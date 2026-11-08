@@ -250,7 +250,7 @@ A generator can declare rival rules: plausible alternatives a solver might infer
 - `lesson_identifiable`: rejects a lesson in which a rival fits every demonstration but changes the query answer, when export chooses the demonstration count; with a fixed count the lesson is kept and flagged.
 - `CANONICAL_SHORTCUTS`: rivals that also fit the original ARC task's own pairs. Each needs generated counterexamples. Since 23 October the gate also verifies the fit and fails a declared shortcut that misses any labelled original pair; generators approved earlier were not re-gated (Section 5.3).
 
-1,498 generators declare 6,822 rivals, a median of 4 and up to 25 per generator, under 5,085 distinct names. Among the 1,984 approved generators, 1,352 declare rivals, 1,224 a lesson-identifiability check and at least 761 canonical shortcuts (1,223 by a looser text match). Most rivals are written for one task. The most common are `identity` (175 generators), `horizontal_only` (42), `vertical_only` (38), `solid_bbox` (19), `largest_component_only` (15) and `ignore_blockers` (14).
+Counting the rivals written out as literal keys of `SEMANTIC_RIVALS` or `LESSON_COMPETITORS`, 1,498 generators declare 6,822 rivals, a median of 4 and up to 25 per generator, under 5,276 distinct names. Among the 1,984 approved generators, 1,352 declare rivals under these field names (36 of them build the table in code), 1,224 a lesson-identifiability check and 1,141 at least one canonical shortcut (679 as literal tables; 82 more declare an empty table). Most rivals are written for one task. The most common are `identity` (199 generators), `horizontal_only` (45), `vertical_only` (40), `solid_bbox` (19), `largest_component_only` (15) and `ignore_blockers` (14).
 
 Generator `00ed2544a15e` fills the cells between two red cells with cyan when the segment between them holds nothing else. Two of its rivals reproduce every pair in the original ARC task:
 
@@ -841,7 +841,7 @@ The same ARC task can be hard in one library's version and easy in another's. 26
 
 ## E Rivals that fit every original pair
 
-A canonical shortcut is a rival rule that reproduces every labelled pair of the original task, training and test, yet differs from the intended rule on other inputs. At least 761 approved generators declare one or more as literal dictionaries (209 for ARC-AGI-2 training tasks, 549 for bank puzzles); the looser text count is 1,223. Each declared shortcut must be checked against every original pair and paired with generated inputs on which it fails. The fit check entered the semantic gate on 23 October; Section 5.3 shows approved generators that copy their whole rival list into the declaration and fail it.
+A canonical shortcut is a rival rule that reproduces every labelled pair of the original task, training and test, yet differs from the intended rule on other inputs. 1,141 approved generators declare one or more: 679 as literal dictionaries with 1,376 entries, 455 by copying their whole rival table and 7 by building the table in code; another 82 declare an empty table. Each declared shortcut must be checked against every original pair and paired with generated inputs on which it fails. The fit check entered the semantic gate on 23 October; Section 5.3 shows approved generators that copy their whole rival list into the declaration and fail it.
 
 Some generators record the strongest shortcut in their notes with its counterexample. Four of them:
 
