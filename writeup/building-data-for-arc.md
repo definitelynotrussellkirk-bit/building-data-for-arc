@@ -38,6 +38,7 @@ ARCpuzzles treats correct labels and sensible lessons as requirements. The point
 - the same identifiability screen applied after the fact to ARCpuzzles episodes (Section 12), and per-generator mastery of the trained model measured by prefill scans (Appendix D);
 - the ideas we used and the pitfalls we hit, each with its case (Section 14);
 - the release: everything, unfinished generators included, with each generator's label and open findings (Section 15), and how to use it (Section 17).
+- excerpts from the reviewer instructions (Appendix F), and a random easy, medium and hard generator from each library (Appendix G).
 
 ## 2 Examples
 
