@@ -143,7 +143,7 @@ to training. See [the fast review workflow](REVIEW/README.md).
 ```bash
 arcpuzzles show 6c68e1b008a5
 arcpuzzles show aba27056 --challenge  # Original ARC training IDs also work
-arcpuzzles show 6c68e1b008a5 --challenge --variant 0 --out var/challenge.json
+arcpuzzles show 3ef9eae12446 --challenge --variant 0 --out var/challenge.json
 arcpuzzles generate 6c68e1b008a5 --count 2 --seed 17 --train 2 --test 1 \
   --out var/examples.jsonl
 ```
