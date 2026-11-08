@@ -436,7 +436,7 @@ What the trained data actually carried can be read from the export. In the round
 | Hard flags (queries): output equals input | 9 |
 | \quad constant output | 4 |
 
-*Table 10: The external screen of Table 9 applied after the fact to ARCpuzzles episodes, one attempt per query. Each of the 33 ambiguous queries had exactly one trigger. Hard flags mark a degenerate query (the output equals the input, or is constant) without making it ambiguous; the 9 hard-flag-only episodes make up the rest of the 1,000. All four RE-ARC rules that fired belong to other tasks than the generator's own.*
+*Table 10: The external screen of Table 9 applied after the fact to ARCpuzzles episodes, one attempt per query. Each of the 33 ambiguous queries had exactly one trigger. Hard flags mark a degenerate query (the output equals the input, or is constant) without making it ambiguous; the 9 hard-flag-only episodes make up the rest of the 1,000. The four RE-ARC triggers come from three rules, all written for tasks other than the generator's own.*
 
 For the external libraries the screen acted on a flagged episode: it added demonstrations, dropped the query or rejected the episode. ARCpuzzles episodes were trained as exported, so about 1.2% of their queries carried a flag the external data would not have. Two-demonstration episodes of parametric families, which requested 2 to 6 demonstrations from 25 October, have the highest rate (6.7%); most flagged episodes have four demonstrations. Size and colour inferability are not part of the generators' declared checks, so those checks could not catch these triggers. The output-equals-input and constant-output queries come from generators that allow such outputs; the external screen rejects them.
 
