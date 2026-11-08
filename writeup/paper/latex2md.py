@@ -215,6 +215,7 @@ def main():
     body = t[t.index('\\begin{document}') + len('\\begin{document}'):t.index('\\end{document}')]
     body = body.replace('\\maketitle', '')
     body = re.sub(r'\{\\(footnotesize|small)\s*\n(\\begin\{xltabular\}.*?\\end\{xltabular\})\}', r'\2', body, flags=re.S)
+    body = re.sub(r'\{\\(?:large|Large)\s*([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}', r'\1', body)
     # bibliography
     bib = ''
     bm = re.search(r'\\begin\{thebibliography\}\{[^}]*\}(.*?)\\end\{thebibliography\}', body, re.S)
@@ -328,6 +329,7 @@ def main():
     md = re.sub(r'\n{3,}', '\n\n', md).strip() + '\n'
     md = f'# {" ".join(inline(title).split())}\n\n' + md
     md = md.replace('@@DD@@', '--')
+    md = re.sub(r'^\{\\(?:large|Large)\s*(.*)\}$', r'\1', md, flags=re.M)
     OUT.write_text(md)
     left = sorted(set(re.findall(r'\\[a-zA-Z]+', re.sub(r'```.*?```', '', re.sub(r'\$[^$]*\$', '', md), flags=re.S))))
     print('written', OUT, len(md.split()), 'words; leftover commands outside math/code:', left[:40])
