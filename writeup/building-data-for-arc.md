@@ -50,7 +50,7 @@ We start with examples. The first three were picked by hand to show what the wor
 
 - `57bafcdde8c3` recolours to cyan every non-background component larger than one cell, leaving single cells alone. It is a parametric family: one rule with six settings (minimum component size 2, 3 or 4, counted with 4- or 8-connectivity), all run on the same sampled inputs. Every lesson is checked so that its demonstrations rule out every setting except the one that produced it (Figure 1).
 - `581bb11ff645` sorts complete red column groups, delimited by separators, into their original slots by increasing count of black holes. Other settings of the same family count holes as connected regions and sort in either direction. On fresh draws of this trained generator the model mastered only 6.7%, meaning it gave every answer token probability at least $1/2$; mastery here always means fresh instances of a generator the model trained on, not held-out tasks (Figure 2, Appendix D).
-- `bee63e6e52bd` pours yellow from the gap in a frame through the cavity and diagonally past both arm tips. A reviewer found that every original pair has arms of length 2, so “assume 2/2 arms” fits them all; the generator now cycles arm lengths 2/2, 1/1, 1/3 and 3/1 by sample number, so three of every four draws refute that shortcut (Figure 3, Section 11). The original pairs lose the rule the way a sum loses its terms; the scheduled lesson keeps it, as a product keeps its factors (Section 1).
+- `bee63e6e52bd` pours yellow from the gap in a frame through the cavity and diagonally past both arm tips. A reviewer found that every original pair has arms of length 2, so “assume 2/2 arms” fits them all; the generator now cycles arm lengths 2/2, 1/1, 1/3 and 3/1 by sample number, so three of every four sample indices refute that shortcut (Figure 3, Section 11). The original pairs lose the rule the way a sum loses its terms; the scheduled lesson keeps it, as a product keeps its factors (Section 1).
 
 ![Figure 1](figures/fig-cherry-57bafcdde8c3.png)
 
@@ -74,20 +74,21 @@ We start with examples. The first three were picked by hand to show what the wor
 
 | Kind of rule | Approved generators that do it |
 |---|---|
-| Recolour objects by a property | `14dacb3b518f` objects with an enclosed hole take one colour, others another; `7ce16af847d6` only solid $3\times3$ components change; `57bafcdde8c3` |
+| Recolour objects by a property | `14dacb3b518f` objects with an enclosed hole take one colour, others another; `7ce16af847d6` only solid blue $3\times3$ components change; `57bafcdde8c3` |
 | Count, rank and sort | `fae242ae157d` repaint three objects by area rank; `148cea0afb09` a number in the corner picks the $R$-th smallest object, which is cropped and scaled; `581bb11ff645` |
 | Find the odd one out | `b9058b6ccb82` output the one object whose shape differs under rotation and reflection; `1a4459f1a38f` crop the unique largest component |
 | Crop, extract and restack | `0005ab5b7704` keep the columns under header markers; `6b88648ff0e0` stack the strips found between paired markers |
 | Transform named by a cue | `74c16adff270` a control cell sets the rotation of a template; `1e92a4eef51d` a corner key picks the reflection; `75b8cb3d5e9b` infer the transform from panel 1 to panel 2 and apply it to panel 3 |
+| Multi-step: each step acts on the last result | `b6592c220670` apply each header code to the previous state and keep every state; `2c784862f42b` four transform codes applied cumulatively, each intermediate panel shown; `ea957ff0d072` slide objects one at a time in order, so an earlier move can block a later one |
 | Combine panels | `5573cf8e2aa4` the union of two panels split by a divider; `4e16917b1bde` mirror cells across a divider bar |
 | Read a legend or key | `d3c9fc4479d8` row 0 lists old-to-new colour pairs; `6be78d0010df` infer a colour map from two panels and apply it to a third; `b83ad00fc681` replace each key-coloured marker by its prototype |
 | Copy or stamp a template | `5553241d87bf` stamp a template cell wherever dots mark one; `693aba8e59d8` stamp copies rotated by anchor colour |
 | Draw segments, rays and flows | `21eb0f467b5a` join each colour's two aligned cells; `1198580cc354` seeds run down their column until a blocker; `edb55a59dc46` alternate two colours along rays; `bee63e6e52bd` |
 | Fill regions | `3ef9eae12446` fill the centre of each same-colour ring; `48732ebd41f9` fill the largest empty rectangle; `25e78410d5bb` fill each walled room with the majority colour on its walls |
-| Distances and paths | `dc382c7da9a9` mark cells equally far from two seeds around walls; `d5af7195f6da` each cell takes its nearest seed's colour, ties stay blank |
+| Distances and paths | `dc382c7da9a9` mark cells equally far from two seeds around walls; `d5af7195f6da` reachable blank cells take the nearest seed's colour around walls, ties stay blank |
 | Move, compact and delete | `23c3ab5fa55f` compact each row to the left; `961add4a2688` pack columns upward inside a frame; `8ff1ff513757` delete empty rows |
 | Rectangles from corners | `96d2d525a266` two same-colour cells mark an outline; `1d23d72f3b43` or a filled box |
-| Local neighbourhood rules | `67c14e0f76b1` a gap between two blue cells in a row turns red; `70b9864c90a3` fill a centre whose four diagonal neighbours agree |
+| Local neighbourhood rules | `67c14e0f76b1` a single blank cell immediately between two blue cells in a row turns red; `70b9864c90a3` fill a centre whose four diagonal neighbours agree |
 | Tile, scale and repeat | `a9f315ca9cc7` a $3\times3$ mask tiled with copies of itself; `75ba893e1e36` mirror and repeat; `997c17fd6870` reverse the order of tiles but not their contents |
 | Restore a damaged pattern | `54b040e4bd08` recover a periodic tile across an erased band |
 | Compose a gallery | `e965836d9f92` every transformed and recoloured copy of a prototype; `07eaf5f238ad` pack header-selected objects in header order |
