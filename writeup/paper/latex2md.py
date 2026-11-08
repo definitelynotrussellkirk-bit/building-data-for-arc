@@ -326,7 +326,7 @@ def main():
     md = '\n'.join(out)
     md = md.replace('@@SEP@@', '---')
     md = re.sub(r'\n{3,}', '\n\n', md).strip() + '\n'
-    md = f'# {inline(title)}\n\n' + md
+    md = f'# {" ".join(inline(title).split())}\n\n' + md
     OUT.write_text(md)
     left = sorted(set(re.findall(r'\\[a-zA-Z]+', re.sub(r'```.*?```', '', re.sub(r'\$[^$]*\$', '', md), flags=re.S))))
     print('written', OUT, len(md.split()), 'words; leftover commands outside math/code:', left[:40])
