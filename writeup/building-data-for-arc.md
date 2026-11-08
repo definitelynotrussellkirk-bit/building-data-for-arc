@@ -704,6 +704,11 @@ The 8-GPU pod was rented for about five and a half hours at \$19.92 an hour. It 
 
 We decided against further burst runs, because we could not tell how much the model's ability was still increasing per round, and because we were not sure we would be able to submit.
 
+**Was the run long enough?**  Two measurements, taken afterwards, suggest that adapter capacity was not the limit and that training longer would have been the cheapest next step.
+
+- **Capacity was barely used.** In the final adapter (update 19,969, rank 128), the 32 largest singular values of each weight update hold a median 98.2% of its squared Frobenius norm (its energy), and at least 88.2% in every one of its 496 tensors; the median stable rank is 2.5. A rank-32 adapter could have held almost all of what this one learned.
+- **Training had not converged.** The adapter's norm was still growing, from 10.1 at update 13,673 to 14.7 at the end. Each route is trained once, so a round's training loss is measured on examples the model had not seen. That loss fell from 0.032 in rounds 38–40 to 0.025 in rounds 48–50. The repair modes fell (verify 0.0057 to 0.0030, verify-then-fix 0.048 to 0.042), and verify-then-fix routes also made up less of the mix (56% to 48%). The direct-answer loss held near 0.017 over the same rounds, on data chosen as the most surprising draws available.
+
 ![Figure 13](figures/fig-run-modes.png)
 
 *Figure 13: Routes per round dataset by supervision mode. Rounds 2–6 mix direct answers, refinement of the model's own earlier attempts, and point queries; rounds 7–8 replace point queries with Racket execution routes; rounds 9–25 are direct only; rounds 26–34 are mostly refinement; round 35 splits repair into verify and fix; from round 36 the model first verifies a previous answer and, if it is wrong, writes the whole correct grid.*
