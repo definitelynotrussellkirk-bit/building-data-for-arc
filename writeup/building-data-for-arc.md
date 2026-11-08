@@ -2,7 +2,7 @@
 
 ## Abstract
 
-ARCpuzzles is a library of 4,061 procedural generators for ARC-style tasks, each a Python input sampler paired with a Racket reference rule that computes every label, whose lessons are checked to identify the intended answer among declared rival rules, not only to label it correctly. Executable rules make correct labels cheap, but a lesson, the demonstrations a learner sees together, can have correct labels and still fit a second rule that answers the query differently. We call a lesson *query-identifiable* relative to declared rivals when every declared rival that fits all of its demonstrations gives the intended answer on the query. Of the 1,984 generators approved for training, each approval bound to the exact reviewed source, 1,352 declare rival rules and 1,007 schedule inputs that refute them; 941 parametric families add 1,233 rule variants, and each of their episodes must fit only the setting that produced it. Agreement between label programs, the check used by RE-ARC and NVARC, does not provide this: a blind solve finds an NVARC puzzle whose first four demonstrations fit a second rule that is wrong on 17 of its 30 pairs, and a screen asks for more demonstrations on 2.1% of RE-ARC, 2.3% of ARC-GEN and 3.6% of NVARC episodes, and finds an ambiguous query in 1.8% of ours, which were not screened before training. In a mixed-data case study, a checkpoint of a Qwen3.8-27B trained on these and screened external episodes scored 5.00 on the public leaderboard. We release all 4,061 generators, unfinished ones included, with labels that say how far each got, and the ideas and pitfalls from building them: <https://github.com/definitelynotrussellkirk-bit/building-data-for-arc>.
+ARCpuzzles is a library of 4,061 procedural generators for ARC-style tasks, each a Python input sampler paired with a Racket reference rule that computes every label, whose lessons are checked to identify the intended answer among declared rival rules, not only to label it correctly. Executable rules make correct labels cheap, but a lesson, the demonstrations a learner sees together, can have correct labels and still fit a second rule that answers the query differently. We call a lesson *query-identifiable* relative to declared rivals when every declared rival that fits all of its demonstrations gives the intended answer on the query. Of the 1,984 generators approved for training, each approval bound to the exact reviewed source, 1,352 declare rival rules and 1,007 schedule inputs that refute them; 941 parametric families add 1,233 rule variants, and each of their episodes must fit only the setting that produced it. Agreement between label programs, the check used by RE-ARC and NVARC, does not provide this: a blind solve finds an NVARC puzzle whose first four demonstrations fit a second rule that is wrong on 17 of its 30 pairs, and a screen asks for more demonstrations on 2.1% of RE-ARC, 2.3% of ARC-GEN and 3.6% of NVARC episodes, and finds an ambiguous query in 1.8% of ours, which were not screened before training. In a mixed-data case study, a checkpoint of a Qwen3.8-27B trained on these and screened external episodes scored 5.00 on the public leaderboard. The data set is the main contribution: all 4,061 generators, unfinished ones included, usable as training data or as a reinforcement-learning environment in which the executable rule scores any answer exactly. Each ships with its review label, open findings, repair notes and tests, so a user starts out knowing its limits and how earlier ones were fixed. We also relate it to RE-ARC, ARC-GEN and NVARC and report the ideas and pitfalls from building it: <https://github.com/definitelynotrussellkirk-bit/building-data-for-arc>.
 
 ## 1 Introduction
 
@@ -34,7 +34,7 @@ ARCpuzzles treats correct labels and sensible lessons as requirements. The point
 
 1. **Query-identifiable lessons.** A definition of lesson quality relative to declared rivals, separate from label correctness, and the machinery that applies it at export: declared rival rules, input schedules that refute them, per-lesson checks, and per-episode certificates that a parametric lesson fits only its own setting (Sections 5–8).
 2. **Evidence that label agreement leaves lessons ambiguous.** A blind-solve witness in NVARC, and one identifiability screen applied to RE-ARC, ARC-GEN, NVARC and our own episodes (Sections 12–13).
-3. **A released library with its state.** 4,061 generators, 1,984 approved with approval bound to exact source hashes, 941 parametric families, unfinished generators labelled by stage, and the ideas and pitfalls from building them (Sections 14–17).
+3. **A released data set with its state.** 4,061 generators, 1,984 approved with approval bound to exact source hashes, 941 parametric families, and unfinished generators labelled by stage, usable as training data or as a reinforcement-learning environment with exact rewards; each ships with its known limits and repair history, and the paper adds the ideas and pitfalls from building it (Section 2 and Sections 14–17).
 
 A Qwen3.8-27B trained on these data mixed with screened external episodes is a case study, not a controlled test of the contributions (Section 18). Section 19 answers the six judging criteria directly.
 
@@ -66,6 +66,38 @@ We start with examples. The first three were picked by hand to show what the wor
 
 *Figure 4: Two demonstrations from each of the six randomly drawn approved generators.*
 
+**What the approved rules do.**  Nine examples are a small window. Table 1 lists kinds of rule in the approved set, each with approved generators that do it. Its descriptions are condensed from the one-line rule summaries the release ships in its catalog (for 1,956 of the 1,984 approved generators; 891 also carry skill tags), which a user can search, for example `arcpuzzles list --approved --search hole`.
+
+| Kind of rule | Approved generators that do it |
+|---|---|
+| Recolour objects by a property | `14dacb3b518f` objects with an enclosed hole take one colour, others another; `7ce16af847d6` only solid $3\times3$ components change; `57bafcdde8c3` |
+| Count, rank and sort | `fae242ae157d` repaint three objects by area rank; `148cea0afb09` a number in the corner picks the $R$-th smallest object, which is cropped and scaled; `581bb11ff645` |
+| Find the odd one out | `b9058b6ccb82` output the one object whose shape differs under rotation and reflection; `1a4459f1a38f` crop the unique largest component |
+| Crop, extract and restack | `0005ab5b7704` keep the columns under header markers; `6b88648ff0e0` stack the strips found between paired markers |
+| Transform named by a cue | `74c16adff270` a control cell sets the rotation of a template; `1e92a4eef51d` a corner key picks the reflection; `75b8cb3d5e9b` infer the transform from panel 1 to panel 2 and apply it to panel 3 |
+| Combine panels | `5573cf8e2aa4` the union of two panels split by a divider; `4e16917b1bde` mirror cells across a divider bar |
+| Read a legend or key | `d3c9fc4479d8` row 0 lists old-to-new colour pairs; `6be78d0010df` infer a colour map from two panels and apply it to a third; `b83ad00fc681` replace each key-coloured marker by its prototype |
+| Copy or stamp a template | `5553241d87bf` stamp a template cell wherever dots mark one; `693aba8e59d8` stamp copies rotated by anchor colour |
+| Draw segments, rays and flows | `21eb0f467b5a` join each colour's two aligned cells; `1198580cc354` seeds run down their column until a blocker; `edb55a59dc46` alternate two colours along rays; `bee63e6e52bd` |
+| Fill regions | `3ef9eae12446` fill the centre of each same-colour ring; `48732ebd41f9` fill the largest empty rectangle; `25e78410d5bb` fill each walled room with the majority colour on its walls |
+| Distances and paths | `dc382c7da9a9` mark cells equally far from two seeds around walls; `d5af7195f6da` each cell takes its nearest seed's colour, ties stay blank |
+| Move, compact and delete | `23c3ab5fa55f` compact each row to the left; `961add4a2688` pack columns upward inside a frame; `8ff1ff513757` delete empty rows |
+| Rectangles from corners | `96d2d525a266` two same-colour cells mark an outline; `1d23d72f3b43` or a filled box |
+| Local neighbourhood rules | `67c14e0f76b1` a gap between two blue cells in a row turns red; `70b9864c90a3` fill a centre whose four diagonal neighbours agree |
+| Tile, scale and repeat | `a9f315ca9cc7` a $3\times3$ mask tiled with copies of itself; `75ba893e1e36` mirror and repeat; `997c17fd6870` reverse the order of tiles but not their contents |
+| Restore a damaged pattern | `54b040e4bd08` recover a periodic tile across an erased band |
+| Compose a gallery | `e965836d9f92` every transformed and recoloured copy of a prototype; `07eaf5f238ad` pack header-selected objects in header order |
+
+*Table 1: Kinds of rule in the approved set. The kinds overlap and are not a taxonomy; many rules combine several, as `148cea0afb09` ranks, crops and scales.*
+
+**How good the approved data is.**  No check proves a lesson good, but the approved data passes the ones we can state, and its known problems travel with it:
+
+- **Labels follow the rule.** Every label is computed by the generator's Racket reference rule, which reproduces every pair of its original task; approval binds the exact generator and rule that were reviewed (Sections 4 and 15).
+- **Lessons are checked against declared rivals.** 1,352 approved generators declare rival rules, 1,224 a lesson check and 1,007 a schedule of inputs that refute them, and every parametric episode must fit only its own setting (Sections 5–8).
+- **An outside screen agrees.** The identifiability screen we ran on RE-ARC, ARC-GEN and NVARC passes 97.3% of a random 1,000 of our training episodes as they were, with no demonstration added; at their default demonstration count it passed 97.9%, 97.7% and 96.4% of theirs (Section 12).
+- **Inputs vary.** Of six approved generators drawn at random, five produced more than 13,000 distinct inputs in 20,000 or 100,000 draws, though one of them concentrates its draws on a few common inputs; the sixth has exactly 2,376 possible inputs (Section 5.3).
+- **Known problems are attached.** 734 approved generators carry an open finding with its reproduction, the screen flags 1.8% of our episodes, and none of the six random generators passes every stage of today's check battery (Sections 10 and 15).
+
 ## 3 How the data was made
 
 | Source | Generators |
@@ -77,7 +109,7 @@ We start with examples. The first three were picked by hand to show what the wor
 | Untagged (49 generic concept generators, 3 per-puzzle) | 52 |
 | Total | 4,061 |
 
-*Table 1: Generator sources.*
+*Table 2: Generator sources.*
 
 The project started on 26 March 2026, the day after ARC Prize 2026 opened. Version 0.1 was released on 10 May, a library-wide review queue ran from 16 July to 16 August with 693 reviews completed, reviewer packets ran from 3 to 26 October, and the submission model trained from 22 October to 2 November.
 
@@ -169,7 +201,7 @@ and, with the six phases equally likely and grids uniform within a phase, $N_{\m
 | `fae242ae157d` | 54 | 3 | 100k | 99,998 | – | $\approx2.5\times10^{9}$ | 6 |
 | `6b88648ff0e0` | 14 | 3 | 100k | 100,000 | – | $\gtrsim1.7\times10^{9}$ | 165 |
 
-*Table 2: Declared configurations ($\prod_j|A_j|$, where $A_j$ is the set of values declared for sampling axis $j$), rule settings, and measured reach. Grid shapes are counted over 5,000 draws. Chao1 values marked $^{\uparrow}$ were still rising with $N$; they are estimates at the stated $N$, not bounds. “–”: too few repeats for Chao1. For `6b88648ff0e0` no collision occurred; the bound uses $C\le3$, the 95% upper limit for zero observed events.*
+*Table 3: Declared configurations ($\prod_j|A_j|$, where $A_j$ is the set of values declared for sampling axis $j$), rule settings, and measured reach. Grid shapes are counted over 5,000 draws. Chao1 values marked $^{\uparrow}$ were still rising with $N$; they are estimates at the stated $N$, not bounds. “–”: too few repeats for Chao1. For `6b88648ff0e0` no collision occurred; the bound uses $C\le3$, the 95% upper limit for zero observed events.*
 
 Declared configurations and measured reach disagree in both directions. `7ce16af847d6` declares three configurations and produced 99,997 distinct grids in 100,000 draws; `3ef9eae12446` declares 196 and emits exactly 2,376. The declared axes list the structural choices a generator makes; everything else, such as colours, positions and shapes, varies with the seed.
 
@@ -182,7 +214,7 @@ Declared configurations and measured reach disagree in both directions. `7ce16af
 | `5ca74a85bc85` | mirror source cells across a divider | none; 5 replay, 11 general profiles | 1 (1): filled source bounding box | 4 |
 | `6b88648ff0e0` | stack strips between cyan markers | none | 0 in production; family audit of 26 policies | – |
 
-*Table 3: Lesson structure of the six sampled generators. In parentheses: rivals that reproduce every labelled original pair, measured by `arcpuzzles lesson-census`. Amb.: of 60 census lessons (20 per difficulty band, 3 demonstrations and 1 query, explicit demonstration count), those in which a declared rival fits every demonstration but changes the query answer.*
+*Table 4: Lesson structure of the six sampled generators. In parentheses: rivals that reproduce every labelled original pair, measured by `arcpuzzles lesson-census`. Amb.: of 60 census lessons (20 per difficulty band, 3 demonstrations and 1 query, explicit demonstration count), those in which a declared rival fits every demonstration but changes the query answer.*
 
 **What the six show.**
 
@@ -241,7 +273,7 @@ def _rival_ignore_blockers(grid):
 | ignore blocking colours (fits the original task) | refuted |
 | simple pairs only (fits the original task) | refuted |
 
-*Table 4: Lesson check recorded in a generated `00ed2544a15e` episode with three demonstrations. A full semantic-gate run on this generator passed on 8 November 2026.*
+*Table 5: Lesson check recorded in a generated `00ed2544a15e` episode with three demonstrations. A full semantic-gate run on this generator passed on 8 November 2026.*
 
 These checks are sampled evidence against named alternatives, not proof that no other rule fits the demonstrations.
 
@@ -278,7 +310,7 @@ The family keeps an adversarial rule, `wrong_intermediate.rkt`, that counts the 
 | `581bb11ff645` | count cells or regions $\times$ ascending or descending | The first demonstration separates every setting |
 | `0005ab5b7704` | left to right or by density | Refute ranking all columns before selection |
 
-*Table 5: Representative accepted parametric families.*
+*Table 6: Representative accepted parametric families.*
 
 ## 9 Matching the original task
 
@@ -297,7 +329,7 @@ Labels are consistent with the reference rule by construction once that rule run
 | Gold program calls a helper the constrained grammar rejects | `grammar` |
 | Generator crashes or emits constant outputs yet passes lint | `rule_smoke`, `selfcheck` |
 
-*Table 6: Defects that produced checks.*
+*Table 7: Defects that produced checks.*
 
 **Today's battery on the six sampled generators.**  The battery keeps growing, and approval is not re-run when it does. We ran today's twelve stages on the six generators of Section 5.3; none passes all twelve.
 
@@ -358,7 +390,7 @@ and, in the semantic gate's sampled draws, every declared canonical shortcut $r$
 | NVARC | $\ge$15 of 20 programs | no originals (new puzzles) | – | – |
 | ARCpuzzles (approved) | – | every reference rule | 1,224 of 1,984 | all 1,984 |
 
-*Table 7: Verification properties by dataset. ARCpuzzles does not use V1: labels come from one reference rule, checked by V2 and by execution. RE-ARC's 391 of 400 was measured during our training run. ARCpuzzles V3 counts generators that declare a lesson hook; the 941 parametric families are also certified per episode against their own settings.*
+*Table 8: Verification properties by dataset. ARCpuzzles does not use V1: labels come from one reference rule, checked by V2 and by execution. RE-ARC's 391 of 400 was measured during our training run. ARCpuzzles V3 counts generators that declare a lesson hook; the 941 parametric families are also certified per episode against their own settings.*
 
 In this paper, *verified* means V2 and V4 for every approved generator, and V3 for lessons that pass a declared lesson check. When the caller fixes the demonstration count, a failing lesson is kept and flagged `diagnostic_unsupported` rather than rejected.
 
@@ -379,7 +411,7 @@ What the trained data actually carried can be read from the export. In the round
 | Queries dropped | 68 | 220 | 19 |
 | Episodes rejected | 50 | 129 | 18 |
 
-*Table 8: Identifiability screen applied to external episodes: RE-ARC and ARC-GEN in round r38, NVARC in round r35 (one episode per puzzle file). Rivals are a finite library run with a 0.3\,s budget each; passing is evidence against these rivals only. Trigger rows count each check that fired on a query at each attempt before a demonstration was added, so one query can be counted several times; they are not episode counts.*
+*Table 9: Identifiability screen applied to external episodes: RE-ARC and ARC-GEN in round r38, NVARC in round r35 (one episode per puzzle file). Rivals are a finite library run with a 0.3\,s budget each; passing is evidence against these rivals only. Trigger rows count each check that fired on a query at each attempt before a demonstration was added, so one query can be counted several times; they are not episode counts.*
 
 **The same screen on ARCpuzzles episodes.**  During training the screen ran only on external episodes; ARCpuzzles episodes were checked against their own generators' declared rivals and hooks or, for parametric families, the settings certificate. Applied afterwards, unchanged, to 1,000 ARCpuzzles episodes drawn at random (seed 20261108) from the 9,170 in the round-38 export, with all four queries of each episode and no demonstration added:
 
@@ -399,7 +431,7 @@ What the trained data actually carried can be read from the export. In the round
 | Hard flags (queries): output equals input | 9 |
 | \quad constant output | 4 |
 
-*Table 9: The external screen of Table 8 applied after the fact to ARCpuzzles episodes, one attempt per query. Each of the 33 ambiguous queries had exactly one trigger. Hard flags mark a degenerate query (the output equals the input, or is constant) without making it ambiguous; the 9 hard-flag-only episodes make up the rest of the 1,000. All four RE-ARC rules that fired belong to other tasks than the generator's own.*
+*Table 10: The external screen of Table 9 applied after the fact to ARCpuzzles episodes, one attempt per query. Each of the 33 ambiguous queries had exactly one trigger. Hard flags mark a degenerate query (the output equals the input, or is constant) without making it ambiguous; the 9 hard-flag-only episodes make up the rest of the 1,000. All four RE-ARC rules that fired belong to other tasks than the generator's own.*
 
 For the external libraries the screen acted on a flagged episode: it added demonstrations, dropped the query or rejected the episode. ARCpuzzles episodes were trained as exported, so about 1.2% of their queries carried a flag the external data would not have. Two-demonstration episodes of parametric families, which requested 2 to 6 demonstrations from 25 October, have the highest rate (6.7%); most flagged episodes have four demonstrations. Size and colour inferability are not part of the generators' declared checks, so those checks could not catch these triggers. The output-equals-input and constant-output queries come from generators that allow such outputs; the external screen rejects them.
 
@@ -502,12 +534,12 @@ We release all of it rather than a curated top subset, because on our budget mos
 | Generators (per-puzzle 4,012; generic 49) | 4,061 |
 | \quad approved for training | 1,984 |
 | Canonical puzzle rows (original pairs, all variants) | 4,472 |
-| Sources: puzzle bank, ARC-AGI-2 training and public evaluation, custom (Table 1) | 4,061 |
+| Sources: puzzle bank, ARC-AGI-2 training and public evaluation, custom (Table 2) | 4,061 |
 | Accepted parametric families (settings) | 941 (2,174) |
 | Reviewer solve attempts; standing-question answers | 2,638; 632 |
 | Certified “find another valid answer” candidates | 18 |
 
-*Table 10: Contents of the release.*
+*Table 11: Contents of the release.*
 
 **Labels.**  Every generator carries a review label and a derived approval:
 
@@ -522,9 +554,9 @@ We release all of it rather than a curated top subset, because on our budget mos
 
 A generator is *approved* when it is `reviewed_safe`, its generator file matches the reviewed SHA-256 exactly and its rule matches the reviewed hash after whitespace normalization, it has a canonical rule and a positive mix weight, and no semantic veto is active. Reasons for non-approval overlap: 2,067 are not reviewed safe, 56 changed code and 15 changed rule after review, 48 have no canonical rule, 15 have zero mix weight, 4 lack a reviewed hash and 2 carry a veto.
 
-**Open audits.**  A finding against a generator stays attached to the source it was found against until someone resolves it; a later edit does not clear it. 1,748 generators, 734 of them approved, carry at least one finding that is not closed. Of the 2,472 open findings, 1,674 await triage, 789 are unresolved and 9 need evidence. A finding does not revoke approval by itself. `arcpuzzles list –audit-unresolved` lists these generators and `show ID` gives each finding with its reproduction. For example, an audit of `c4f6a0585dbf` reproduced that one of its overrides (`palette_kind=warm`) yields inputs its Racket rule leaves unchanged.
+**Open audits.**  A finding against a generator stays attached to the source it was found against until someone resolves it; a later edit does not clear it. 1,748 generators, 734 of them approved, carry at least one finding that is not closed. Of the 2,472 open findings, 1,674 await triage, 789 are unresolved and 9 need evidence. A finding does not revoke approval by itself. `arcpuzzles list --audit-unresolved` lists these generators and `show ID` gives each finding with its reproduction. For example, an audit of `c4f6a0585dbf` reproduced that one of its overrides (`palette_kind=warm`) yields inputs its Racket rule leaves unchanged.
 
-**Originals outside ARC's size limit.**  Thirteen bank puzzles, two of them with approved generators, have an original grid wider or taller than 30, so they are not valid ARC tasks and `show –challenge` refuses them. Their generators can still draw legal grids: `6c68e1b008a5`, whose original is $9\times59$, draws inputs at most 29 wide.
+**Originals outside ARC's size limit.**  Thirteen bank puzzles, two of them with approved generators, have an original grid wider or taller than 30, so they are not valid ARC tasks and `show --challenge` refuses them. Their generators can still draw legal grids: `6c68e1b008a5`, whose original is $9\times59$, draws inputs at most 29 wide.
 
 ## 16 Exporting training data
 
@@ -551,12 +583,21 @@ arcpuzzles check 3ef9eae12446 --battery --out var/checks/3ef9  # 12 stages
 arcpuzzles lesson-census 3ef9eae12446 --per-band 20 --out var/census/3ef9.json
 ```
 
-- **Train on approved generators.** Generation and export refuse unapproved generators by default. `–allow-unapproved` opens them for research and labels every output as unapproved.
+- **Train on approved generators.** Generation and export refuse unapproved generators by default. `--allow-unapproved` opens them for research and labels every output as unapproved.
 - **Keep answers private.** Exports write the model-visible challenges and the private labels to separate files; the labels must never enter the challenge file. `public.jsonl` holds every query input of an episode, so keep it with the controller and show the model the demonstrations and only the current query (`iter_public_turns`; `docs/datasets.md`).
 - **Read the provenance.** Every episode carries its seed, sample indices, executed rule hash, rejections and lesson check. With a fixed demonstration count, drop episodes whose check is `diagnostic_unsupported`.
 - **Keep sample indices consecutive.** A lesson schedule is a function of the sample index; a loader that keeps one residue class of indices can remove the inputs that refute the rivals.
 - **Check open audits** before relying on a generator, and decide whether its finding matters for the use at hand.
 - **To continue a generator**, start from its `notes.md`, counterexamples and tests, run the battery, and treat its label as a claim about the reviewed bytes only.
+
+**What the release can be used for.**
+
+- **Training data at any size.** Each approved generator draws new episodes from a seed without a fixed limit, so a run can take as many as its budget allows and be evaluated on fresh draws it never saw (Appendix D). To test on unseen rules instead, hold out whole families: every exported row records its verified original-task family or marks it unknown.
+- **A reinforcement-learning environment.** The reference rule executes, so any answer a model gives can be scored exactly, including answers no one wrote down. Each generator is then an environment with an unlimited supply of tasks and an exact reward, with the difficulty band and the demonstration count as settings.
+- **Wrong answers on demand.** Declared rivals are executable rules that fit the original pairs and answer the query wrongly. They can serve as distractors, as negatives for a verifier, or as wrong drafts to repair. Our run trained verify and repair modes on the model's own wrong answers (Appendix B); rivals supply such answers without a model.
+- **Rule variants on shared inputs.** A parametric family runs all its settings on the same inputs (Figure 1), so a model must read the setting from the demonstrations.
+- **Programs as targets.** Every generator comes with the short Racket program that computes its labels, so the same data can train writing or executing programs; the grammar and style checks that use would need were left incomplete (Section 10).
+- **A base to continue.** Every approved generator ships with its `notes.md`, which records repairs and the decisions behind them, and 1,979 with tests; with the review label and open findings, a user starts out knowing a generator's limits and how earlier ones were fixed. Section 12 relates the data to RE-ARC, ARC-GEN and NVARC, and Section 14 lists what we would do differently.
 
 ## 18 Submission
 
@@ -589,7 +630,7 @@ We release all 4,061 generators, unfinished ones included, with their labels, op
 - Rival and identifiability checks cover declared rivals on sampled lessons; they do not prove uniqueness.
 - We did not run the experiment that would test the paper's central hypothesis: matched models trained on the same generators and the same number of examples, one on lessons that pass the rival checks and one on lessons that do not, compared on fresh instances. Without it, that query-identifiable lessons train better models remains untested; the submission is a mixed-data case study, not that experiment.
 - Approval binds a generator's source hash, not the gate version. Checks added later, such as the 23 October verification of declared canonical shortcuts, are not re-run on approved generators; three approved generators examined here fail it.
-- ARCpuzzles episodes were not filtered by the external identifiability screen of Table 8 during training. Applied afterwards to a random 1,000 of them, it flags an ambiguous query in 1.8% (Table 9).
+- ARCpuzzles episodes were not filtered by the external identifiability screen of Table 9 during training. Applied afterwards to a random 1,000 of them, it flags an ambiguous query in 1.8% (Table 10).
 - Most review results are reviewer-reported and were not re-run when integrated.
 - The 415 `unsafe` labels are not a review-measured defect rate. A generator is `unsafe` when it has an active semantic veto, failed an independent monitor gate, or, before any review, has a machine-estimated suitability tier of 1 or lower. Unsafe generators are excluded from training exports.
 - 120 generators were written for ARC-AGI-2 public evaluation tasks, and the submission's training run included 3,981 training examples from public evaluation tasks. Local public-evaluation scores of that model are therefore not held-out measurements; the competition's hidden test tasks are separate.
@@ -626,7 +667,7 @@ Direction was set on 22 October 2026: one Qwen3.8-27B answering with the grid di
 | External generators | RE-ARC 391, ARC-GEN 891, NVARC 855 files, requested at one third of generator items |
 | Pilot (round 1) | 4,332 episodes from 1,459 approved generators in 530 families; answer loss 0.191 $\to$ 0.124 |
 
-*Table 11: The training run.*
+*Table 12: The training run.*
 
 ![Figure 12](figures/fig-run-hours.png)
 
@@ -760,7 +801,7 @@ The scans ran in two lanes. The training cluster served the BF16 model with vLLM
 | ARC-GEN | 871 | 310 | 326 | 115 | 91 | 29 | – |
 | NVARC (by source task) | 836 | 44 | 152 | 596 | 20 | 24 | – |
 
-*Table 12: Scoreboard classes on 2 November. Classes are measured on fresh draws of generators the model trained on: “mastered” means new instances of a trained rule, not a held-out rule. NVARC files are one-offs and count under their source task. The median ARCpuzzles generator has 115 observations.*
+*Table 13: Scoreboard classes on 2 November. Classes are measured on fresh draws of generators the model trained on: “mastered” means new instances of a trained rule, not a held-out rule. NVARC files are one-offs and count under their source task. The median ARCpuzzles generator has 115 observations.*
 
 A quarter of the approved ARCpuzzles generators (473) were mastered and two thirds (1,316) mastered or easy; 390 were hard or unsolved. The 120 generators written for public-evaluation tasks were the hardest group: 79 hard or unsolved, 2 mastered. The six generators sampled in Section 5.3:
 
@@ -773,9 +814,9 @@ A quarter of the approved ARCpuzzles generators (473) were mastered and two thir
 | `5ca74a85bc85` | mastered | 61 | 77.0% | 26/33 |
 | `6b88648ff0e0` | easy | 85 | 35.3% | 31/43 |
 
-*Table 13: Scoreboard records of the six sampled generators. “Mastered (all items)” counts every scan item since the generator was first scanned; the class uses the newest three. For `6b88648ff0e0`, 24 unmastered items had no cell below $q=1/2$: the miss was in the size or colours line.*
+*Table 14: Scoreboard records of the six sampled generators. “Mastered (all items)” counts every scan item since the generator was first scanned; the class uses the newest three. For `6b88648ff0e0`, 24 unmastered items had no cell below $q=1/2$: the miss was in the size or colours line.*
 
-**What the model found hard.**  Hard and unsolved generators usually fail narrowly. In ARCpuzzles, RE-ARC and ARC-GEN alike, the median hard or unsolved generator has 0.9% of its recent answer cells below $q=1/2$: given the correct cells before it, the model gives nearly every gold cell probability at least $1/2$, yet a few cells fail and its greedy answers are rarely exact. The NVARC median is 16.3%: NVARC files received no greedy answers, so an NVARC file is classed hard only through the 15% cell threshold, while in the other libraries a generator is also hard when its recent answers were all wrong. Table 14 lists the five ARCpuzzles generators with the largest recent share (among those with at least 8 scan items, not counting those written for public-evaluation tasks), all from the puzzle bank; each asks the model to count or compare objects and write the result into a small output grid (Figure 15).
+**What the model found hard.**  Hard and unsolved generators usually fail narrowly. In ARCpuzzles, RE-ARC and ARC-GEN alike, the median hard or unsolved generator has 0.9% of its recent answer cells below $q=1/2$: given the correct cells before it, the model gives nearly every gold cell probability at least $1/2$, yet a few cells fail and its greedy answers are rarely exact. The NVARC median is 16.3%: NVARC files received no greedy answers, so an NVARC file is classed hard only through the 15% cell threshold, while in the other libraries a generator is also hard when its recent answers were all wrong. Table 15 lists the five ARCpuzzles generators with the largest recent share (among those with at least 8 scan items, not counting those written for public-evaluation tasks), all from the puzzle bank; each asks the model to count or compare objects and write the result into a small output grid (Figure 15).
 
 | Generator | Rule | Class | Scans | Answers right | Cells $q<1/2$ |
 |---|---|---|---|---|---|
@@ -785,7 +826,7 @@ A quarter of the approved ARCpuzzles generators (473) were mastered and two thir
 | `71982ba2b59e` | $N\times N$ matrix relating every pair of objects: same shape up to rotation, same colour, or neither | hard | 83 | 1/69 | 17.8% |
 | `26f313fdf812` | $N\times N$ matrix comparing the areas of every pair of objects | unsolved | 85 | 0/64 | 12.0% |
 
-*Table 14: The five ARCpuzzles generators with the largest recent share of answer cells below $q=1/2$, among hard and unsolved generators with at least 8 scan items, not counting those written for public-evaluation tasks. “Answers right” counts every greedy answer to an untrained draw; “–”: none was requested.*
+*Table 15: The five ARCpuzzles generators with the largest recent share of answer cells below $q=1/2$, among hard and unsolved generators with at least 8 scan items, not counting those written for public-evaluation tasks. “Answers right” counts every greedy answer to an untrained draw; “–”: none was requested.*
 
 ![Figure 15](figures/fig-hard-6c2353a2cdee.png)
 

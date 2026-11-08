@@ -77,7 +77,7 @@ def code_text(x):
     x = x.replace('\\_', '_').replace('\\textasciitilde', '~').replace('{}', '').replace('\\{', '{').replace('\\}', '}')
     x = x.replace('\\&', '&').replace('\\%', '%').replace('\\#', '#').replace('\\allowbreak', '').replace('\\$', '$')
     x = x.replace('\\textbackslash', '\\')
-    return x
+    return x.replace('--', '@@DD@@')
 
 
 def inline(t):
@@ -327,6 +327,7 @@ def main():
     md = md.replace('@@SEP@@', '---')
     md = re.sub(r'\n{3,}', '\n\n', md).strip() + '\n'
     md = f'# {" ".join(inline(title).split())}\n\n' + md
+    md = md.replace('@@DD@@', '--')
     OUT.write_text(md)
     left = sorted(set(re.findall(r'\\[a-zA-Z]+', re.sub(r'```.*?```', '', re.sub(r'\$[^$]*\$', '', md), flags=re.S))))
     print('written', OUT, len(md.split()), 'words; leftover commands outside math/code:', left[:40])
