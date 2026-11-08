@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let* ((keys (take (filter (lambda (v) (not (= v 0))) (first g)) 2)) (body (subgrid g 2 0 (- (rows g) 1) (- (cols g) 1))) (cells (apply append (map (lambda (color) (find-color body color)) keys))) (bb (bbox-of-cells cells))) (subgrid body (first bb) (second bb) (third bb) (fourth bb)))))

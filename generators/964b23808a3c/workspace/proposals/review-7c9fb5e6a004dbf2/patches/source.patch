@@ -1,0 +1,949 @@
+diff --git a/repo/generators/964b23808a3c/generator.py b/repo/generators/964b23808a3c/generator.py
+--- a/repo/generators/964b23808a3c/generator.py
++++ b/repo/generators/964b23808a3c/generator.py
+@@ -21,7 +21,7 @@
+ GENERATOR_ID = "964b23808a3c"
+ TASK_ID = GENERATOR_ID
+ RULE_HASH = "c7e69da25375"
+-VERSION = "3.0.1"
++VERSION = "3.0.2"
+ SUMMARY = (
+     "In each column whose last nonzero marker is 5, fill from row 0 through "
+     "successive markers using the current/lower marker's color. Leave other "
+@@ -126,17 +126,31 @@
+ _ACTIVE_COLORS = (1, 2, 3, 4, 6, 7, 8, 9)
+ 
+ 
++def _validate_entrypoint(seed: int, sample_index: int) -> None:
++    """Reject coercible scalar aliases before they reach profile/RNG logic."""
++    if type(seed) is not int:
++        raise TypeError("seed must be an integer (not bool, float, or string)")
++    if type(sample_index) is not int:
++        raise TypeError(
++            "sample_index must be an integer (not bool, float, or string)"
++        )
++    if sample_index < 0:
++        raise ValueError("sample_index must be nonnegative")
++
++
+ def schedule_profile(seed, sample_index, difficulty=None):
+     """Every four consecutive draws contain all four curriculum profiles."""
+-    del seed, difficulty
+-    return SCHEDULE_PROFILES[int(sample_index) % len(SCHEDULE_PROFILES)]
++    _validate_entrypoint(seed, sample_index)
++    del difficulty
++    return SCHEDULE_PROFILES[sample_index % len(SCHEDULE_PROFILES)]
+ 
+ 
+ def _profile_spec(sample_index: int) -> dict[str, Any]:
+-    return _PROFILE_SPECS[int(sample_index) % len(_PROFILE_SPECS)]
+-
+-
+-def _validate_call(difficulty, overrides: dict[str, Any]) -> None:
++    return _PROFILE_SPECS[sample_index % len(_PROFILE_SPECS)]
++
++
++def _validate_call(seed, sample_index, difficulty, overrides: dict[str, Any]) -> None:
++    _validate_entrypoint(seed, sample_index)
+     if difficulty not in (None, "easy", "medium", "hard"):
+         raise ValueError("difficulty must be easy, medium, hard, or None")
+     unknown = sorted(set(overrides) - set(AXES))
+@@ -259,7 +273,7 @@
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    _validate_call(difficulty, overrides)
++    _validate_call(seed, sample_index, difficulty, overrides)
+     profile = _profile_spec(sample_index)
+     ctx = gen_ctx(
+         seed=seed,
+diff --git a/repo/generators/964b23808a3c/notes.md b/repo/generators/964b23808a3c/notes.md
+--- a/repo/generators/964b23808a3c/notes.md
++++ b/repo/generators/964b23808a3c/notes.md
+@@ -271,3 +271,39 @@
+ **Limitations.** The probe checks six declared rivals, 16 seeds, nine windows per
+ seed/band, and overlapping windows. It does not enumerate all programs or all
+ legal inputs; its 715 unique-input denominator is reported explicitly.
++
++## Review `review-7c9fb5e6a004dbf2` — strict entry contract and parametric prototype
++
++### D13 — Strict public scalar contract
++
++The pinned `3.0.1` baseline passed every battery stage except defect lint, which
++reported 33 strict-scalar warnings: bool/float/string seeds and sample indices,
++plus `sample_index=-1`, were accepted. The negative index reached Python profile
++lookup and selected the final schedule profile. Version `3.0.2` now validates
++both public entry paths before profile or RNG logic, requires exact built-in
++integers, rejects negative indices, and removes `int(...)` coercion. Eleven new
++parameterized cases exercise both `generate` and `schedule_profile`.
++
++Final generator SHA-256:
++`c586f09adde529195a8467eb499005004a68546e46a4b10b3e80617f02d431e5`.
++The final battery is 12/12 green and the portable task suite is 111/111 green.
++The Racket authority and `RULE_HASH = c7e69da25375` are unchanged.
++
++### D14 — Proposed selector × segment-owner family
++
++A runnable, non-production prototype lives in `workspace/parametric/`. It varies
++`selector_mode` (`ends_in_5` / `contains_5`) and `segment_mode` (`current` /
++`previous`) while preserving the original vertical marker/fill reasoning. The
++canonical default is byte-for-byte the selected Racket program. A setting is
++chosen once per episode and held fixed across three demonstrations and one
++query. Seed-17 evidence executes all labels in Racket; every episode's demos
++refute the three alternative settings and every query independently separates
++them. This is bounded authoring evidence only, not training or API approval.
++
++### D15 — Final lesson evidence
++
++The final-source census used 100 lessons per band and hold-one-out query
++rotation. It materialized 300 lessons, 1,200 pairs, 1,200 rotations, and 1,062
++exact unique inputs with zero ambiguity, materialization errors, hook warnings,
++or scoring errors against the declared rivals. The result is finite-rival
++coverage, not proof against arbitrary programs.
+diff --git a/repo/generators/964b23808a3c/tests/test_generator.py b/repo/generators/964b23808a3c/tests/test_generator.py
+--- a/repo/generators/964b23808a3c/tests/test_generator.py
++++ b/repo/generators/964b23808a3c/tests/test_generator.py
+@@ -124,6 +124,22 @@
+         gen.generate(1, 0, n_targets="2")
+ 
+ 
++@pytest.mark.parametrize("bad_seed", [True, False, 1.0, 1.75, "1"])
++def test_generate_and_schedule_reject_non_integer_seed(bad_seed):
++    with pytest.raises((TypeError, ValueError), match="seed.*integer"):
++        gen.generate(bad_seed, 0)
++    with pytest.raises((TypeError, ValueError), match="seed.*integer"):
++        gen.schedule_profile(bad_seed, 0)
++
++
++@pytest.mark.parametrize("bad_index", [True, False, 1.0, 1.75, "1", -1])
++def test_generate_and_schedule_reject_invalid_sample_index(bad_index):
++    with pytest.raises((TypeError, ValueError), match="sample_index.*(integer|nonnegative)"):
++        gen.generate(1, bad_index)
++    with pytest.raises((TypeError, ValueError), match="sample_index.*(integer|nonnegative)"):
++        gen.schedule_profile(1, bad_index)
++
++
+ EXPECTED_PROFILES = {
+     0: ((7, 7, 3), {"grid_h": 7, "grid_w": 7, "n_targets": 1,
+                      "n_marks_per_target": 2, "distractor_mode": "none",
+diff --git a/repo/generators/964b23808a3c/tests/test_parametric_prototype.py b/repo/generators/964b23808a3c/tests/test_parametric_prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/964b23808a3c/tests/test_parametric_prototype.py
+@@ -0,0 +1,125 @@
++"""Focused tests for the proposed task-local parametric rule family."""
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from reviewer_support import canonical_pairs, find_root
++
++TASK_ID = "964b23808a3c"
++HOME = Path(__file__).resolve().parents[1]
++PROTOTYPE_PATH = HOME / "workspace" / "parametric" / "prototype.py"
++SPEC = importlib.util.spec_from_file_location(
++    f"parametric_prototype_{TASK_ID}", PROTOTYPE_PATH
++)
++assert SPEC is not None and SPEC.loader is not None
++p = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(p)
++PAIRS = canonical_pairs(TASK_ID, root=find_root(__file__), labeled_only=True)
++
++
++@pytest.fixture(scope="module")
++def bridge():
++    from arc_repl.racket_bridge import RacketBridge
++
++    with RacketBridge(max_calls_before_restart=None) as live:
++        yield live
++
++
++@pytest.fixture(scope="module")
++def episodes(bridge):
++    return {
++        setting: p.build_episode(17, bridge, setting)
++        for setting in p.ALL_SETTINGS
++    }
++
++
++def test_setting_space_and_seed_selection_are_bounded_and_deterministic():
++    assert p.DEFAULT_SETTING == p.RuleSetting("ends_in_5", "current")
++    assert len(p.ALL_SETTINGS) == 4
++    assert {setting.selector_mode for setting in p.ALL_SETTINGS} == {
++        "ends_in_5", "contains_5"
++    }
++    assert {setting.segment_mode for setting in p.ALL_SETTINGS} == {
++        "current", "previous"
++    }
++    assert [p.choose_setting(seed) for seed in range(8)] == list(p.ALL_SETTINGS) * 2
++    with pytest.raises((TypeError, ValueError), match="seed.*nonnegative integer"):
++        p.choose_setting(True)
++    with pytest.raises((TypeError, ValueError), match="seed.*nonnegative integer"):
++        p.choose_setting(-1)
++
++
++def test_default_program_is_exact_canonical_and_all_variants_are_minimal_edits():
++    source = p.canonical_rows()[0]["program_solution"]
++    assert p.program() == source
++    assert p.program(p.DEFAULT_SETTING) == source
++    assert len({p.program(setting) for setting in p.ALL_SETTINGS}) == 4
++    for setting in p.ALL_SETTINGS:
++        text = p.program(setting)
++        if setting.selector_mode == "ends_in_5":
++            assert p.CANONICAL_SELECTOR_REJECT in text
++        else:
++            assert p.CONTAINS_FIVE_REJECT in text
++        if setting.segment_mode == "current":
++            assert p.CANONICAL_COLOR_BINDING in text
++            assert p.CANONICAL_RANGE in text
++        else:
++            assert p.PREVIOUS_COLOR_BINDING in text
++            assert p.PREVIOUS_RANGE in text
++
++
++def test_python_default_matches_all_canonical_labels_and_parent_mirror():
++    assert len(PAIRS) == 5
++    parent = p.generator()
++    for pair in PAIRS:
++        assert p.python_transform(pair["input"], p.DEFAULT_SETTING) == pair["output"]
++        assert p.python_transform(pair["input"], p.DEFAULT_SETTING) == parent.rule_mirror(
++            pair["input"]
++        )
++
++
++def test_each_setting_has_racket_python_parity_on_one_complete_episode(episodes):
++    for setting in p.ALL_SETTINGS:
++        public, private = episodes[setting]
++        assert len(public["train"]) == 3
++        assert len(public["test"]) == 1
++        assert private["parameters"] == setting.as_dict()
++        assert private["program_sha256"] == p.digest(p.program(setting))
++        assert len(private["pairs"]) == 4
++        for pair in private["pairs"]:
++            assert pair["outputs"][setting.slug] == p.python_transform(
++                pair["input"], setting
++            )
++        assert set(private["rivals"]) == {
++            other.slug for other in p.ALL_SETTINGS if other != setting
++        }
++        assert all(item["demo_mismatches"] for item in private["rivals"].values())
++        assert all(item["query_differs"] for item in private["rivals"].values())
++
++
++def test_public_episode_hides_parameters_program_and_query_answer(episodes):
++    chosen = p.choose_setting(17)
++    public, private = episodes[chosen]
++    assert private["parameters"] == chosen.as_dict()
++    assert set(public) == {"train", "test"}
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert all(set(pair) == {"input"} for pair in public["test"])
++    encoded = json.dumps(public, sort_keys=True)
++    for secret in (
++        "selector_mode", "segment_mode", "program", "parameters",
++        "query_output", "rivals", "seed"
++    ):
++        assert secret not in encoded
++    assert private["public_sha256"] == p.digest(p.encoded(public))
++
++
++def test_noisy_training_pair_and_dense_query_distinguish_all_four_settings(episodes):
++    _, private = episodes[p.DEFAULT_SETTING]
++    noisy = private["pairs"][2]["outputs"]
++    dense = private["pairs"][3]["outputs"]
++    assert len({p.encoded(grid) for grid in noisy.values()}) == 4
++    assert len({p.encoded(grid) for grid in dense.values()}) == 4
+diff --git a/repo/generators/964b23808a3c/workspace/parametric/README.md b/repo/generators/964b23808a3c/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/964b23808a3c/workspace/parametric/README.md
+@@ -0,0 +1,49 @@
++# Proposed column-selector × segment-owner family
++
++This is a **task-local prototype**, separate from canonical execution. It does
++not alter the selected Racket authority, rule hash `c7e69da25375`, canonical
++labels, or production generator dispatch.
++
++The family preserves the original reasoning sequence: find the nonzero markers
++in each column, decide whether color 5 makes that column active, order the
++markers from top to bottom, and paint the intervals those markers delimit.
++
++| Parameter | Values | Canonical/default | Meaning |
++| --- | --- | --- | --- |
++| `selector_mode` | `ends_in_5`, `contains_5` | `ends_in_5` | Activate only columns whose last marker is 5, or any column containing 5. |
++| `segment_mode` | `current`, `previous` | `current` | Give each interval the lower/current marker's color, or the preceding marker's color while preserving the current marker cell. |
++
++A complete setting is chosen once per episode as `ALL_SETTINGS[seed % 4]` and
++held fixed for all three demonstrations and the query. The episode uses the
++parent generator's four deterministic profiles in order: minimal, clean, noisy,
++dense. The noisy demonstration contains both an internal-5 distractor and
++multi-marker targets, so it separates all four settings; the dense query does
++the same independently.
++
++`prototype.py` executes every label with the exact instantiated Racket program
++through `RacketBridge`; its Python transform is only a parity assertion. The
++canonical/default program is byte-for-byte identical to the selected authority.
++The four materialized programs live in `rules/`. Public episode files contain
++only three labelled demonstrations and one unlabelled query; parameters,
++program text, rival outputs, and the query answer remain private evidence.
++
++From the outer packet directory, create retained evidence with:
++
++```bash
++python3 review.py run python3 \
++  generators/964b23808a3c/workspace/parametric/prototype.py \
++  --seed 17 \
++  --out ../checks/parametric/selector-segment-seed17
++```
++
++Focused tests:
++
++```bash
++python3 review.py run python3 -m arcpuzzles check 964b23808a3c \
++  --stage task_tests --phase after --out ../checks/task-tests
++```
++
++The retained seed-17 evidence is a bounded authoring result, not approval for
++training admission. It distinguishes the four declared settings only; it does
++not prove uniqueness against arbitrary programs, and broader seed coverage
++would be required before promoting the family into a production API.
+diff --git a/repo/generators/964b23808a3c/workspace/parametric/prototype.py b/repo/generators/964b23808a3c/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/964b23808a3c/workspace/parametric/prototype.py
+@@ -0,0 +1,510 @@
++#!/usr/bin/env python3
++"""Proposed task-local parametric rule family for ARC task 964b23808a3c.
++
++The canonical generator and selected authority remain the production path.  This
++prototype varies two small semantic choices while retaining the same reasoning
++objects: detect marked columns, select columns using color 5, then fill the
++vertical intervals delimited by ordered markers.
++
++* ``selector_mode``: select columns that end in 5 (canonical) or contain 5.
++* ``segment_mode``: assign each interval to its lower/current marker
++  (canonical) or to the preceding marker.
++
++One complete setting is chosen once per episode and held fixed for all three
++labelled demonstrations and the unlabelled query.
++"""
++from __future__ import annotations
++
++import argparse
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import shlex
++import sys
++import types
++from typing import Any, NamedTuple
++
++TASK_ID = "964b23808a3c"
++PROTOTYPE_VERSION = "1.0.0"
++SELECTOR_MODES = ("ends_in_5", "contains_5")
++SEGMENT_MODES = ("current", "previous")
++
++ROOT = Path(__file__).resolve().parents[4]
++HOME = ROOT / "generators" / TASK_ID
++GENERATOR_PATH = HOME / "generator.py"
++RULE_DIR = Path(__file__).resolve().parent / "rules"
++CANONICAL_PATH = ROOT / "shared" / "data" / "canonical" / "puzzles.jsonl"
++
++CANONICAL_SELECTOR_REJECT = (
++    "(!= (at g (nth marks (- (length marks) 1)) c) 5)"
++)
++CONTAINS_FIVE_REJECT = (
++    "(empty? (filter (lambda (r) (= (at g r c) 5)) marks))"
++)
++CANONICAL_COLOR_BINDING = "(color (at g r c)))"
++PREVIOUS_COLOR_BINDING = """(color (if (zero? i)
++                                                       (at g r c)
++                                                       (at g (nth marks (- i 1)) c)))
++                                            (stop (if (zero? i)
++                                                      (+ r 1)
++                                                      r)))"""
++CANONICAL_RANGE = "(range start (+ r 1))"
++PREVIOUS_RANGE = "(range start stop)"
++
++LIMITATIONS = [
++    "Proposed task-local prototype only; it does not alter canonical labels, the selected rule hash, or production generator dispatch.",
++    "The setting space is deliberately bounded to four nearby rules and does not establish uniqueness against undeclared hypotheses.",
++    "Evidence uses one deterministic four-pair episode per setting; broader seed coverage would be required before training admission.",
++    "The previous-marker variant preserves each current marker cell and colors only the open interval above it, matching the retained semantic rival.",
++]
++
++
++class RuleSetting(NamedTuple):
++    selector_mode: str
++    segment_mode: str
++
++    def as_dict(self) -> dict[str, str]:
++        return {
++            "selector_mode": self.selector_mode,
++            "segment_mode": self.segment_mode,
++        }
++
++    @property
++    def slug(self) -> str:
++        return f"{self.selector_mode}__{self.segment_mode}"
++
++
++DEFAULT_SETTING = RuleSetting("ends_in_5", "current")
++ALL_SETTINGS = tuple(
++    RuleSetting(selector_mode, segment_mode)
++    for selector_mode in SELECTOR_MODES
++    for segment_mode in SEGMENT_MODES
++)
++
++
++def digest(value: str | bytes) -> str:
++    if isinstance(value, str):
++        value = value.encode("utf-8")
++    return hashlib.sha256(value).hexdigest()
++
++
++def encoded(value: Any) -> str:
++    return json.dumps(value, sort_keys=True, separators=(",", ":"))
++
++
++def _validate_setting(setting: RuleSetting) -> RuleSetting:
++    if not isinstance(setting, RuleSetting):
++        raise TypeError("setting must be a RuleSetting")
++    if setting.selector_mode not in SELECTOR_MODES:
++        raise ValueError(f"unsupported selector_mode: {setting.selector_mode!r}")
++    if setting.segment_mode not in SEGMENT_MODES:
++        raise ValueError(f"unsupported segment_mode: {setting.segment_mode!r}")
++    return setting
++
++
++def choose_setting(seed: int) -> RuleSetting:
++    """Choose one hidden setting for an entire episode."""
++    if type(seed) is not int or seed < 0:
++        raise ValueError("seed must be a nonnegative integer")
++    return ALL_SETTINGS[seed % len(ALL_SETTINGS)]
++
++
++def canonical_rows() -> list[dict[str, Any]]:
++    rows: list[dict[str, Any]] = []
++    with CANONICAL_PATH.open() as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                rows.append(row)
++    if not rows:
++        raise ValueError(f"no canonical row found for {TASK_ID}")
++    programs = {row.get("program_solution") for row in rows}
++    if None in programs or len(programs) != 1:
++        raise ValueError("expected one exact selected program across canonical rows")
++    return rows
++
++
++def program(setting: RuleSetting = DEFAULT_SETTING) -> str:
++    """Instantiate one exact Racket rule; default bytes equal the authority."""
++    setting = _validate_setting(setting)
++    source = canonical_rows()[0]["program_solution"]
++    for fragment, expected_count in (
++        (CANONICAL_SELECTOR_REJECT, 1),
++        (CANONICAL_COLOR_BINDING, 1),
++        (CANONICAL_RANGE, 1),
++    ):
++        if source.count(fragment) != expected_count:
++            raise ValueError(
++                f"canonical source edit anchor changed for {fragment!r}; explicit review required"
++            )
++    if setting.selector_mode == "contains_5":
++        source = source.replace(
++            CANONICAL_SELECTOR_REJECT, CONTAINS_FIVE_REJECT, 1
++        )
++    if setting.segment_mode == "previous":
++        source = source.replace(
++            CANONICAL_COLOR_BINDING, PREVIOUS_COLOR_BINDING, 1
++        ).replace(CANONICAL_RANGE, PREVIOUS_RANGE, 1)
++    return source
++
++
++def generator():
++    spec = importlib.util.spec_from_file_location(
++        f"parametric_parent_{TASK_ID}", GENERATOR_PATH
++    )
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load parent generator from {GENERATOR_PATH}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _validate_grid(grid: Any) -> tuple[int, int]:
++    if (
++        not isinstance(grid, (list, tuple))
++        or not grid
++        or not isinstance(grid[0], (list, tuple))
++        or not grid[0]
++    ):
++        raise ValueError("grid must be a nonempty rectangular sequence")
++    width = len(grid[0])
++    if any(
++        not isinstance(row, (list, tuple)) or len(row) != width for row in grid
++    ):
++        raise ValueError("grid must be rectangular")
++    if any(
++        type(value) is not int or not 0 <= value <= 9
++        for row in grid
++        for value in row
++    ):
++        raise ValueError("grid cells must be integer ARC colors 0..9")
++    return len(grid), width
++
++
++def _selected(marks: list[tuple[int, int]], setting: RuleSetting) -> bool:
++    if not marks:
++        return False
++    if setting.selector_mode == "ends_in_5":
++        return marks[-1][1] == 5
++    return any(color == 5 for _, color in marks)
++
++
++def python_transform(grid: list[list[int]], setting: RuleSetting) -> list[list[int]]:
++    """Independent Python mirror; Racket remains label authority in evidence."""
++    setting = _validate_setting(setting)
++    height, width = _validate_grid(grid)
++    out = copy.deepcopy(grid)
++    for column in range(width):
++        marks = [
++            (row, grid[row][column])
++            for row in range(height)
++            if grid[row][column] != 0
++        ]
++        if not _selected(marks, setting):
++            continue
++        if setting.segment_mode == "current":
++            previous_row = -1
++            for current_row, current_color in marks:
++                for row in range(previous_row + 1, current_row + 1):
++                    out[row][column] = current_color
++                previous_row = current_row
++            continue
++
++        first_row, first_color = marks[0]
++        for row in range(0, first_row + 1):
++            out[row][column] = first_color
++        for index in range(1, len(marks)):
++            previous_row, previous_color = marks[index - 1]
++            current_row, _current_color = marks[index]
++            for row in range(previous_row + 1, current_row):
++                out[row][column] = previous_color
++    return out
++
++
++def _ensure_scripts_namespace() -> None:
++    """Expose the portable shared/tools namespace expected by rule_wrap."""
++    if "scripts" in sys.modules:
++        return
++    scripts = types.ModuleType("scripts")
++    scripts.__path__ = [str(ROOT / "shared" / "tools")]
++    sys.modules["scripts"] = scripts
++
++
++def execute(bridge, source: str, grid: list[list[int]]) -> list[list[int]]:
++    """Execute exact source through the shared protected Racket bridge."""
++    _validate_grid(grid)
++    _ensure_scripts_namespace()
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    literal = "'(" + " ".join(
++        "(" + " ".join(str(value) for value in row) + ")" for row in grid
++    ) + ")"
++    result = bridge.eval_text(f"({wrap_rule(source)} {literal})")
++    _validate_grid(result)
++    return result
++
++
++def outputs_for(bridge, grid: list[list[int]]) -> dict[str, list[list[int]]]:
++    return {
++        setting.slug: execute(bridge, program(setting), grid)
++        for setting in ALL_SETTINGS
++    }
++
++
++class EpisodeAmbiguityError(RuntimeError):
++    pass
++
++
++def build_episode(
++    seed: int,
++    bridge,
++    setting: RuleSetting | None = None,
++) -> tuple[dict[str, Any], dict[str, Any]]:
++    """Build three demonstrations plus one query under one fixed setting."""
++    chosen = choose_setting(seed) if setting is None else _validate_setting(setting)
++    gen = generator()
++    pairs: list[dict[str, Any]] = []
++    for sample_index in range(4):
++        grid = gen.generate(seed, sample_index)
++        errors = gen.self_check(grid)
++        if errors:
++            raise ValueError(f"parent generator returned unlawful input: {errors}")
++        outputs = outputs_for(bridge, grid)
++        for candidate in ALL_SETTINGS:
++            expected = python_transform(grid, candidate)
++            if outputs[candidate.slug] != expected:
++                raise AssertionError(
++                    f"Racket/Python mismatch for {candidate.slug} at sample {sample_index}"
++                )
++        pairs.append(
++            {
++                "sample_index": sample_index,
++                "profile": gen.schedule_profile(seed, sample_index),
++                "input": grid,
++                "outputs": outputs,
++            }
++        )
++
++    selected_slug = chosen.slug
++    public = {
++        "train": [
++            {"input": pair["input"], "output": pair["outputs"][selected_slug]}
++            for pair in pairs[:3]
++        ],
++        "test": [{"input": pairs[3]["input"]}],
++    }
++    rivals: dict[str, dict[str, Any]] = {}
++    for rival in ALL_SETTINGS:
++        if rival == chosen:
++            continue
++        rivals[rival.slug] = {
++            "demo_mismatches": [
++                index
++                for index, pair in enumerate(pairs[:3])
++                if pair["outputs"][rival.slug] != pair["outputs"][selected_slug]
++            ],
++            "query_differs": (
++                pairs[3]["outputs"][rival.slug]
++                != pairs[3]["outputs"][selected_slug]
++            ),
++        }
++    ambiguous = {
++        slug: result
++        for slug, result in rivals.items()
++        if not result["demo_mismatches"] or not result["query_differs"]
++    }
++    if ambiguous:
++        raise EpisodeAmbiguityError(
++            "episode does not distinguish every declared setting: "
++            + encoded(ambiguous)
++        )
++
++    parent_source = GENERATOR_PATH.read_bytes()
++    private = {
++        "schema": "arc-task-local-parametric-column-segments-v1",
++        "status": "proposed prototype",
++        "task_id": TASK_ID,
++        "prototype_version": PROTOTYPE_VERSION,
++        "seed": seed,
++        "parameters": chosen.as_dict(),
++        "setting_slug": chosen.slug,
++        "program": program(chosen),
++        "program_sha256": digest(program(chosen)),
++        "parent_generator_sha256": digest(parent_source),
++        "parent_generator_version": gen.VERSION,
++        "pairs": pairs,
++        "query_output": pairs[3]["outputs"][selected_slug],
++        "rivals": rivals,
++        "public_sha256": digest(encoded(public)),
++        "limitations": LIMITATIONS,
++    }
++    return public, private
++
++
++def materialize_rules(directory: Path = RULE_DIR) -> dict[str, Path]:
++    directory.mkdir(parents=True, exist_ok=True)
++    paths: dict[str, Path] = {}
++    for setting in ALL_SETTINGS:
++        path = directory / f"{setting.slug}.rkt"
++        path.write_text(program(setting))
++        paths[setting.slug] = path
++    return paths
++
++
++def public_filename(seed: int, public: dict[str, Any]) -> str:
++    fingerprint = digest(encoded({"episode_seed": seed, "challenge": public}))[:20]
++    return f"episode-{fingerprint}.json"
++
++
++def _write_json(path: Path, value: Any) -> None:
++    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
++
++
++def _source_hashes() -> dict[str, str]:
++    paths = [
++        GENERATOR_PATH,
++        Path(__file__),
++        Path(__file__).resolve().parent / "README.md",
++        HOME / "tests" / "test_parametric_prototype.py",
++        ROOT / "shared" / "runtime" / "arc_repl" / "racket_bridge.py",
++        ROOT / "shared" / "runtime" / "puzzle_generators" / "rule_wrap.py",
++        *sorted(RULE_DIR.glob("*.rkt")),
++    ]
++    return {
++        str(path.relative_to(ROOT)): digest(path.read_bytes())
++        for path in paths
++        if path.is_file()
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seed", type=int, default=17)
++    parser.add_argument(
++        "--out", type=Path, required=True, help="new evidence directory"
++    )
++    args = parser.parse_args(argv)
++    choose_setting(args.seed)  # strict validation before creating output
++    args.out.mkdir(parents=True, exist_ok=False)
++    for name in ("programs", "public", "private"):
++        (args.out / name).mkdir()
++
++    source_rule_paths = materialize_rules()
++    programs = {setting.slug: program(setting) for setting in ALL_SETTINGS}
++    for slug, source in programs.items():
++        (args.out / "programs" / f"{slug}.rkt").write_text(source)
++
++    receipt: dict[str, Any] = {
++        "schema": "arc-task-local-parametric-evidence-v1",
++        "status": "proposed prototype",
++        "task_id": TASK_ID,
++        "prototype_version": PROTOTYPE_VERSION,
++        "seed": args.seed,
++        "default_setting": DEFAULT_SETTING.as_dict(),
++        "auto_setting": choose_setting(args.seed).as_dict(),
++        "settings": [setting.as_dict() for setting in ALL_SETTINGS],
++        "command": shlex.join([sys.executable, *sys.argv]),
++        "payload_cwd": "WORK/repo",
++        "source_sha256": _source_hashes(),
++        "parent_generator_sha256": digest(GENERATOR_PATH.read_bytes()),
++        "programs": {
++            slug: {
++                "evidence_path": f"programs/{slug}.rkt",
++                "task_workspace_path": str(
++                    source_rule_paths[slug].relative_to(ROOT)
++                ),
++                "sha256": digest(source),
++            }
++            for slug, source in programs.items()
++        },
++        "canonical_pairs": {"checked": 0, "passed": 0},
++        "episodes": [],
++        "failures": [],
++        "limitations": LIMITATIONS,
++    }
++
++    try:
++        from arc_repl.racket_bridge import RacketBridge, racket_runtime_status
++
++        receipt["runtime"] = racket_runtime_status()
++        with RacketBridge(max_calls_before_restart=64) as bridge:
++            canonical_checks = []
++            for row in canonical_rows():
++                for split in ("train", "test"):
++                    for pair_index, pair in enumerate(row.get(split, [])):
++                        actual = execute(bridge, programs[DEFAULT_SETTING.slug], pair["input"])
++                        check = {
++                            "split": split,
++                            "pair_index": pair_index,
++                            "passed": actual == pair["output"],
++                            "input_sha256": digest(encoded(pair["input"])),
++                            "output_sha256": digest(encoded(actual)),
++                        }
++                        canonical_checks.append(check)
++            _write_json(args.out / "private" / "canonical-parity.json", canonical_checks)
++            receipt["canonical_pairs"] = {
++                "checked": len(canonical_checks),
++                "passed": sum(check["passed"] for check in canonical_checks),
++                "evidence_path": "private/canonical-parity.json",
++            }
++            if not all(check["passed"] for check in canonical_checks):
++                raise AssertionError("canonical/default Racket parity failed")
++
++            for setting in ALL_SETTINGS:
++                public, private = build_episode(args.seed, bridge, setting)
++                filename = public_filename(args.seed, public)
++                public_path = args.out / "public" / filename
++                private_path = args.out / "private" / filename
++                _write_json(public_path, public)
++                _write_json(private_path, private)
++                receipt["episodes"].append(
++                    {
++                        "setting": setting.as_dict(),
++                        "program_sha256": private["program_sha256"],
++                        "public_path": str(public_path.relative_to(args.out)),
++                        "private_path": str(private_path.relative_to(args.out)),
++                        "demonstrations": 3,
++                        "queries": 1,
++                        "rivals": private["rivals"],
++                        "all_demo_distinguishable": all(
++                            value["demo_mismatches"]
++                            for value in private["rivals"].values()
++                        ),
++                        "all_query_distinguishable": all(
++                            value["query_differs"]
++                            for value in private["rivals"].values()
++                        ),
++                    }
++                )
++    except Exception as exc:  # retain a machine-readable failed authoring run
++        receipt["failures"].append(
++            {
++                "type": type(exc).__name__,
++                "message": str(exc),
++            }
++        )
++
++    receipt["artifact_sha256"] = {
++        str(path.relative_to(args.out)): digest(path.read_bytes())
++        for path in sorted(args.out.rglob("*"))
++        if path.is_file()
++    }
++    _write_json(args.out / "receipt.json", receipt)
++    print(
++        json.dumps(
++            {
++                "out": str(args.out),
++                "canonical_pairs": receipt["canonical_pairs"],
++                "episodes": len(receipt["episodes"]),
++                "failures": receipt["failures"],
++            },
++            sort_keys=True,
++        )
++    )
++    return 1 if receipt["failures"] else 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/964b23808a3c/workspace/parametric/rules/contains_5__current.rkt b/repo/generators/964b23808a3c/workspace/parametric/rules/contains_5__current.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/964b23808a3c/workspace/parametric/rules/contains_5__current.rkt
+@@ -0,0 +1,22 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (reduce (lambda (acc c)
++                     (let* ((marks (filter (lambda (r) (!= (at g r c) 0)) (range 0 h))))
++                       (if (or
++                             (empty? marks)
++                             (empty? (filter (lambda (r) (= (at g r c) 5)) marks)))
++                           acc
++                           (reduce (lambda (a i)
++                                     (let* ((r (nth marks i))
++                                            (start (if (zero? i)
++                                                       0
++                                                       (+ (nth marks (- i 1)) 1)))
++                                            (color (at g r c)))
++                                       (reduce (lambda (aa rr) (set-cell aa rr c color))
++                                               a
++                                               (range start (+ r 1)))))
++                                   acc
++                                   (range 0 (length marks))))))
++                   g
++                   (range 0 w)))))
+\ No newline at end of file
+diff --git a/repo/generators/964b23808a3c/workspace/parametric/rules/contains_5__previous.rkt b/repo/generators/964b23808a3c/workspace/parametric/rules/contains_5__previous.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/964b23808a3c/workspace/parametric/rules/contains_5__previous.rkt
+@@ -0,0 +1,27 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (reduce (lambda (acc c)
++                     (let* ((marks (filter (lambda (r) (!= (at g r c) 0)) (range 0 h))))
++                       (if (or
++                             (empty? marks)
++                             (empty? (filter (lambda (r) (= (at g r c) 5)) marks)))
++                           acc
++                           (reduce (lambda (a i)
++                                     (let* ((r (nth marks i))
++                                            (start (if (zero? i)
++                                                       0
++                                                       (+ (nth marks (- i 1)) 1)))
++                                            (color (if (zero? i)
++                                                       (at g r c)
++                                                       (at g (nth marks (- i 1)) c)))
++                                            (stop (if (zero? i)
++                                                      (+ r 1)
++                                                      r)))
++                                       (reduce (lambda (aa rr) (set-cell aa rr c color))
++                                               a
++                                               (range start stop))))
++                                   acc
++                                   (range 0 (length marks))))))
++                   g
++                   (range 0 w)))))
+\ No newline at end of file
+diff --git a/repo/generators/964b23808a3c/workspace/parametric/rules/ends_in_5__current.rkt b/repo/generators/964b23808a3c/workspace/parametric/rules/ends_in_5__current.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/964b23808a3c/workspace/parametric/rules/ends_in_5__current.rkt
+@@ -0,0 +1,22 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (reduce (lambda (acc c)
++                     (let* ((marks (filter (lambda (r) (!= (at g r c) 0)) (range 0 h))))
++                       (if (or
++                             (empty? marks)
++                             (!= (at g (nth marks (- (length marks) 1)) c) 5))
++                           acc
++                           (reduce (lambda (a i)
++                                     (let* ((r (nth marks i))
++                                            (start (if (zero? i)
++                                                       0
++                                                       (+ (nth marks (- i 1)) 1)))
++                                            (color (at g r c)))
++                                       (reduce (lambda (aa rr) (set-cell aa rr c color))
++                                               a
++                                               (range start (+ r 1)))))
++                                   acc
++                                   (range 0 (length marks))))))
++                   g
++                   (range 0 w)))))
+\ No newline at end of file
+diff --git a/repo/generators/964b23808a3c/workspace/parametric/rules/ends_in_5__previous.rkt b/repo/generators/964b23808a3c/workspace/parametric/rules/ends_in_5__previous.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/964b23808a3c/workspace/parametric/rules/ends_in_5__previous.rkt
+@@ -0,0 +1,27 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (reduce (lambda (acc c)
++                     (let* ((marks (filter (lambda (r) (!= (at g r c) 0)) (range 0 h))))
++                       (if (or
++                             (empty? marks)
++                             (!= (at g (nth marks (- (length marks) 1)) c) 5))
++                           acc
++                           (reduce (lambda (a i)
++                                     (let* ((r (nth marks i))
++                                            (start (if (zero? i)
++                                                       0
++                                                       (+ (nth marks (- i 1)) 1)))
++                                            (color (if (zero? i)
++                                                       (at g r c)
++                                                       (at g (nth marks (- i 1)) c)))
++                                            (stop (if (zero? i)
++                                                      (+ r 1)
++                                                      r)))
++                                       (reduce (lambda (aa rr) (set-cell aa rr c color))
++                                               a
++                                               (range start stop))))
++                                   acc
++                                   (range 0 (length marks))))))
++                   g
++                   (range 0 w)))))
+\ No newline at end of file

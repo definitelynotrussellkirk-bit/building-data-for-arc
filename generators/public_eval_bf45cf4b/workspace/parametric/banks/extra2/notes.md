@@ -1,0 +1,15 @@
+# Current implementation: infer roles, expand motif, measure final connectivity
+
+Unapproved public parent bf45cf4b. All three supplied training labels and the supplied test label match protected Racket. Owner registration, source review, native qualification and acceptance are pending; no training admission.
+
+Canonical: infer the uniquely modal background. Find the monochrome layout color isolated from other foreground colors by both bounding-box overlap and four-neighbor contact; remaining colors are the multicolor motif. Crop both tightly. Replace each occupied layout cell with the complete motif, preserving its holes and colors; empty layout cells produce background tiles. Adjacent differently colored motif regions are supported even when their individual color boxes do not overlap. Layouts may have disconnected cells.
+
+Alternative finish=highlight_largest: derive all binary four-connected foreground components after expansion and recolor the complete largest-area class to 9, including ties. This depends on actual opposing motif boundary ports: the retained witness has pre-expansion component sizes [6,5] but expanded sizes [24,24,24,60]; choosing the larger layout component changes 132 final cells. Horizontal, vertical and both-axis joining motifs vary within each setting.
+
+Construction: layouts 3..6 cells per axis; motifs 3..6; exact expanded sides <=30. Modal backgrounds and motif/layout palettes vary (including foreground 0 on a nonzero background). Color-role panels are placed in random relative order/position. Demonstration zero and one explicitly defeat first/last component and pre-expansion-component shortcuts. Queries include arbitrary tight layouts, holes, ties, all port-axis types, and a 30x30 expansion. Counts are 2..6 demonstrations and four sequential private queries with matched inputs across settings.
+
+Evidence: checks/public_eval_bf45cf4b/preflight-return and audit-return. 42 tests; 18 audit jobs; 138 Python/Racket label comparisons / 61 unique protected evaluations; two additional protected causal replay executions; 256 census episodes; 16 sequential public views and 24 hidden-field invariance mutations. A failing regression for adjacent motif colors is retained.
+
+Limits: inferred rule, not a proof about unknown intended labels. Admitted motif support is connected column-convex/transpose-cross geometry with two or three foreground colors, not all possible multicolor art. Original reference is not restricted to those constructive shapes. Finite declared rivals do not imply universal uniqueness. Final review is author self-review.
+
+Test harness: the combined task suite passes 89 tests. Test modules use unique names to avoid pytest import collisions. Catalog-bound `review.py task-tests` cannot resolve either unregistered public task, so no native task-test receipt is claimed; use the documented direct pytest and isolated relocation commands until owner registration. The frozen repository archival suite also has missing-catalog failures; it was not changed.

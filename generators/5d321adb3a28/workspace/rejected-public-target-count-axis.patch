@@ -1,0 +1,306 @@
+--- /mnt/data/5d321adb3a28.generator.before.py	2026-10-03 23:37:47.546307467 +0000
++++ repo/generators/5d321adb3a28/generator.py	2026-10-03 23:38:18.115629968 +0000
+@@ -1,10 +1,10 @@
+ """Generator for arc_puzzle_bank_21_set18_bundle:easy_p07.
+ 
+ Fill a zero cell when its immediate horizontal or vertical neighbours are the
+-same nonzero color.  Every generated lesson includes both positive
+-orientations and four nearby counterexamples: mismatched horizontal and
+-vertical endpoints plus same-color horizontal and vertical spans with two
+-interior zeros.
++same nonzero color.  Every generated lesson includes three positive gaps in a
++canonical 2:1 orientation split plus four nearby counterexamples: mismatched
++horizontal and vertical endpoints and same-color horizontal and vertical spans
++with two interior zeros.
+ """
+ from __future__ import annotations
+ 
+@@ -16,7 +16,7 @@
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "5d321adb3a28"
+-VERSION = "3.1.0"  # canonical-scale object layout plus band-sensitive sampling
++VERSION = "3.2.0"  # canonical target multiplicity plus band-sensitive sampling
+ TASK_ID = "5d321adb3a28"
+ RULE_HASH = "980e1ed5540b"
+ EXAMPLES_NEEDED = 3
+@@ -26,19 +26,21 @@
+     "nonzero; otherwise fill it when its immediate up/down neighbours match "
+     "and are nonzero. Preserve every other cell. Generated lessons include "
+     "both positive orientations, mismatched endpoints, and longer same-color "
+-    "spans that must remain unchanged."
++    "spans that must remain unchanged. Each generated grid contains three "
++    "fillable gaps, matching the canonical 2:1 horizontal/vertical profiles."
+ )
+ 
+ INVARIANTS = [
+     "background is 0 and exactly three nonzero colors are used",
+-    "ordinary draws contain one horizontal and one vertical fillable gap",
++    "ordinary draws contain three fillable gaps in a 2h1v or 1h2v profile",
+     "ordinary draws contain one mismatched and one long-gap control per orientation",
+     "all motif endpoints are isolated from unintended relations",
+-    "every ordinary draw changes exactly two cells under the canonical rule",
++    "every ordinary draw changes exactly three cells under the canonical rule",
+ ]
+ 
+ SCENE_PROFILES = ("6x10", "7x8", "7x9", "8x8")
+ TARGET_RELATIONS = ("same", "different")
++TARGET_COUNT_PROFILES = ("2h1v", "1h2v")
+ AXES = {
+     "scene_profile": {
+         "type": "str",
+@@ -50,6 +52,11 @@
+         "default": "rng same|different",
+         "valid": "|".join(TARGET_RELATIONS),
+     },
++    "target_count_profile": {
++        "type": "str",
++        "default": "rng 2h1v|1h2v",
++        "valid": "|".join(TARGET_COUNT_PROFILES),
++    },
+ }
+ 
+ _H_TARGET = "horizontal_target"
+@@ -58,16 +65,28 @@
+ _V_MISMATCH = "vertical_mismatch"
+ _H_LONG = "horizontal_long_gap"
+ _V_LONG = "vertical_long_gap"
+-_GENERATED_SIGNATURE = Counter(
+-    {
+-        _H_TARGET: 1,
+-        _V_TARGET: 1,
+-        _H_MISMATCH: 1,
+-        _V_MISMATCH: 1,
+-        _H_LONG: 1,
+-        _V_LONG: 1,
+-    }
+-)
++_GENERATED_SIGNATURES = {
++    "2h1v": Counter(
++        {
++            _H_TARGET: 2,
++            _V_TARGET: 1,
++            _H_MISMATCH: 1,
++            _V_MISMATCH: 1,
++            _H_LONG: 1,
++            _V_LONG: 1,
++        }
++    ),
++    "1h2v": Counter(
++        {
++            _H_TARGET: 1,
++            _V_TARGET: 2,
++            _H_MISMATCH: 1,
++            _V_MISMATCH: 1,
++            _H_LONG: 1,
++            _V_LONG: 1,
++        }
++    ),
++}
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+@@ -86,14 +105,19 @@
+     )
+     scene_profile = ctx.draw_choice("scene_profile", SCENE_PROFILES)
+     target_relation = ctx.draw_choice("target_relation", TARGET_RELATIONS)
++    target_count_profile = ctx.draw_choice(
++        "target_count_profile", TARGET_COUNT_PROFILES
++    )
+     height, width = (int(part) for part in scene_profile.split("x"))
+     rng = ctx.draw_rng(f"layout:{difficulty or 'unspecified'}")
+ 
+     for _ in range(512):
+-        grid = _draw_scene(height, width, target_relation, rng)
++        grid = _draw_scene(
++            height, width, target_relation, target_count_profile, rng
++        )
+         analysis = _analyze_grid(grid)
+         if (
+-            analysis["counts"] == _GENERATED_SIGNATURE
++            analysis["counts"] == _GENERATED_SIGNATURES[target_count_profile]
+             and not analysis["ambiguous_cells"]
+             and not analysis["uncovered_cells"]
+             and 6 <= _object_count(grid) <= 8
+@@ -101,6 +125,7 @@
+             == {
+                 "scene_profile": scene_profile,
+                 "target_relation": target_relation,
++                "target_count_profile": target_count_profile,
+             }
+         ):
+             return grid
+@@ -109,43 +134,107 @@
+     )
+ 
+ 
+-def _draw_scene(height: int, width: int, target_relation: str, rng):
+-    """Draw six relations as two compact, canonical-scale endpoint clusters.
++def _draw_scene(
++    height: int,
++    width: int,
++    target_relation: str,
++    target_count_profile: str,
++    rng,
++):
++    """Draw seven relations as two compact, canonical-scale endpoint clusters.
+ 
+     Adjacent same-color endpoints connect pairs of motifs without sharing a
+-    motif endpoint.  The result retains all six semantic relations while
++    motif endpoint.  The result retains all decisive semantic relations while
+     keeping the non-background object count in the canonical neighbourhood
+-    (normally seven or eight rather than twelve isolated dots).
++    (normally seven or eight rather than fourteen isolated dots).
+     """
+     grid = full_grid(height, width, 0)
+ 
+-    # Three consecutive rows hold the horizontal target, mismatch, and long
+-    # span.  The vertical cluster needs six rows.  Reflections and offsets
+-    # preserve the rule while producing a broad deterministic distribution.
+-    h_top = rng.randrange(height - 2)
++    # The duplicated target is adjacent to its same-orientation partner, so it
++    # adds canonical target multiplicity without adding disconnected objects.
++    horizontal_rows = 4 if target_count_profile == "2h1v" else 3
++    vertical_columns = 4 if target_count_profile == "1h2v" else 3
++    h_top = rng.randrange(height - horizontal_rows + 1)
+     v_top = rng.randrange(height - 5)
+     cluster_on_left = rng.choice((True, False))
+     h_left = 0 if cluster_on_left else width - 6
+-    v_left = width - 3 if cluster_on_left else 0
++    v_left = width - vertical_columns if cluster_on_left else 0
+ 
+     color_a, color_b, color_c = rng.sample(range(1, 10), 3)
+     vertical_target_color = color_a if target_relation == "same" else color_b
+ 
+-    horizontal = (
++    horizontal = [
+         (((h_top, h_left), (h_top, h_left + 2)), (color_a, color_a)),
+-        (((h_top + 1, h_left), (h_top + 1, h_left + 2)), (color_a, color_b)),
+-        (((h_top + 2, h_left + 2), (h_top + 2, h_left + 5)), (color_b, color_b)),
++    ]
++    next_horizontal_row = h_top + 1
++    if target_count_profile == "2h1v":
++        horizontal.append(
++            (
++                (
++                    (next_horizontal_row, h_left),
++                    (next_horizontal_row, h_left + 2),
++                ),
++                (color_a, color_a),
++            )
++        )
++        next_horizontal_row += 1
++    horizontal.extend(
++        [
++            (
++                (
++                    (next_horizontal_row, h_left),
++                    (next_horizontal_row, h_left + 2),
++                ),
++                (color_a, color_b),
++            ),
++            (
++                (
++                    (next_horizontal_row + 1, h_left + 2),
++                    (next_horizontal_row + 1, h_left + 5),
++                ),
++                (color_b, color_b),
++            ),
++        ]
+     )
+-    vertical = (
+-        (((v_top, v_left), (v_top + 2, v_left)),
+-         (vertical_target_color, vertical_target_color)),
+-        (((v_top, v_left + 1), (v_top + 2, v_left + 1)),
+-         (vertical_target_color, color_c)),
+-        (((v_top + 2, v_left + 2), (v_top + 5, v_left + 2)),
+-         (color_c, color_c)),
++
++    vertical = [
++        (
++            ((v_top, v_left), (v_top + 2, v_left)),
++            (vertical_target_color, vertical_target_color),
++        ),
++    ]
++    next_vertical_column = v_left + 1
++    if target_count_profile == "1h2v":
++        vertical.append(
++            (
++                (
++                    (v_top, next_vertical_column),
++                    (v_top + 2, next_vertical_column),
++                ),
++                (vertical_target_color, vertical_target_color),
++            )
++        )
++        next_vertical_column += 1
++    vertical.extend(
++        [
++            (
++                (
++                    (v_top, next_vertical_column),
++                    (v_top + 2, next_vertical_column),
++                ),
++                (vertical_target_color, color_c),
++            ),
++            (
++                (
++                    (v_top + 2, next_vertical_column + 1),
++                    (v_top + 5, next_vertical_column + 1),
++                ),
++                (color_c, color_c),
++            ),
++        ]
+     )
+ 
+-    motifs = horizontal + vertical
++    motifs = tuple(horizontal + vertical)
+     if rng.choice((True, False)):
+         motifs = tuple(reversed(motifs))
+     for cells, colors in motifs:
+@@ -195,13 +284,24 @@
+     analysis = _analyze_grid(grid)
+     horizontal_colors = analysis["colors"][_H_TARGET]
+     vertical_colors = analysis["colors"][_V_TARGET]
+-    if len(horizontal_colors) != 1 or len(vertical_colors) != 1:
++    if len(set(horizontal_colors)) != 1 or len(set(vertical_colors)) != 1:
+         raise ValueError("target_relation is not observable from this grid")
++    target_counts = (
++        analysis["counts"][_H_TARGET],
++        analysis["counts"][_V_TARGET],
++    )
++    target_count_profile = {
++        (2, 1): "2h1v",
++        (1, 2): "1h2v",
++    }.get(target_counts)
++    if target_count_profile is None:
++        raise ValueError("target_count_profile is not observable from this grid")
+     return {
+         "scene_profile": f"{len(grid)}x{len(grid[0])}",
+         "target_relation": (
+             "same" if horizontal_colors[0] == vertical_colors[0] else "different"
+         ),
++        "target_count_profile": target_count_profile,
+     }
+ 
+ 
+@@ -271,7 +371,7 @@
+         counts[kind] for kind in (_H_MISMATCH, _V_MISMATCH, _H_LONG, _V_LONG)
+     )
+     pure_canonical = control_total == 0
+-    generated = counts == _GENERATED_SIGNATURE
++    generated = any(counts == signature for signature in _GENERATED_SIGNATURES.values())
+     if pure_canonical:
+         if counts[_H_TARGET] < 1 or counts[_V_TARGET] < 1:
+             errors.append(
+@@ -279,8 +379,8 @@
+             )
+     elif not generated:
+         errors.append(
+-            "generated form must contain exactly one target, mismatch, and long-gap "
+-            "motif per orientation"
++            "generated form must contain a 2h1v or 1h2v target profile plus exactly "
++            "one mismatch and one long-gap motif per orientation"
+         )
+ 
+     palette = {value for row in grid for value in row}

@@ -1,0 +1,52 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (begin
+             (define mask (cellmap g (r c v) (if (= v 3) 1 0)))
+             (define objs (objects mask 0))
+             (define cell-colors (make-hash))
+             (for-each (lambda (o)
+                         (define cells (obj-cells o))
+                         (define cell-set
+                           (list->set (map (lambda (p) (cons (first p) (second p)))
+                                           cells)))
+                         (define corners 0)
+                         (define tjunctions 0)
+                         (for-each (lambda (p)
+                                     (define r (first p))
+                                     (define c (second p))
+                                     (define nbr-count 0)
+                                     (define nbrs (list))
+                                     (for-each (lambda (d)
+                                                 (define nr (+ r (car d)))
+                                                 (define nc (+ c (cdr d)))
+                                                 (when
+                                                   (set-member? cell-set (cons nr nc))
+                                                   (set! nbr-count (+ nbr-count 1))
+                                                   (set! nbrs (cons d nbrs))))
+                                               (list (cons -1 0)
+                                                     (cons 1 0)
+                                                     (cons 0 -1)
+                                                     (cons 0 1)))
+                                     (when
+                                       (= nbr-count 2)
+                                       (define d1 (first nbrs))
+                                       (define d2 (second nbrs))
+                                       (unless
+                                         (or
+                                           (= (car d1) (car d2))
+                                           (= (cdr d1) (cdr d2)))
+                                         (set! corners (+ corners 1))))
+                                     (when
+                                       (= nbr-count 3)
+                                       (set! tjunctions (+ tjunctions 1))))
+                                   cells)
+                         (define color
+                           (cond ((> tjunctions 0) 2) ((= corners 2) 6) (else 1)))
+                         (for-each (lambda (p)
+                                     (hash-set! cell-colors
+                                                (cons (first p) (second p))
+                                                color))
+                                   cells))
+                       objs)
+             (cellmap g (r c v) (hash-ref cell-colors (cons r c) v))))))

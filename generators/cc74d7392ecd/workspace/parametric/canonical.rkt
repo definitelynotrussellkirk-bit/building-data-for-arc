@@ -1,0 +1,10 @@
+(rule!
+  (let ((seeds (filter (lambda (cell) (not (= (third cell) 0))) (grid-cells g))))
+    (define (covers? seed r c)
+      (= (+ (abs (- r (first seed))) (abs (- c (second seed)))) 1))
+    (define (same? seed r c)
+      (and (= r (first seed)) (= c (second seed))))
+    (grid-from-fn (rows g) (cols g)
+      (lambda (r c)
+        (let ((hit (find-first (lambda (seed) (or (same? seed r c) (covers? seed r c))) seeds)))
+          (if hit (third hit) 0))))))

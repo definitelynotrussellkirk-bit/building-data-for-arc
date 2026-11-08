@@ -1,0 +1,1376 @@
+diff --git a/repo/generators/4f6f232c17bc/SUMMARY.md b/repo/generators/4f6f232c17bc/SUMMARY.md
+--- a/repo/generators/4f6f232c17bc/SUMMARY.md
++++ b/repo/generators/4f6f232c17bc/SUMMARY.md
+@@ -1,6 +1,18 @@
+ # 4f6f232c17bc
+ 
+-0-bg grid (h~6-10, w = 2*half_w + 1 with half_w ∈ [4, 6]) with: (a) ONE FULL-HEIGHT DIVIDER COLUMN at col c = half_w painted COLOR 5 (gray) on every row; (b) A BLUE BLOB on the LEFT SIDE — a connected 4-8-cell blob of COLOR 1 grown by random neighbor extension within cols 0..half_w-2 (always strictly left of divider); right side is INPUT-EMPTY (all 0). Rule (REFLECT BLUE CELLS ACROSS DIVIDER TO CYAN, ON BLANK OUTPUT): IDENTIFY the FULL-HEIGHT GRAY (5) DIVIDER at col g_c. PRODUCE a NEW BLANK (all 0) h × w OUTPUT. For EACH BLUE (1) CELL at (r, c) on the LEFT (c < g_c): PAINT (r, 2*g_c - c) on the RIGHT with COLOR 8 (cyan). The divider and the blue cells are discarded. Net: blue blob appears as a cyan mirror across the gray axis on an otherwise blank canvas.
++A unique full-height gray (`5`) column is the reflection axis. The input contains
++one connected blue (`1`) object wholly on either side of that axis. Reflect each
++blue cell horizontally across the axis, clip reflected cells that fall outside
++the canvas, recolor retained cells cyan (`8`), and return the result on a blank
++same-size output. Divider cells, the source object, isolated extra-gray cells,
++and unrelated non-blue colors are discarded.
+ 
+-Kind: `per_puzzle`. Imported version: `2.0.1`.
+-Approval is derived by the catalog from current code and retained evidence.
++The sampler cycles through six source/axis profiles: left/right sources,
++centered/off-center axes, and partial-clipping cases. Canonical-size anchors,
++connected blue sizes 3–8, and 2–4 distractors keep all five canonical inputs in
++the accepted domain while teaching against side-only, canvas-midline,
++all-or-nothing clipping, overlay, reflect-all-colors, and keep-blue-color rivals.
++
++Kind: `per_puzzle`. Reviewed version: `3.0.0`. Rule hash: `549dba88300b`.
++Approval remains a catalog/maintainer decision; passing review checks does not
++change training approval.
+diff --git a/repo/generators/4f6f232c17bc/generator.py b/repo/generators/4f6f232c17bc/generator.py
+--- a/repo/generators/4f6f232c17bc/generator.py
++++ b/repo/generators/4f6f232c17bc/generator.py
+@@ -1,156 +1,625 @@
+-"""Generator for arc_additional_puzzle_bank_volume19:M128.
+-
+-Rule: a full gray divider column reflects blue cells to cyan on an
+-otherwise blank output.
+-
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, blue_size,
+-palette_size, position_bias, n_distinct_colors, density, texture.
+-Degenerates: no_divider, no_blue, blue_on_both_sides.
++"""Constructive sampler for blue-to-cyan reflection across a gray divider.
++
++The selected Racket rule finds the unique full-height color-5 column, starts
++from a blank output, and reflects every blue (1) cell across that column as
++cyan (8). Reflections outside the canvas are clipped. All input cells,
++including the divider and unrelated distractors, are discarded.
+ """
+ from __future__ import annotations
+ 
++from copy import deepcopy
++
+ from puzzle_generators.base import gen_ctx
+-from puzzle_generators.helpers.blobs import grow_blob
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "4f6f232c17bc"
+-VERSION = "2.0.1"
+-TASK_ID = "4f6f232c17bc"
++TASK_ID = GENERATOR_ID
++RULE_HASH = "549dba88300b"
++VERSION = "3.0.0"
+ SUMMARY = (
+-    "0-bg grid (h~6-10, "
+-    "w = 2*half_w + 1 with "
+-    "half_w ∈ [4, 6]) with: "
+-    "(a) ONE FULL-HEIGHT "
+-    "DIVIDER COLUMN at "
+-    "col c = half_w "
+-    "painted COLOR 5 "
+-    "(gray) on every row; "
+-    "(b) A BLUE BLOB on "
+-    "the LEFT SIDE — a "
+-    "connected 4-8-cell "
+-    "blob of COLOR 1 "
+-    "grown by random "
+-    "neighbor extension "
+-    "within cols 0..half_w-"
+-    "2 (always strictly "
+-    "left of divider); "
+-    "right side is INPUT-"
+-    "EMPTY (all 0). Rule "
+-    "(REFLECT BLUE CELLS "
+-    "ACROSS DIVIDER TO "
+-    "CYAN, ON BLANK "
+-    "OUTPUT): IDENTIFY the "
+-    "FULL-HEIGHT GRAY (5) "
+-    "DIVIDER at col g_c. "
+-    "PRODUCE a NEW BLANK "
+-    "(all 0) h × w OUTPUT. "
+-    "For EACH BLUE (1) "
+-    "CELL at (r, c) on the "
+-    "LEFT (c < g_c): "
+-    "PAINT (r, 2*g_c - c) "
+-    "on the RIGHT with "
+-    "COLOR 8 (cyan). The "
+-    "divider and the blue "
+-    "cells are discarded. "
+-    "Net: blue blob "
+-    "appears as a cyan "
+-    "mirror across the "
+-    "gray axis on an "
+-    "otherwise blank "
+-    "canvas."
++    "A unique full-height gray (5) column is the reflection axis. Reflect the "
++    "single connected blue (1) object from either side across that axis, clip "
++    "out-of-bounds cells, recolor retained cells cyan (8), and discard the "
++    "entire input canvas including unrelated colored and extra-gray distractors."
+ )
++
++LAYOUT_PROFILES = (
++    "left_centered",
++    "right_clipped",
++    "right_centered",
++    "left_clipped",
++    "left_offcenter",
++    "right_offcenter",
++)
++
+ INVARIANTS = [
+-    "exactly one full color-5 divider column",
+-    "all color-1 cells lie on one side of the divider",
+-    "reflected color-1 positions remain inside the grid",
++    "exactly one full-height color-5 divider column; isolated extra gray cells are allowed",
++    "one nonempty 4-connected blue object lies wholly on one side of the divider",
++    "at least one blue reflection remains in bounds; clipped profiles also lose at least one cell",
++    "ordinary draws include a reflectable non-blue distractor and an isolated extra-gray distractor",
+ ]
+ 
+-PALETTE_KINDS = ("default", "warm", "cool", "varied")
+-DEGENERATE_TEXTURES = ("no_divider", "no_blue", "blue_on_both_sides")
+-HELPFUL_TEXTURES = PALETTE_KINDS
+-
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 6..10", "valid": "5..14"},
+-    "half_w":         {"type": "int", "default": "rng 4..6", "valid": "3..8"},
+-    "palette_kind":   {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(PALETTE_KINDS)},
+-    "blue_size":      {"type": "int", "default": "rng 4..8", "valid": "1..16"},
+-    "palette_size":   {"type": "int", "default": "2", "valid": "2"},
+-    "position_bias":  {"type": "str", "default": "left_blue_full_divider",
+-                       "valid": "left_blue_full_divider"},
+-    "n_distinct_colors": {"type": "int", "default": "2", "valid": "2"},
+-    "density":        {"type": "str", "default": "sparse", "valid": "sparse"},
+-    "texture":        {"type": "str", "default": "alias for palette_kind",
+-                       "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "grid_h": {
++        "type": "int",
++        "default": "canonical anchors plus difficulty-aware 7..12",
++        "valid": "7..12",
++    },
++    "grid_w": {
++        "type": "int",
++        "default": "canonical anchors plus difficulty-aware 9..15",
++        "valid": "9..15",
++    },
++    "layout_profile": {
++        "type": "str",
++        "default": "six-sample deterministic semantic schedule",
++        "valid": "|".join(LAYOUT_PROFILES),
++    },
++    "blue_size": {
++        "type": "int",
++        "default": "difficulty-aware 3..8",
++        "valid": "3..8",
++    },
++    "n_distractors": {
++        "type": "int",
++        "default": "difficulty-aware 2..4",
++        "valid": "2..4",
++    },
+ }
++INCOMPATIBLE_OVERRIDE_COMBINATIONS = []
++MIN_STRICT_FRAC = 1.0
++EXAMPLES_NEEDED = 5
++SCHEDULE_PROFILES = LAYOUT_PROFILES
++
++_INT_DOMAINS = {
++    "grid_h": (7, 12),
++    "grid_w": (9, 15),
++    "blue_size": (3, 8),
++    "n_distractors": (2, 4),
++}
++_ALLOWED_OVERRIDES = frozenset(_INT_DOMAINS) | {"layout_profile"}
++_CANONICAL_SHAPES = ((8, 11), (9, 13), (10, 12), (8, 14))
++_NOISE_COLORS = (2, 3, 4, 6, 7, 9)
++_NEIGHBORS = ((-1, 0), (1, 0), (0, -1), (0, 1))
++
++
++def _validate_overrides(overrides):
++    unknown = sorted(set(overrides) - _ALLOWED_OVERRIDES)
++    if unknown:
++        raise ValueError(f"unknown override(s): {', '.join(unknown)}")
++    for name, (lo, hi) in _INT_DOMAINS.items():
++        if name not in overrides or overrides[name] is None:
++            continue
++        value = overrides[name]
++        if type(value) is not int:
++            raise TypeError(f"{name} must be an integer (not bool)")
++        if not lo <= value <= hi:
++            raise ValueError(f"{name}={value} outside [{lo}, {hi}]")
++    if "layout_profile" in overrides and overrides["layout_profile"] is not None:
++        value = overrides["layout_profile"]
++        if type(value) is not str or value not in LAYOUT_PROFILES:
++            raise ValueError(
++                f"layout_profile={value!r} must be one of {LAYOUT_PROFILES}"
++            )
++
++
++def _difficulty_ranges(difficulty):
++    if difficulty == "easy":
++        return {
++            "grid_h": (7, 9), "grid_w": (9, 12),
++            "blue_size": (3, 4), "n_distractors": (2, 2),
++        }
++    if difficulty == "medium":
++        return {
++            "grid_h": (8, 11), "grid_w": (10, 14),
++            "blue_size": (4, 6), "n_distractors": (2, 3),
++        }
++    if difficulty == "hard":
++        return {
++            "grid_h": (9, 12), "grid_w": (12, 15),
++            "blue_size": (6, 8), "n_distractors": (3, 4),
++        }
++    return dict(_INT_DOMAINS)
++
++
++def _draw_int(ctx, name, ordinary_bounds):
++    bounds = _INT_DOMAINS[name] if ctx.overrides.get(name) is not None else ordinary_bounds
++    return ctx.draw_int_strict(name, *bounds)
++
++
++def schedule_profile(seed, sample_index, difficulty=None):
++    """Expose the deterministic semantic layout schedule."""
++    del seed, difficulty
++    return LAYOUT_PROFILES[sample_index % len(LAYOUT_PROFILES)]
++
++
++def _divider_for(width, profile):
++    if profile.endswith("centered"):
++        return width // 2
++    if profile == "left_offcenter":
++        return max(2, (width - 1) // 3)
++    if profile == "right_offcenter":
++        return width - 1 - max(2, (width - 1) // 3)
++    if profile == "left_clipped":
++        return width - 3
++    if profile == "right_clipped":
++        return 2
++    raise ValueError(f"unknown layout profile {profile!r}")
++
++
++def _source_side(profile):
++    return "left" if profile.startswith("left_") else "right"
++
++
++def _mirror(divider, column):
++    return 2 * divider - column
++
++
++def _grow_connected(allowed, seeds, size, rng):
++    cells = set(seeds)
++    if not cells <= allowed:
++        raise RuntimeError("blue seed lies outside the constructive region")
++    while len(cells) < size:
++        frontier = sorted({
++            (r + dr, c + dc)
++            for r, c in cells
++            for dr, dc in _NEIGHBORS
++            if (r + dr, c + dc) in allowed and (r + dr, c + dc) not in cells
++        })
++        if not frontier:
++            raise RuntimeError("constructive blue growth exhausted its region")
++        cells.add(rng.choice(frontier))
++    return cells
++
++
++def _blue_cells(ctx, height, width, divider, profile, size):
++    side = _source_side(profile)
++    side_cells = {
++        (r, c)
++        for r in range(height)
++        for c in range(width)
++        if (c < divider if side == "left" else c > divider)
++    }
++    rng = ctx.draw_rng("blue_shape")
++
++    if profile.endswith("clipped"):
++        row = rng.randrange(height)
++        if side == "left":
++            target_span = width - 1 - divider
++            valid_c = divider - target_span
++            seeds = {(row, valid_c), (row, valid_c - 1)}
++        else:
++            target_span = divider
++            valid_c = divider + target_span
++            seeds = {(row, valid_c), (row, valid_c + 1)}
++        cells = _grow_connected(side_cells, seeds, size, rng)
++        reflected = [_mirror(divider, c) for _, c in cells]
++        if not any(0 <= c < width for c in reflected) or not any(
++            not 0 <= c < width for c in reflected
++        ):
++            raise RuntimeError("clipped profile did not realize both retained and clipped cells")
++        return cells
++
++    fully_visible = {
++        (r, c) for r, c in side_cells if 0 <= _mirror(divider, c) < width
++    }
++    seed = rng.choice(sorted(fully_visible))
++    return _grow_connected(fully_visible, {seed}, size, rng)
++
++
++def _reflected_blue_positions(grid, divider):
++    width = len(grid[0])
++    return {
++        (r, mirror)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == 1
++        for mirror in (_mirror(divider, c),)
++        if 0 <= mirror < width
++    }
++
++
++def _place_distractors(ctx, grid, divider, count):
++    height, width = len(grid), len(grid[0])
++    intended = _reflected_blue_positions(grid, divider)
++    rng = ctx.draw_rng("distractor_layout")
++    noise_color = rng.choice(_NOISE_COLORS)
++
++    reflectable = []
++    for r in range(height):
++        for c in range(width):
++            if c == divider or grid[r][c] != 0 or (r, c) in intended:
++                continue
++            mirror = _mirror(divider, c)
++            if (
++                0 <= mirror < width
++                and grid[r][mirror] == 0
++                and (r, mirror) not in intended
++            ):
++                reflectable.append((r, c))
++    if not reflectable:
++        raise RuntimeError("no room for the semantic distractor witness")
++    first_noise = rng.choice(reflectable)
++    grid[first_noise[0]][first_noise[1]] = noise_color
++
++    gray_candidates = [
++        (r, c)
++        for r in range(height)
++        for c in range(width)
++        if c != divider and grid[r][c] == 0 and (r, c) not in intended
++    ]
++    if not gray_candidates:
++        raise RuntimeError("no room for an extra-gray distractor")
++    extra_gray = rng.choice(gray_candidates)
++    grid[extra_gray[0]][extra_gray[1]] = 5
++
++    remaining = count - 2
++    if remaining:
++        candidates = [
++            (r, c)
++            for r in range(height)
++            for c in range(width)
++            if c != divider and grid[r][c] == 0 and (r, c) not in intended
++        ]
++        if len(candidates) < remaining:
++            raise RuntimeError("not enough cells for requested distractors")
++        for r, c in rng.sample(candidates, remaining):
++            grid[r][c] = noise_color
++
++
++def generate(seed, sample_index, *, difficulty=None, **overrides):
++    _validate_overrides(overrides)
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++    ranges = _difficulty_ranges(difficulty)
++
++    canonical_anchor = (
++        sample_index % 4 == 0
++        and overrides.get("grid_h") is None
++        and overrides.get("grid_w") is None
++    )
++    if canonical_anchor:
++        h0, w0 = _CANONICAL_SHAPES[(sample_index // 4) % len(_CANONICAL_SHAPES)]
++        height = ctx.draw_choice("grid_h", (h0,))
++        width = ctx.draw_choice("grid_w", (w0,))
++    else:
++        height = _draw_int(ctx, "grid_h", ranges["grid_h"])
++        width = _draw_int(ctx, "grid_w", ranges["grid_w"])
++
++    if overrides.get("layout_profile") is not None:
++        profile = ctx.draw_choice("layout_profile", LAYOUT_PROFILES)
++    else:
++        profile = ctx.draw_choice("layout_profile", (schedule_profile(seed, sample_index),))
++    blue_size = _draw_int(ctx, "blue_size", ranges["blue_size"])
++    n_distractors = _draw_int(ctx, "n_distractors", ranges["n_distractors"])
++
++    divider = _divider_for(width, profile)
++    grid = full_grid(height, width, 0)
++    for row in range(height):
++        grid[row][divider] = 5
++    for row, col in _blue_cells(ctx, height, width, divider, profile, blue_size):
++        grid[row][col] = 1
++    _place_distractors(ctx, grid, divider, n_distractors)
++
++    errors = self_check(grid, difficulty=difficulty)
++    if errors:
++        raise RuntimeError(f"constructive generator violated its contract: {errors}")
++    expected = {
++        "grid_h": height,
++        "grid_w": width,
++        "layout_profile": profile,
++        "blue_size": blue_size,
++        "n_distractors": n_distractors,
++    }
++    observed = observe_overrides(grid)
++    if observed != expected:
++        raise RuntimeError(f"observable override mismatch: expected {expected}, got {observed}")
++    return grid
++
++
++def _shape_errors(grid):
++    if not isinstance(grid, list) or not grid:
++        return None, ["grid must be a nonempty list of rows"]
++    if not all(isinstance(row, list) and row for row in grid):
++        return None, ["every row must be a nonempty list"]
++    width = len(grid[0])
++    if any(len(row) != width for row in grid):
++        return None, ["grid must be rectangular"]
++    invalid = [
++        (r, c, value)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if type(value) is not int or not 0 <= value <= 9
++    ]
++    if invalid:
++        return None, [f"invalid ARC color at {invalid[0][:2]}: {invalid[0][2]!r}"]
++    return (len(grid), width), []
++
++
++def _divider_columns(grid):
++    height, width = len(grid), len(grid[0])
++    return [c for c in range(width) if all(grid[r][c] == 5 for r in range(height))]
++
++
++def _blue_positions(grid):
++    return [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == 1]
++
++
++def _connected(points):
++    remaining = set(points)
++    if not remaining:
++        return False
++    stack = [remaining.pop()]
++    while stack:
++        r, c = stack.pop()
++        for dr, dc in _NEIGHBORS:
++            neighbor = (r + dr, c + dc)
++            if neighbor in remaining:
++                remaining.remove(neighbor)
++                stack.append(neighbor)
++    return not remaining
++
++
++def _distractor_positions(grid, divider):
++    return [
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value != 0 and value != 1 and not (c == divider and value == 5)
++    ]
+ 
+ 
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Verify: one full-height gray(5) divider column; >=1 blue(1) cell left of divider."""
+-    if not grid or not grid[0]:
+-        return ["empty grid"]
+-    h, w = len(grid), len(grid[0])
+-    errs = []
+-    # Find full-height gray(5) columns
+-    gray_cols = [c for c in range(w) if all(grid[r][c] == 5 for r in range(h))]
+-    if len(gray_cols) != 1:
+-        errs.append(f"expected 1 full-height gray(5) divider column, found {len(gray_cols)}")
++    """Validate the canonical input domain without evaluating output labels."""
++    del difficulty, meta
++    shape, errors = _shape_errors(grid)
++    if errors:
++        return errors
++    height, width = shape
++    dividers = _divider_columns(grid)
++    if len(dividers) != 1:
++        return [f"expected exactly one full-height gray divider, found {len(dividers)}"]
++    divider = dividers[0]
++
++    blue = _blue_positions(grid)
++    errors = []
++    if not blue:
++        errors.append("no blue object")
++        return errors
++    left = any(c < divider for _, c in blue)
++    right = any(c > divider for _, c in blue)
++    if left == right:
++        errors.append("blue cells must lie wholly on exactly one side of the divider")
++    if not _connected(blue):
++        errors.append("blue cells must form one 4-connected object")
++    if any(value == 8 for row in grid for value in row):
++        errors.append("cyan 8 is reserved for the output and must not appear in input")
++    valid_reflections = sum(0 <= _mirror(divider, c) < width for _, c in blue)
++    if valid_reflections == 0:
++        errors.append("all blue reflections fall outside the grid")
++    if not _distractor_positions(grid, divider):
++        errors.append("at least one unrelated input distractor is required")
++    return errors
++
++
++def strict_canonical_like(grid):
++    return self_check(grid)
++
++
++def _divider_column(grid):
++    dividers = _divider_columns(grid)
++    if len(dividers) != 1:
++        raise ValueError(f"expected one divider, found {len(dividers)}")
++    return dividers[0]
++
++
++def _rule_output(grid):
++    height, width = len(grid), len(grid[0])
++    divider = _divider_column(grid)
++    output = full_grid(height, width, 0)
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if value != 1:
++                continue
++            mirror = _mirror(divider, c)
++            if 0 <= mirror < width:
++                output[r][mirror] = 8
++    return output
++
++
++def observe_overrides(grid):
++    errors = self_check(grid)
++    if errors:
++        raise ValueError(f"cannot observe malformed grid: {errors}")
++    height, width = len(grid), len(grid[0])
++    divider = _divider_column(grid)
++    blue = _blue_positions(grid)
++    side = "left" if all(c < divider for _, c in blue) else "right"
++    clipped = any(not 0 <= _mirror(divider, c) < width for _, c in blue)
++    if clipped:
++        profile = f"{side}_clipped"
++    elif divider == width // 2:
++        profile = f"{side}_centered"
+     else:
+-        div = gray_cols[0]
+-        has_blue_left = any(grid[r][c] == 1 for r in range(h) for c in range(div))
+-        if not has_blue_left:
+-            errs.append("no blue(1) cell on the left side of the divider")
+-    return errs
+-
+-
+-def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION,
+-                  task_id=TASK_ID, difficulty=difficulty, overrides=overrides)
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], None)
+-    if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 6, 7)
+-        half_w = ctx.draw_int("half_w", 4, 4)
+-        size = ctx.draw_int("blue_size", 4, 5)
+-    elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 8, 10)
+-        half_w = ctx.draw_int("half_w", 5, 6)
+-        size = ctx.draw_int("blue_size", 6, 8)
+-    else:
+-        h = ctx.draw_int("grid_h", 6, 10)
+-        half_w = ctx.draw_int("half_w", 4, 6)
+-        size = ctx.draw_int("blue_size", 4, 8)
+-    rng = ctx.draw_rng("layout")
+-
+-    w = half_w * 2 + 1
+-    div = half_w
+-    g = full_grid(h, w, 0)
+-    for r in range(h):
+-        g[r][div] = 5
+-
+-    cells = grow_blob(rng, h, half_w - 1, set(), size)
+-    if cells is None:
+-        cells = {(1, 1), (1, 2), (2, 1), (3, 1)}
+-    for r, c in cells:
+-        g[r][c] = 1
+-    return g
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    h, w = 7, 9
+-    g = full_grid(h, w, 0)
+-    if name == "no_divider":
+-        # blue cells without 5-divider → no reflection axis
+-        g[2][1] = 1; g[3][2] = 1; g[4][1] = 1
+-        return g
+-    if name == "no_blue":
+-        # divider but no blue cells → nothing to reflect
+-        for r in range(h): g[r][4] = 5
+-        return g
+-    if name == "blue_on_both_sides":
+-        # blue on both sides of divider → reflection collides with existing cells
+-        for r in range(h): g[r][4] = 5
+-        g[2][1] = 1; g[3][2] = 1
+-        g[2][7] = 1; g[3][6] = 1
+-        return g
+-    return g
++        profile = f"{side}_offcenter"
++    return {
++        "grid_h": height,
++        "grid_w": width,
++        "layout_profile": profile,
++        "blue_size": len(blue),
++        "n_distractors": len(_distractor_positions(grid, divider)),
++    }
++
++
++def _blank_like(grid):
++    return full_grid(len(grid), len(grid[0]), 0)
++
++
++def _left_only(grid):
++    divider = _divider_column(grid)
++    output = _blank_like(grid)
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            mirror = _mirror(divider, c)
++            if value == 1 and c < divider and 0 <= mirror < len(row):
++                output[r][mirror] = 8
++    return output
++
++
++def _right_only(grid):
++    divider = _divider_column(grid)
++    output = _blank_like(grid)
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            mirror = _mirror(divider, c)
++            if value == 1 and c > divider and 0 <= mirror < len(row):
++                output[r][mirror] = 8
++    return output
++
++
++def _canvas_midline(grid):
++    width = len(grid[0])
++    output = _blank_like(grid)
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if value == 1:
++                output[r][width - 1 - c] = 8
++    return output
++
++
++def _all_or_nothing(grid):
++    divider = _divider_column(grid)
++    width = len(grid[0])
++    if any(
++        not 0 <= _mirror(divider, c) < width
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == 1
++    ):
++        return _blank_like(grid)
++    return _rule_output(grid)
++
++
++def _overlay_input(grid):
++    output = deepcopy(grid)
++    divider = _divider_column(grid)
++    width = len(grid[0])
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            mirror = _mirror(divider, c)
++            if value == 1 and 0 <= mirror < width:
++                output[r][mirror] = 8
++    return output
++
++
++def _reflect_all_colored(grid):
++    divider = _divider_column(grid)
++    width = len(grid[0])
++    output = _blank_like(grid)
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            mirror = _mirror(divider, c)
++            if value not in (0, 5) and 0 <= mirror < width:
++                output[r][mirror] = 8
++    return output
++
++
++def _keep_blue_color(grid):
++    divider = _divider_column(grid)
++    width = len(grid[0])
++    output = _blank_like(grid)
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            mirror = _mirror(divider, c)
++            if value == 1 and 0 <= mirror < width:
++                output[r][mirror] = 1
++    return output
++
++
++def _source_left(grid):
++    divider = _divider_column(grid)
++    return all(c < divider for _, c in _blue_positions(grid))
++
++
++def _source_right(grid):
++    divider = _divider_column(grid)
++    return all(c > divider for _, c in _blue_positions(grid))
++
++
++def _offcenter_counterexample(grid):
++    return _divider_column(grid) != len(grid[0]) // 2 and _canvas_midline(grid) != _rule_output(grid)
++
++
++def _clipping_counterexample(grid):
++    divider = _divider_column(grid)
++    width = len(grid[0])
++    clipped = any(
++        not 0 <= _mirror(divider, c) < width for _, c in _blue_positions(grid)
++    )
++    return clipped and _all_or_nothing(grid) != _rule_output(grid)
++
++
++def _cleared_canvas_counterexample(grid):
++    return _overlay_input(grid) != _rule_output(grid)
++
++
++def _distractor_counterexample(grid):
++    return _reflect_all_colored(grid) != _rule_output(grid)
++
++
++def _recolor_counterexample(grid):
++    return _keep_blue_color(grid) != _rule_output(grid)
++
++
++SEMANTIC_RIVALS = {
++    "left_only": _left_only,
++    "right_only": _right_only,
++    "canvas_midline": _canvas_midline,
++    "all_or_nothing_clipping": _all_or_nothing,
++    "overlay_on_input": _overlay_input,
++    "reflect_all_colored": _reflect_all_colored,
++    "keep_blue_color": _keep_blue_color,
++}
++SEMANTIC_WITNESSES = {
++    "source_on_left": _source_left,
++    "source_on_right": _source_right,
++    "offcenter_axis": _offcenter_counterexample,
++    "partial_clipping": _clipping_counterexample,
++    "discard_input_canvas": _cleared_canvas_counterexample,
++    "ignore_nonblue_distractors": _distractor_counterexample,
++    "recolor_blue_to_cyan": _recolor_counterexample,
++}
++WITNESS_RIVALS = {
++    "source_on_left": ["right_only"],
++    "source_on_right": ["left_only"],
++    "offcenter_axis": ["canvas_midline"],
++    "partial_clipping": ["all_or_nothing_clipping"],
++    "discard_input_canvas": ["overlay_on_input"],
++    "ignore_nonblue_distractors": ["reflect_all_colored"],
++    "recolor_blue_to_cyan": ["keep_blue_color"],
++}
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
++CANONICAL_SHORTCUTS = dict(SEMANTIC_RIVALS)
++
++
++def lesson_identifiable(demos, query):
++    """Reject a lesson when a declared wrong rule survives its demonstrations."""
++    reasons = []
++    for name, rival in sorted(LESSON_COMPETITORS.items()):
++        try:
++            fits_demos = all(
++                rival(deepcopy(pair["input"])) == pair["output"] for pair in demos
++            )
++            changes_query = rival(deepcopy(query["input"])) != query["output"]
++        except Exception as exc:
++            reasons.append(f"{name} evaluation failed: {type(exc).__name__}: {exc}")
++            continue
++        if fits_demos and changes_query:
++            reasons.append(f"{name} fits every demonstration but changes the query")
++    return reasons
+diff --git a/repo/generators/4f6f232c17bc/notes.md b/repo/generators/4f6f232c17bc/notes.md
+--- a/repo/generators/4f6f232c17bc/notes.md
++++ b/repo/generators/4f6f232c17bc/notes.md
+@@ -1,4 +1,38 @@
+ # Working notes: 4f6f232c17bc
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Review 2026-10-07 — assignment `review-77585fe0f3de648e`
++
++The selected baseline (`generator.py` SHA-256
++`b3e9172eb5615cc86ba101ce76f6ca4b15a5bfb245c008bc0942764227cbc119`)
++modeled only a left-side blue blob reflected across a centered divider. It had no
++canonical rule-hash pin, rejected three of five canonical inputs, could not reach
++the canonical four-color palette, exposed dead/singleton axes, lacked a semantic
++contract, and had extensive unsound override behavior. The before battery ended
++5 green / 1 advisory / 6 failed; see
++`checks/before/checks/4f6f232c17bc_before_battery_summary.json`.
++
++The replacement constructive sampler (`VERSION = 3.0.0`, final generator SHA-256
++`357accbdabfa83ce3e48ca4d70a17108cd439eeb215bb554c37cf6abf4761b9b`)
++uses five exact controls and six scheduled semantic layouts. It supports blue
++objects on either side, centered and off-center axes, partial clipping,
++canonical-size anchors, a reflectable non-blue distractor, and an isolated extra
++gray cell. `self_check`, `strict_canonical_like`, exact override observation,
++seven executable rivals/witnesses, and a five-demo lesson contract are included.
++The Racket authority and canonical data were not changed.
++
++Task-local tests were written red-first. The final selected-task stage passes
++58 tests, including canonical parity, every exact override, invalid-input
++handling, all six layouts, rotation-safe lesson support, and the reusable
++`workspace/audit_distribution.py` probe. The complete after battery is 12/12
++green. A 100-lessons-per-band census materialized 300 production lessons and
++1,800 unique pairs; both production and all 1,800 query rotations had zero
++reported ambiguity against the declared finite rival set.
++
++No prior return was used as a defect lead: `evidence/associated_notes.jsonl` was
++empty. The retained passing task `b90d4c3d5553` was consulted only as a workflow
++and contract-shape example, not as a source of task-specific geometry.
++
++Known limitation: these finite declared-rival checks do not prove unique
++induction against every possible hypothesis. The deterministic six-profile cycle
++makes complete six-pair blocks semantically broad, but the shared census does not
++enumerate every conceivable curriculum assembly outside the production sampler.
+diff --git a/repo/generators/4f6f232c17bc/tests/test_generator.py b/repo/generators/4f6f232c17bc/tests/test_generator.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4f6f232c17bc/tests/test_generator.py
+@@ -0,0 +1,196 @@
++"""Regression tests for the gray-divider blue-to-cyan reflection sampler."""
++from __future__ import annotations
++
++from copy import deepcopy
++import importlib.util
++import os
++from pathlib import Path
++import random
++
++import pytest
++
++from reviewer_support import canonical_pairs, find_root
++
++TASK = "4f6f232c17bc"
++HOME = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
++
++
++def _load_generator():
++    path = Path(os.environ.get("GENERATOR_UNDER_TEST", HOME / "generator.py"))
++    spec = importlib.util.spec_from_file_location("reviewed_4f6f232c17bc", path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++gen = _load_generator()
++
++
++def oracle(grid):
++    """Independent implementation of the published Racket rule."""
++    h, w = len(grid), len(grid[0])
++    dividers = [c for c in range(w) if all(grid[r][c] == 5 for r in range(h))]
++    assert len(dividers) == 1
++    divider = dividers[0]
++    output = [[0] * w for _ in range(h)]
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if value != 1:
++                continue
++            mirror = 2 * divider - c
++            if 0 <= mirror < w:
++                output[r][mirror] = 8
++    return output
++
++
++def profile(grid):
++    return len(grid), len(grid[0]), len({v for row in grid for v in row})
++
++
++@pytest.mark.parametrize(
++    "pair",
++    canonical_pairs(TASK, root=ROOT),
++    ids=lambda p: f"v{p['variant']}-{p['split']}{p['pair_index']}",
++)
++def test_canonical_inputs_are_owned_and_oracle_matches(pair):
++    assert gen.self_check(pair["input"]) == []
++    assert oracle(pair["input"]) == pair["output"]
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++@pytest.mark.parametrize(
++    "options",
++    [
++        dict(grid_h=7, grid_w=9, layout_profile="left_centered",
++             blue_size=3, n_distractors=2),
++        dict(grid_h=8, grid_w=10, layout_profile="right_centered",
++             blue_size=4, n_distractors=3),
++        dict(grid_h=9, grid_w=11, layout_profile="left_offcenter",
++             blue_size=5, n_distractors=4),
++        dict(grid_h=10, grid_w=12, layout_profile="right_offcenter",
++             blue_size=6, n_distractors=2),
++        dict(grid_h=11, grid_w=14, layout_profile="left_clipped",
++             blue_size=7, n_distractors=3),
++        dict(grid_h=12, grid_w=15, layout_profile="right_clipped",
++             blue_size=8, n_distractors=4),
++    ],
++)
++def test_every_advertised_override_is_exact_and_observable(band, options):
++    grid = gen.generate(317, 29, difficulty=band, **options)
++    assert gen.self_check(grid) == []
++    assert gen.observe_overrides(grid) == options
++    assert oracle(grid) != [[0] * len(grid[0]) for _ in grid]
++
++
++@pytest.mark.parametrize(
++    "key,value",
++    [
++        ("typo", 1),
++        ("grid_h", 6), ("grid_h", 13), ("grid_h", True), ("grid_h", 7.5),
++        ("grid_w", 8), ("grid_w", 16), ("grid_w", "11"),
++        ("layout_profile", "diagonal"),
++        ("blue_size", 2), ("blue_size", 9), ("blue_size", 4.0),
++        ("n_distractors", 1), ("n_distractors", 5),
++    ],
++)
++def test_invalid_overrides_fail_loudly(key, value):
++    with pytest.raises((TypeError, ValueError)):
++        gen.generate(0, 0, **{key: value})
++
++
++def test_six_sample_schedule_covers_every_semantic_layout():
++    expected = [
++        "left_centered",
++        "right_clipped",
++        "right_centered",
++        "left_clipped",
++        "left_offcenter",
++        "right_offcenter",
++    ]
++    observed = [
++        gen.observe_overrides(gen.generate(701, i))["layout_profile"]
++        for i in range(6)
++    ]
++    assert observed == expected
++    assert [gen.schedule_profile(701, i) for i in range(6)] == expected
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++def test_default_distribution_is_lawful_deterministic_and_profile_linked(band):
++    canonical_profiles = {
++        profile(pair["input"]) for pair in canonical_pairs(TASK, root=ROOT)
++    }
++    seen_profiles = set()
++    seen_layouts = set()
++    witness_hits = {name: 0 for name in gen.SEMANTIC_WITNESSES}
++
++    for index in range(48):
++        seed = 10_000 + index
++        grid = gen.generate(seed, index, difficulty=band)
++        assert grid == gen.generate(seed, index, difficulty=band)
++        assert gen.self_check(grid) == []
++        assert gen.strict_canonical_like(grid) == []
++        assert oracle(grid) == gen._rule_output(grid)
++
++        seen_profiles.add(profile(grid))
++        observed = gen.observe_overrides(grid)
++        seen_layouts.add(observed["layout_profile"])
++        assert observed["blue_size"] == sum(v == 1 for row in grid for v in row)
++        assert observed["n_distractors"] in range(2, 5)
++
++        intended = oracle(grid)
++        for name, witness in gen.SEMANTIC_WITNESSES.items():
++            if witness(deepcopy(grid)):
++                witness_hits[name] += 1
++                rivals = gen.WITNESS_RIVALS[name]
++                assert any(gen.SEMANTIC_RIVALS[r](deepcopy(grid)) != intended
++                           for r in rivals), name
++
++    assert seen_layouts == set(gen.LAYOUT_PROFILES)
++    assert seen_profiles & canonical_profiles
++    assert all(count > 0 for count in witness_hits.values())
++
++
++def test_any_six_consecutive_pairs_have_rotation_safe_lesson_support():
++    pairs = []
++    for index in range(6):
++        grid = gen.generate(901, index, difficulty="medium")
++        pairs.append({"input": grid, "output": oracle(grid)})
++
++    assert gen.lesson_identifiable(pairs[:5], pairs[5]) == []
++    for held_out in range(6):
++        demos = [pair for i, pair in enumerate(pairs) if i != held_out]
++        assert gen.lesson_identifiable(demos, pairs[held_out]) == []
++
++
++def test_lesson_contract_detects_a_query_changing_side_shortcut():
++    demos = []
++    for index in range(5):
++        grid = gen.generate(
++            902, index, layout_profile="left_centered", n_distractors=2
++        )
++        demos.append({"input": grid, "output": oracle(grid)})
++    query_grid = gen.generate(
++        903, 7, layout_profile="right_centered", n_distractors=2
++    )
++    reasons = gen.lesson_identifiable(
++        demos, {"input": query_grid, "output": oracle(query_grid)}
++    )
++    assert any("left_only" in reason for reason in reasons)
++
++
++@pytest.mark.parametrize(
++    "grid",
++    [None, [], [[]], [[0], [0, 1]], [[True, 5, 0]], [[0, 5, 10]]],
++)
++def test_malformed_grids_return_diagnostics_not_exceptions(grid):
++    assert gen.self_check(grid)
++
++
++def test_generation_does_not_mutate_global_random_state():
++    random.seed(418)
++    before = random.getstate()
++    gen.generate(77, 12, difficulty="hard")
++    assert random.getstate() == before
+diff --git a/repo/generators/4f6f232c17bc/tests/test_workspace_audit.py b/repo/generators/4f6f232c17bc/tests/test_workspace_audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4f6f232c17bc/tests/test_workspace_audit.py
+@@ -0,0 +1,49 @@
++"""Regression test for the reusable source-bound distribution audit."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++
++HOME = Path(__file__).resolve().parents[1]
++AUDIT_PATH = HOME / "workspace" / "audit_distribution.py"
++
++
++def _load_audit():
++    spec = importlib.util.spec_from_file_location("audit_4f6f232c17bc", AUDIT_PATH)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_audit_proves_profile_witness_and_rotation_coverage():
++    audit = _load_audit()
++    report = audit.run(samples_per_band=6, seed=20261007)
++
++    assert report["passed"] is True
++    assert report["generator_sha256"]
++    assert report["canonical"]["pairs"] == 5
++    assert report["canonical"]["validator_rejections"] == 0
++    assert report["canonical"]["oracle_mismatches"] == 0
++    assert report["totals"]["generated"] == 24
++    assert report["totals"]["unique_inputs"] == 24
++    assert report["totals"]["rotation_windows"] == 24
++    assert report["totals"]["unidentifiable_rotations"] == 0
++
++    expected_layouts = {
++        "left_centered",
++        "right_clipped",
++        "right_centered",
++        "left_clipped",
++        "left_offcenter",
++        "right_offcenter",
++    }
++    for row in report["per_band"].values():
++        assert set(row["layout_counts"]) == expected_layouts
++        assert row["validator_rejections"] == 0
++        assert row["oracle_mismatches"] == 0
++        assert row["unidentifiable_rotations"] == 0
++
++    assert all(count > 0 for count in report["witness_counts"].values())
++    assert report["failures"] == []
+diff --git a/repo/generators/4f6f232c17bc/workspace/README.md b/repo/generators/4f6f232c17bc/workspace/README.md
+--- a/repo/generators/4f6f232c17bc/workspace/README.md
++++ b/repo/generators/4f6f232c17bc/workspace/README.md
+@@ -1,4 +1,20 @@
+-# Workspace
++# Workspace tools
+ 
+-Keep alternate drafts, reproducers, and unfinished experiments here.
+-The selected implementation is `../generator.py`. Workspace drafts are never automatically selected.
++`audit_distribution.py` is a source-bound, read-only regression probe for the
++selected generator. It independently checks canonical rule parity, profile
++coverage, declared semantic witnesses/rivals, generated-input uniqueness, and
++five-demo lesson identifiability under every query rotation.
++
++From the packet's `repo/` directory:
++
++```bash
++python3 ../run_with_racket.py \
++  python3 generators/4f6f232c17bc/workspace/audit_distribution.py \
++  --samples-per-band 12 \
++  --out ../checks/distribution-audit.json
++```
++
++The command exits nonzero when it finds a validator rejection, oracle mismatch,
++missing profile/witness, ineffective rival witness, duplicate input, or a
++rotation where a declared wrong rule fits all demonstrations but changes the
++query. It never edits or selects a generator.
+diff --git a/repo/generators/4f6f232c17bc/workspace/audit_distribution.py b/repo/generators/4f6f232c17bc/workspace/audit_distribution.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4f6f232c17bc/workspace/audit_distribution.py
+@@ -0,0 +1,253 @@
++#!/usr/bin/env python3
++"""Reproduce the semantic-coverage audit for generator 4f6f232c17bc.
++
++The probe is source-bound and cheap: it uses an independent Python oracle,
++checks every declared semantic witness/rival, and rotates each six-pair lesson
++through all possible query positions.  It does not edit or select a generator.
++"""
++from __future__ import annotations
++
++import argparse
++from collections import Counter
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++
++TASK = "4f6f232c17bc"
++HOME = Path(__file__).resolve().parents[1]
++GENERATOR_PATH = HOME / "generator.py"
++BANDS = ("default", "easy", "medium", "hard")
++
++
++def _load_generator():
++    spec = importlib.util.spec_from_file_location(
++        "audited_4f6f232c17bc", GENERATOR_PATH
++    )
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def _oracle(grid):
++    """Independent implementation of the published reflection rule."""
++    height, width = len(grid), len(grid[0])
++    dividers = [
++        column
++        for column in range(width)
++        if all(grid[row][column] == 5 for row in range(height))
++    ]
++    if len(dividers) != 1:
++        raise ValueError(f"expected one full-height gray divider, got {dividers}")
++    divider = dividers[0]
++    output = [[0] * width for _ in range(height)]
++    for row, values in enumerate(grid):
++        for column, value in enumerate(values):
++            if value != 1:
++                continue
++            mirror = 2 * divider - column
++            if 0 <= mirror < width:
++                output[row][mirror] = 8
++    return output
++
++
++def _grid_key(grid):
++    raw = json.dumps(grid, separators=(",", ":")).encode()
++    return hashlib.sha256(raw).hexdigest()
++
++
++def _canonical_report(gen):
++    from reviewer_support import canonical_pairs, find_root
++
++    pairs = canonical_pairs(TASK, root=find_root(__file__))
++    rejected = 0
++    mismatches = 0
++    for pair in pairs:
++        rejected += bool(gen.self_check(pair["input"]))
++        mismatches += _oracle(pair["input"]) != pair["output"]
++    return {
++        "pairs": len(pairs),
++        "validator_rejections": rejected,
++        "oracle_mismatches": mismatches,
++    }
++
++
++def run(*, samples_per_band=12, seed=20261007):
++    """Return a JSON-serializable source-bound audit report."""
++    if type(samples_per_band) is not int or samples_per_band < 6:
++        raise ValueError("samples_per_band must be an integer >= 6")
++    if type(seed) is not int:
++        raise TypeError("seed must be an integer")
++
++    gen = _load_generator()
++    failures = []
++    unique_inputs = set()
++    witness_counts = Counter({name: 0 for name in gen.SEMANTIC_WITNESSES})
++    rival_survived_demo_counts = Counter({name: 0 for name in gen.LESSON_COMPETITORS})
++    per_band = {}
++
++    for band_index, band_name in enumerate(BANDS):
++        difficulty = None if band_name == "default" else band_name
++        band_seed = seed + 100_003 * band_index
++        layout_counts = Counter()
++        validator_rejections = 0
++        oracle_mismatches = 0
++        pairs = []
++
++        for sample_index in range(samples_per_band):
++            grid = gen.generate(band_seed, sample_index, difficulty=difficulty)
++            intended = _oracle(grid)
++            errors = gen.self_check(grid, difficulty=difficulty)
++            observed = gen.observe_overrides(grid)
++            layout_counts[observed["layout_profile"]] += 1
++            unique_inputs.add(_grid_key(grid))
++            validator_rejections += bool(errors)
++            oracle_mismatches += gen._rule_output(grid) != intended
++            pairs.append({"input": grid, "output": intended})
++
++            if errors and len(failures) < 25:
++                failures.append({
++                    "kind": "validator_rejection",
++                    "band": band_name,
++                    "seed": band_seed,
++                    "sample_index": sample_index,
++                    "errors": errors,
++                })
++            if gen._rule_output(grid) != intended and len(failures) < 25:
++                failures.append({
++                    "kind": "oracle_mismatch",
++                    "band": band_name,
++                    "seed": band_seed,
++                    "sample_index": sample_index,
++                })
++
++            for witness_name, witness in gen.SEMANTIC_WITNESSES.items():
++                if not witness(deepcopy(grid)):
++                    continue
++                witness_counts[witness_name] += 1
++                rivals = gen.WITNESS_RIVALS[witness_name]
++                if not any(
++                    gen.SEMANTIC_RIVALS[name](deepcopy(grid)) != intended
++                    for name in rivals
++                ) and len(failures) < 25:
++                    failures.append({
++                        "kind": "ineffective_witness",
++                        "band": band_name,
++                        "seed": band_seed,
++                        "sample_index": sample_index,
++                        "witness": witness_name,
++                        "rivals": rivals,
++                    })
++
++        missing_layouts = sorted(set(gen.LAYOUT_PROFILES) - set(layout_counts))
++        if missing_layouts and len(failures) < 25:
++            failures.append({
++                "kind": "missing_layouts",
++                "band": band_name,
++                "missing": missing_layouts,
++            })
++
++        rotation_windows = 0
++        unidentifiable_rotations = 0
++        # Each complete six-pair block is a complete semantic schedule.
++        for start in range(0, len(pairs) - 5, 6):
++            lesson = pairs[start : start + 6]
++            for query_index in range(6):
++                demos = [pair for index, pair in enumerate(lesson) if index != query_index]
++                query = lesson[query_index]
++                rotation_windows += 1
++                reasons = gen.lesson_identifiable(demos, query)
++                for name, rival in gen.LESSON_COMPETITORS.items():
++                    if all(
++                        rival(deepcopy(pair["input"])) == pair["output"]
++                        for pair in demos
++                    ):
++                        rival_survived_demo_counts[name] += 1
++                if reasons:
++                    unidentifiable_rotations += 1
++                    if len(failures) < 25:
++                        failures.append({
++                            "kind": "unidentifiable_rotation",
++                            "band": band_name,
++                            "seed": band_seed,
++                            "block_start": start,
++                            "query_index": query_index,
++                            "reasons": reasons,
++                        })
++
++        per_band[band_name] = {
++            "seed": band_seed,
++            "generated": len(pairs),
++            "layout_counts": dict(sorted(layout_counts.items())),
++            "validator_rejections": validator_rejections,
++            "oracle_mismatches": oracle_mismatches,
++            "rotation_windows": rotation_windows,
++            "unidentifiable_rotations": unidentifiable_rotations,
++        }
++
++    for name, count in witness_counts.items():
++        if count == 0 and len(failures) < 25:
++            failures.append({"kind": "missing_semantic_witness", "witness": name})
++
++    canonical = _canonical_report(gen)
++    if canonical["validator_rejections"]:
++        failures.append({"kind": "canonical_validator_rejections", **canonical})
++    if canonical["oracle_mismatches"]:
++        failures.append({"kind": "canonical_oracle_mismatches", **canonical})
++
++    total_generated = sum(row["generated"] for row in per_band.values())
++    report = {
++        "schema": "4f6f232c17bc-distribution-audit-v1",
++        "task_id": TASK,
++        "generator_sha256": hashlib.sha256(GENERATOR_PATH.read_bytes()).hexdigest(),
++        "sample_domain": {
++            "bands": list(BANDS),
++            "base_seed": seed,
++            "samples_per_band": samples_per_band,
++            "lesson_block_size": 6,
++            "demos_per_rotation": 5,
++        },
++        "canonical": canonical,
++        "per_band": per_band,
++        "witness_counts": dict(sorted(witness_counts.items())),
++        "rival_survived_demo_counts": dict(sorted(rival_survived_demo_counts.items())),
++        "totals": {
++            "generated": total_generated,
++            "unique_inputs": len(unique_inputs),
++            "rotation_windows": sum(row["rotation_windows"] for row in per_band.values()),
++            "unidentifiable_rotations": sum(
++                row["unidentifiable_rotations"] for row in per_band.values()
++            ),
++        },
++        "failures": failures,
++    }
++    report["passed"] = (
++        not failures
++        and report["totals"]["unique_inputs"] == total_generated
++        and canonical["pairs"] > 0
++    )
++    return report
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--samples-per-band", type=int, default=12)
++    parser.add_argument("--seed", type=int, default=20261007)
++    parser.add_argument("--out", type=Path)
++    args = parser.parse_args(argv)
++
++    report = run(samples_per_band=args.samples_per_band, seed=args.seed)
++    text = json.dumps(report, indent=2, sort_keys=True) + "\n"
++    if args.out:
++        args.out.parent.mkdir(parents=True, exist_ok=True)
++        args.out.write_text(text)
++    print(text, end="")
++    return 0 if report["passed"] else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

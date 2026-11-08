@@ -1,0 +1,240 @@
+--- baseline/repo/generators/3a4b67ab16ff/workspace/parametric/prototype.py
++++ current/repo/generators/3a4b67ab16ff/workspace/parametric/prototype.py
+@@ -375,21 +375,10 @@
+     out_dir = Path(out_dir)
+     if out_dir.exists():
+         raise FileExistsError(f"refusing to overwrite existing evidence: {out_dir}")
+-    private_dir = out_dir / "private"
+-    public_dir = out_dir / "public"
+-    program_dir = private_dir / "programs"
+-    episode_dir = private_dir / "episodes"
+-    for directory in (program_dir, episode_dir, public_dir):
+-        directory.mkdir(parents=True, exist_ok=False)
+-
+-    for setting in ALLOWED_LAYER_ORDERS:
+-        (program_dir / f"{setting}.rkt").write_text(
+-            materialize_rule(setting) + "\n", encoding="utf-8"
+-        )
+ 
+     used: set[int] = set()
+-    records: list[dict[str, Any]] = []
+     ids: set[str] = set()
++    prepared: list[tuple[str, dict[str, Any], dict[str, Any], bytes]] = []
+     runtime = bridge if bridge is not None else RacketBridge(max_calls_before_restart=128)
+     owns_runtime = bridge is None
+     try:
+@@ -409,34 +398,52 @@
+                 raise ValueError("duplicate visible public challenge payload")
+             ids.add(identifier)
+             private_rel = Path("private") / "episodes" / f"episode-{setting}-seed-{seed}.json"
+-            public_rel = Path("public") / public_filename(episode)
+-            _write_json(out_dir / private_rel, episode)
+-            (out_dir / public_rel).write_bytes(public_bytes(episode))
+-            records.append(
+-                {
+-                    "layer_order": setting,
+-                    "seed": seed,
+-                    "train_count": train_count,
+-                    "query_count": test_count,
+-                    "unique_input_count": episode["checks"]["unique_input_count"],
+-                    "demonstrations_refute_rival": episode["checks"][
+-                        "demonstrations_refute_rival"
+-                    ],
+-                    "all_queries_differ_from_rival": episode["checks"][
+-                        "all_queries_differ_from_rival"
+-                    ],
+-                    "program_sha256": episode["program"]["sha256"],
+-                    "public_id": identifier,
+-                    "public_sha256": _sha256_bytes(public_bytes(episode)),
+-                    "private_path": private_rel.as_posix(),
+-                    "public_path": public_rel.as_posix(),
+-                }
++            public_payload = public_bytes(episode)
++            public_rel = Path("public") / f"challenge-{identifier}.json"
++            record = {
++                "layer_order": setting,
++                "seed": seed,
++                "train_count": train_count,
++                "query_count": test_count,
++                "unique_input_count": episode["checks"]["unique_input_count"],
++                "demonstrations_refute_rival": episode["checks"][
++                    "demonstrations_refute_rival"
++                ],
++                "all_queries_differ_from_rival": episode["checks"][
++                    "all_queries_differ_from_rival"
++                ],
++                "program_sha256": episode["program"]["sha256"],
++                "public_id": identifier,
++                "public_sha256": _sha256_bytes(public_payload),
++                "private_path": private_rel.as_posix(),
++                "public_path": public_rel.as_posix(),
++            }
++            prepared.append(
++                (identifier, record, episode, public_payload)
+             )
+     finally:
+         if owns_runtime:
+             runtime.shutdown()
+ 
+-    records.sort(key=lambda row: row["public_id"])
++    prepared.sort(key=lambda item: item[0])
++    records = [record for _, record, _, _ in prepared]
++
++    private_dir = out_dir / "private"
++    public_dir = out_dir / "public"
++    program_dir = private_dir / "programs"
++    episode_dir = private_dir / "episodes"
++    for directory in (program_dir, episode_dir, public_dir):
++        directory.mkdir(parents=True, exist_ok=False)
++
++    for setting in ALLOWED_LAYER_ORDERS:
++        (program_dir / f"{setting}.rkt").write_text(
++            materialize_rule(setting) + "\n", encoding="utf-8"
++        )
++
++    for _, record, episode, public_payload in prepared:
++        _write_json(out_dir / record["private_path"], episode)
++        (out_dir / record["public_path"]).write_bytes(public_payload)
++
+     source_snapshot = {
+         "task_id": TASK_ID,
+         "original_task_id": ORIGINAL_TASK_ID,
+--- baseline/repo/generators/3a4b67ab16ff/tests/test_parametric_layer_order.py
++++ current/repo/generators/3a4b67ab16ff/tests/test_parametric_layer_order.py
+@@ -163,6 +163,75 @@
+         module.materialize(out, seed_start=1200)
+ 
+ 
++def test_materializer_emits_public_files_in_visible_id_order(
++    tmp_path: Path,
++    racket_bridge,
++    monkeypatch,
++):
++    module = _load_prototype()
++    observed_public_writes: list[str] = []
++    original_write_bytes = Path.write_bytes
++
++    def record_public_write(path: Path, payload: bytes) -> int:
++        if path.parent.name == "public":
++            observed_public_writes.append(path.name)
++        return original_write_bytes(path, payload)
++
++    monkeypatch.setattr(Path, "write_bytes", record_public_write)
++    report = module.materialize(
++        tmp_path / "evidence",
++        seed_start=1,
++        train_count=3,
++        test_count=4,
++        bridge=racket_bridge,
++    )
++    manifest_order = [Path(row["public_path"]).name for row in report["episodes"]]
++
++    assert observed_public_writes == manifest_order == sorted(manifest_order)
++
++
++def test_duplicate_public_payload_is_rejected_before_any_public_write(
++    tmp_path: Path,
++    racket_bridge,
++    monkeypatch,
++):
++    module = _load_prototype()
++    retained_episode = module.build_episode(
++        3,
++        layer_order="ascending",
++        train_count=3,
++        test_count=4,
++        bridge=racket_bridge,
++    )
++    observed_public_writes: list[str] = []
++    original_write_bytes = Path.write_bytes
++
++    def record_public_write(path: Path, payload: bytes) -> int:
++        if path.parent.name == "public":
++            observed_public_writes.append(path.name)
++        return original_write_bytes(path, payload)
++
++    def duplicate_visible_episode(seed: int, **kwargs):
++        episode = deepcopy(retained_episode)
++        episode["seed"] = seed
++        episode["parameters"][module.PARAMETER_NAME] = module.choose_layer_order(seed)
++        return episode
++
++    monkeypatch.setattr(Path, "write_bytes", record_public_write)
++    monkeypatch.setattr(module, "build_episode", duplicate_visible_episode)
++
++    with pytest.raises(ValueError, match="duplicate visible public challenge payload"):
++        module.materialize(
++            tmp_path / "evidence",
++            seed_start=1,
++            train_count=3,
++            test_count=4,
++            bridge=racket_bridge,
++        )
++
++    assert observed_public_writes == []
++
++
+ @pytest.mark.parametrize("value", [True, -1, "7"])
+ def test_seed_validation_fails_closed(value):
+     module = _load_prototype()
+--- baseline/repo/generators/3a4b67ab16ff/workspace/parametric/README.md
++++ current/repo/generators/3a4b67ab16ff/workspace/parametric/README.md
+@@ -16,15 +16,18 @@
+ and each private query answer differs under that rival. Every selected and
+ rival output is executed by the included Racket bridge. Public files are named
+ from, and contain, only the exact visible demonstration/input bytes; settings,
+-seeds, programs, rival outputs, and query answers remain private.
++seeds, programs, rival outputs, and query answers remain private. The writer
++precomputes the complete batch, rejects duplicate visible payloads before any
++public write, and emits public files in visible-ID order rather than private
++setting/seed order.
+ 
+ From the packet root, retain one episode for each setting with:
+ 
+ ```bash
+ python3 review.py run python3 \
+   generators/3a4b67ab16ff/workspace/parametric/prototype.py \
+-  --out ../checks/parametric/3a4b67ab16ff-layer-order-v1 \
+-  --seed-start 1200 --train 3 --test 4
++  --out ../checks/parametric/3a4b67ab16ff-layer-order-final \
++  --seed-start 1 --train 3 --test 4
+ ```
+ 
+ This evidence is a bounded proposal, not production approval or training
+--- baseline/repo/generators/3a4b67ab16ff/notes.md
++++ current/repo/generators/3a4b67ab16ff/notes.md
+@@ -8,13 +8,13 @@
+ - Raise exact-public sampler weight from 2 to 5. Weight 3 restored one anchor per band but still missed the repository's 25% total canonical-envelope floor; weight 5 passes at 17/60 with easy/medium/hard support 7/5/5.
+ - Reject non-exact integer seeds/sample indices and negative sample indices after defect-lint exposed Python bool/float/string acceptance.
+ - Keep `layer_order={ascending,descending}` in `workspace/parametric/` only. Ascending is the exact canonical source; descending changes only color iteration. Each retained episode fixes one setting and has 3 demonstrations plus 4 distinct Racket-labelled queries.
+-- Public prototype exports use exact `reviewer_support.public_challenge_bytes` and content IDs; private settings, seed, programs, rivals, and query answers stay separate.
++- Public prototype exports use exact `reviewer_support.public_challenge_bytes` and content IDs; private settings, seed, programs, rivals, and query answers stay separate. The batch is now fully validated before output creation, duplicate visible payloads fail before any public write, and physical public emission is sorted by visible ID.
+ 
+ ## Evidence and unresolved items
+ 
+-Focused tests pass (`32 passed`), and final lint, self-check, override, profile-floor, defect-lint, and rule-smoke receipts all bind generator SHA `477f580307ec2c8a3a56ea6dc4006c4b59f419687802d08dedc51755cd85537f`.
++This packet's prototype-only edit passes `20` focused layer-order tests and `35` selected edit-scope tests. Fresh seed-start-1 evidence retains one Racket-backed episode per setting, each with 3 demonstrations and 4 distinct queries; the visible IDs are emitted in sorted order. Earlier production lint, self-check, override, profile-floor, defect-lint, and rule-smoke receipts remain source-bound to the unchanged production generator.
+ 
+-Two packet-level checks remain outside selected edit scope: active authority source text differs only at the exact-text level while execution parity passes, and portable task tests stop in the issued frozen test's fixed canonical-path preflight. The next useful maintainer action is to assess the proposed layer-order family independently, then separately normalize the active authority text and migrate the frozen test to `reviewer_support.find_root` if those shared changes are desired.
++The aggregate selected-task directory still cannot collect the issued frozen production fixture because it imports the absent staged module `puzzle_generators.per_puzzle.3a4b67ab16ff`; that blocked aggregate is retained rather than counted as a pass. The next useful maintainer action is to assess the layer-order family independently and, separately, make the frozen fixture source-packet portable if an aggregate task run is required.
+ 
+ <!-- arcpuzzles-current-supplementary:start -->
+ ## Current supplementary checks
+@@ -23,9 +23,15 @@
+ <!-- arcpuzzles-current-supplementary:end -->
+ 
+ <!-- arcpuzzles-current-public-order:start -->
+-## Current prototype public emission-order follow-up
++## Current prototype public emission-order repair
+ 
+-Public filenames match visible bytes, but physical writes still follow private seed/setting order. Preserve exact code/Racket evidence; precompute and sort the batch before writes with one focused regression. No variant or training approval. Static receipt: `generators/3a4b67ab16ff/evidence/parametric-export-inspection-2536817375f5b79f/manifest.json`.
++Closed the retained export-order finding. `materialize` now precomputes every
++Racket-backed episode and visible payload, rejects duplicate public IDs before
++creating the output tree, sorts by `public_id`, and only then writes evidence.
++The seed-start-1 regression deliberately makes private enumeration oppose
++visible-ID order; both that case and duplicate-before-write rejection are pinned
++in focused tests. Evidence: `checks/parametric/3a4b67ab16ff-layer-order-final/repair-summary.json`.
++No production generator, canonical rule, variant approval, or training admission changed.
+ <!-- arcpuzzles-current-public-order:end -->
+ 
+ <!-- arcpuzzles-current-conflict-reconciliation:start -->

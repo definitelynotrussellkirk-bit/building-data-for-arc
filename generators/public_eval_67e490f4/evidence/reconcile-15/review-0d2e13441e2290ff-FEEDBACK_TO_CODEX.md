@@ -1,0 +1,2 @@
+## F1: Exact-label preflight cannot settle semantic ambiguity
+A compatibility convention can pass every supplied label while conflicting with the apparent periodic rule; retain a separate semantic-review hold rather than automatically promoting exact-label success to reviewer readiness. The new periodic-consistency diagnostic and frozen protected counterexample replayer make that distinction inspectable without altering official labels or relying on the repaired sampler.

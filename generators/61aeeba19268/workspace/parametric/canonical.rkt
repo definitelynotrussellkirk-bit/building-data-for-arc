@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let ((obj (for*/list ((r (in-range (rows g))) (c (in-range (cols g))) #:when (not (member? (at g r c) (list 0 7)))) (list r c (at g r c))))) (if (empty? obj) g (let ((maxc (apply max (map second obj)))) (for*/fold ((out g)) ((shift (in-range 1 (- (cols g) maxc))) (p (in-list obj))) (set-cell out (first p) (+ (second p) shift) (third p))))))))

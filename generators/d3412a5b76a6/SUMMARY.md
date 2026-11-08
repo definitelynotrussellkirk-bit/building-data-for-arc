@@ -1,0 +1,6 @@
+# d3412a5b76a6
+
+Vertically-assembled grid with 3 SAME-SIZE PANELS (each panel h × w, h ∈ {5, 6} and w ∈ {5, 6}) separated by FULL-WIDTH COLOR-9 SEPARATOR ROWS. Layout: (a) PANEL 0 at top, painted in COLOR 2 (red); (b) PANEL 1 in middle, COLOR 3 (green); (c) PANEL 2 at bottom, COLOR 4 (yellow). The occupancy patterns (which cells are non-bg) are: ONE REPEATED PATTERN (6 cells) appears in EXACTLY 2 of the 3 panels (the pair chosen via repeat_pair ∈ {'01', '02', '12'}); the THIRD ODD PANEL has a DIFFERENT pattern (5 cells, ensured distinct from the repeated set). Each panel's occupied cells use that panel's designated color. Rule (FIND THE REPEATED OCCUPANCY PATTERN AMONG 3 PANELS, OUTPUT IT RECOLORED TO 8): COMPUTE each panel's OCCUPANCY MASK (which cells are non-0, ignoring color). FIND the TWO panels that share the SAME occupancy mask. OUTPUT is a single panel of dimensions h × w where the SHARED OCCUPANCY CELLS are painted COLOR 8 (cyan) and all other cells are bg-0. The third panel and the 9-dividers are discarded. Net: the repeated-pattern panel emerges as a single cyan-occupancy panel.
+
+Kind: `per_puzzle`. Imported version: `2.0.0`.
+Approval is derived by the catalog from current code and retained evidence.

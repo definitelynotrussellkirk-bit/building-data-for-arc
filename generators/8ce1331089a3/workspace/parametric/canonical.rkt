@@ -1,0 +1,23 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((top-color (at g 0 1))
+                  (bot-color (at g (- h 1) 1))
+                  (left-color (at g 1 0))
+                  (right-color (at g 1 (- w 1)))
+                  (result (make-hash)))
+             (for* ((r (range 0 h)) (c (range 0 w)))
+                   (let ((v (at g r c)))
+                     (cond
+                       ((or (zero? r) (= r (- h 1)) (zero? c) (= c (- w 1))) (hash-set! result (list r c) v))
+                       (else (hash-set! result (list r c) 0)))))
+             (for* ((r (range 1 (- h 1))) (c (range 1 (- w 1))))
+                   (let ((v (at g r c)))
+                     (when
+                       (!= v 0)
+                       (cond
+                         ((= v top-color) (hash-set! result (list 1 c) v))
+                         ((= v bot-color) (hash-set! result (list (- h 2) c) v))
+                         ((= v left-color) (hash-set! result (list r 1) v))
+                         ((= v right-color) (hash-set! result (list r (- w 2)) v))))))
+             (cellmap g (r c v) (hash-ref result (list r c) 0))))))

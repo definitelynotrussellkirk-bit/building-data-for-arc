@@ -1,0 +1,3598 @@
+diff --git a/repo/generators/4043070e87c0/notes.md b/repo/generators/4043070e87c0/notes.md
+--- a/repo/generators/4043070e87c0/notes.md
++++ b/repo/generators/4043070e87c0/notes.md
+@@ -2,3 +2,31 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Current bounded learnability finding
++
++Reproduced against generator SHA-256
++`5d7c3ee577d0f7b86d2d09df22d6d32e790fb7ab79fe283c717d62e07ef48b3c`:
++the plausible rival “mark top-half zeros red and ignore the bottom panel”
++fits both demonstrations in the supported explicit two-demo request at seed 0,
++sample index 0, with no overrides, but differs from the first query at zero-based
++cells `(0, 5)` and `(0, 6)`. Canonical Racket returns 0 there; the Racket rival
++returns 2. All four generated inputs in the retained two-demo/two-query episode
++pass `self_check` and the public API records no rejections.
++
++An authored three-demo view using the same unmodified pairs at sample indices
++`[0, 1, 3]`, with query index `2`, also leaves this rival undefeated. This is a
++deliberate rearrangement, **not** a default sequential three-demo episode.
++This source declares no example minimum or lesson identifiability checks; the
++public API's automatic floor is three, and an explicit request for two is
++supported. The bounded search over seeds 0–7 found no default sequential
++three-demo witness for this one rival. No frequency or exhaustive claim follows.
++
++The source-bound reproducer is [workspace/learnability_probe.py](workspace/learnability_probe.py).
++Its [witness](workspace/learnability_witness.json) retains the exact canonical and
++rival programs, protected Racket labels, generated inputs, predictions, policy,
++source hashes, and rerun command. Proposed mitigation: ensure demonstrations
++distinguish each panel-only rival, or reject materialized lessons when such a
++rival fits every demonstration but disagrees on a query. The finding is
++reproduced; the mitigation remains unimplemented. No generator, rule, approval,
++or shared authority was changed.
+diff --git a/repo/generators/4043070e87c0/workspace/learnability_probe.py b/repo/generators/4043070e87c0/workspace/learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4043070e87c0/workspace/learnability_probe.py
+@@ -0,0 +1,126 @@
++"""Replay one bounded, source-bound top-only rival witness through Racket.
++
++From the outer packet directory:
++  WORK/.venv/bin/python review.py run ../.venv/bin/python \
++    generators/4043070e87c0/workspace/learnability_probe.py \
++    --out generators/4043070e87c0/workspace/learnability_witness.json
++
++The three-demo view is deliberately assembled from unmodified generated pairs.
++It is not claimed to be a default sequential three-demo episode.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++
++from arcpuzzles import Catalog
++from puzzle_generators import runner
++from reviewer_support import find_root, load_selected_generator
++
++
++TASK = "4043070e87c0"
++EXPECTED_GENERATOR_SHA256 = "5d7c3ee577d0f7b86d2d09df22d6d32e790fb7ab79fe283c717d62e07ef48b3c"
++RIVAL = """(rule! (lambda (g)
++  (let ((h (/ (rows g) 2)) (w (cols g)))
++    (grid-from-fn h w
++      (lambda (r c) (if (zero? (at g r c)) 2 0))))))"""
++
++
++def sha(text):
++    return hashlib.sha256(text.encode("utf-8")).hexdigest()
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    root = find_root(__file__)
++    module, source_path, source_sha = load_selected_generator(TASK, root=root)
++    if source_sha != EXPECTED_GENERATOR_SHA256:
++        raise ValueError("Audited generator changed; review the new source before replay")
++
++    # This public API creates its own source-bound runtime and derives every
++    # label through protected canonical Racket execution. Two demos is an
++    # explicit supported request; the automatic floor is three for this source.
++    episode = Catalog(root).generate(
++        TASK, count=1, seed=0, sample_index=0, n_train=2, n_test=2,
++        difficulty=None, overrides={}, allow_unapproved=True, timeout=90,
++    )[0]
++    assert episode["provenance"]["generator_sha256"] == source_sha
++    assert episode["sample_indices"] == [0, 1, 2, 3]
++    assert episode["rejections"] == []
++    policy = episode["provenance"]["demonstration_policy"]
++    assert policy["declared_minimum"] is None
++    assert policy["resolved_n_train"] == 2 and policy["default_floor"] == 3
++    pairs = episode["train"] + episode["test"]
++    assert all(module.self_check(pair["input"]) == [] for pair in pairs)
++
++    bridge, name = runner._open_bridge_with_rule(runner.wrap_rule(RIVAL))
++    try:
++        predictions = [runner._apply_rule(bridge, name, pair["input"]) for pair in pairs]
++    finally:
++        bridge.shutdown()
++    matches = [prediction == pair["output"] for prediction, pair in zip(predictions, pairs)]
++    assert matches == [True, True, False, True]
++    disagreements = [
++        {"row": r, "column": c, "canonical": value, "rival": predictions[2][r][c]}
++        for r, row in enumerate(pairs[2]["output"])
++        for c, value in enumerate(row)
++        if predictions[2][r][c] != value
++    ]
++    assert len(disagreements) == 2
++    source_program = episode["program"]
++    result = {
++        "schema": "arcpuzzles-peer-learnability-witness-v1",
++        "task_id": TASK,
++        "status": "source_bound_finding_reproduced; proposed review, not approved",
++        "generator_path": source_path.relative_to(root).as_posix(),
++        "generator_sha256": source_sha,
++        "probe_path": Path(__file__).resolve().relative_to(root).as_posix(),
++        "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        "canonical_program": source_program,
++        "canonical_program_sha256": sha(source_program),
++        "canonical_rule_hash": sha(" ".join(source_program.split()))[:12],
++        "rival_description": "Ignore the bottom panel; mark each zero cell in the top panel red.",
++        "rival_program": RIVAL,
++        "rival_program_sha256": sha(RIVAL),
++        "label_source": "Catalog.generate canonical reference, protected isolated Racket runtime",
++        "rival_source": "Same local Racket bridge and rule wrapper, separate rival execution",
++        "reproduction_command": "WORK/.venv/bin/python review.py run ../.venv/bin/python generators/4043070e87c0/workspace/learnability_probe.py --out generators/4043070e87c0/workspace/learnability_witness.json",
++        "supported_request": {"seed": 0, "sample_index": 0, "n_train": 2,
++                              "n_test": 2, "difficulty": None, "overrides": {}},
++        "demonstration_policy": policy,
++        "supported_episode": episode,
++        "rival_predictions_by_sample_index": predictions,
++        "rival_matches_by_sample_index": matches,
++        "three_demo_view": {
++            "assembly": "Deliberate rearrangement of the four source-bound generated pairs; no grid or label edits.",
++            "train_sample_indices": [0, 1, 3], "query_sample_index": 2,
++            "train": [pairs[i] for i in [0, 1, 3]], "test": [pairs[2]],
++            "rival_fits_every_demo": True, "rival_differs_on_query": True,
++            "query_disagreements_zero_based": disagreements,
++            "default_sequential_episode": False,
++        },
++        "bounded_search": {
++            "rivals": ["top_only"], "seeds": list(range(8)),
++            "sample_indices": "0..4 for seeds 0..3; 0..3 for seeds 4..7",
++            "default_sequential_three_demo_witness_found": False,
++            "scope": "No prevalence estimate or exhaustive identifiability claim.",
++        },
++        "proposed_mitigation": "Ensure demonstrations include top-zero/bottom-nonzero and top-nonzero/bottom-zero positions, or reject materialized lessons where the corresponding panel-only rivals fit every demo but differ on a query.",
++        "approval_changed": False,
++        "generator_changed": False,
++        "source_authorities_changed": False,
++    }
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps({"task_id": TASK, "generator_sha256": source_sha,
++                      "supported_demo_matches": matches[:2],
++                      "assembled_three_demo_matches": [matches[i] for i in [0, 1, 3]],
++                      "query_disagreements": disagreements, "receipt": str(args.out)}))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/repo/generators/4043070e87c0/workspace/learnability_witness.json b/repo/generators/4043070e87c0/workspace/learnability_witness.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4043070e87c0/workspace/learnability_witness.json
+@@ -0,0 +1,2053 @@
++{
++  "schema": "arcpuzzles-peer-learnability-witness-v1",
++  "task_id": "4043070e87c0",
++  "status": "source_bound_finding_reproduced; proposed review, not approved",
++  "generator_path": "generators/4043070e87c0/generator.py",
++  "generator_sha256": "5d7c3ee577d0f7b86d2d09df22d6d32e790fb7ab79fe283c717d62e07ef48b3c",
++  "probe_path": "generators/4043070e87c0/workspace/learnability_probe.py",
++  "probe_sha256": "f89a085172ab9c39daaf1eed96f05371bedb8eec473751319474d235c9e9385b",
++  "canonical_program": "(rule! (lambda (g)\n         (let ((h (/ (rows g) 2))\n               (w (cols g)))\n           (grid-from-fn h\n                         w\n                         (lambda (r c)\n                           (if (and (zero? (at g r c)) (zero? (at g (+ r h) c))) 2 0))))))",
++  "canonical_program_sha256": "8d8e173ecf17fc111ef8cd1b083fa86208cf516c10a626db96224d2d121482d5",
++  "canonical_rule_hash": "3e78b1497229",
++  "rival_description": "Ignore the bottom panel; mark each zero cell in the top panel red.",
++  "rival_program": "(rule! (lambda (g)\n  (let ((h (/ (rows g) 2)) (w (cols g)))\n    (grid-from-fn h w\n      (lambda (r c) (if (zero? (at g r c)) 2 0))))))",
++  "rival_program_sha256": "b2c96d4ce834693813bbac569ab00a17a98b5e18cfc5c40ba92442907ce9af29",
++  "label_source": "Catalog.generate canonical reference, protected isolated Racket runtime",
++  "rival_source": "Same local Racket bridge and rule wrapper, separate rival execution",
++  "reproduction_command": "WORK/.venv/bin/python review.py run ../.venv/bin/python generators/4043070e87c0/workspace/learnability_probe.py --out generators/4043070e87c0/workspace/learnability_witness.json",
++  "supported_request": {
++    "seed": 0,
++    "sample_index": 0,
++    "n_train": 2,
++    "n_test": 2,
++    "difficulty": null,
++    "overrides": {}
++  },
++  "demonstration_policy": {
++    "requested_n_train": 2,
++    "resolved_n_train": 2,
++    "declared_minimum": null,
++    "default_floor": 3,
++    "automatic": false
++  },
++  "supported_episode": {
++    "task_id": "4043070e87c0",
++    "seed": 0,
++    "episode_index": 0,
++    "generator_version": "2.0.0",
++    "sample_index": 0,
++    "sample_indices": [
++      0,
++      1,
++      2,
++      3
++    ],
++    "sampling": {
++      "schema": "arcpuzzles-pair-sampling-v1",
++      "requested_start": 0,
++      "next_sample_index": 4,
++      "attempted_pairs": 4,
++      "accepted_pairs": [
++        {
++          "split": "train",
++          "pair_index": 0,
++          "sample_index": 0,
++          "input_sha256": "57533e095806818f60e494713c17499be076eb843759e51a5fd906b144d583bf"
++        },
++        {
++          "split": "train",
++          "pair_index": 1,
++          "sample_index": 1,
++          "input_sha256": "0af7dd20d872f3636f343e8fa5ea39656d053e5f9c435a7d868e61bd45ffe34d"
++        },
++        {
++          "split": "test",
++          "pair_index": 0,
++          "sample_index": 2,
++          "input_sha256": "806ddd67f05a82e5fed7942c4183bbd237211a13abc68d4caa6e8f2d9d09c4fb"
++        },
++        {
++          "split": "test",
++          "pair_index": 1,
++          "sample_index": 3,
++          "input_sha256": "b3d73204670bfd4b0f56d7dec61ab8b11d90028ac5f2d22e6ab78cf184d2e84e"
++        }
++      ],
++      "rejections": []
++    },
++    "rule_task_id": "4043070e87c0",
++    "rule_file": "data/canonical/puzzles.jsonl",
++    "train": [
++      {
++        "input": [
++          [
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5
++          ],
++          [
++            5,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            5
++          ],
++          [
++            5,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            5
++          ],
++          [
++            5,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            5
++          ],
++          [
++            5,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            5
++          ],
++          [
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5
++          ],
++          [
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8
++          ],
++          [
++            8,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            8
++          ],
++          [
++            8,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            8
++          ],
++          [
++            8,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            8
++          ],
++          [
++            8,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            8
++          ],
++          [
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8
++          ]
++        ],
++        "output": [
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ]
++        ]
++      },
++      {
++        "input": [
++          [
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0
++          ],
++          [
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7
++          ],
++          [
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0
++          ],
++          [
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7
++          ],
++          [
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0
++          ],
++          [
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9
++          ],
++          [
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0
++          ],
++          [
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9
++          ]
++        ],
++        "output": [
++          [
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2
++          ],
++          [
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2
++          ],
++          [
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0
++          ]
++        ]
++      }
++    ],
++    "test": [
++      {
++        "input": [
++          [
++            0,
++            9,
++            9,
++            9,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            8,
++            8,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ]
++        ],
++        "output": [
++          [
++            2,
++            0,
++            0,
++            0,
++            2,
++            0,
++            0,
++            2,
++            2
++          ],
++          [
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2
++          ],
++          [
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2
++          ],
++          [
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2
++          ]
++        ]
++      },
++      {
++        "input": [
++          [
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0
++          ],
++          [
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9
++          ],
++          [
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0
++          ],
++          [
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9
++          ],
++          [
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0
++          ],
++          [
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9
++          ],
++          [
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0
++          ],
++          [
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7
++          ],
++          [
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0
++          ],
++          [
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7
++          ],
++          [
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0
++          ],
++          [
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7
++          ]
++        ],
++        "output": [
++          [
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2
++          ],
++          [
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2
++          ],
++          [
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2
++          ],
++          [
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0
++          ]
++        ]
++      }
++    ],
++    "program": "(rule! (lambda (g)\n         (let ((h (/ (rows g) 2))\n               (w (cols g)))\n           (grid-from-fn h\n                         w\n                         (lambda (r c)\n                           (if (and (zero? (at g r c)) (zero? (at g (+ r h) c))) 2 0))))))",
++    "executed_rule_hash": "3e78b1497229",
++    "rule_source": "data/canonical/puzzles.jsonl",
++    "rejections": [],
++    "lesson_check": {
++      "status": "not_declared",
++      "hook_declared": false,
++      "queries": [],
++      "reasons": [],
++      "rival_declarations": [],
++      "rivals": {},
++      "contract": "none",
++      "scope": "declared checks on materialized demos and each labeled query"
++    },
++    "provenance": {
++      "schema": "arcpuzzles-generation-v1",
++      "generator_sha256": "5d7c3ee577d0f7b86d2d09df22d6d32e790fb7ab79fe283c717d62e07ef48b3c",
++      "rule_hash": "3e78b1497229",
++      "catalog_rule_hash": "3e78b1497229",
++      "reference": "canonical",
++      "family": null,
++      "split": null,
++      "difficulty": null,
++      "overrides": {},
++      "demonstration_policy": {
++        "requested_n_train": 2,
++        "resolved_n_train": 2,
++        "declared_minimum": null,
++        "default_floor": 3,
++        "automatic": false
++      },
++      "lesson_check": {
++        "status": "not_declared",
++        "hook_declared": false,
++        "queries": [],
++        "reasons": [],
++        "rival_declarations": [],
++        "rivals": {},
++        "contract": "none",
++        "scope": "declared checks on materialized demos and each labeled query"
++      },
++      "approved": false,
++      "train_safety": "unsafe",
++      "catalog_approved": false,
++      "catalog_train_safety": "unsafe"
++    }
++  },
++  "rival_predictions_by_sample_index": [
++    [
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        0
++      ],
++      [
++        0,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        0
++      ],
++      [
++        0,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        0
++      ],
++      [
++        0,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ]
++    ],
++    [
++      [
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2
++      ],
++      [
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0
++      ],
++      [
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2
++      ],
++      [
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0
++      ]
++    ],
++    [
++      [
++        2,
++        0,
++        0,
++        0,
++        2,
++        2,
++        2,
++        2,
++        2
++      ],
++      [
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2
++      ],
++      [
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2
++      ],
++      [
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2
++      ]
++    ],
++    [
++      [
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2
++      ],
++      [
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0
++      ],
++      [
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2
++      ],
++      [
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0
++      ],
++      [
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2
++      ],
++      [
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0,
++        2,
++        0
++      ]
++    ]
++  ],
++  "rival_matches_by_sample_index": [
++    true,
++    true,
++    false,
++    true
++  ],
++  "three_demo_view": {
++    "assembly": "Deliberate rearrangement of the four source-bound generated pairs; no grid or label edits.",
++    "train_sample_indices": [
++      0,
++      1,
++      3
++    ],
++    "query_sample_index": 2,
++    "train": [
++      {
++        "input": [
++          [
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5
++          ],
++          [
++            5,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            5
++          ],
++          [
++            5,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            5
++          ],
++          [
++            5,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            5
++          ],
++          [
++            5,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            5
++          ],
++          [
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5,
++            5
++          ],
++          [
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8
++          ],
++          [
++            8,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            8
++          ],
++          [
++            8,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            8
++          ],
++          [
++            8,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            8
++          ],
++          [
++            8,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            8
++          ],
++          [
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8,
++            8
++          ]
++        ],
++        "output": [
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ]
++        ]
++      },
++      {
++        "input": [
++          [
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0
++          ],
++          [
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7
++          ],
++          [
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0
++          ],
++          [
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7
++          ],
++          [
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0
++          ],
++          [
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9
++          ],
++          [
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0
++          ],
++          [
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9
++          ]
++        ],
++        "output": [
++          [
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2
++          ],
++          [
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2
++          ],
++          [
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0
++          ]
++        ]
++      },
++      {
++        "input": [
++          [
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0
++          ],
++          [
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9
++          ],
++          [
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0
++          ],
++          [
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9
++          ],
++          [
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0
++          ],
++          [
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9,
++            0,
++            9
++          ],
++          [
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0
++          ],
++          [
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7
++          ],
++          [
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0
++          ],
++          [
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7
++          ],
++          [
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0
++          ],
++          [
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7,
++            0,
++            7
++          ]
++        ],
++        "output": [
++          [
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2
++          ],
++          [
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2
++          ],
++          [
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0
++          ],
++          [
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2
++          ],
++          [
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0,
++            2,
++            0
++          ]
++        ]
++      }
++    ],
++    "test": [
++      {
++        "input": [
++          [
++            0,
++            9,
++            9,
++            9,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            8,
++            8,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ],
++          [
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0,
++            0
++          ]
++        ],
++        "output": [
++          [
++            2,
++            0,
++            0,
++            0,
++            2,
++            0,
++            0,
++            2,
++            2
++          ],
++          [
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2
++          ],
++          [
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2
++          ],
++          [
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2,
++            2
++          ]
++        ]
++      }
++    ],
++    "rival_fits_every_demo": true,
++    "rival_differs_on_query": true,
++    "query_disagreements_zero_based": [
++      {
++        "row": 0,
++        "column": 5,
++        "canonical": 0,
++        "rival": 2
++      },
++      {
++        "row": 0,
++        "column": 6,
++        "canonical": 0,
++        "rival": 2
++      }
++    ],
++    "default_sequential_episode": false
++  },
++  "bounded_search": {
++    "rivals": [
++      "top_only"
++    ],
++    "seeds": [
++      0,
++      1,
++      2,
++      3,
++      4,
++      5,
++      6,
++      7
++    ],
++    "sample_indices": "0..4 for seeds 0..3; 0..3 for seeds 4..7",
++    "default_sequential_three_demo_witness_found": false,
++    "scope": "No prevalence estimate or exhaustive identifiability claim."
++  },
++  "proposed_mitigation": "Ensure demonstrations include top-zero/bottom-nonzero and top-nonzero/bottom-zero positions, or reject materialized lessons where the corresponding panel-only rivals fit every demo but differ on a query.",
++  "approval_changed": false,
++  "generator_changed": false,
++  "source_authorities_changed": false
++}
+diff --git a/repo/generators/5f6fdf4f9900/notes.md b/repo/generators/5f6fdf4f9900/notes.md
+--- a/repo/generators/5f6fdf4f9900/notes.md
++++ b/repo/generators/5f6fdf4f9900/notes.md
+@@ -8,3 +8,46 @@
+ 
+ Current source-bound ticket observations: `generators/5f6fdf4f9900/evidence/supplementary-current.json`. Results are reviewer-reported; blocked or unknown stays explicit. These observations do not approve a generator or variant, resolve audits, or admit data to training.
+ <!-- arcpuzzles-current-supplementary:end -->
++
++## Current native parametric work
++
++`workspace/parametric/adapter.py` implements `corner_priority=scan|largest_component`.
++The default returns the exact canonical program; the alternative compares the
++same-color four-connected areas of eligible diagonal neighbors before choosing
++which red diagonal to paint. Ties preserve NW, NE, SW, SE. The separate grammar
++admits disconnected same-color regions and inputs up to 15×15 when the enlarged
++output fits 30×30. The canonical generator and selected rule remain unchanged.
++
++Support is 2–6 demonstrations and 1–4 independent novel queries, ordinarily
++3 demos/4 queries. Input draws match across settings. Two constructive demos
++cover scales three/four, competing orientations, size ties, blocked larger
++neighbors, disconnected colors and four-versus-eight connectivity.
++
++A protected-Racket self-audit found that smallest-component selection fit the
++initial scan demonstrations but changed a seed-17 query. Moving the isolated
++fourth-color cell in the second demo from (4,5) to (5,3) rejects that shortcut
++without adding demonstrations. The original lesson and both executable answers
++are retained in `checks/5f6fdf4f9900/teaching-repair-witness.json`; it is suitable
++as a candidate alternative-answer case, not a second official gold label. The
++repaired core is unambiguous within the ten tested rivals. The final finite
++audit, private labels and safe one-query projections are in
++`checks/5f6fdf4f9900/self-audit/`.
++
++Native qualification passed for both settings at seeds 0/17 with 3 demos and
++4 queries, including populated 30×30 outputs. See
++`checks/5f6fdf4f9900/qualification/qualification.json` and sibling `execution.json`.
++The source inventory is `workspace/parametric/evidence/manifest.json`.
++`checks/5f6fdf4f9900/causal/witness.json` binds the area-comparison dependency
++to a protected-Racket skip-A counterfactual. Qualification is reviewer evidence;
++the owner must qualify and accept the exact integrated source before native use.
++No training admission is claimed.
++
++The legacy test loader now uses the same-checkout `reviewer_support` helpers;
++direct and isolated/relocated tests execute. The inherited exact-string test
++still fails because raw/base target texts differ from the canonical text in
++formatting. Its assertions were retained. Both distinct programs matched all
++four public pairs (8 protected-Racket evaluations), which does not resolve the
++active exact-source synchronization requirement. The old missing canonical
++lesson contract and composite audit remain open; this separate parameterized
++family does not clear them. See `checks/5f6fdf4f9900/portable-test-authority-parity.json`
++and `portable-test-relocation.json` for the bounded evidence.
+diff --git a/repo/generators/5f6fdf4f9900/tests/test_generator_5f6fdf4f9900.py b/repo/generators/5f6fdf4f9900/tests/test_generator_5f6fdf4f9900.py
+--- a/repo/generators/5f6fdf4f9900/tests/test_generator_5f6fdf4f9900.py
++++ b/repo/generators/5f6fdf4f9900/tests/test_generator_5f6fdf4f9900.py
+@@ -1,7 +1,7 @@
+ from __future__ import annotations
+ 
+ import hashlib
+-import importlib
++import importlib.util
+ import json
+ import random
+ from pathlib import Path
+@@ -10,17 +10,37 @@
+ 
+ 
+ TASK = "5f6fdf4f9900"
+-MODULE = importlib.import_module(f"puzzle_generators.per_puzzle.{TASK}.generator")
+-ROOT = Path(__file__).resolve().parents[1]
++
++
++def _reviewer_support():
++    """Load the helper from this test's own checkout or copied runtime."""
++    for ancestor in Path(__file__).resolve().parents:
++        for relative in ("reviewer_support.py", "shared/runtime/reviewer_support.py"):
++            path = ancestor / relative
++            if path.is_file():
++                spec = importlib.util.spec_from_file_location(f"_reviewer_support_{TASK}", path)
++                if spec is None or spec.loader is None:
++                    raise ImportError(f"Cannot load local reviewer helper: {path}")
++                module = importlib.util.module_from_spec(spec)
++                spec.loader.exec_module(module)
++                return module
++    raise FileNotFoundError(f"No local reviewer_support.py ancestor for {__file__}")
++
++
++SUPPORT = _reviewer_support()
++ROOT = SUPPORT.find_root(__file__)
++MODULE, _, _ = SUPPORT.load_selected_generator(TASK, root=ROOT)
++CANONICAL = SUPPORT.canonical_path(ROOT)
++DATA_ROOT = CANONICAL.parent.parent
+ BASE_FILES = (
+-    ROOT / "data/base/solutions/training/469497ad__5f6fdf4f9900.json",
+-    ROOT / "data/base/solutions/augmented/469497ad__5586a8e9c172.json",
++    DATA_ROOT / "base/solutions/training/469497ad__5f6fdf4f9900.json",
++    DATA_ROOT / "base/solutions/augmented/469497ad__5586a8e9c172.json",
+ )
+ 
+ 
+ def canonical_rows():
+     rows = []
+-    for line in (ROOT / "data/canonical/puzzles.jsonl").read_text().splitlines():
++    for line in CANONICAL.read_text(encoding="utf-8").splitlines():
+         row = json.loads(line)
+         if row.get("task_id") == TASK:
+             rows.append(row)
+diff --git a/repo/generators/5f6fdf4f9900/tests/test_parametric_corner_priority.py b/repo/generators/5f6fdf4f9900/tests/test_parametric_corner_priority.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/5f6fdf4f9900/tests/test_parametric_corner_priority.py
+@@ -0,0 +1,106 @@
++"""Behavioral checks for the separate native component-priority family."""
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++
++HOME = Path(__file__).resolve().parents[1]
++ADAPTER_PATH = HOME / "workspace/parametric/adapter.py"
++SCAN = {"corner_priority": "scan"}
++LARGEST = {"corner_priority": "largest_component"}
++DEMO = [[int(x) for x in row] for row in
++        ("000333", "110303", "000000", "010440", "110040", "100000")]
++
++
++def adapter():
++    assert ADAPTER_PATH.is_file(), "native corner-priority adapter is missing"
++    spec = importlib.util.spec_from_file_location("test_corner_priority_adapter", ADAPTER_PATH)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def block(output, row, col, scale):
++    return [r[col * scale:(col + 1) * scale]
++            for r in output[row * scale:(row + 1) * scale]]
++
++
++def test_largest_neighbor_uses_connected_component_not_whole_color_frequency():
++    module = adapter()
++    scan = module.transform(DEMO, SCAN)
++    largest = module.transform(DEMO, LARGEST)
++    assert block(scan, 2, 2, 3) == [[2, 0, 0], [0, 2, 0], [0, 0, 2]]
++    assert block(largest, 2, 2, 3) == [[0, 0, 2], [0, 2, 0], [2, 0, 0]]
++    # Color 1 has six cells but its separate components have areas two and four.
++    # The area-five color-3 component wins at NE. Its tied NW/NE contacts at
++    # (2,4) must keep the first direction.
++    assert block(largest, 2, 4, 3) == [[2, 0, 0], [0, 2, 0], [0, 0, 2]]
++
++
++@pytest.mark.parametrize("settings", [SCAN, LARGEST])
++@pytest.mark.parametrize("demos", [2, 3, 6])
++def test_independent_counts_unique_queries_matched_inputs_and_output_bounds(settings, demos):
++    module = adapter()
++    lesson = module.generate(17, settings, demos, 4)
++    assert len(lesson["train"]) == demos and len(lesson["test"]) == 4
++    pairs = lesson["train"] + lesson["test"]
++    assert len({json.dumps(p["input"]) for p in pairs}) == demos + 4
++    assert lesson["program_solution"] == module.program(settings)
++    assert all(p["output"] == module.transform(p["input"], settings) for p in pairs)
++    assert all(1 <= len(p["output"]) <= 30 and 1 <= len(p["output"][0]) <= 30
++               for p in pairs)
++    assert (len(lesson["test"][-1]["output"]), len(lesson["test"][-1]["output"][0])) == (30, 30)
++    other = module.generate(17, LARGEST if settings == SCAN else SCAN, demos, 4)
++    assert [p["input"] for p in pairs] == [p["input"] for p in other["train"] + other["test"]]
++    one = module.generate(17, settings, demos, 1)
++    assert one["train"] == lesson["train"] and one["test"][0] == lesson["test"][0]
++    assert module.teaching_check(lesson)["ok"] is True
++
++
++@pytest.mark.parametrize("demos,queries", [(1, 4), (7, 4), (True, 4), (3, 0), (3, 5), (3, True)])
++def test_invalid_count_requests_fail_before_generation(demos, queries):
++    with pytest.raises(ValueError):
++        adapter().generate(0, SCAN, demos, queries)
++
++
++@pytest.mark.parametrize("settings", [{}, {"corner_priority": True}, {"corner_priority": "smallest"},
++                                     {"corner_priority": "scan", "extra": 1}])
++def test_undeclared_settings_fail_closed(settings):
++    with pytest.raises(ValueError):
++        adapter().program(settings)
++
++
++def test_default_program_is_exact_canonical_resource():
++    module = adapter()
++    assert module.program(SCAN) == (ADAPTER_PATH.parent / "canonical.rkt").read_text()
++
++
++def test_teaching_check_rejects_a_lesson_without_distinguishing_demonstrations():
++    module = adapter()
++    grid = [[1, 1, 0, 0], [1, 0, 0, 0], [0, 0, 3, 0], [0, 0, 0, 0]]
++    lesson = {"train": [{"input": grid, "output": module.transform(grid, SCAN)}],
++              "test": [{"input": DEMO, "output": module.transform(DEMO, SCAN)}],
++              "program_solution": module.program(SCAN)}
++    assert module.teaching_check(lesson)["ok"] is False
++
++
++def test_large_input_keeps_substantive_regions_within_the_output_limit():
++    module = adapter()
++    lesson = module.generate(17, LARGEST, 2, 4)
++    grid = lesson["test"][3]["input"]
++    assert (len(grid), len(grid[0])) == (15, 15)
++    assert 100 <= sum(v != 0 for row in grid for v in row) <= 150
++    assert len(lesson["test"][3]["output"]) == 30
++    assert any(grid[r][c] for r in (0, 14) for c in range(15))
++
++
++def test_output_overflow_grid_is_rejected_before_allocation():
++    module = adapter()
++    grid = [[1] * 15 for _ in range(15)]
++    grid[0][0], grid[0][1] = 3, 4
++    with pytest.raises(ValueError):
++        module.transform(grid, LARGEST)
+diff --git a/repo/generators/5f6fdf4f9900/tests/test_parametric_export.py b/repo/generators/5f6fdf4f9900/tests/test_parametric_export.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/5f6fdf4f9900/tests/test_parametric_export.py
+@@ -0,0 +1,62 @@
++"""Focused public-projection and fail-closed tests for the reviewer exporter."""
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++
++PATH = Path(__file__).resolve().parents[1] / "workspace/parametric/audit.py"
++SPEC = importlib.util.spec_from_file_location("corner_priority_export_test", PATH)
++AUDIT = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(AUDIT)
++
++
++@pytest.mark.parametrize("settings", [{"corner_priority": "scan"}, {"corner_priority": "largest_component"}])
++def test_current_turn_has_no_query_count_future_answer_or_private_fields(settings):
++    adapter = AUDIT.load_adapter()
++    four = adapter.generate(17, settings, demos=2, queries=4)
++    four["settings"] = settings
++    four["future_hint"] = "future material"
++    first = AUDIT.public_first_turn(four)
++    one = AUDIT.public_first_turn(adapter.generate(17, settings, demos=2, queries=1))
++    assert first == one
++    assert set(first) == {"train", "test"}
++    assert len(first["test"]) == 1
++    assert set(first["test"][0]) == {"input"}
++    assert all(set(pair) == {"input", "output"} for pair in first["train"])
++    assert AUDIT.SUPPORT.public_challenge_id(first) == AUDIT._sha(AUDIT.SUPPORT.public_challenge_bytes(first))
++    for index in range(4):
++        assert AUDIT.public_turn(four, index)["test"] == [{"input": four["test"][index]["input"]}]
++
++
++def test_boolean_or_ragged_runtime_result_fails_instead_of_eliminating_a_rival():
++    for value in (True, [[True]], [[0], [0, 1]], [], [[10]], "failure"):
++        with pytest.raises(ValueError):
++            AUDIT._grid(value)
++
++
++def test_runtime_errors_propagate_instead_of_counting_as_rival_disagreement():
++    class BrokenBridge:
++        def eval_text(self, source):
++            raise RuntimeError("synthetic evaluation failure")
++
++    class Wrapper:
++        @staticmethod
++        def wrap_rule(source):
++            return source
++
++    with pytest.raises(RuntimeError, match="synthetic evaluation failure"):
++        AUDIT.execute(BrokenBridge(), Wrapper(), "(lambda (g) g)", [[0]])
++
++
++def test_existing_output_is_never_overwritten(tmp_path):
++    protected = tmp_path / "already-present"
++    protected.mkdir()
++    marker = protected / "marker.json"
++    marker.write_text(json.dumps({"retained": True}))
++    with pytest.raises(FileExistsError):
++        AUDIT.run(protected)
++    assert json.loads(marker.read_text()) == {"retained": True}
+diff --git a/repo/generators/5f6fdf4f9900/workspace/parametric/README.md b/repo/generators/5f6fdf4f9900/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/5f6fdf4f9900/workspace/parametric/README.md
+@@ -0,0 +1,108 @@
++# Component priority for concave-corner enlargement
++
++Native authoring adapter for `5f6fdf4f9900`; Python 3.12+, the repository runtime,
++and Racket are required. `promotion.json` declares the native contract.
++
++## Rule and admitted grammar
++
++The episode-fixed parameter is `corner_priority`:
++
++| Value | Selection at each empty input cell |
++|---|---|
++| `scan` (default) | First eligible diagonal neighbor in NW, NE, SW, SE order. `program()` returns the selected canonical Racket text byte-for-byte. |
++| `largest_component` | Eligible neighbor belonging to the largest same-color, four-connected component; equal areas use the same directional order. |
++
++Eligibility still requires a nonzero diagonal neighbor and two empty intervening
++orthogonal cells. Every input cell expands by the number of distinct nonzero
++colors. Foreground becomes solid blocks; the chosen neighbor determines the
++red main/anti diagonal in an empty block. Other empty blocks stay empty.
++
++The separate parametric grammar allows disconnected occurrences of a color.
++Inputs have 2–5 nonzero colors, zero background, and no red input cells; each
++dimension is 4–15 and each enlarged dimension must be at most 30. The canonical
++generator's own distribution and source are unchanged. A 30×30 input is unlawful
++here because the minimum enlargement factor two would exceed the output limit.
++
++The fourth query alternates by seed between populated 6×6 inputs with five
++colors and populated 15×15 inputs with two colors, both yielding 30×30 outputs.
++Other queries cover 4×4, 5×6 and 6×5 inputs, with scales two, three and four.
++The larger inputs contain region growth and disconnected pieces, not empty
++padding. All input draws are independent of the selected private setting.
++
++## Teaching and actual dependency
++
++Two constructive demonstrations distinguish the finite settings. The first
++separates component area from whole-color frequency and contains opposing
++candidate orientations and ties. The second distinguishes four-connectivity,
++bounding-box area, ignored orthogonal blockers and smallest-component selection.
++Its singleton was moved after a live Racket audit found a smallest-component
++shortcut fitting the initial canonical demonstrations. The repair adds no demo.
++
++The dependency is: compute the same-color four-connected components and their
++areas → bind each eligible corner to its component area → choose the largest
++eligible neighbor and paint its orientation. Remote cells can change the
++winning direction while the entire local 3×3 corner neighborhood stays fixed.
++The causal receipt compares the alternate program with the exact scan program
++that skips the area decision. It is finite execution evidence, not a universal
++proof of learnability or measured training benefit.
++
++`generate(seed, settings, demos=3, queries=4)` supports 2–6 demonstrations and
++1–4 queries independently. Four novel queries are the normal request. The first
++two demos use different scales (three and four); later demos are sampled.
++`teaching_check()` identifies the setting using demonstration labels only.
++The separate audit tests ten declared executable wrong rules per setting.
++
++## Run from an extracted packet
++
++Use the same passing interpreter as `review.py python-check`; the commands
++below use the packet's local venv. Choose new output paths for every fresh run.
++
++```bash
++WORK/.venv/bin/python review.py run python3 \
++  generators/5f6fdf4f9900/workspace/parametric/audit.py \
++  --out ../checks/5f6fdf4f9900/self-audit-fresh
++
++WORK/.venv/bin/python review.py run python3 -m pytest \
++  generators/5f6fdf4f9900/tests/test_parametric_corner_priority.py \
++  generators/5f6fdf4f9900/tests/test_parametric_export.py -q
++
++WORK/.venv/bin/python review.py run python3 -m arcpuzzles parametric qualify \
++  5f6fdf4f9900 --seed 0 --seed 17 --demos 3 --queries 4 \
++  --out ../checks/5f6fdf4f9900/qualification-fresh --summary
++```
++
++The audit retains complete private episodes, all exact executed programs, a
++finite-rival report, and hash-named projections. Give a model only one file from
++`turns/` at a time. `public_archive/` contains all four query inputs for the
++controller; it is not a model turn. `private/` and `audit.json` contain answers,
++settings, seeds and source identities. Current-turn names depend only on the
++visible demos and that query; future query changes cannot change them. The
++first turn is identical to the corresponding single-query request.
++
++`audit.py` is reusable by later reviewers and refuses to overwrite existing
++outputs. Runtime errors cannot eliminate a rival. A demo-refuted rival needs
++no further query replay; surviving rivals are checked on every query.
++
++## Owner handoff
++
++The native inventory is `evidence/manifest.json`. This return contains reviewer
++qualification and source-bound execution evidence; owner acceptance and training
++admission are separate. After applying the delta, the owner must qualify the
++exact integrated source and accept it through the native API. From the repo:
++
++```bash
++python3 -m arcpuzzles parametric qualify 5f6fdf4f9900 \
++  --seed 0 --seed 17 --demos 3 --queries 4 \
++  --out var/review/corner-priority-qualification --summary
++python3 -m arcpuzzles parametric accept 5f6fdf4f9900 \
++  --qualification var/review/corner-priority-qualification/qualification.json \
++  --reason 'Reviewed component priority, teaching repair, and causal evidence'
++python3 -m arcpuzzles parametric export 5f6fdf4f9900 \
++  --count 2 --seed 41 --demos 3 --queries 4 \
++  --out var/datasets/corner-priority
++```
++
++An inherited canonical test still reports exact-text divergence between catalog
++and base authority strings. Its assertions were preserved; bounded Racket parity
++matches the labels. The task notes and return report retain that unresolved
++finding. This prototype does not silently clear it or other inherited audits.
+diff --git a/repo/generators/5f6fdf4f9900/workspace/parametric/adapter.py b/repo/generators/5f6fdf4f9900/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/5f6fdf4f9900/workspace/parametric/adapter.py
+@@ -0,0 +1,231 @@
++"""Native parameterized corner enlargement; labels are replayed by Racket.
++
++The input RNG never depends on settings. Canonical generation is untouched.
++This separate grammar allows disconnected regions of the same color, so
++component area cannot be replaced by whole-color frequency.
++"""
++from __future__ import annotations
++
++import json
++import random
++from collections import deque
++from pathlib import Path
++
++
++HOME = Path(__file__).resolve().parent
++SETTINGS = ({"corner_priority": "scan"}, {"corner_priority": "largest_component"})
++PALETTE = (1, 3, 4, 5, 6, 7, 8, 9)
++DIAGONALS = ((-1, -1), (-1, 1), (1, -1), (1, 1))
++ORTHOGONALS = ((-1, 0), (1, 0), (0, -1), (0, 1))
++
++# Both templates contain meaningful conflicts and disconnected same-color
++# pieces. The second has a fourth color, defeating fixed-three scale.
++TEACHING_ROWS = (
++    ("000333", "110303", "000000", "010440", "110040", "100000"),
++    ("110333", "110300", "400300", "040300", "040000", "440500"),
++)
++
++LARGEST_PROGRAM = """(rule! (lambda (g)
++  (let* ((n (length (filter (lambda (v) (!= v 0)) (grid-colors g))))
++         (parts (objects g 0))
++         (areas (build-grid h w (ar ac)
++                  (if (zero? (at g ar ac)) 0
++                      (obj-size
++                        (first (filter
++                          (lambda (o) (member (list ar ac) (obj-cells o)))
++                          parts)))))))
++    (build-grid (* h n) (* w n) (br bc)
++      (let* ((r (quotient br n)) (c (quotient bc n))
++             (lr (modulo br n)) (lc (modulo bc n))
++             (v (at g r c)))
++        (if (!= v 0) v
++            (let* ((eligible
++                     (filter
++                       (lambda (d)
++                         (let ((nr (+ r (first d))) (nc (+ c (second d))))
++                           (and (in-bounds? nr nc h w)
++                                (!= (at g nr nc) 0)
++                                (zero? (at g nr c))
++                                (zero? (at g r nc)))))
++                       diagonal-deltas))
++                   (chosen
++                     (if (null? eligible) #f
++                         (pick-max eligible
++                           (lambda (d)
++                             (at areas (+ r (first d)) (+ c (second d))))))))
++              (if chosen
++                  (if (= (first chosen) (second chosen))
++                      (if (= lr lc) 2 0)
++                      (if (= lr (- (- n 1) lc)) 2 0))
++                  0))))))))"""
++
++
++def _setting(settings):
++    if (type(settings) is not dict or set(settings) != {"corner_priority"}
++            or type(settings["corner_priority"]) is not str
++            or settings["corner_priority"] not in ("scan", "largest_component")):
++        raise ValueError("settings must declare corner_priority=scan|largest_component")
++    return settings["corner_priority"]
++
++
++def program(settings):
++    """Exact standalone Racket rule; the default resource has no added newline."""
++    return (HOME / "canonical.rkt").read_text() if _setting(settings) == "scan" else LARGEST_PROGRAM
++
++
++def _validate_grid(grid):
++    if (type(grid) is not list or not 4 <= len(grid) <= 15
++            or type(grid[0]) is not list or not 4 <= len(grid[0]) <= 15
++            or any(type(row) is not list or len(row) != len(grid[0]) for row in grid)
++            or any(type(v) is not int or v not in (0, *PALETTE) for row in grid for v in row)):
++        raise ValueError("input must be a rectangular 4..15 grid of literal colors, with red reserved")
++    n = len({v for row in grid for v in row if v})
++    if not 2 <= n <= 5:
++        raise ValueError("input needs 2..5 distinct nonzero colors")
++    if len(grid) * n > 30 or len(grid[0]) * n > 30:
++        raise ValueError("color-count enlargement must fit a 30x30 output")
++    return n
++
++
++def component_areas(grid):
++    """Map every foreground cell to its same-color four-connected area."""
++    height, width = len(grid), len(grid[0])
++    areas = [[0] * width for _ in grid]
++    for r in range(height):
++        for c in range(width):
++            if not grid[r][c] or areas[r][c]:
++                continue
++            cells = {(r, c)}
++            frontier = deque([(r, c)])
++            while frontier:
++                row, col = frontier.popleft()
++                for dr, dc in ORTHOGONALS:
++                    nr, nc = row + dr, col + dc
++                    if (0 <= nr < height and 0 <= nc < width
++                            and grid[nr][nc] == grid[r][c] and (nr, nc) not in cells):
++                        cells.add((nr, nc))
++                        frontier.append((nr, nc))
++            for row, col in cells:
++                areas[row][col] = len(cells)
++    return areas
++
++
++def corner_candidates(grid, r, c):
++    if grid[r][c]:
++        return []
++    height, width = len(grid), len(grid[0])
++    return [(dr, dc) for dr, dc in DIAGONALS
++            if 0 <= r + dr < height and 0 <= c + dc < width
++            and grid[r + dr][c + dc] and not grid[r + dr][c] and not grid[r][c + dc]]
++
++
++def transform(grid, settings):
++    """Python claim only: native qualification independently executes Racket."""
++    priority = _setting(settings)
++    n = _validate_grid(grid)
++    height, width = len(grid), len(grid[0])
++    areas = component_areas(grid) if priority == "largest_component" else None
++    out = [[0] * (width * n) for _ in range(height * n)]
++    for r in range(height):
++        for c in range(width):
++            candidates = corner_candidates(grid, r, c)
++            chosen = (max(candidates, key=lambda d: areas[r + d[0]][c + d[1]])
++                      if candidates and areas is not None else
++                      candidates[0] if candidates else None)
++            for lr in range(n):
++                for lc in range(n):
++                    if grid[r][c]:
++                        value = grid[r][c]
++                    elif chosen is None:
++                        value = 0
++                    else:
++                        on = lr == lc if chosen[0] == chosen[1] else lr + lc == n - 1
++                        value = 2 if on else 0
++                    out[r * n + lr][c * n + lc] = value
++    return out
++
++
++def _palette_copy(rows, rng):
++    grid = [[int(x) for x in row] for row in rows]
++    colors = sorted({v for row in grid for v in row if v})
++    mapping = dict(zip(colors, rng.sample(PALETTE, len(colors))))
++    return [[mapping.get(v, 0) for v in row] for row in grid]
++
++
++def _random_scene(rng, height, width, count, density):
++    """Bounded region-growth scenes with additional disconnected pieces."""
++    target = max(count, round(height * width * density))
++    for _ in range(160):
++        colors = rng.sample(PALETTE, count)
++        grid = [[0] * width for _ in range(height)]
++        for color, cell in zip(colors, rng.sample(range(height * width), count)):
++            grid[cell // width][cell % width] = color
++        filled = count
++        while filled < target:
++            empty = [(r, c) for r in range(height) for c in range(width) if not grid[r][c]]
++            r, c = rng.choice(empty)
++            neighbors = [grid[r + dr][c + dc] for dr, dc in ORTHOGONALS
++                         if 0 <= r + dr < height and 0 <= c + dc < width
++                         and grid[r + dr][c + dc]]
++            grid[r][c] = rng.choice(neighbors) if neighbors and rng.random() < .75 else rng.choice(colors)
++            filled += 1
++        orientations = {d[0] == d[1] for r in range(height) for c in range(width)
++                        for d in corner_candidates(grid, r, c)}
++        if orientations == {True, False}:
++            return grid
++    raise ValueError("bounded scene sampler could not produce both corner orientations")
++
++
++def teaching_check(episode):
++    """Demonstration-only identification against the two declared settings.
++
++    It deliberately ignores test labels. Broader finite-rival Racket audits
++    live in audit.py and do not claim universal uniqueness.
++    """
++    survivors = []
++    for setting in SETTINGS:
++        if all(transform(pair["input"], setting) == pair["output"] for pair in episode["train"]):
++            survivors.append(dict(setting))
++    selected = [s for s in SETTINGS if program(s) == episode.get("program_solution")]
++    return {"ok": len(selected) == 1 and survivors == selected,
++            "survivors": survivors, "basis": "demonstrations_only", "finite_settings": 2}
++
++
++def generate(seed, settings, demos=3, queries=4):
++    _setting(settings)
++    if type(seed) is not int or not 0 <= seed <= 2**63 - 1:
++        raise ValueError("seed must be an integer in 0..2**63-1")
++    if type(demos) is not int or not 2 <= demos <= 6:
++        raise ValueError("demos must be an integer in 2..6")
++    if type(queries) is not int or not 1 <= queries <= 4:
++        raise ValueError("queries must be an integer in 1..4")
++    train, test, seen = [], [], set()
++    for index in range(demos):
++        rng = random.Random(f"5f6fdf4f9900:{seed}:demo:{index}")
++        if index < 2:
++            grid = _palette_copy(TEACHING_ROWS[index], rng)
++        else:
++            grid = _random_scene(rng, 4 + index % 3, 5, 2 + index % 4, (.42, .55, .66)[index % 3])
++        key = json.dumps(grid, separators=(",", ":"))
++        if key in seen:
++            raise ValueError("duplicate demonstration input")
++        seen.add(key)
++        train.append({"input": grid, "output": transform(grid, settings)})
++    stress = (15, 15, 2, .58) if seed % 2 else (6, 6, 5, .58)
++    profiles = ((4, 4, 2, .44), (5, 6, 3, .53), (6, 5, 4, .63), stress)
++    for index, (height, width, count, density) in enumerate(profiles[:queries]):
++        rng = random.Random(f"5f6fdf4f9900:{seed}:query:{index}")
++        for _ in range(16):
++            grid = _random_scene(rng, height, width, count, density)
++            key = json.dumps(grid, separators=(",", ":"))
++            if key not in seen:
++                break
++        else:
++            raise ValueError("bounded query sampler exhausted distinct inputs")
++        seen.add(key)
++        test.append({"input": grid, "output": transform(grid, settings)})
++    episode = {"train": train, "test": test, "program_solution": program(settings)}
++    certificate = teaching_check(episode)
++    if not certificate["ok"]:
++        raise ValueError("constructive demonstrations failed finite-setting identification")
++    return episode
+diff --git a/repo/generators/5f6fdf4f9900/workspace/parametric/audit.py b/repo/generators/5f6fdf4f9900/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/5f6fdf4f9900/workspace/parametric/audit.py
+@@ -0,0 +1,368 @@
++"""Bounded reviewer-only Racket replay, finite-rival audit, and safe export.
++
++Run through the packet's ``review.py run`` wrapper.  Give a solver only one
++``turns/<public-content-sha256>.json`` file.  ``public_archive`` contains all
++query inputs and is controller-facing; ``private`` and ``audit.json`` contain
++answers, programs, settings, source identities, and finite audit findings.
++
++Every rival is executable Racket.  Runtime errors abort the audit, never count
++as an eliminated hypothesis. Queries are replayed only for demo survivors;
++demo-refuted rules carry an explicit not-needed query status. Finite survivors
++are findings, not evidence of universal ambiguity; finite elimination is not
++an acceptance or training gate.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++
++HOME = Path(__file__).resolve().parent
++TASK_ID = "5f6fdf4f9900"
++SEEDS = (0, 17)
++
++
++def _repo_root():
++    for parent in HOME.parents:
++        if (parent / "shared/runtime/reviewer_support.py").is_file():
++            return parent
++    raise FileNotFoundError("audit needs its own checkout's shared/runtime")
++
++
++ROOT = _repo_root()
++RUNTIME = ROOT / "shared/runtime"
++
++
++def _load_exact(path, name):
++    path = Path(path).resolve()
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(f"cannot import exact source {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    if Path(module.__file__).resolve() != path:
++        raise ImportError(f"source import escaped {path}")
++    return module
++
++
++def load_adapter():
++    return _load_exact(HOME / "adapter.py", "corner_priority_audit_adapter")
++
++
++SUPPORT = _load_exact(RUNTIME / "reviewer_support.py", "corner_priority_audit_support")
++
++
++def _runtime_modules():
++    if str(RUNTIME) not in sys.path:
++        sys.path.insert(0, str(RUNTIME))
++    modules = []
++    for name in ("arc_repl.racket_bridge", "puzzle_generators.rule_wrap"):
++        module = importlib.import_module(name)
++        expected = (RUNTIME / (name.replace(".", "/") + ".py")).resolve()
++        if Path(module.__file__).resolve() != expected:
++            raise ImportError(f"{name} must come from this checkout: {expected}")
++        modules.append(module)
++    return tuple(modules)
++
++
++def _bytes(value):
++    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
++
++
++def _sha(data):
++    return hashlib.sha256(data).hexdigest()
++
++
++def _write_json(path, value):
++    with Path(path).open("xb") as handle:
++        handle.write(_bytes(value))
++
++
++def _grid(value):
++    if (type(value) is not list or not 1 <= len(value) <= 30
++            or type(value[0]) is not list or not 1 <= len(value[0]) <= 30):
++        raise ValueError("Racket must return a nonempty 1..30 rectangular grid")
++    width = len(value[0])
++    if any(type(row) is not list or len(row) != width
++           or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++           for row in value):
++        raise ValueError("Racket must return literal integer colors, never booleans")
++    return value
++
++
++def execute(bridge, wrapper, program, grid):
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in _grid(grid)) + ")"
++    # RacketBridgeError deliberately propagates: an error is not a mismatch.
++    return _grid(bridge.eval_text(f"({wrapper.wrap_rule(program)} {literal})"))
++
++
++def public_turn(episode, query_index=0):
++    """Project exactly the demos and one current query, with no future hints."""
++    if (type(query_index) is not int or not 0 <= query_index < len(episode["test"])):
++        raise ValueError("query_index must identify an existing query")
++    # The shared helper both validates grid values and strips all private keys.
++    raw = SUPPORT.public_challenge_bytes({"train": episode["train"],
++                                          "test": [episode["test"][query_index]]})
++    result = json.loads(raw)
++    if set(result) != {"train", "test"} or len(result["test"]) != 1:
++        raise ValueError("unsafe current-turn projection")
++    return result
++
++
++def public_first_turn(episode):
++    return public_turn(episode, 0)
++
++
++def _replace_once(source, old, new):
++    if source.count(old) != 1:
++        raise ValueError(f"Racket rival anchor changed: {old!r}")
++    return source.replace(old, new, 1)
++
++
++_PICK = """(pick-max eligible
++                           (lambda (d)
++                             (at areas (+ r (first d)) (+ c (second d)))))"""
++_AREA = """(obj-size
++                        (first (filter
++                          (lambda (o) (member (list ar ac) (obj-cells o)))
++                          parts)))"""
++_GATES = """(zero? (at g nr c))
++                                (zero? (at g r nc))"""
++_COLOR_COUNT = "(length (filter (lambda (v) (!= v 0)) (grid-colors g)))"
++
++
++def rival_programs(adapter, settings):
++    """A declared finite family; each entry is independently executed below."""
++    largest = adapter.LARGEST_PROGRAM
++    scan_template = _replace_once(largest, _PICK, "(first eligible)")
++    selected = settings["corner_priority"]
++    base = largest if selected == "largest_component" else scan_template
++    other = "scan" if selected == "largest_component" else "largest_component"
++    no_red = _replace_once(base, "(if (= lr lc) 2 0)", "(if (= lr lc) 0 0)")
++    no_red = _replace_once(no_red, "(if (= lr (- (- n 1) lc)) 2 0)",
++                           "(if (= lr (- (- n 1) lc)) 0 0)")
++    result = {
++        "other_setting": adapter.program({"corner_priority": other}),
++        "last_eligible_candidate": _replace_once(largest, _PICK, "(last eligible)"),
++        "smallest_component": _replace_once(largest, "(pick-max eligible", "(pick-min eligible"),
++        "largest_component_tie_last": _replace_once(largest, "(pick-max eligible",
++                                                       "(pick-max (reverse eligible)"),
++        "whole_color_frequency": _replace_once(largest, _AREA,
++            "(count (lambda (v) (= v (at g ar ac))) (flatten g))"),
++        "eight_connected_component": _replace_once(largest, "(objects g 0)", "(objects-8 g 0)"),
++        "component_bbox_area": _replace_once(largest, "(obj-size",
++                                              "((lambda (o) (* (obj-h o) (obj-w o)))"),
++        "ignore_orthogonal_gates": _replace_once(base, _GATES, "#t"),
++        "no_red_corners": no_red,
++        "fixed_scale_3": _replace_once(base, _COLOR_COUNT, "3"),
++    }
++    if len(set(result.values())) != len(result):
++        raise ValueError("finite rivals unexpectedly duplicate one another")
++    return result, base
++
++
++def _difference(expected, actual):
++    """One concrete cell (or shape) is enough to refute one false rule."""
++    if expected == actual:
++        return None
++    result = {"expected_shape": [len(expected), len(expected[0])],
++              "rival_shape": [len(actual), len(actual[0])],
++              "expected_sha256": _sha(_bytes(expected)),
++              "rival_sha256": _sha(_bytes(actual))}
++    for r in range(min(len(expected), len(actual))):
++        for c in range(min(len(expected[0]), len(actual[0]))):
++            if expected[r][c] != actual[r][c]:
++                result["cell"] = {"row": r, "col": c, "expected": expected[r][c],
++                                  "rival": actual[r][c]}
++                return result
++    return result
++
++
++def _source_inventory():
++    paths = [HOME / name for name in ("adapter.py", "canonical.rkt", "promotion.json", "audit.py")]
++    paths += [RUNTIME / name for name in (
++        "reviewer_support.py", "puzzle_generators/rule_wrap.py", "arc_repl/racket_bridge.py",
++        "arc_repl/security.py", "arc_repl/racket_prelude/arc-prelude.rkt")]
++    return {path.relative_to(ROOT).as_posix(): _sha(path.read_bytes()) for path in paths}
++
++
++def _public_file(out, folder, challenge):
++    raw = SUPPORT.public_challenge_bytes(challenge)
++    identity = SUPPORT.public_challenge_id(challenge)
++    if identity != _sha(raw):
++        raise ValueError("public helper identity differs from exact public bytes")
++    path = out / folder / f"{identity}.json"
++    if path.exists():
++        if path.read_bytes() != raw:
++            raise ValueError("public identity collision")
++    else:
++        with path.open("xb") as handle:
++            handle.write(raw)
++    return {"id": identity, "path": path.relative_to(out).as_posix()}
++
++
++def run(out):
++    """Retain four small lessons; source drift, label mismatch, or errors fail."""
++    out = Path(out).resolve()
++    if out.exists():
++        raise FileExistsError(f"refusing to overwrite an existing output directory: {out}")
++    sources = _source_inventory()
++    adapter = load_adapter()
++    bridge_module, wrapper = _runtime_modules()
++    out.mkdir(parents=True, exist_ok=False)
++    for folder in ("public_archive", "turns", "private", "private/rules"):
++        (out / folder).mkdir()
++    episodes, inputs_by_seed, input_shapes = [], {}, set()
++    evaluated_labels, evaluated_rivals, equivalent_replays = 0, 0, 0
++    saved_programs = set()
++
++    def save_program(source):
++        identity = _sha(source.encode())
++        path = f"private/rules/{identity}.rkt"
++        if identity not in saved_programs:
++            with (out / path).open("x", encoding="utf-8") as handle:
++                handle.write(source)
++            saved_programs.add(identity)
++        return {"sha256": identity, "path": path}
++
++    with bridge_module.RacketBridge(timeout=15, max_calls_before_restart=128) as bridge:
++        runtime = bridge.runtime_identity
++        if runtime.get("protected") is not True or runtime.get("startup_handshake") != "pass":
++            raise RuntimeError("live Racket runtime failed its protected handshake")
++        for seed in SEEDS:
++            for settings in adapter.SETTINGS:
++                settings = dict(settings)
++                episode = adapter.generate(seed, settings, demos=2, queries=4)
++                if len(episode["train"]) != 2 or len(episode["test"]) != 4:
++                    raise ValueError("audit requires exactly two demos and four queries")
++                source = adapter.program(settings)
++                if episode.get("program_solution") != source:
++                    raise ValueError("episode does not bind the exact selected program")
++                pairs = episode["train"] + episode["test"]
++                inputs = [pair["input"] for pair in pairs]
++                if seed in inputs_by_seed and inputs_by_seed[seed] != inputs:
++                    raise ValueError("input sampling depends on hidden settings")
++                inputs_by_seed[seed] = inputs
++                for pair in pairs:
++                    input_shapes.add((len(pair["input"]), len(pair["input"][0])))
++                    actual = execute(bridge, wrapper, source, pair["input"])
++                    evaluated_labels += 1
++                    if actual != _grid(pair["output"]):
++                        raise ValueError(f"Python/Racket label disagreement at seed={seed}, setting={settings}")
++                    pair["output"] = actual
++                one = adapter.generate(seed, settings, demos=2, queries=1)
++                first = public_first_turn(episode)
++                if SUPPORT.public_challenge_bytes(first) != SUPPORT.public_challenge_bytes(public_first_turn(one)):
++                    raise ValueError("one-query and four-query first turns differ")
++                archive = _public_file(out, "public_archive", episode)
++                turns = [_public_file(out, "turns", public_turn(episode, i)) for i in range(4)]
++                rivals, equivalent = rival_programs(adapter, settings)
++                rule_binding = save_program(source)
++                # The scan mutations share a clearer selection template; prove
++                # that unmutated template equals the exact reference on every
++                # retained pair before using it to state any rival result.
++                for pair in pairs:
++                    if execute(bridge, wrapper, equivalent, pair["input"]) != pair["output"]:
++                        raise ValueError("rival construction baseline differs from selected reference")
++                    equivalent_replays += 1
++                rival_rows = []
++                for name, rival in rivals.items():
++                    mismatches = {"train": [], "test": []}
++                    details = {}
++                    for split in ("train", "test"):
++                        if split == "test" and mismatches["train"]:
++                            # Refutation on a shown demonstration is already
++                            # decisive; held-out predictions matter only for
++                            # hypotheses that survive every demonstration.
++                            continue
++                        for index, pair in enumerate(episode[split]):
++                            actual = execute(bridge, wrapper, rival, pair["input"])
++                            evaluated_rivals += 1
++                            difference = _difference(pair["output"], actual)
++                            if difference is not None:
++                                mismatches[split].append(index)
++                                details[(split, index)] = difference
++                    row = {"name": name, "program": save_program(rival),
++                           "demo_survives": not mismatches["train"],
++                           "demo_disagreements": mismatches["train"],
++                           "query_status": ("not_needed_demo_refuted" if mismatches["train"]
++                                            else "executed_demo_survivor"),
++                           "query_disagreements": mismatches["test"]}
++                    if mismatches["train"]:
++                        index = min(mismatches["train"], key=lambda i: (
++                            len(episode["train"][i]["input"]) * len(episode["train"][i]["input"][0]), i))
++                        row["minimal_demo_witness"] = {"demo_index": index,
++                            "selection": "smallest retained disagreeing demo; then earliest index",
++                            **details[("train", index)]}
++                    elif mismatches["test"]:
++                        index = mismatches["test"][0]
++                        row["held_out_counterexample"] = {"query_index": index,
++                                                          **details[("test", index)]}
++                    rival_rows.append(row)
++                survivors = [row["name"] for row in rival_rows if row["demo_survives"]]
++                private = {"schema": "arcpuzzles-corner-priority-private-v1", "task_id": TASK_ID,
++                           "seed": seed, "settings": settings, "sources": sources,
++                           "label_backend": "live protected Racket", "program": rule_binding,
++                           "mutation_baseline": save_program(equivalent),
++                           "episode": episode, "public_archive": archive, "turns": turns,
++                           "first_turn_independent_of_requested_query_count": True,
++                           "finite_rivals": rival_rows, "demo_only_survivors": survivors}
++                private_path = f"private/{archive['id']}.json"
++                _write_json(out / private_path, private)
++                episodes.append({"seed": seed, "settings": settings,
++                                 "private_path": private_path,
++                                 "public_archive": archive, "first_turn": turns[0],
++                                 "demo_only_survivors": survivors,
++                                 "rival_count": len(rival_rows)})
++        final_runtime = bridge.runtime_identity
++        if final_runtime.get("protected") is not True:
++            raise RuntimeError("protected Racket identity lost during replay")
++        for key in ("binary_sha256", "prelude_sha256", "bridge_sha256", "boot_script_sha256"):
++            if final_runtime[key] != runtime[key]:
++                raise RuntimeError(f"runtime source drift during audit: {key}")
++    if _source_inventory() != sources:
++        raise RuntimeError("source changed during replay; rerun into a new directory")
++    finite_ok = all(not row["demo_only_survivors"] for row in episodes)
++    report = {"schema": "arcpuzzles-corner-priority-finite-audit-v1", "task_id": TASK_ID,
++              "status": "pass" if finite_ok else "finite_rival_survivors",
++              "scope": "reviewer-only, four retained episodes and ten executable rivals per episode",
++              "limits": "finite elimination does not prove universal uniqueness or confer acceptance or training admission",
++              "sources": sources, "runtime": runtime, "episodes": episodes,
++              "counts": {"episodes": len(episodes), "reference_label_replays": evaluated_labels,
++                         "equivalent_baseline_replays": equivalent_replays,
++                         "rival_pair_executions": evaluated_rivals,
++                         "unique_racket_programs": len(saved_programs)},
++              "input_shapes": sorted(map(list, input_shapes)),
++              "checks": {"all_retained_labels_equal_live_racket": True,
++                         "setting_independent_inputs": True,
++                         "one_vs_four_query_first_turn_identical": True,
++                         "all_rivals_eliminated_by_demos_only": finite_ok,
++                         "public_names_derived_only_from_public_bytes": True,
++                         "per_turn_has_one_query_no_private_or_future_fields": True},
++              "visibility": {"solver": "exactly one turns/<sha256>.json file at a time",
++                             "controller_only": ["public_archive/", "private/", "audit.json", "manifest.json"]}}
++    _write_json(out / "audit.json", report)
++    files = {path.relative_to(out).as_posix(): {"sha256": _sha(path.read_bytes()), "bytes": path.stat().st_size}
++             for path in sorted(out.rglob("*")) if path.is_file()}
++    _write_json(out / "manifest.json", {"schema": "arcpuzzles-corner-priority-export-manifest-v1",
++                                       "sources": sources, "files": files})
++    return report
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", required=True, type=Path, help="new evidence directory; never overwritten")
++    args = parser.parse_args(argv)
++    report = run(args.out)
++    print(json.dumps({"status": report["status"], "out": str(args.out),
++                      "counts": report["counts"], "checks": report["checks"]}, sort_keys=True))
++    return 0 if report["status"] == "pass" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/5f6fdf4f9900/workspace/parametric/canonical.rkt b/repo/generators/5f6fdf4f9900/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/5f6fdf4f9900/workspace/parametric/canonical.rkt
+@@ -0,0 +1,34 @@
++(rule! (lambda (g)
++         (let* ((n (length (filter (lambda (v) (!= v 0)) (grid-colors g))))
++                (oh (* h n))
++                (ow (* w n)))
++           (build-grid oh
++                       ow
++                       (br bc)
++                       (let* ((r (quotient br n))
++                              (c (quotient bc n))
++                              (lr (modulo br n))
++                              (lc (modulo bc n))
++                              (v (at g r c)))
++                         (if (!= v 0)
++                             v
++                             (let* ((cands (filter (lambda (x) x)
++                                                   (map (lambda (d)
++                                                          (let* ((dr2 (first d))
++                                                                 (dc2 (second d))
++                                                                 (nr (+ r dr2))
++                                                                 (nc (+ c dc2)))
++                                                            (and
++                                                              (in-bounds? nr nc h w)
++                                                              (!= (at g nr nc) 0)
++                                                              (zero? (at g nr c))
++                                                              (zero? (at g r nc))
++                                                              (if (= dr2 dc2)
++                                                                  (if (= lr lc) 2 0)
++                                                                  (if (= lr
++                                                                         (- (- n 1) lc))
++                                                                      2
++                                                                      0)))))
++                                                        diagonal-deltas)))
++                                    (found (if (null? cands) 0 (first cands))))
++                               found)))))))
+\ No newline at end of file
+diff --git a/repo/generators/5f6fdf4f9900/workspace/parametric/evidence/current/verification.json b/repo/generators/5f6fdf4f9900/workspace/parametric/evidence/current/verification.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/5f6fdf4f9900/workspace/parametric/evidence/current/verification.json
+@@ -0,0 +1,47 @@
++{
++  "schema": "corner-priority-reviewer-checks-v1",
++  "task_id": "5f6fdf4f9900",
++  "adapter_sha256": "437f8be3ce490192ef4c121579568439d0e93536554d625c582de785aaca6d6f",
++  "reported_status": "passed",
++  "parametric_tests": "..........................                                               [100%]\n26 passed in 0.16s",
++  "bounded_requests": {
++    "attempted": 30,
++    "passed": 30,
++    "failed": 0
++  },
++  "protected_finite_audit": {
++    "path": "checks/5f6fdf4f9900/self-audit/audit.json",
++    "sha256": "08a0cc08314151f4a2bfb33f28ed628fc50f404cf1d6e2b51fc7c9eb00bf2bf8",
++    "status": "pass",
++    "counts": {
++      "episodes": 4,
++      "equivalent_baseline_replays": 24,
++      "reference_label_replays": 24,
++      "rival_pair_executions": 80,
++      "unique_racket_programs": 15
++    },
++    "checks": {
++      "all_retained_labels_equal_live_racket": true,
++      "all_rivals_eliminated_by_demos_only": true,
++      "one_vs_four_query_first_turn_identical": true,
++      "per_turn_has_one_query_no_private_or_future_fields": true,
++      "public_names_derived_only_from_public_bytes": true,
++      "setting_independent_inputs": true
++    }
++  },
++  "public_exports": {
++    "public-archive-check.json": {
++      "status": "passed",
++      "files_checked": 4,
++      "sha256": "4f77a869411254959443cf400c2a15127d92036d9fbc15cb664d2e803fa1703e"
++    },
++    "public-turn-check.json": {
++      "status": "passed",
++      "files_checked": 16,
++      "sha256": "cbc1a3dd3042bf907bdd012ab47bc922a5a0c0b90db48e0720bc204ce4294de8"
++    }
++  },
++  "owner_accepted": false,
++  "training_admitted": false,
++  "limits": "Reviewer evidence on listed settings, seeds and finite rivals. Legacy authority-formatting audit remains open."
++}
+diff --git a/repo/generators/5f6fdf4f9900/workspace/parametric/evidence/manifest.json b/repo/generators/5f6fdf4f9900/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/5f6fdf4f9900/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,82 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "e8ddd01c97da77886932b62da5674aebd7ec587e0eb87753ede0317cfdfab1ce",
++  "canonical_rule_hash": "9c543a96623c",
++  "default": {
++    "corner_priority": "scan"
++  },
++  "evidence_root": "generators/5f6fdf4f9900/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 12067,
++      "path": "generators/5f6fdf4f9900/generator.py",
++      "sha256": "569fc64005104d307d54d9b451c1b7f2ac9397f52f6e986ee2d7b7f46009bd83"
++    },
++    {
++      "bytes": 11847,
++      "path": "generators/5f6fdf4f9900/tests/test_generator_5f6fdf4f9900.py",
++      "sha256": "cc1131dfe3366a5dd60ee43fb023bd3b486c0690d309d899474745a9c6982e8f"
++    },
++    {
++      "bytes": 4541,
++      "path": "generators/5f6fdf4f9900/tests/test_parametric_corner_priority.py",
++      "sha256": "211f4f247dfa9896d9f42cd18ffbed1bead872cabad415846049df7d223e502e"
++    },
++    {
++      "bytes": 2424,
++      "path": "generators/5f6fdf4f9900/tests/test_parametric_export.py",
++      "sha256": "3b02406a4c8cad080050030e6e7ba1064736433ef59860f52cc78b23d422a889"
++    },
++    {
++      "bytes": 10225,
++      "path": "generators/5f6fdf4f9900/workspace/parametric/adapter.py",
++      "sha256": "437f8be3ce490192ef4c121579568439d0e93536554d625c582de785aaca6d6f"
++    },
++    {
++      "bytes": 18694,
++      "path": "generators/5f6fdf4f9900/workspace/parametric/audit.py",
++      "sha256": "1ab2bb3b5b78dba484891967922dc682f1851cc81082ba389ea2cf26a4f416f1"
++    },
++    {
++      "bytes": 2079,
++      "path": "generators/5f6fdf4f9900/workspace/parametric/canonical.rkt",
++      "sha256": "e8ddd01c97da77886932b62da5674aebd7ec587e0eb87753ede0317cfdfab1ce"
++    },
++    {
++      "bytes": 1705,
++      "path": "generators/5f6fdf4f9900/workspace/parametric/evidence/current/verification.json",
++      "sha256": "561ff2933c0ee912dd27d40da3824c3eaa53eb8aa268ac61b322cbe9804c95d9"
++    },
++    {
++      "bytes": 362,
++      "path": "generators/5f6fdf4f9900/workspace/parametric/promotion.json",
++      "sha256": "ddb8b8ad96fd53543f6cbb291165262dfbb986ed179824ba5ff6014f0ca6d2b5"
++    }
++  ],
++  "generator_sha256": "569fc64005104d307d54d9b451c1b7f2ac9397f52f6e986ee2d7b7f46009bd83",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "corner_priority": [
++      "scan",
++      "largest_component"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "26 focused tests; 30/30 bounded sampling requests; protected Racket audit of 4 episodes,24 labels,24 equivalent-reference replays,80 demo-rival executions; all ten finite rivals eliminated by demonstrations; public archive and one-query turn checks passed. Legacy exact-source formatting test remains failed, with bounded Racket label parity; no owner acceptance or training admission.",
++  "rule_task_id": "5f6fdf4f9900",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "5f6fdf4f9900",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/5f6fdf4f9900/workspace/parametric/promotion.json b/repo/generators/5f6fdf4f9900/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/5f6fdf4f9900/workspace/parametric/promotion.json
+@@ -0,0 +1,8 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/5f6fdf4f9900/workspace/parametric/adapter.py",
++  "parameters": {"corner_priority": ["scan", "largest_component"]},
++  "default": {"corner_priority": "scan"},
++  "limits": {"demos": [2, 6], "queries": [1, 4]},
++  "resources": ["generators/5f6fdf4f9900/workspace/parametric/canonical.rkt"]
++}
+diff --git a/repo/generators/f283b8535697/notes.md b/repo/generators/f283b8535697/notes.md
+--- a/repo/generators/f283b8535697/notes.md
++++ b/repo/generators/f283b8535697/notes.md
+@@ -2,3 +2,33 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Current bounded lesson review (2026-10-24)
++
++**Finding: one generated three-demo lesson does not teach the required mirror
++fallback.** Source SHA-256:
++`5517f198d0641385a022bfb233f5ce082121e2baf8001fea08f97a738691a886`;
++selected canonical rule hash `4829c9bc9298`. Native generation with seed `11`,
++automatic demo count, one query, and no overrides accepts sample indices
++`0,1,2,3`. Its corner / h-band / corner demonstrations all fit the executable
++rival “copy each marker cell's left-right mirror, replacing still-blue mirror
++values with zero.” The v-band query needs a clean vertical/180-degree mirror;
++the rival differs from the canonical 5x5 answer in ten cells. All four inputs
++pass `self_check`.
++
++The exact selected canonical program and the rival were replayed on all four
++pairs through protected Racket (eight replay evaluations, in addition to four
++native generation labels). The source-bound episode, exact programs, runtime
++identity, outputs, and differing coordinates are retained in
++`checks/f283b8535697/lr-shortcut/review.json`; the command receipt is
++`checks/f283b8535697/lr-shortcut-command.json`. Reproducer:
++`generators/f283b8535697/workspace/bounded_lr_shortcut.py`.
++
++Suggested follow-up: select a v-band demonstration when a query requires
++fallback beyond the left-right mirror, and check this finite rival while
++assembling lessons. The comment that the rival is refuted “by construction”
++holds across suitable placement families, but does not guarantee it within
++every randomly assembled three-demo lesson. No generator, canonical rule,
++approval, or shared runtime was changed. This bounded result establishes a
++teaching gap for this episode and rival only; it is not a canonical-label error,
++population-rate estimate, or universal ambiguity claim. Repair remains proposed.
+diff --git a/repo/generators/f283b8535697/workspace/bounded_lr_shortcut.py b/repo/generators/f283b8535697/workspace/bounded_lr_shortcut.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f283b8535697/workspace/bounded_lr_shortcut.py
+@@ -0,0 +1,135 @@
++"""Replay one generated three-demo lesson against a left-right-only rival.
++
++Run from WORK/repo through the packet wrapper:
++  python3 generators/f283b8535697/workspace/bounded_lr_shortcut.py \
++      --out ../checks/f283b8535697/lr-shortcut
++
++This is reviewer evidence only. It changes no generator or selected rule.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++from arcpuzzles.catalog import Catalog
++from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++from arcpuzzles.runtime import generate
++
++
++TASK = "f283b8535697"
++SEED = 11
++
++
++def digest(text):
++    return hashlib.sha256(text.encode()).hexdigest()
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", required=True, type=Path)
++    args = parser.parse_args()
++    root = Path.cwd().resolve()
++    target = args.out.resolve()
++    if target.exists():
++        raise ValueError("Choose a fresh evidence output directory")
++    catalog = Catalog(root)
++    selected = catalog.get(TASK)
++    programs = {variant["program_solution"] for variant in selected["variants"]}
++    if len(programs) != 1:
++        raise ValueError("This probe requires one exact selected canonical program")
++    canonical = next(iter(programs))
++    prefix, tail = canonical.split("             (define (get-pixel r c)", 1)
++    _, suffix = tail.split("             (build-grid oh ow", 1)
++    rival = prefix + """             (define (get-pixel r c)
++               (let ((v (at g r (- (- w 1) c))))
++                 (if (= v 1) 0 v)))
++             (build-grid oh ow""" + suffix
++
++    # Omitted n_train exercises the declared automatic three-demo policy.
++    episode = generate(catalog, TASK, count=1, seed=SEED, n_train=None,
++                       n_test=1, timeout=45)[0]
++    if episode["program"] != canonical or episode.get("sample_indices") != [0, 1, 2, 3]:
++        raise ValueError("Native generation differs from the bounded discovery case")
++
++    source = root / selected["generator"]
++    runtime = root / "shared/runtime"
++    with _local_imports(runtime, source.parent):
++        spec = importlib.util.spec_from_file_location("peer_f283_review", source)
++        module = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(module)
++        apply, identity, bridge = _real_evaluator(runtime)
++        checks, predictions = [], {"train": [], "test": []}
++        evaluations = 0
++        try:
++            for split in ("train", "test"):
++                for index, pair in enumerate(episode[split]):
++                    grid = _grid(pair["input"])
++                    errors = module.self_check(grid)
++                    if errors:
++                        raise ValueError(f"Unexpected unlawful input: {errors}")
++                    actual = _grid(apply(canonical, grid))
++                    alternate = _grid(apply(rival, grid))
++                    evaluations += 2
++                    if actual != pair["output"]:
++                        raise ValueError("Native label differs from protected replay")
++                    differences = [
++                        {"row": r, "col": c, "canonical": actual[r][c],
++                         "rival": alternate[r][c]}
++                        for r in range(len(actual)) for c in range(len(actual[0]))
++                        if actual[r][c] != alternate[r][c]
++                    ]
++                    predictions[split].append(alternate)
++                    checks.append({"split": split, "pair_index": index,
++                                   "marker_family": module._marker_family(grid),
++                                   "self_check": errors,
++                                   "rival_matches": not differences,
++                                   "different_cells": differences})
++        finally:
++            bridge.close()
++    fits_demos = all(check["rival_matches"] for check in checks if check["split"] == "train")
++    differs_query = any(not check["rival_matches"] for check in checks if check["split"] == "test")
++    if not (fits_demos and differs_query):
++        raise ValueError("The claimed bounded ambiguity did not replay")
++    if catalog.describe(TASK)["generator_sha256"] != selected["generator_sha256"]:
++        raise ValueError("Generator changed during review")
++
++    result = {
++        "schema": "arcpuzzles-bounded-peer-review-v1",
++        "task_id": TASK,
++        "status": "underidentified_generated_lesson",
++        "source_binding": {
++            "generator": selected["generator"],
++            "generator_sha256": selected["generator_sha256"],
++            "rule_hash": selected["rule_hash"],
++            "canonical_program_sha256": digest(canonical),
++            "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        },
++        "request": {"seed": SEED, "sample_index": 0, "n_train": None,
++                    "resolved_train": 3, "n_test": 1, "difficulty": None,
++                    "overrides": {}},
++        "racket": identity,
++        "protected_replay_evaluations": evaluations,
++        "native_generation_labels": 4,
++        "canonical_program": canonical,
++        "rival_program": rival,
++        "rival_program_sha256": digest(rival),
++        "rival_description": "Copy the left-right mirror of each marker cell; replace a still-blue mirror value with zero, without up-down or 180-degree fallback.",
++        "episode": episode,
++        "rival_predictions": predictions,
++        "checks": checks,
++        "finding": "All three native demos fit the left-right-only rival, but the v-band query requires clean vertical/180-degree fallback and disagrees.",
++        "suggested_repair": "Select a v-band demonstration when the query needs fallback beyond the left-right mirror; declare and check this finite rival when assembling lessons. Keep the canonical transformation unchanged.",
++        "limits": "One source-bound native episode and one named rival. This is a generated-lesson teaching finding, not a canonical label error, population-rate estimate, or universal uniqueness claim. No generator repair or owner acceptance performed.",
++    }
++    target.mkdir(parents=True)
++    (target / "review.json").write_text(json.dumps(result, indent=2) + "\n")
++    print(json.dumps({"status": result["status"], "source_binding": result["source_binding"],
++                      "racket": identity, "protected_replay_evaluations": evaluations,
++                      "checks": checks, "evidence": str(target / "review.json")}, indent=2))
++
++
++if __name__ == "__main__":
++    main()

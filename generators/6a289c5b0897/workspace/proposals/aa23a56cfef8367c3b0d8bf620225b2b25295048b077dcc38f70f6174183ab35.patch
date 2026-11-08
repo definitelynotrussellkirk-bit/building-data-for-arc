@@ -1,0 +1,1586 @@
+diff --git a/repo/generators/6a289c5b0897/SUMMARY.md b/repo/generators/6a289c5b0897/SUMMARY.md
+--- a/repo/generators/6a289c5b0897/SUMMARY.md
++++ b/repo/generators/6a289c5b0897/SUMMARY.md
+@@ -1,6 +1,17 @@
+ # 6a289c5b0897
+ 
+-Small grid (h×w, h∈{4..6}, w∈{5..8}) filled with 5s (walls) and 0s. Exactly ONE non-zero non-5 color appears exactly TWICE marking the two endpoints. Rule: BFS shortest path between the endpoints through 0s (and the endpoint color); output = empty grid with that path painted.
++A 4–6 × 5–8 maze uses black `0` as open space and gray `5` as walls.
++Exactly one other color occurs twice as the terminals. Starting at the first
++row-major terminal, paint the parent-selected BFS shortest path using neighbor
++order **up, down, left, right** on a fresh black grid.
+ 
+-Kind: `per_puzzle`. Imported version: `3.0.0`.
+-Approval is derived by the catalog from current code and retained evidence.
++Version `4.0.0` alternates unique routes with deliberate shortest-path ties that
++make the Racket authority's direction order observable. Half of ordinary draws
++anchor the canonical `5×5` / `5×6` profiles; exact public overrides are `h`,
++`w`, and `color`. The generator includes a Python rule mirror, executable
++semantic rivals/witnesses, a lesson-identifiability hook, task-local tests, and
++an independent probe in `workspace/reference_probe.py`.
++
++Kind: `per_puzzle`. Canonical rule hash: `d0e77b114425`.
++Approval remains a maintainer/catalog decision derived from current code and
++retained evidence.
+diff --git a/repo/generators/6a289c5b0897/generator.py b/repo/generators/6a289c5b0897/generator.py
+--- a/repo/generators/6a289c5b0897/generator.py
++++ b/repo/generators/6a289c5b0897/generator.py
+@@ -1,172 +1,712 @@
+-"""Generator for 6a289c5b0897 — BFS shortest path between two endpoints through 0s.
+-
+-Rule: grid contains 5s (walls) and exactly one non-zero non-5 color appearing
+-exactly TWICE (the two endpoints). Find the BFS shortest path between them
+-(allowed: 0 and the endpoint color). Output: empty grid with just that path
+-painted in the endpoint color.
+-
+-Combinatorial axes (5): h, w, wall_density, color, min_path_len.
++"""Generator for 6a289c5b0897 — ordered shortest path through gray walls.
++
++The canonical Racket rule locates the one non-zero, non-gray color that occurs
++exactly twice, starts at its first row-major occurrence, and performs BFS with
++neighbor order up, down, left, right through colors 0 and the endpoint color.
++It paints that one parent-selected shortest path on a fresh black grid.
++
++The public examples contain shortest-path ties even though the prose calls the
++path unique.  This generator therefore teaches both unique paths and deliberate
++ties where the Racket neighbor order is observable.  In particular, generated
++tie scenes refute a different BFS order that nevertheless reproduces every
++canonical pair.
+ """
+ from __future__ import annotations
+ 
+ from collections import deque
++from itertools import combinations
++from typing import Iterable
+ 
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "6a289c5b0897"
+-VERSION = "3.0.0"  # complete rewrite — correct task (BFS path through 0s)
+ TASK_ID = "6a289c5b0897"
++VERSION = "4.0.0"
++RULE_HASH = "d0e77b114425"
+ 
+ SUMMARY = (
+-    "Small grid (h×w, h∈{4..6}, w∈{5..8}) filled with 5s (walls) "
+-    "and 0s. Exactly ONE non-zero non-5 color appears exactly TWICE "
+-    "marking the two endpoints. Rule: BFS shortest path between the "
+-    "endpoints through 0s (and the endpoint color); output = empty grid "
+-    "with that path painted."
++    "A 4..6 by 5..8 maze uses black 0 as open space and gray 5 as walls. "
++    "Exactly two cells share one endpoint color. Paint the BFS shortest path "
++    "selected from the first row-major endpoint using neighbor order up, down, "
++    "left, right; clear every other cell to black. The curriculum alternates "
++    "unique routes with tied shortest routes that make that order observable."
+ )
+ 
+ INVARIANTS = [
+-    "background is 0",
+-    "5s are walls (block movement)",
+-    "exactly one non-zero non-5 color appears exactly twice (the endpoints)",
+-    "a valid BFS path always exists between the two endpoints",
++    "input colors are 0, gray 5, and exactly one endpoint color",
++    "the endpoint color is one of 1,2,3,4,6,7,8 and appears exactly twice",
++    "at least three gray walls are present, so gray cannot be mistaken for an endpoint pair",
++    "all non-wall cells form one 4-connected region containing both endpoints",
++    "the authoritative path starts at the first row-major endpoint",
++    "BFS neighbor order is up, down, left, right and is load-bearing on tied lessons",
++    "the output is a fresh black grid containing only the selected path",
+ ]
+ 
+ AXES = {
+-    "h":            {"type": "int", "default": "rng 4..6", "valid": "4..6"},
+-    "w":            {"type": "int", "default": "rng 5..8", "valid": "5..8"},
+-    "wall_density": {"type": "float", "default": "rng 0.20..0.40", "valid": "0.10..0.50"},
+-    "color":        {"type": "int", "default": "rng 1..8 excl 5", "valid": "1|2|3|4|6|7|8"},
+-    "min_path_len": {"type": "int", "default": "rng 4..7", "valid": "3..10"},
++    "h": {
++        "type": "int",
++        "default": "scheduled over 4..6 with canonical 5-row anchors",
++        "valid": "4..6",
++    },
++    "w": {
++        "type": "int",
++        "default": "scheduled over 5..8 with canonical 5/6-column anchors",
++        "valid": "5..8",
++    },
++    "color": {
++        "type": "int",
++        "default": "keyed choice from 1|2|3|4|6|7|8",
++        "valid": "1|2|3|4|6|7|8",
++    },
+ }
+ 
+-_ENDPOINT_COLORS = [1, 2, 3, 4, 6, 7, 8]
+-_DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+-
+-
+-def _bfs_dist(grid, h, w, start):
+-    """BFS from start through 0-cells; returns dist dict."""
+-    dist = {start: 0}
+-    q = deque([start])
+-    while q:
+-        r, c = q.popleft()
+-        for dr, dc in _DIRS:
+-            nr, nc = r + dr, c + dc
+-            if 0 <= nr < h and 0 <= nc < w and (nr, nc) not in dist and grid[nr][nc] == 0:
+-                dist[(nr, nc)] = dist[(r, c)] + 1
+-                q.append((nr, nc))
+-    return dist
+-
+-
+-def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
+-    rng = ctx.draw_rng("layout")
+-
++EXAMPLES_NEEDED = 3
++MIN_STRICT_FRAC = 1.0
++HELPFUL_TEXTURES: tuple[str, ...] = ()
++DEGENERATE_TEXTURES: tuple[str, ...] = ()
++LAWFUL_DEGENERATE_TEXTURES: tuple[str, ...] = ()
++
++Cell = tuple[int, int]
++Grid = list[list[int]]
++
++_ENDPOINT_COLORS = (1, 2, 3, 4, 6, 7, 8)
++# Exact order used by the selected Racket authority.
++_DIRS: tuple[Cell, ...] = ((-1, 0), (1, 0), (0, -1), (0, 1))
++# This order reproduces all four canonical pairs, but differs on generated tie
++# witnesses.  It is therefore a genuine canonical-fitting shortcut.
++_ALT_DIRS: tuple[Cell, ...] = ((1, 0), (0, 1), (0, -1), (-1, 0))
++
++# Half the default schedule uses canonical 5x5 / 5x6 shapes; the remainder
++# widens morphology.  Even offsets preserve the tie/unique alternation.
++_SHAPE_SCHEDULE: tuple[tuple[int, int], ...] = (
++    (5, 5),
++    (5, 6),
++    (4, 7),
++    (6, 8),
++    (5, 6),
++    (5, 5),
++    (4, 8),
++    (6, 7),
++)
++
++SCHEDULE_PROFILES = ("tied", "unique")
++
++
++def _neighbors(cell: Cell, h: int, w: int, order: Iterable[Cell] = _DIRS):
++    r, c = cell
++    for dr, dc in order:
++        nr, nc = r + dr, c + dc
++        if 0 <= nr < h and 0 <= nc < w:
++            yield nr, nc
++
++
++def _bfs_distances(grid: Grid, start: Cell, allowed: set[int]) -> dict[Cell, int]:
++    h, w = len(grid), len(grid[0])
++    distances = {start: 0}
++    queue = deque([start])
++    while queue:
++        cell = queue.popleft()
++        for nxt in _neighbors(cell, h, w):
++            if nxt in distances or grid[nxt[0]][nxt[1]] not in allowed:
++                continue
++            distances[nxt] = distances[cell] + 1
++            queue.append(nxt)
++    return distances
++
++
++def _ordered_path(
++    grid: Grid,
++    start: Cell,
++    goal: Cell,
++    allowed: set[int],
++    order: Iterable[Cell] = _DIRS,
++) -> list[Cell]:
++    """Return the parent-selected BFS path for one explicit neighbor order."""
++    h, w = len(grid), len(grid[0])
++    parent: dict[Cell, Cell | None] = {start: None}
++    queue = deque([start])
++    while queue:
++        cell = queue.popleft()
++        if cell == goal:
++            break
++        for nxt in _neighbors(cell, h, w, order):
++            if nxt in parent or grid[nxt[0]][nxt[1]] not in allowed:
++                continue
++            parent[nxt] = cell
++            queue.append(nxt)
++    if goal not in parent:
++        return []
++    path: list[Cell] = []
++    current: Cell | None = goal
++    while current is not None:
++        path.append(current)
++        current = parent[current]
++    return list(reversed(path))
++
++
++def _shortest_path_stats(
++    grid: Grid, start: Cell, goal: Cell, allowed: set[int]
++) -> tuple[int, set[Cell], dict[Cell, int], dict[Cell, int]]:
++    """Return (path count capped at 2, all-shortest union, forward, reverse)."""
++    forward = _bfs_distances(grid, start, allowed)
++    if goal not in forward:
++        return 0, set(), forward, {}
++    reverse = _bfs_distances(grid, goal, allowed)
++    total = forward[goal]
++    shortest_cells = {
++        cell
++        for cell, distance in forward.items()
++        if cell in reverse and distance + reverse[cell] == total
++    }
++
++    by_distance: dict[int, list[Cell]] = {}
++    for cell in shortest_cells:
++        by_distance.setdefault(forward[cell], []).append(cell)
++    ways: dict[Cell, int] = {start: 1}
++    h, w = len(grid), len(grid[0])
++    for distance in range(total):
++        for cell in by_distance.get(distance, ()):  # deterministic count only
++            for nxt in _neighbors(cell, h, w):
++                if nxt not in shortest_cells or forward.get(nxt) != distance + 1:
++                    continue
++                ways[nxt] = min(2, ways.get(nxt, 0) + ways.get(cell, 0))
++    return ways.get(goal, 0), shortest_cells, forward, reverse
++
++
++def _turn_count(path: list[Cell]) -> int:
++    directions = [
++        (path[index + 1][0] - path[index][0],
++         path[index + 1][1] - path[index][1])
++        for index in range(len(path) - 1)
++    ]
++    return sum(
++        directions[index] != directions[index - 1]
++        for index in range(1, len(directions))
++    )
++
++
++def _row_first_cells(start: Cell, goal: Cell) -> list[Cell]:
++    """A common wrong rule: ignore walls, move vertically, then horizontally."""
++    r, c = start
++    cells = [(r, c)]
++    if goal[0] != r:
++        step = 1 if goal[0] > r else -1
++        while r != goal[0]:
++            r += step
++            cells.append((r, c))
++    if goal[1] != c:
++        step = 1 if goal[1] > c else -1
++        while c != goal[1]:
++            c += step
++            cells.append((r, c))
++    return cells
++
++
++def _analyze(grid) -> dict[str, object]:
++    """Total validator/analyzer for canonical and generated inputs."""
++    if not isinstance(grid, list) or not grid:
++        return {"errors": ["grid must be a non-empty list of rows"]}
++    if not isinstance(grid[0], list) or not grid[0]:
++        return {"errors": ["grid rows must be non-empty lists"]}
++    h = len(grid)
++    w = len(grid[0])
++    if any(not isinstance(row, list) or len(row) != w for row in grid):
++        return {"errors": ["grid rows must be rectangular lists"]}
++
++    errors: list[str] = []
++    if not 4 <= h <= 6:
++        errors.append(f"grid height {h} outside 4..6")
++    if not 5 <= w <= 8:
++        errors.append(f"grid width {w} outside 5..8")
++
++    by_color: dict[int, list[Cell]] = {}
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if (
++                not isinstance(value, int)
++                or isinstance(value, bool)
++                or not 0 <= value <= 9
++            ):
++                errors.append(f"cell ({r},{c}) has invalid ARC color {value!r}")
++                continue
++            by_color.setdefault(value, []).append((r, c))
++    if any("invalid ARC color" in error for error in errors):
++        return {"errors": errors}
++
++    extra_colors = sorted(color for color in by_color if color not in (0, 5))
++    if len(extra_colors) != 1:
++        errors.append(
++            "expected exactly one non-zero non-gray endpoint color, got "
++            f"{extra_colors}"
++        )
++        return {"errors": errors}
++    color = extra_colors[0]
++    if color not in _ENDPOINT_COLORS:
++        errors.append(f"endpoint color {color} is not allowed")
++    endpoints = sorted(by_color[color])
++    if len(endpoints) != 2:
++        errors.append(
++            f"expected endpoint color {color} exactly twice, got {len(endpoints)}"
++        )
++        return {"errors": errors}
++
++    walls = set(by_color.get(5, ()))
++    zeros = set(by_color.get(0, ()))
++    if len(walls) < 3:
++        errors.append(
++            f"expected at least three gray walls (and not a gray pair), got {len(walls)}"
++        )
++    if len(zeros) < 2:
++        errors.append(f"expected at least two open black cells, got {len(zeros)}")
++
++    start, goal = endpoints
++    allowed = {0, color}
++    path = _ordered_path(grid, start, goal, allowed, _DIRS)
++    if not path:
++        errors.append("endpoints are disconnected through colors 0 and endpoint color")
++        return {
++            "errors": errors,
++            "h": h,
++            "w": w,
++            "color": color,
++            "endpoints": endpoints,
++            "walls": walls,
++            "zeros": zeros,
++        }
++
++    path_count, shortest_cells, forward, reverse = _shortest_path_stats(
++        grid, start, goal, allowed
++    )
++    walkable = zeros | set(endpoints)
++    if len(forward) != len(walkable):
++        errors.append(
++            f"all non-wall cells must be connected; {len(walkable) - len(forward)} are isolated"
++        )
++
++    path_cells = set(path)
++    off_path_zeros = zeros - path_cells
++    return {
++        "errors": errors,
++        "h": h,
++        "w": w,
++        "color": color,
++        "endpoints": endpoints,
++        "start": start,
++        "goal": goal,
++        "walls": walls,
++        "zeros": zeros,
++        "wall_count": len(walls),
++        "walkable_count": len(walkable),
++        "path": path,
++        "path_cells": path_cells,
++        "path_distance": len(path) - 1,
++        "shortest_path_count": path_count,
++        "shortest_cells": shortest_cells,
++        "turns": _turn_count(path),
++        "off_path_zero_count": len(off_path_zeros),
++        "forward_distances": forward,
++        "reverse_distances": reverse,
++        "wall_density": len(walls) / (h * w),
++    }
++
++
++def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
++    """Return reasons when a grid is outside the supported rule domain."""
++    del difficulty, meta
++    return list(_analyze(grid)["errors"])
++
++
++def strict_canonical_like(grid) -> list[str]:
++    return self_check(grid)
++
++
++def observe_overrides(grid) -> dict[str, int]:
++    analysis = _analyze(grid)
++    if analysis["errors"]:
++        return {}
++    return {
++        "h": int(analysis["h"]),
++        "w": int(analysis["w"]),
++        "color": int(analysis["color"]),
++    }
++
++
++def semantic_observables(grid) -> dict[str, object]:
++    analysis = _analyze(grid)
++    if analysis["errors"]:
++        return {"errors": list(analysis["errors"])}
++    h = int(analysis["h"])
++    w = int(analysis["w"])
++    return {
++        **observe_overrides(grid),
++        "path_distance": analysis["path_distance"],
++        "shortest_path_count": analysis["shortest_path_count"],
++        "tied_shortest_paths": int(analysis["shortest_path_count"]) >= 2,
++        "unique_shortest_path": analysis["shortest_path_count"] == 1,
++        "turns": analysis["turns"],
++        "off_path_zero_count": analysis["off_path_zero_count"],
++        "wall_count": analysis["wall_count"],
++        "canonical_shape": (h, w) in {(5, 5), (5, 6)},
++    }
++
++
++def schedule_profile(seed, sample_index, difficulty=None):
++    del seed, difficulty
++    return "tied" if sample_index % 2 == 0 else "unique"
++
++
++def _draw_axis(ctx, overrides, label: str, default: int, lo: int, hi: int) -> int:
++    """Use full legal bounds for overrides; otherwise pin the schedule value."""
++    if label in overrides and overrides[label] is not None:
++        return ctx.draw_int(label, lo, hi)
++    return ctx.draw_int(label, default, default)
++
++
++def _validate_overrides(overrides: dict) -> None:
++    unknown = sorted(set(overrides) - set(AXES))
++    if unknown:
++        raise ValueError(f"unknown override(s): {unknown!r}")
++    for label in ("h", "w", "color"):
++        if label not in overrides or overrides[label] is None:
++            continue
++        value = overrides[label]
++        if not isinstance(value, int) or isinstance(value, bool):
++            raise ValueError(f"override {label!r} must be an exact integer, got {value!r}")
++    if "h" in overrides and overrides["h"] is not None and not 4 <= overrides["h"] <= 6:
++        raise ValueError(f"override 'h' outside 4..6: {overrides['h']!r}")
++    if "w" in overrides and overrides["w"] is not None and not 5 <= overrides["w"] <= 8:
++        raise ValueError(f"override 'w' outside 5..8: {overrides['w']!r}")
++    if (
++        "color" in overrides
++        and overrides["color"] is not None
++        and overrides["color"] not in _ENDPOINT_COLORS
++    ):
++        raise ValueError(
++            f"override 'color' must be one of {_ENDPOINT_COLORS}, got {overrides['color']!r}"
++        )
++
++
++def _all_free_connected(grid: Grid) -> bool:
++    free = [
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == 0
++    ]
++    if not free:
++        return False
++    return len(_bfs_distances(grid, free[0], {0})) == len(free)
++
++
++def _candidate_info(grid: Grid, start: Cell, goal: Cell, profile: str):
++    allowed = {0}
++    path = _ordered_path(grid, start, goal, allowed, _DIRS)
++    if not path:
++        return None
++    distance = len(path) - 1
++    count, shortest_cells, _forward, _reverse = _shortest_path_stats(
++        grid, start, goal, allowed
++    )
++    if profile == "tied":
++        if count < 2 or shortest_cells == set(path):
++            return None
++        alternate = _ordered_path(grid, start, goal, allowed, _ALT_DIRS)
++        if not alternate or set(alternate) == set(path):
++            return None
++    elif profile == "unique":
++        if count != 1:
++            return None
++    else:  # internal contract guard
++        raise ValueError(f"unknown schedule profile: {profile!r}")
++
++    if _turn_count(path) < 1:
++        return None
++    if len([cell for cell in shortest_cells if cell not in path]) < (1 if profile == "tied" else 0):
++        return None
++    if set(_row_first_cells(start, goal)) == set(path):
++        return None
++    free_count = sum(value == 0 for row in grid for value in row)
++    if free_count - len(path) < 2:
++        return None
++    return {
++        "start": start,
++        "goal": goal,
++        "path": path,
++        "distance": distance,
++        "turns": _turn_count(path),
++        "shortest_path_count": count,
++    }
++
++
++def _select_candidate(candidates, difficulty, rng):
++    candidates = sorted(
++        candidates,
++        key=lambda item: (item["distance"], item["turns"], item["start"], item["goal"]),
++    )
++    third = max(1, len(candidates) // 3)
+     if difficulty == "easy":
+-        h = ctx.draw_int("h", 4, 5)
+-        w = ctx.draw_int("w", 5, 6)
+-        min_path = ctx.draw_int("min_path_len", 3, 5)
+-        density_lo, density_hi = 0.15, 0.25
++        pool = candidates[:third]
+     elif difficulty == "hard":
+-        h = ctx.draw_int("h", 5, 6)
+-        w = ctx.draw_int("w", 6, 8)
+-        min_path = ctx.draw_int("min_path_len", 6, 9)
+-        density_lo, density_hi = 0.30, 0.45
++        pool = candidates[-third:]
+     else:
+-        h = ctx.draw_int("h", 4, 6)
+-        w = ctx.draw_int("w", 5, 7)
+-        min_path = ctx.draw_int("min_path_len", 4, 7)
+-        density_lo, density_hi = 0.20, 0.35
+-
+-    color = rng.choice(_ENDPOINT_COLORS)
++        begin = max(0, (len(candidates) - third) // 2)
++        pool = candidates[begin:begin + third]
++    return rng.choice(pool)
++
++
++def _build_grid(
++    h: int,
++    w: int,
++    color: int,
++    profile: str,
++    difficulty,
++    rng,
++) -> Grid:
++    density_ranges = {
++        None: (0.18, 0.36),
++        "easy": (0.15, 0.28),
++        "medium": (0.21, 0.36),
++        "hard": (0.27, 0.43),
++    }
++    density_lo, density_hi = density_ranges[difficulty]
++    min_distance = {None: 4, "easy": 3, "medium": 4, "hard": 5}[difficulty]
++    all_cells = [(r, c) for r in range(h) for c in range(w)]
+     n_total = h * w
+-    all_cells = [(r, c) for r in range(h) for c in range(w)]
+-
+-    for _attempt in range(80):
++
++    for _attempt in range(128):
+         density = rng.uniform(density_lo, density_hi)
+-        n_walls = int(n_total * density)
+-
+-        # Shuffle cells; first n_walls become walls
++        n_walls = max(3, min(n_total - 8, round(n_total * density)))
+         order = list(all_cells)
+         rng.shuffle(order)
+-        wall_set = set(order[:n_walls])
+-
+-        # Build grid
+-        g = full_grid(h, w, 0)
+-        for r, c in wall_set:
+-            g[r][c] = 5
+-
+-        # BFS from every free cell to find reachable pairs with enough distance
+-        free = [(r, c) for r, c in all_cells if g[r][c] == 0]
+-        if len(free) < 2:
++        walls = set(order[:n_walls])
++        grid = full_grid(h, w, 0)
++        for r, c in walls:
++            grid[r][c] = 5
++        if not _all_free_connected(grid):
+             continue
+ 
+-        # Pick endpoint A randomly; BFS to find distant B
+-        a = free[rng.randint(0, len(free) - 1)]
+-        dist = _bfs_dist(g, h, w, a)
+-
+-        candidates = [(d, pos) for pos, d in dist.items() if d >= min_path and pos != a]
++        free = [cell for cell in all_cells if cell not in walls]
++        pairs = list(combinations(free, 2))
++        rng.shuffle(pairs)
++        candidates = []
++        for start, goal in pairs:
++            # combinations over row-major free cells exactly mirrors find-color
++            # endpoint ordering after the chosen color is painted.
++            info = _candidate_info(grid, start, goal, profile)
++            if info is None or info["distance"] < min_distance:
++                continue
++            candidates.append(info)
++            if len(candidates) >= 24:
++                break
+         if not candidates:
+             continue
+ 
+-        # Pick B with some preference for longer paths
+-        candidates.sort(reverse=True)
+-        top_n = max(1, len(candidates) // 3)
+-        _, b = candidates[rng.randint(0, top_n - 1)]
+-
+-        g[a[0]][a[1]] = color
+-        g[b[0]][b[1]] = color
+-        return g
+-
+-    # Fallback: guaranteed simple case
+-    g = full_grid(5, 5, 0)
+-    g[0][0] = color
+-    g[4][4] = color
+-    return g
+-
+-
+-def self_check(grid, *, difficulty=None, meta=None):
+-    """Verify the grid has exactly one non-{0,5} color appearing exactly twice."""
+-    errors = []
+-    h = len(grid)
+-    w = len(grid[0]) if h else 0
+-
+-    # Count occurrences of each non-0 color
+-    from collections import Counter
+-    counts = Counter(grid[r][c] for r in range(h) for c in range(w) if grid[r][c] != 0)
+-
+-    endpoint_colors = [c for c, n in counts.items() if c != 5 and n == 2]
+-    if not endpoint_colors:
+-        errors.append("no non-5 color appears exactly twice (no valid endpoint pair)")
+-    elif len(endpoint_colors) > 1:
+-        # Multiple colors with count=2: rule picks min, still valid but note it
+-        pass
+-
+-    # Check at least one color has count=2 and path exists
+-    if endpoint_colors:
+-        color = min(endpoint_colors)
+-        positions = [(r, c) for r in range(h) for c in range(w) if grid[r][c] == color]
+-        if len(positions) == 2:
+-            a, b = positions[0], positions[1]
+-            # Temporarily clear color cells to 0 for BFS check
+-            g_tmp = [row[:] for row in grid]
+-            g_tmp[a[0]][a[1]] = 0
+-            g_tmp[b[0]][b[1]] = 0
+-            # BFS: allowed cells are 0 (the color cells were 0 before placement too)
+-            dist = {}
+-            q = deque([a])
+-            dist[a] = 0
+-            while q:
+-                r, c = q.popleft()
+-                for dr, dc in _DIRS:
+-                    nr, nc = r + dr, c + dc
+-                    if 0 <= nr < h and 0 <= nc < w and (nr, nc) not in dist and g_tmp[nr][nc] == 0:
+-                        dist[(nr, nc)] = dist[(r, c)] + 1
+-                        q.append((nr, nc))
+-            if b not in dist:
+-                errors.append(f"no BFS path from {a} to {b} through 0s")
+-
+-    return errors
++        chosen = _select_candidate(candidates, difficulty, rng)
++        result = [row[:] for row in grid]
++        for r, c in (chosen["start"], chosen["goal"]):
++            result[r][c] = color
++        return result
++
++    raise ValueError(
++        f"could not construct a {profile} ordered-path lesson at {h}x{w} "
++        f"for difficulty {difficulty!r}"
++    )
++
++
++def generate(seed, sample_index, *, difficulty=None, **overrides):
++    if difficulty not in (None, "easy", "medium", "hard"):
++        raise ValueError(f"unknown difficulty: {difficulty!r}")
++    _validate_overrides(overrides)
++
++    band_offset = {None: 0, "easy": 0, "medium": 2, "hard": 4}[difficulty]
++    default_h, default_w = _SHAPE_SCHEDULE[
++        (sample_index + band_offset) % len(_SHAPE_SCHEDULE)
++    ]
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++    h = _draw_axis(ctx, overrides, "h", default_h, 4, 6)
++    w = _draw_axis(ctx, overrides, "w", default_w, 5, 8)
++    color = ctx.draw_choice("color", _ENDPOINT_COLORS)
++    profile = schedule_profile(seed, sample_index, difficulty)
++    grid = _build_grid(h, w, color, profile, difficulty, ctx.draw_rng("maze"))
++
++    errors = self_check(grid)
++    if errors:
++        raise AssertionError("generated invalid ordered-path lesson: " + "; ".join(errors))
++    analysis = _analyze(grid)
++    if profile == "tied" and int(analysis["shortest_path_count"]) < 2:
++        raise AssertionError("scheduled tied route was not tied")
++    if profile == "unique" and analysis["shortest_path_count"] != 1:
++        raise AssertionError("scheduled unique route was not unique")
++
++    observed = observe_overrides(grid)
++    for axis, value in ctx.recorded_draws().items():
++        if axis in AXES and observed.get(axis) != value:
++            raise AssertionError(
++                f"axis {axis!r} requested {value!r} but grid observes {observed.get(axis)!r}"
++            )
++    return grid
++
++
++def rule_mirror(grid: Grid) -> Grid:
++    """Pure Python mirror of the selected Racket authority."""
++    analysis = _analyze(grid)
++    if analysis["errors"]:
++        raise ValueError("; ".join(analysis["errors"]))
++    out = full_grid(int(analysis["h"]), int(analysis["w"]), 0)
++    color = int(analysis["color"])
++    for r, c in analysis["path"]:
++        out[r][c] = color
++    return out
++
++
++def _paint_all_shortest_cells(grid: Grid) -> Grid:
++    analysis = _analyze(grid)
++    if analysis["errors"]:
++        return [list(row) for row in grid] if isinstance(grid, list) else []
++    out = full_grid(int(analysis["h"]), int(analysis["w"]), 0)
++    color = int(analysis["color"])
++    for r, c in analysis["shortest_cells"]:
++        out[r][c] = color
++    return out
++
++
++def _alternate_bfs_order(grid: Grid) -> Grid:
++    analysis = _analyze(grid)
++    if analysis["errors"]:
++        return [list(row) for row in grid] if isinstance(grid, list) else []
++    out = full_grid(int(analysis["h"]), int(analysis["w"]), 0)
++    color = int(analysis["color"])
++    path = _ordered_path(
++        grid,
++        analysis["start"],
++        analysis["goal"],
++        {0, color},
++        _ALT_DIRS,
++    )
++    for r, c in path:
++        out[r][c] = color
++    return out
++
++
++def _ignore_walls_row_first(grid: Grid) -> Grid:
++    analysis = _analyze(grid)
++    if analysis["errors"]:
++        return [list(row) for row in grid] if isinstance(grid, list) else []
++    out = full_grid(int(analysis["h"]), int(analysis["w"]), 0)
++    color = int(analysis["color"])
++    for r, c in _row_first_cells(analysis["start"], analysis["goal"]):
++        out[r][c] = color
++    return out
++
++
++def _paint_all_open_cells(grid: Grid) -> Grid:
++    analysis = _analyze(grid)
++    if analysis["errors"]:
++        return [list(row) for row in grid] if isinstance(grid, list) else []
++    color = int(analysis["color"])
++    return [
++        [color if value in (0, color) else 0 for value in row]
++        for row in grid
++    ]
++
++
++def _preserve_input(grid: Grid) -> Grid:
++    analysis = _analyze(grid)
++    if analysis["errors"]:
++        return [list(row) for row in grid] if isinstance(grid, list) else []
++    out = [row[:] for row in grid]
++    color = int(analysis["color"])
++    for r, c in analysis["path"]:
++        out[r][c] = color
++    return out
++
++
++SEMANTIC_RIVALS = {
++    "alternate_bfs_order": _alternate_bfs_order,
++    "paint_all_shortest_cells": _paint_all_shortest_cells,
++    "ignore_walls_row_first": _ignore_walls_row_first,
++    "paint_all_open_cells": _paint_all_open_cells,
++    "preserve_input": _preserve_input,
++}
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
++# Only include shortcuts that genuinely reproduce every canonical pair.
++CANONICAL_SHORTCUTS = {
++    "alternate_bfs_order": _alternate_bfs_order,
++}
++
++
++def _witness(grid, predicate) -> bool:
++    observables = semantic_observables(grid)
++    return not observables.get("errors") and bool(predicate(observables))
++
++
++SEMANTIC_WITNESSES = {
++    "tied_shortest_paths": lambda grid: _witness(
++        grid, lambda obs: obs["tied_shortest_paths"]
++    ),
++    "unique_shortest_path": lambda grid: _witness(
++        grid, lambda obs: obs["unique_shortest_path"]
++    ),
++    "ordered_tie_break": lambda grid: (
++        not self_check(grid)
++        and int(_analyze(grid)["shortest_path_count"]) >= 2
++        and _alternate_bfs_order(grid) != rule_mirror(grid)
++    ),
++    "off_path_background": lambda grid: _witness(
++        grid, lambda obs: int(obs["off_path_zero_count"]) >= 2
++    ),
++    "gray_walls_cleared": lambda grid: _witness(
++        grid, lambda obs: int(obs["wall_count"]) >= 3
++    ),
++}
++
++WITNESS_RIVALS = {
++    "tied_shortest_paths": ["alternate_bfs_order", "paint_all_shortest_cells"],
++    "unique_shortest_path": ["paint_all_open_cells", "preserve_input"],
++    "ordered_tie_break": ["alternate_bfs_order"],
++    "off_path_background": ["paint_all_open_cells"],
++    "gray_walls_cleared": ["preserve_input"],
++}
++
++
++def lesson_identifiable(demos, query) -> list[str]:
++    """Report any declared rival that the demonstrations leave live."""
++    reasons: list[str] = []
++    query_input = query.get("input") if isinstance(query, dict) else None
++    query_errors = self_check(query_input)
++    if query_errors:
++        return ["query input is unlawful: " + "; ".join(query_errors)]
++    try:
++        query_truth = rule_mirror(query_input)
++    except ValueError as exc:  # defensive; self_check already ran
++        return [f"query rule mirror failed: {exc}"]
++
++    if not isinstance(demos, list):
++        return ["demos must be a list"]
++    for index, demo in enumerate(demos):
++        demo_input = demo.get("input") if isinstance(demo, dict) else None
++        errors = self_check(demo_input)
++        if errors:
++            reasons.append(f"demo {index} is unlawful: {'; '.join(errors)}")
++            continue
++        expected = rule_mirror(demo_input)
++        if demo.get("output") != expected:
++            reasons.append(f"demo {index} output disagrees with the ordered BFS rule")
++    if reasons:
++        return reasons
++
++    for name, competitor in LESSON_COMPETITORS.items():
++        if all(competitor(demo["input"]) == demo["output"] for demo in demos):
++            if competitor(query_input) != query_truth:
++                reasons.append(
++                    f"demos remain compatible with competitor {name!r}, which changes the query"
++                )
++    return reasons
+diff --git a/repo/generators/6a289c5b0897/notes.md b/repo/generators/6a289c5b0897/notes.md
+--- a/repo/generators/6a289c5b0897/notes.md
++++ b/repo/generators/6a289c5b0897/notes.md
+@@ -1,4 +1,37 @@
+ # Working notes: 6a289c5b0897
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## 2026-10-04 review
++
++The imported `3.0.0` sampler labeled the route as unique, but an independent
++probe found multiple shortest paths in **466/600** baseline draws and in three
++of the four canonical inputs. The selected Racket authority resolves those ties
++with row-major endpoint selection and BFS order `up, down, left, right`.
++Changing the authority would have erased real canonical semantics, so it was
++left untouched and pinned with `RULE_HASH = "d0e77b114425"`.
++
++Version `4.0.0` alternates deliberate tied and unique lessons. Every tied draw
++is selected so that an alternative BFS order differs. That rival is not
++artificial: 11 non-authority direction permutations reproduce all four public
++pairs; the declared `alternate_bfs_order` is one of them. Any three demos from a
++four-pair schedule window contain a tied witness, while every draw also refutes
++wall-ignoring, paint-all-open, and preserve-input shortcuts.
++
++The old five-axis surface was reduced to three exact observable controls:
++`h`, `w`, and `color`. Unknown keys and coercible-but-wrong types fail closed.
++Half of default draws use canonical `5×5` or `5×6` shapes, with six total shape
++profiles over the period-eight schedule.
++
++Reusable evidence/tooling:
++
++- `workspace/reference_probe.py` implements an independent oracle, dynamically
++  checks declared shortcuts/rivals, samples the actual generator, and exhausts
++  all schedule starts and query rotations.
++- `tests/test_generator.py` covers canonical parity, exact controls, malformed
++  inputs, schedule semantics, rotated lessons, mirror purity, and the probe CLI.
++- Baseline ambiguity: `checks/baseline-path-probe.log`.
++- Final independent probe: `checks/reference-probe.json`.
++
++Known limits: the finite rival set is not a proof of unique human induction;
++generated mazes keep all non-wall cells connected and use at least three walls,
++so disconnected open islands and the special case of exactly two gray cells are
++outside the supported training domain.
+diff --git a/repo/generators/6a289c5b0897/tests/test_generator.py b/repo/generators/6a289c5b0897/tests/test_generator.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/6a289c5b0897/tests/test_generator.py
+@@ -0,0 +1,179 @@
++from __future__ import annotations
++
++import copy
++import importlib
++
++import pytest
++
++from reviewer_support import canonical_pairs, find_root
++
++GEN = importlib.import_module(
++    "puzzle_generators.per_puzzle.6a289c5b0897.generator"
++)
++PAIRS = canonical_pairs(GEN.TASK_ID, root=find_root(__file__))
++
++
++def _episode(seed: int, start: int, difficulty: str):
++    pairs = []
++    for index in range(start, start + 4):
++        grid = GEN.generate(seed, index, difficulty=difficulty)
++        pairs.append({"input": grid, "output": GEN.rule_mirror(grid)})
++    return pairs
++
++
++def test_canonical_inputs_are_owned_and_python_mirror_matches_authority():
++    assert len(PAIRS) == 4
++    for pair in PAIRS:
++        assert GEN.self_check(pair["input"]) == []
++        assert GEN.rule_mirror(pair["input"]) == pair["output"]
++
++
++@pytest.mark.parametrize("difficulty", [None, "easy", "medium", "hard"])
++def test_exact_observable_overrides_work_in_every_band(difficulty):
++    cases = [
++        (0, {"h": 4, "w": 5, "color": 1}),
++        (1, {"h": 6, "w": 8, "color": 8}),
++    ]
++    for sample_index, expected in cases:
++        grid = GEN.generate(
++            7711,
++            sample_index,
++            difficulty=difficulty,
++            **expected,
++        )
++        assert GEN.self_check(grid) == []
++        assert GEN.observe_overrides(grid) == expected
++
++
++@pytest.mark.parametrize(
++    "override",
++    [
++        {"unknown_axis": 1},
++        {"h": 3},
++        {"h": 7},
++        {"w": 4},
++        {"w": 9},
++        {"color": 0},
++        {"color": 5},
++        {"color": 9},
++        {"h": True},
++        {"w": 5.0},
++        {"color": "2"},
++    ],
++)
++def test_invalid_overrides_fail_loudly(override):
++    with pytest.raises(ValueError):
++        GEN.generate(1, 0, **override)
++
++
++@pytest.mark.parametrize("difficulty", ["easy", "medium", "hard"])
++def test_schedule_deliberately_covers_tied_and_unique_shortest_routes(difficulty):
++    observed = []
++    for sample_index in range(12):
++        grid = GEN.generate(3109, sample_index, difficulty=difficulty)
++        analysis = GEN._analyze(grid)
++        assert analysis["errors"] == []
++        profile = GEN.schedule_profile(3109, sample_index, difficulty)
++        observed.append(profile)
++        if profile == "tied":
++            assert analysis["shortest_path_count"] >= 2
++            truth = GEN.rule_mirror(grid)
++            assert GEN.SEMANTIC_RIVALS["paint_all_shortest_cells"](grid) != truth
++            assert GEN.SEMANTIC_RIVALS["alternate_bfs_order"](grid) != truth
++        else:
++            assert profile == "unique"
++            assert analysis["shortest_path_count"] == 1
++    assert set(observed) == {"tied", "unique"}
++
++
++@pytest.mark.parametrize("difficulty", ["easy", "medium", "hard"])
++def test_every_rotated_four_pair_lesson_refutes_declared_rivals(difficulty):
++    for start in range(8):
++        episode = _episode(518081, start, difficulty)
++        for query_index in range(4):
++            query = episode[query_index]
++            demos = episode[:query_index] + episode[query_index + 1 :]
++            assert GEN.lesson_identifiable(demos, query) == []
++
++
++def test_default_schedule_anchors_canonical_profiles_without_collapsing_shapes():
++    for difficulty in ("easy", "medium", "hard"):
++        shapes = {
++            (len(GEN.generate(9001, index, difficulty=difficulty)),
++             len(GEN.generate(9001, index, difficulty=difficulty)[0]))
++            for index in range(16)
++        }
++        assert {(5, 5), (5, 6)} <= shapes
++        assert len(shapes) >= 4
++
++
++def test_validator_rejects_malformed_and_multi_terminal_inputs():
++    for bad in (None, [], [[]], [[0], [0, 5]], [[True, 0], [0, 0]]):
++        assert GEN.self_check(bad)
++
++    grid = GEN.generate(44, 1)
++    extra = copy.deepcopy(grid)
++    zeros = [
++        (r, c)
++        for r, row in enumerate(extra)
++        for c, value in enumerate(row)
++        if value == 0
++    ]
++    assert len(zeros) >= 2
++    for r, c in zeros[:2]:
++        extra[r][c] = 9
++    assert GEN.self_check(extra)
++
++
++def test_rule_mirror_is_pure_and_fresh():
++    grid = GEN.generate(812, 0, difficulty="hard")
++    frozen = copy.deepcopy(grid)
++    first = GEN.rule_mirror(grid)
++    second = GEN.rule_mirror(grid)
++    assert grid == frozen
++    assert first == second
++    assert first is not second
++    assert all(a is not b for a, b in zip(first, second))
++
++
++def test_declared_alternate_order_is_a_real_canonical_shortcut_and_is_taught_away():
++    rival = GEN.CANONICAL_SHORTCUTS["alternate_bfs_order"]
++    for pair in PAIRS:
++        assert rival(pair["input"]) == pair["output"]
++
++    for difficulty in ("easy", "medium", "hard"):
++        tied = GEN.generate(271828, 0, difficulty=difficulty)
++        assert GEN.schedule_profile(271828, 0, difficulty) == "tied"
++        assert rival(tied) != GEN.rule_mirror(tied)
++
++
++def test_reference_probe_cli_writes_a_clean_reproducible_report(tmp_path):
++    import json
++    import subprocess
++    import sys
++    from pathlib import Path
++
++    script = Path(__file__).resolve().parents[1] / "workspace" / "reference_probe.py"
++    report = tmp_path / "probe.json"
++    command = [
++        sys.executable,
++        str(script),
++        "--seeds",
++        "2",
++        "--samples-per-band",
++        "4",
++        "--out",
++        str(report),
++    ]
++    subprocess.run(command, check=True, cwd=find_root(__file__), capture_output=True, text=True)
++    first = json.loads(report.read_text())
++    assert first["status"] == "pass"
++    assert first["canonical"]["oracle_matches"] == len(PAIRS)
++    assert first["canonical"]["shortcut_fit"]["alternate_bfs_order"] == len(PAIRS)
++    assert first["sampled"]["generated"] == 2 * 4 * 3
++    assert first["sampled"]["failures"] == []
++    assert first["cyclic_lessons"]["ambiguous_rotations"] == 0
++
++    subprocess.run(command, check=True, cwd=find_root(__file__), capture_output=True, text=True)
++    second = json.loads(report.read_text())
++    assert second == first
+diff --git a/repo/generators/6a289c5b0897/workspace/README.md b/repo/generators/6a289c5b0897/workspace/README.md
+--- a/repo/generators/6a289c5b0897/workspace/README.md
++++ b/repo/generators/6a289c5b0897/workspace/README.md
+@@ -1,4 +1,26 @@
+-# Workspace
++# Task-local reviewer workspace
+ 
+-Keep alternate drafts, reproducers, and unfinished experiments here.
+-The selected implementation is `../generator.py`. Workspace drafts are never automatically selected.
++`reference_probe.py` is an independent, deterministic audit tool for task
++`6a289c5b0897`. It does **not** use the generator's Python mirror as its oracle.
++It:
++
++- reimplements the selected Racket endpoint selection and ordered BFS;
++- checks every canonical pair;
++- verifies every dynamically declared `CANONICAL_SHORTCUTS` entry really fits
++  all public pairs;
++- samples the actual generator and checks replay, schedule profiles, shapes,
++  colors, and rival disagreements; and
++- exhausts all eight schedule starts and all four query rotations for a
++  three-demo/one-query lesson.
++
++From the packet root:
++
++```bash
++python3 run_with_racket.py python3 \
++  generators/6a289c5b0897/workspace/reference_probe.py \
++  --seeds 10 --samples-per-band 16 \
++  --out ../checks/reference-probe.json
++```
++
++The JSON contains the exact generator SHA-256 and has no timestamps, so an
++identical source and command produce byte-identical output.
+diff --git a/repo/generators/6a289c5b0897/workspace/reference_probe.py b/repo/generators/6a289c5b0897/workspace/reference_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/6a289c5b0897/workspace/reference_probe.py
+@@ -0,0 +1,441 @@
++#!/usr/bin/env python3
++"""Independent reproducible probe for generator 6a289c5b0897.
++
++The probe deliberately does not use ``generator.rule_mirror`` as its oracle.
++It reimplements the selected Racket BFS semantics, checks all canonical pairs,
++verifies declared canonical shortcuts, samples the actual generator, and tests
++every query rotation over all eight starts of the deterministic shape schedule.
++
++Typical packet-root invocation:
++
++    python3 run_with_racket.py python3 \
++      generators/6a289c5b0897/workspace/reference_probe.py \
++      --seeds 10 --samples-per-band 16 \
++      --out ../checks/reference-probe.json
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++import sys
++from collections import Counter, deque
++from pathlib import Path
++from typing import Callable, Iterable
++
++HERE = Path(__file__).resolve()
++
++# Support both the source packet and the portable task-test runtime.
++for parent in HERE.parents:
++    source_runtime = parent / "shared" / "runtime"
++    if (source_runtime / "reviewer_support.py").is_file():
++        sys.path.insert(0, str(source_runtime))
++        break
++    if (parent / "reviewer_support.py").is_file():
++        sys.path.insert(0, str(parent))
++        break
++
++from reviewer_support import canonical_pairs, find_root  # noqa: E402
++
++TASK_ID = "6a289c5b0897"
++AUTHORITY_DIRS = ((-1, 0), (1, 0), (0, -1), (0, 1))
++BANDS = ("easy", "medium", "hard")
++SCHEDULE_PERIOD = 8
++Cell = tuple[int, int]
++Grid = list[list[int]]
++
++
++def _load_generator():
++    path = HERE.parents[1] / "generator.py"
++    spec = importlib.util.spec_from_file_location(f"probe_generator_{TASK_ID}", path)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot import generator from {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module, path
++
++
++def _neighbors(cell: Cell, h: int, w: int, order: Iterable[Cell]):
++    r, c = cell
++    for dr, dc in order:
++        nr, nc = r + dr, c + dc
++        if 0 <= nr < h and 0 <= nc < w:
++            yield nr, nc
++
++
++def _authority_parts(grid: Grid) -> tuple[int, Cell, Cell, set[int]]:
++    """Follow the Racket endpoint selection literally enough for this domain."""
++    values = sorted({value for row in grid for value in row if value != 0})
++    candidates = [
++        color
++        for color in values
++        if sum(value == color for row in grid for value in row) == 2
++    ]
++    if not candidates:
++        raise ValueError("no nonzero color occurs exactly twice")
++    color = min(candidates)
++    points = [
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == color
++    ]
++    return color, points[0], points[1], {0, color}
++
++
++def _ordered_path(
++    grid: Grid,
++    start: Cell,
++    goal: Cell,
++    allowed: set[int],
++    order: Iterable[Cell] = AUTHORITY_DIRS,
++) -> list[Cell]:
++    h, w = len(grid), len(grid[0])
++    parent: dict[Cell, Cell | None] = {start: None}
++    queue = deque([start])
++    while queue:
++        cell = queue.popleft()
++        if cell == goal:
++            break
++        for nxt in _neighbors(cell, h, w, order):
++            if nxt in parent or grid[nxt[0]][nxt[1]] not in allowed:
++                continue
++            parent[nxt] = cell
++            queue.append(nxt)
++    if goal not in parent:
++        return []
++    path: list[Cell] = []
++    current: Cell | None = goal
++    while current is not None:
++        path.append(current)
++        current = parent[current]
++    return list(reversed(path))
++
++
++def independent_oracle(grid: Grid) -> Grid:
++    color, start, goal, allowed = _authority_parts(grid)
++    path = _ordered_path(grid, start, goal, allowed)
++    if not path:
++        raise ValueError("selected endpoints are disconnected")
++    out = [[0 for _ in row] for row in grid]
++    for r, c in path:
++        out[r][c] = color
++    return out
++
++
++def _distances(grid: Grid, start: Cell, allowed: set[int]) -> dict[Cell, int]:
++    h, w = len(grid), len(grid[0])
++    dist = {start: 0}
++    queue = deque([start])
++    while queue:
++        cell = queue.popleft()
++        for nxt in _neighbors(cell, h, w, AUTHORITY_DIRS):
++            if nxt in dist or grid[nxt[0]][nxt[1]] not in allowed:
++                continue
++            dist[nxt] = dist[cell] + 1
++            queue.append(nxt)
++    return dist
++
++
++def shortest_path_count(grid: Grid) -> int:
++    _color, start, goal, allowed = _authority_parts(grid)
++    forward = _distances(grid, start, allowed)
++    if goal not in forward:
++        return 0
++    reverse = _distances(grid, goal, allowed)
++    total = forward[goal]
++    shortest = {
++        cell
++        for cell, distance in forward.items()
++        if cell in reverse and distance + reverse[cell] == total
++    }
++    ways: dict[Cell, int] = {start: 1}
++    h, w = len(grid), len(grid[0])
++    for distance in range(total):
++        for cell in sorted(shortest):
++            if forward[cell] != distance:
++                continue
++            for nxt in _neighbors(cell, h, w, AUTHORITY_DIRS):
++                if nxt in shortest and forward.get(nxt) == distance + 1:
++                    ways[nxt] = min(2, ways.get(nxt, 0) + ways.get(cell, 0))
++    return ways.get(goal, 0)
++
++
++def _grid_hash(grid: Grid) -> str:
++    payload = json.dumps(grid, separators=(",", ":"), sort_keys=False).encode()
++    return hashlib.sha256(payload).hexdigest()
++
++
++def _source_hash(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def _safe_rule_call(rule: Callable[[Grid], Grid], grid: Grid):
++    try:
++        return rule([row[:] for row in grid]), None
++    except Exception as exc:  # report exact declaration failures, never hide them
++        return None, f"{type(exc).__name__}: {exc}"
++
++
++def run_probe(*, seeds: int, samples_per_band: int) -> dict[str, object]:
++    gen, generator_path = _load_generator()
++    root = find_root(HERE)
++    pairs = canonical_pairs(TASK_ID, root=root)
++    failures: list[dict[str, object]] = []
++
++    canonical_matches = 0
++    for index, pair in enumerate(pairs):
++        try:
++            predicted = independent_oracle(pair["input"])
++        except Exception as exc:
++            failures.append({"kind": "canonical_oracle_error", "index": index, "error": str(exc)})
++            continue
++        if predicted == pair["output"]:
++            canonical_matches += 1
++        else:
++            failures.append({"kind": "canonical_oracle_mismatch", "index": index})
++
++    shortcut_fit: dict[str, int] = {}
++    shortcut_errors: dict[str, list[str]] = {}
++    for name, rival in sorted(getattr(gen, "CANONICAL_SHORTCUTS", {}).items()):
++        fit = 0
++        errors: list[str] = []
++        for index, pair in enumerate(pairs):
++            predicted, error = _safe_rule_call(rival, pair["input"])
++            if error:
++                errors.append(f"pair {index}: {error}")
++            elif predicted == pair["output"]:
++                fit += 1
++        shortcut_fit[name] = fit
++        if errors:
++            shortcut_errors[name] = errors
++        if fit != len(pairs):
++            failures.append({
++                "kind": "declared_shortcut_not_canonical_fitting",
++                "name": name,
++                "fit": fit,
++                "pairs": len(pairs),
++            })
++
++    profiles: Counter[str] = Counter()
++    shapes: Counter[str] = Counter()
++    colors: Counter[str] = Counter()
++    multiplicities: Counter[str] = Counter()
++    rival_disagreements: Counter[str] = Counter()
++    generated_hashes: set[str] = set()
++    generated = 0
++    competitors = dict(getattr(gen, "LESSON_COMPETITORS", {}))
++
++    for band in BANDS:
++        for seed in range(seeds):
++            for sample_index in range(samples_per_band):
++                generated += 1
++                try:
++                    grid = gen.generate(seed, sample_index, difficulty=band)
++                    replay = gen.generate(seed, sample_index, difficulty=band)
++                except Exception as exc:
++                    failures.append({
++                        "kind": "generation_error",
++                        "band": band,
++                        "seed": seed,
++                        "sample_index": sample_index,
++                        "error": f"{type(exc).__name__}: {exc}",
++                    })
++                    continue
++                if replay != grid:
++                    failures.append({
++                        "kind": "nondeterministic_replay",
++                        "band": band,
++                        "seed": seed,
++                        "sample_index": sample_index,
++                    })
++                check_errors = list(gen.self_check(grid))
++                if check_errors:
++                    failures.append({
++                        "kind": "self_check_rejection",
++                        "band": band,
++                        "seed": seed,
++                        "sample_index": sample_index,
++                        "errors": check_errors,
++                    })
++                    continue
++                try:
++                    truth = independent_oracle(grid)
++                except Exception as exc:
++                    failures.append({
++                        "kind": "oracle_error",
++                        "band": band,
++                        "seed": seed,
++                        "sample_index": sample_index,
++                        "error": str(exc),
++                    })
++                    continue
++                if gen.rule_mirror(grid) != truth:
++                    failures.append({
++                        "kind": "python_mirror_mismatch",
++                        "band": band,
++                        "seed": seed,
++                        "sample_index": sample_index,
++                    })
++
++                profile = str(gen.schedule_profile(seed, sample_index, band))
++                count = shortest_path_count(grid)
++                profiles[profile] += 1
++                multiplicities["tied" if count >= 2 else "unique"] += 1
++                if (profile == "tied") != (count >= 2):
++                    failures.append({
++                        "kind": "schedule_profile_mismatch",
++                        "band": band,
++                        "seed": seed,
++                        "sample_index": sample_index,
++                        "profile": profile,
++                        "shortest_path_count": count,
++                    })
++                shapes[f"{len(grid)}x{len(grid[0])}"] += 1
++                color, _start, _goal, _allowed = _authority_parts(grid)
++                colors[str(color)] += 1
++                generated_hashes.add(_grid_hash(grid))
++                for name, rival in sorted(competitors.items()):
++                    prediction, error = _safe_rule_call(rival, grid)
++                    if error:
++                        failures.append({
++                            "kind": "rival_error",
++                            "name": name,
++                            "band": band,
++                            "seed": seed,
++                            "sample_index": sample_index,
++                            "error": error,
++                        })
++                    elif prediction != truth:
++                        rival_disagreements[name] += 1
++
++    for name in sorted(competitors):
++        if rival_disagreements[name] == 0:
++            failures.append({"kind": "rival_never_refuted", "name": name})
++
++    # Exhaust every schedule start and every held-out query position.  Cache the
++    # period plus three look-ahead pairs once per seed/band.
++    total_rotations = 0
++    ambiguous_rotations = 0
++    hook_warning_rotations = 0
++    direct_ambiguity_examples: list[dict[str, object]] = []
++    lesson_hashes: set[str] = set()
++    for band in BANDS:
++        for seed in range(seeds):
++            pairs_by_index: dict[int, dict[str, Grid]] = {}
++            for sample_index in range(SCHEDULE_PERIOD + 3):
++                grid = gen.generate(seed, sample_index, difficulty=band)
++                pairs_by_index[sample_index] = {
++                    "input": grid,
++                    "output": independent_oracle(grid),
++                }
++            for start in range(SCHEDULE_PERIOD):
++                episode = [pairs_by_index[index] for index in range(start, start + 4)]
++                lesson_hashes.update(_grid_hash(pair["input"]) for pair in episode)
++                for query_index in range(4):
++                    total_rotations += 1
++                    query = episode[query_index]
++                    demos = episode[:query_index] + episode[query_index + 1:]
++                    query_truth = query["output"]
++                    surviving = []
++                    for name, rival in sorted(competitors.items()):
++                        if all(rival(pair["input"]) == pair["output"] for pair in demos):
++                            if rival(query["input"]) != query_truth:
++                                surviving.append(name)
++                    hook_reasons = list(gen.lesson_identifiable(demos, query))
++                    if surviving:
++                        ambiguous_rotations += 1
++                        if len(direct_ambiguity_examples) < 8:
++                            direct_ambiguity_examples.append({
++                                "band": band,
++                                "seed": seed,
++                                "start": start,
++                                "query_index": query_index,
++                                "surviving": surviving,
++                            })
++                    if hook_reasons:
++                        hook_warning_rotations += 1
++                    if bool(surviving) != bool(hook_reasons):
++                        failures.append({
++                            "kind": "lesson_hook_disagrees_with_direct_scoring",
++                            "band": band,
++                            "seed": seed,
++                            "start": start,
++                            "query_index": query_index,
++                            "surviving": surviving,
++                            "hook_reasons": hook_reasons,
++                        })
++
++    if ambiguous_rotations:
++        failures.append({
++            "kind": "ambiguous_rotations",
++            "count": ambiguous_rotations,
++            "examples": direct_ambiguity_examples,
++        })
++
++    result = {
++        "schema": "6a289c5b0897-reference-probe-v1",
++        "task_id": TASK_ID,
++        "generator_sha256": _source_hash(generator_path),
++        "parameters": {
++            "seeds": seeds,
++            "samples_per_band": samples_per_band,
++            "bands": list(BANDS),
++            "schedule_period": SCHEDULE_PERIOD,
++            "lesson_pairs": 4,
++            "demo_pairs": 3,
++        },
++        "canonical": {
++            "pairs": len(pairs),
++            "oracle_matches": canonical_matches,
++            "shortcut_fit": dict(sorted(shortcut_fit.items())),
++            "shortcut_errors": shortcut_errors,
++        },
++        "sampled": {
++            "generated": generated,
++            "unique_inputs": len(generated_hashes),
++            "profiles": dict(sorted(profiles.items())),
++            "actual_multiplicity": dict(sorted(multiplicities.items())),
++            "shapes": dict(sorted(shapes.items())),
++            "colors": dict(sorted(colors.items())),
++            "rival_disagreements": dict(sorted(rival_disagreements.items())),
++            "failures": failures,
++        },
++        "cyclic_lessons": {
++            "starts_per_seed_band": SCHEDULE_PERIOD,
++            "rotations": total_rotations,
++            "unique_inputs": len(lesson_hashes),
++            "ambiguous_rotations": ambiguous_rotations,
++            "hook_warning_rotations": hook_warning_rotations,
++            "examples": direct_ambiguity_examples,
++        },
++    }
++    result["status"] = "pass" if not failures else "fail"
++    return result
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seeds", type=int, default=10)
++    parser.add_argument("--samples-per-band", type=int, default=16)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    if args.seeds < 1 or args.samples_per_band < 1:
++        parser.error("--seeds and --samples-per-band must be positive")
++
++    result = run_probe(seeds=args.seeds, samples_per_band=args.samples_per_band)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    print(
++        f"{result['status'].upper()} {TASK_ID}: "
++        f"canonical={result['canonical']['oracle_matches']}/{result['canonical']['pairs']} "
++        f"generated={result['sampled']['generated']} "
++        f"rotations={result['cyclic_lessons']['rotations']} "
++        f"ambiguous={result['cyclic_lessons']['ambiguous_rotations']}"
++    )
++    return 0 if result["status"] == "pass" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

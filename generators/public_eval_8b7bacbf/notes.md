@@ -1,0 +1,13 @@
+# public_eval_8b7bacbf
+
+Canonical reference: infer background, singleton marker, indicator and frame material, classify enclosed pockets and fill those selected by clean marker-associated indicators. Existing fallback, multiple-marker, contamination and irregular-enclosure branches are retained byte for byte and checked on the supplied original pairs.
+
+Current family: `indicator_policy = clean | all` uses one clean connected indicator network and rectangular enclosures. Both settings share identical input streams. Geometry now varies across 4–16 pockets, dimensions, locations, scales, selected subsets, palettes (including nonzero background), rotations/reflections and rectangular canvases. Dense 30x30 examples contain sixteen real enclosures. Two demonstrations distinguish the declared settings; 2–6 demonstrations and 1–4 prefix-stable shuffled queries are supported. Query construction is independent of demonstration count. The public projection exposes only the current unlabeled query.
+
+Prior reviewer sampler -> current repair: the prior sampler always selected the same upper-left 2x2 interior and varied only one optional indicator cell. A fixed-coordinate rule solved all generated cases and the reported causal witness. The current sampler changes selected pockets while holding enclosure geometry fixed in route-counterfactual probes and tests fixed-coordinate, enclosure-only and simple object-selection rivals. The reference programs are unchanged.
+
+Limits: synthetic construction currently covers rectangular enclosures with one clean marker/indicator network. Multiple markers, contaminated chains, irregular pockets and fallback behavior are retained in canonical original examples but are not claimed as synthetic coverage. Finite source-bound checks do not prove arbitrary-program uniqueness or admit trajectories to training. Review/qualification evidence states which bounded checks were actually executed.
+
+## Current repeated-return reconciliation
+
+Preserve exact clean/all programs and the owner-repaired sampler with variable geometry, palettes, 4–16 pockets, marker routing and dense 30x30 scenes. The superseded 04d1 fixed-coordinate sampler remains rejected; none of its constructor bytes are restored. The e9d87 embedded-carrier/bridged-gap interpretation conflicts with the accepted marker-adjacent grammar and is excluded, with a protected-Racket counterexample. Route-only counterfactual and cheap-bypass tests remain checked. Evidence: `evidence/reconcile-15/`. Private native qualification, fresh native acceptance re-execution and bounded protected execution passed. Live publication and training admission remain separate.

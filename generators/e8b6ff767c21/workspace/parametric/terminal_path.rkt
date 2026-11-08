@@ -1,0 +1,67 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g))
+                (dirs (list (list 0 1) (list 1 0) (list 0 -1) (list -1 0)))
+                (start (set-cell (cellmap g (r c v) 0) 0 0 3))
+                (state
+                 (let loop
+                      ((s 0) (rr 0) (cc 0) (acc start))
+                      (let* ((base (if (zero? (remainder s 2)) (- w 1) (- h 1)))
+                             (shrink (if (< s 3) 0 (* 2 (quotient (- s 1) 2))))
+                             (len (- base shrink)))
+                        (if (<= len 0)
+                            (list acc rr cc)
+                            (let* ((dir (nth dirs (remainder s 4)))
+                                   (dr (fst dir))
+                                   (dc (snd dir)))
+                              (let step
+                                   ((i 0) (cr rr) (cur-c cc) (a acc))
+                                   (if (= i len)
+                                       (loop (+ s 1) cr cur-c a)
+                                       (let* ((nr (+ cr dr))
+                                              (nc (+ cur-c dc)))
+                                         (step (+ i 1)
+                                               nr
+                                               nc
+                                               (if (in-bounds? nr nc h w)
+                                                   (set-cell a nr nc 3)
+                                                   a))))))))))
+                (spiral (first state))
+                (end-r (second state))
+                (end-c (third state))
+                (targets
+                 (filter
+                  (lambda (p)
+                    (and (in-bounds? (first p) (second p) h w)
+                         (= (at spiral (first p) (second p)) 0)))
+                  (map (lambda (d)
+                         (list (+ end-r (first d)) (+ end-c (second d))))
+                       dirs))))
+           (let bfs
+                ((queue (list (list (list 1 0) (list (list 1 0)))))
+                 (seen (list (list 1 0))))
+                (if (empty? queue)
+                    spiral
+                    (let* ((entry (first queue))
+                           (position (first entry))
+                           (path (second entry))
+                           (remaining (rest queue)))
+                      (if (member? position targets)
+                          (for/fold ((out spiral)) ((p (in-list path)))
+                            (set-cell out (first p) (second p) 2))
+                          (let* ((neighbors
+                                  (filter
+                                   (lambda (p)
+                                     (and (in-bounds? (first p) (second p) h w)
+                                          (= (at spiral (first p) (second p)) 0)
+                                          (not (member? p seen))))
+                                   (map (lambda (d)
+                                          (list (+ (first position) (first d))
+                                                (+ (second position) (second d))))
+                                        dirs)))
+                                 (entries
+                                  (map (lambda (p)
+                                         (list p (append path (list p))))
+                                       neighbors)))
+                            (bfs (append remaining entries)
+                                 (append seen neighbors))))))))))

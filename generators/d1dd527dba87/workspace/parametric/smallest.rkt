@@ -1,0 +1,15 @@
+(rule!
+  (let* ((shape1 (normalize-cells (obj-cells (first (sort (filter (lambda (o) (= (obj-color o) 1)) (objects g 0))
+                                                        (lambda (a b) (< (obj-size a) (obj-size b))))))))
+         (shape2 (normalize-cells (obj-cells (first (sort (filter (lambda (o) (= (obj-color o) 2)) (objects g 0))
+                                                        (lambda (a b) (< (obj-size a) (obj-size b))))))))
+         (xor (filter (lambda (p) (not (and (member? p shape1) (member? p shape2))))
+                      (append (filter (lambda (p) (not (member? p shape2))) shape1)
+                              (filter (lambda (p) (not (member? p shape1))) shape2)))))
+    (if (empty? xor)
+        (empty-grid 1 1 0)
+        (let* ((norm (normalize-cells xor))
+               (h (+ 1 (apply max (map first norm))))
+               (w (+ 1 (apply max (map second norm)))))
+          (grid-from-fn h w
+            (lambda (r c) (if (member? (list r c) norm) 8 0)))))))

@@ -1,0 +1,4204 @@
+diff --git a/repo/generators/b6ba2d176fe8/notes.md b/repo/generators/b6ba2d176fe8/notes.md
+--- a/repo/generators/b6ba2d176fe8/notes.md
++++ b/repo/generators/b6ba2d176fe8/notes.md
+@@ -1,3 +1,15 @@
++# Current assignment: `review-529fa06ea6394047`
++
++## Advisory object-count gate counterexample
++
++Production generator, accepted sort-order artifact, and canonical authority were not changed. The deterministic native sampler exposes object counts `[3, 4, 5]` in its three demonstrations and first introduces count `6` in query 1. The reusable probe `workspace/parametric/count_gate_probe.py` constructs, for each declared sort-order setting, a source-bound rival that follows the intended order except at exactly six objects, where it reverses the order.
++
++For both `left_to_right` and `right_to_left`, the rival matches all three demonstrations and fails only the first query: demo matches `[true, true, true]`, query matches `[false, true, true, true]`. Protected Racket independently reproduced all target and rival labels in 28 evaluations. The staged peer suite passed 51/51.
++
++Recommended owner action: ensure any lesson that may query six objects includes a six-object demonstration, or add count-gated ordering rivals to the lesson-identifiability gate. The retained report is `checks/b6ba2d176fe8/count-gate-probe.json`. This is advisory peer work and does not alter the already accepted artifact, approval state, or training admission.
++
++---
++
+ # Current notes: b6ba2d176fe8
+ 
+ ## Intended rule
+diff --git a/repo/generators/b6ba2d176fe8/tests/test_count_gate_probe.py b/repo/generators/b6ba2d176fe8/tests/test_count_gate_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b6ba2d176fe8/tests/test_count_gate_probe.py
+@@ -0,0 +1,56 @@
++"""Regression tests for the b6ba2d176fe8 object-count lesson probe."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++import pytest
++
++
++TASK_HOME = Path(__file__).resolve().parents[1]
++PROBE_PATH = TASK_HOME / "workspace/parametric/count_gate_probe.py"
++
++
++def load_probe():
++    assert PROBE_PATH.is_file(), f"required peer audit tool is missing: {PROBE_PATH}"
++    spec = importlib.util.spec_from_file_location("b6ba2d176fe8_count_gate_probe", PROBE_PATH)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_count_gate_rival_fits_all_three_demos_but_fails_six_object_query():
++    probe = load_probe()
++    report = probe.build_report(seed=20261023, verify_racket=False)
++
++    assert report["status"] == "counterexample_found"
++    assert report["object_counts"] == [3, 4, 5, 6, 3, 4, 5]
++    assert len(report["witnesses"]) == 2
++    for witness in report["witnesses"]:
++        assert witness["demo_matches"] == [True, True, True]
++        assert witness["query_matches"] == [False, True, True, True]
++        assert witness["first_failing_query"] == 0
++        assert witness["rival_program_sha256"] != witness["target_program_sha256"]
++        assert witness["rival_program"].count("(length objs)") == 1
++
++
++def test_count_gate_rival_materialization_is_guarded_and_setting_specific():
++    probe = load_probe()
++    left = probe.materialize_count_gate_rival("left_to_right")
++    right = probe.materialize_count_gate_rival("right_to_left")
++
++    assert left != right
++    assert "(= (length objs) 6)" in left
++    assert "(= (length objs) 6)" in right
++    assert left.count(probe.proto._SORT_FRAGMENT) == 1
++    assert right.count(probe.proto._REVERSE_SORT_FRAGMENT) == 1
++    with pytest.raises(ValueError, match="sort_order"):
++        probe.materialize_count_gate_rival("sideways")
++
++
++def test_count_gate_probe_rejects_nonliteral_seed_before_generation():
++    probe = load_probe()
++    for bad_seed in (True, False, -1, 1.0, "1"):
++        with pytest.raises(ValueError, match="seed"):
++            probe.build_report(seed=bad_seed, verify_racket=False)
+diff --git a/repo/generators/b6ba2d176fe8/workspace/parametric/count_gate_probe.py b/repo/generators/b6ba2d176fe8/workspace/parametric/count_gate_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b6ba2d176fe8/workspace/parametric/count_gate_probe.py
+@@ -0,0 +1,250 @@
++#!/usr/bin/env python3
++"""Find an object-count shortcut in the b6ba2d176fe8 sort-order lesson.
++
++The native prototype samples object counts 3, 4, 5 for its three
++representations, then count 6 for its first query.  This probe constructs a
++source-bound rival that follows the selected sort order except when there are
++exactly six objects, where it uses the opposite order.  The rival therefore
++fits every demonstration and fails the first query for either declared
++setting.
++"""
++from __future__ import annotations
++
++import argparse
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++from typing import Any
++
++
++HERE = Path(__file__).resolve().parent
++TASK_HOME = HERE.parents[1]
++REPO = TASK_HOME.parents[1]
++PROTOTYPE_PATH = HERE / "prototype.py"
++GENERATOR_PATH = TASK_HOME / "generator.py"
++TEST_PATH = TASK_HOME / "tests/test_count_gate_probe.py"
++
++
++def _load_prototype():
++    spec = importlib.util.spec_from_file_location(
++        "b6ba2d176fe8_count_gate_probe_prototype", PROTOTYPE_PATH
++    )
++    if spec is None or spec.loader is None:
++        raise ImportError(f"cannot load prototype from {PROTOTYPE_PATH}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++proto = _load_prototype()
++_SORT_BODY = "(sort-by objs (lambda (o) (second (obj-bbox o))))"
++
++
++def _file_digest(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def _validate_seed(seed: Any) -> int:
++    if type(seed) is not int or not 0 <= seed < 2**63:
++        raise ValueError("seed must be a literal integer in 0..2**63-1")
++    return seed
++
++
++def _validate_sort_order(sort_order: Any) -> str:
++    if type(sort_order) is not str or sort_order not in {
++        "left_to_right",
++        "right_to_left",
++    }:
++        raise ValueError("sort_order must be left_to_right or right_to_left")
++    return sort_order
++
++
++def materialize_count_gate_rival(sort_order: str) -> str:
++    """Return a guarded Racket rival bound to the selected source program."""
++    sort_order = _validate_sort_order(sort_order)
++    settings = proto.Settings(sort_order)
++    source = proto.program(settings)
++    if sort_order == "left_to_right":
++        fragment = proto._SORT_FRAGMENT
++        replacement = (
++            "(sorted (let* ((sorted "
++            + _SORT_BODY
++            + ") (opposite (reverse sorted))) "
++            + "(if (= (length objs) 6) opposite sorted)))"
++        )
++    else:
++        fragment = proto._REVERSE_SORT_FRAGMENT
++        replacement = (
++            "(sorted (let* ((sorted (reverse "
++            + _SORT_BODY
++            + ")) (opposite (reverse sorted))) "
++            + "(if (= (length objs) 6) opposite sorted)))"
++        )
++    if source.count(fragment) != 1:
++        raise ValueError(
++            f"expected exactly one guarded sort fragment for {sort_order}; "
++            f"found {source.count(fragment)}"
++        )
++    rival = source.replace(fragment, replacement)
++    if rival == source or rival.count("(= (length objs) 6)") != 1:
++        raise ValueError(f"failed to materialize count-gated rival for {sort_order}")
++    return rival
++
++
++def _render(rectangles: list[dict], grid: list[list[int]]) -> list[list[int]]:
++    output = [[0 for _ in row] for row in grid]
++    row = column = 0
++    for rectangle in rectangles:
++        top, left, bottom, right = rectangle["bbox"]
++        height = bottom - top + 1
++        width = right - left + 1
++        for rr in range(row, row + height):
++            for cc in range(column, column + width):
++                output[rr][cc] = rectangle["color"]
++        row += height - 1
++        column += width - 1
++    return output
++
++
++def count_gate_transform(grid, sort_order: str):
++    """Python parity model for the rival; labels are verified in Racket."""
++    sort_order = _validate_sort_order(sort_order)
++    source = proto.validate_grid(grid)
++    rectangles = proto._load_generator()._ordered_rectangles(source)
++    if not rectangles:
++        raise ValueError("no rectangular objects found")
++    rectangles = list(rectangles)
++    if sort_order == "right_to_left":
++        rectangles.reverse()
++    if len(rectangles) == 6:
++        rectangles.reverse()
++    return _render(rectangles, source)
++
++
++def _racket_outputs(source: str, grids: list[list[list[int]]]) -> tuple[list, dict]:
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    callable_source = wrap_rule(source)
++    outputs = []
++    with RacketBridge(timeout=20.0, startup_timeout=45.0) as bridge:
++        runtime_identity = dict(bridge.runtime_identity)
++        if not runtime_identity.get("protected"):
++            raise RuntimeError("protected Racket runtime required")
++        for grid in grids:
++            outputs.append(
++                bridge.eval_text(f"({callable_source} {proto._grid_literal(grid)})")
++            )
++    return outputs, runtime_identity
++
++
++def build_report(seed: int = 20261023, *, verify_racket: bool = True) -> dict:
++    seed = _validate_seed(seed)
++    if type(verify_racket) is not bool:
++        raise ValueError("verify_racket must be a literal boolean")
++    records = proto._sample_input_records(seed, count=7)
++    grids = [copy.deepcopy(record["input"]) for record in records]
++    object_counts = [record["profile"]["n_objects"] for record in records]
++    witnesses = []
++    runtime_identities = []
++    evaluations = 0
++
++    for sort_order in ("left_to_right", "right_to_left"):
++        settings = proto.Settings(sort_order)
++        target_source = proto.program(settings)
++        rival_source = materialize_count_gate_rival(sort_order)
++        target_outputs = [proto.transform(grid, settings) for grid in grids]
++        rival_outputs = [count_gate_transform(grid, sort_order) for grid in grids]
++
++        if verify_racket:
++            racket_target, target_runtime = _racket_outputs(target_source, grids)
++            racket_rival, rival_runtime = _racket_outputs(rival_source, grids)
++            runtime_identities.extend((target_runtime, rival_runtime))
++            evaluations += 2 * len(grids)
++            if racket_target != target_outputs:
++                raise ValueError(f"target Racket/Python mismatch for {sort_order}")
++            if racket_rival != rival_outputs:
++                raise ValueError(f"rival Racket/Python mismatch for {sort_order}")
++
++        matches = [
++            rival == target
++            for rival, target in zip(rival_outputs, target_outputs, strict=True)
++        ]
++        witnesses.append(
++            {
++                "sort_order": sort_order,
++                "target_program": target_source,
++                "target_program_sha256": proto.text_digest(target_source),
++                "rival_program": rival_source,
++                "rival_program_sha256": proto.text_digest(rival_source),
++                "input_sha256": [record["input_sha256"] for record in records],
++                "target_output_sha256": [proto.digest(value) for value in target_outputs],
++                "rival_output_sha256": [proto.digest(value) for value in rival_outputs],
++                "demo_matches": matches[:3],
++                "query_matches": matches[3:],
++                "first_failing_query": next(
++                    (index for index, match in enumerate(matches[3:]) if not match),
++                    None,
++                ),
++            }
++        )
++
++    found = all(
++        witness["demo_matches"] == [True, True, True]
++        and witness["query_matches"] == [False, True, True, True]
++        for witness in witnesses
++    )
++    return {
++        "schema": "b6ba2d176fe8-count-gate-probe-v1",
++        "task_id": proto.TASK_ID,
++        "status": "counterexample_found" if found else "no_counterexample",
++        "seed": seed,
++        "lesson_shape": {"demonstrations": 3, "queries": 4},
++        "object_counts": object_counts,
++        "witnesses": witnesses,
++        "protected_racket": {
++            "requested": verify_racket,
++            "evaluations": evaluations,
++            "runtime_identity": runtime_identities[0] if runtime_identities else None,
++            "all_runtime_identities_equal": (
++                all(value == runtime_identities[0] for value in runtime_identities)
++                if runtime_identities
++                else None
++            ),
++        },
++        "source_binding": {
++            path.relative_to(REPO).as_posix(): _file_digest(path)
++            for path in (PROTOTYPE_PATH, GENERATOR_PATH, TEST_PATH)
++        },
++        "recommendation": (
++            "Ensure every three-demonstration lesson that may query six objects "
++            "contains a six-object demonstration, or add count-gated order rivals "
++            "to the lesson-identifiability gate."
++        ),
++        "limits": [
++            "This is a bounded counterexample for the prototype's deterministic seven-input profile at the recorded seed.",
++            "It tests the two declared sort-order settings and one simple object-count gate, not every lawful rival.",
++            "The probe is advisory and does not modify production generation, selected authority, approval, or training admission.",
++        ],
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seed", type=int, default=20261023)
++    parser.add_argument("--out", type=Path)
++    parser.add_argument("--no-racket", action="store_true")
++    args = parser.parse_args(argv)
++    report = build_report(args.seed, verify_racket=not args.no_racket)
++    payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
++    if args.out:
++        args.out.parent.mkdir(parents=True, exist_ok=True)
++        args.out.write_text(payload)
++    print(payload, end="")
++    return 0 if report["status"] == "counterexample_found" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/b985d561c63b/notes.md b/repo/generators/b985d561c63b/notes.md
+--- a/repo/generators/b985d561c63b/notes.md
++++ b/repo/generators/b985d561c63b/notes.md
+@@ -1,3 +1,19 @@
++# Current assignment: `review-529fa06ea6394047`
++
++## Native parametric MAIN result
++
++Production generator `generator.py` and canonical authority remain unchanged at SHA-256 `8a81e88ddb5d46c6eadd3fed5f2f283a532bde46e512ee1bc4d06ff3eec621a0` and canonical program SHA-256 `d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a`.
++
++The task-local native adapter now declares `stamp_anchor ∈ {top_left, hole_corner}`. `top_left` is byte-exact canonical behavior. For `hole_corner`, Step A locates the unique zero cell inside the colored source crop and classifies its corner; Step B aligns the complete crop, including zero, to that same corner of every larger gray target. The destination origin therefore cannot be chosen before the input-derived corner exists.
++
++Native qualification passed for both settings at seeds 0 and 17 with three demonstrations and four queries per job (40 protected-Racket evaluations). The source-bound wrong-intermediate witness and independent reviewer replay both report `reviewer_replayed`. The finite teaching audit used the minimum supported two demonstrations and found no surviving declared fixed-corner or alternate-setting rival across the retained seeds. Public/private export checks passed for two four-query challenges. The complete staged task suite passed 322/322.
++
++Primary evidence: `workspace/parametric/evidence/manifest.json`, `checks/b985d561c63b/qualification/qualification.json`, `checks/b985d561c63b/sequential-witness/witness.json`, and `checks/b985d561c63b/public-check.json` in the return packet layout.
++
++Status is reviewer-ready only. Owner integration, fresh native qualification/acceptance replay, canonical approval, and any training admission remain pending. Evidence is finite over two settings, two qualification seeds, and the declared rival bank; it is not a universal identifiability or training-gain claim.
++
++---
++
+ # Current notes: `b985d561c63b`
+ 
+ ## Identity and authority
+diff --git a/repo/generators/b985d561c63b/tests/test_parametric_anchor.py b/repo/generators/b985d561c63b/tests/test_parametric_anchor.py
+--- a/repo/generators/b985d561c63b/tests/test_parametric_anchor.py
++++ b/repo/generators/b985d561c63b/tests/test_parametric_anchor.py
+@@ -1,4 +1,4 @@
+-"""Focused tests for the separate proposed stamp-anchor prototype."""
++"""Focused tests for the native source-cue stamp-anchor family."""
+ from __future__ import annotations
+ 
+ import copy
+@@ -6,124 +6,200 @@
+ import importlib.util
+ import json
+ from pathlib import Path
++import sys
+ 
+ import pytest
+ 
+ 
+ ROOT = Path(__file__).resolve().parents[3]
+-PROTOTYPE_PATH = (
+-    Path(__file__).resolve().parents[1] / "workspace" / "parametric" / "prototype.py"
+-)
+-
+-
+-def _load_prototype():
+-    spec = importlib.util.spec_from_file_location(
+-        "b985d561c63b_parametric_anchor", PROTOTYPE_PATH
+-    )
++PARAMETRIC = Path(__file__).resolve().parents[1] / "workspace" / "parametric"
++PROTOTYPE_PATH = PARAMETRIC / "prototype.py"
++ADAPTER_PATH = PARAMETRIC / "adapter.py"
++PROMOTION_PATH = PARAMETRIC / "promotion.json"
++
++
++def _load(path: Path, name: str):
++    spec = importlib.util.spec_from_file_location(name, path)
+     assert spec is not None and spec.loader is not None
+     module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
+     spec.loader.exec_module(module)
+     return module
+ 
+ 
+-def test_default_rule_is_byte_exact_canonical_and_alternative_is_reversible():
+-    prototype = _load_prototype()
++def _prototype():
++    return _load(PROTOTYPE_PATH, "b985d561c63b_parametric_prototype_test")
++
++
++def _inputs(episode):
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def test_default_program_is_byte_exact_and_alternative_is_guarded_source_edit():
++    prototype = _prototype()
+     canonical = prototype.canonical_source(root=ROOT)
+     assert hashlib.sha256(canonical.encode()).hexdigest() == prototype.CANONICAL_SHA256
+-    assert prototype.materialize_rule(root=ROOT) == canonical
+-    assert prototype.materialize_rule("top_left", root=ROOT) == canonical
+-
+-    alternative = prototype.materialize_rule("bottom_right", root=ROOT)
+-    assert alternative != canonical
+-    assert prototype.restore_canonical_rule(alternative) == canonical
+-    assert prototype.rule_callable(alternative) != prototype.rule_callable(canonical)
+-
+-    for bad in (True, 0, 1, "center", "top-left", None):
++    assert prototype.program_for("top_left", root=ROOT) == canonical
++
++    alternate = prototype.program_for("hole_corner", root=ROOT)
++    assert alternate == prototype.materialize_hole_corner_rule(canonical)
++    assert alternate != canonical
++    assert (PARAMETRIC / "rules" / "hole_corner_anchor.rkt").read_text() == alternate
++
++    wrong = prototype.fixed_anchor_program("bottom_left", root=ROOT)
++    assert wrong != canonical
++    assert wrong != alternate
++    assert (PARAMETRIC / "rules" / "fixed_bottom_left.rkt").read_text() == wrong
++
++    for bad in (True, 0, None, "bottom_right", "source_hole"):
+         with pytest.raises((TypeError, ValueError)):
+-            prototype.materialize_rule(bad, root=ROOT)
+-
+-
+-def test_complete_episodes_choose_one_anchor_and_refute_the_other_setting():
+-    prototype = _load_prototype()
+-    seen = set()
+-    with prototype.RacketBridge() as bridge:
+-        for seed in (0, 1):
+-            episode = prototype.make_episode(seed, root=ROOT, bridge=bridge)
+-            assert prototype.make_episode(seed, root=ROOT, bridge=bridge) == episode
+-            anchor = episode["parameters"]["stamp_anchor"]
+-            seen.add(anchor)
+-            assert len(episode["train"]) == 3
+-            assert len(episode["test"]) == 1
+-            assert episode["status"] == "proposed_unapproved"
+-            assert episode["approved"] is False
+-            assert episode["input_constraints_depend_on_parameter"] is False
+-            assert not episode["ambiguities"]
+-            assert len({pair["input_sha256"] for pair in episode["train"] + episode["test"]}) == 4
+-
+-            rival, = [
+-                row for row in episode["parameter_rivals"]
+-                if row["stamp_anchor"] != anchor
++            prototype.program_for(bad, root=ROOT)
++
++
++def test_adapter_contract_is_thin_and_counts_are_independent():
++    prototype = _prototype()
++    adapter = _load(ADAPTER_PATH, "b985d561c63b_parametric_adapter_test")
++    promotion = json.loads(PROMOTION_PATH.read_text())
++    assert promotion == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": "generators/b985d561c63b/workspace/parametric/adapter.py",
++        "parameters": {"stamp_anchor": ["top_left", "hole_corner"]},
++        "default": {"stamp_anchor": "top_left"},
++        "limits": {"demos": [2, 6], "queries": [1, 4]},
++        "qualification_demos": 3,
++        "resources": [
++            "generators/b985d561c63b/workspace/parametric/rules/hole_corner_anchor.rkt",
++            "generators/b985d561c63b/workspace/parametric/rules/fixed_bottom_left.rkt",
++        ],
++    }
++    for setting in prototype.ALLOWED_STAMP_ANCHORS:
++        settings = {"stamp_anchor": setting}
++        assert adapter.program(settings) == prototype.program_for(setting, root=ROOT)
++        episode = adapter.generate(17, settings, demos=2, queries=1)
++        assert len(episode["train"]) == 2
++        assert len(episode["test"]) == 1
++        assert episode["program_solution"] == adapter.program(settings)
++
++    for bad_settings in ({}, {"stamp_anchor": "top_left", "extra": 1}, {"stamp_anchor": True}):
++        with pytest.raises(ValueError):
++            adapter.program(bad_settings)
++
++
++def test_generation_is_deterministic_prefix_stable_and_setting_independent():
++    prototype = _prototype()
++    for seed in (0, 17, 2**63 - 1):
++        small = prototype.generate_episode(seed, stamp_anchor="top_left", demos=2, queries=1)
++        large = prototype.generate_episode(seed, stamp_anchor="top_left", demos=6, queries=4)
++        assert small == prototype.generate_episode(seed, stamp_anchor="top_left", demos=2, queries=1)
++        assert small["train"] == large["train"][:2]
++        assert small["test"] == large["test"][:1]
++
++        alternate = prototype.generate_episode(seed, stamp_anchor="hole_corner", demos=6, queries=4)
++        assert _inputs(large) == _inputs(alternate)
++        assert large["program_solution"] != alternate["program_solution"]
++        assert all(pair["input"] != other["input"] for i, pair in enumerate(large["train"] + large["test"])
++                   for other in (large["train"] + large["test"])[i + 1 :])
++
++    for bad in (True, -1, 2**63, 1.0, "1"):
++        with pytest.raises(ValueError):
++            prototype.generate_episode(bad, stamp_anchor="top_left")
++    for demos in (1, 7, True):
++        with pytest.raises(ValueError):
++            prototype.generate_episode(0, stamp_anchor="top_left", demos=demos)
++    for queries in (0, 5, True):
++        with pytest.raises(ValueError):
++            prototype.generate_episode(0, stamp_anchor="top_left", queries=queries)
++
++
++def test_two_demonstrations_identify_each_setting_and_refute_fixed_shortcuts():
++    prototype = _prototype()
++    rival_corners = ("top_left", "top_right", "bottom_left", "bottom_right")
++    for chosen in prototype.ALLOWED_STAMP_ANCHORS:
++        episode = prototype.generate_episode(23, stamp_anchor=chosen, demos=2, queries=4)
++        demos = episode["train"]
++
++        other = next(value for value in prototype.ALLOWED_STAMP_ANCHORS if value != chosen)
++        assert any(
++            prototype.apply_python(pair["input"], stamp_anchor=other) != pair["output"]
++            for pair in demos
++        )
++
++        for corner in rival_corners:
++            predictions = [
++                prototype.apply_python(
++                    pair["input"], stamp_anchor="hole_corner", corner_override=corner
++                )
++                for pair in demos
+             ]
+-            assert rival["status"] == "refuted_by_demonstrations"
+-            assert rival["demonstration_mismatch_indices"] == [0, 1, 2]
+-            assert rival["query_mismatch_indices"] == [0]
+-
+-            for pair in episode["train"] + episode["test"]:
+-                observation = pair["input_observation"]
+-                assert observation["template_style"] == "dense"
+-                assert observation["extra_rows"] == 1
+-                assert observation["extra_cols"] == 1
+-                assert pair["output"] == prototype.execute_rule(
+-                    episode["racket_source"], pair["input"], bridge=bridge
+-                )
+-                assert pair["output"] == prototype.python_mirror(
+-                    pair["input"], stamp_anchor=anchor
+-                )
+-    assert seen == set(prototype.ALLOWED_STAMP_ANCHORS)
+-
+-
+-def test_public_challenge_omits_parameter_rule_seed_rivals_and_query_answer():
+-    prototype = _load_prototype()
+-    with prototype.RacketBridge() as bridge:
+-        episode = prototype.make_episode(0, root=ROOT, bridge=bridge)
++            if chosen == "top_left" and corner == "top_left":
++                assert predictions == [pair["output"] for pair in demos]
++            else:
++                assert any(prediction != pair["output"] for prediction, pair in zip(predictions, demos))
++
++        nonzero_predictions = [
++            prototype.apply_python(
++                pair["input"], stamp_anchor=chosen, copy_template_zeros=False
++            )
++            for pair in demos
++        ]
++        assert any(prediction != pair["output"] for prediction, pair in zip(nonzero_predictions, demos))
++
++
++def test_racket_labels_match_python_claims_for_full_profiles():
++    prototype = _prototype()
++    with prototype.RacketBridge(max_calls_before_restart=128) as bridge:
++        for seed in (0, 17):
++            for setting in prototype.ALLOWED_STAMP_ANCHORS:
++                episode = prototype.generate_episode(seed, stamp_anchor=setting, demos=6, queries=4)
++                source = prototype.program_for(setting, root=ROOT)
++                for pair in episode["train"] + episode["test"]:
++                    assert prototype.execute_rule(source, pair["input"], bridge=bridge) == pair["output"]
++
++
++def test_fourth_query_is_substantive_30x30_boundary_stress():
++    prototype = _prototype()
++    canonical = prototype.generate_episode(7, stamp_anchor="top_left", demos=3, queries=4)
++    alternate = prototype.generate_episode(7, stamp_anchor="hole_corner", demos=3, queries=4)
++    grid = canonical["test"][3]["input"]
++    assert len(grid) == 30 and len(grid[0]) == 30
++    features = prototype.input_features(grid)
++    assert features["source_shape"] == [5, 5]
++    assert features["target_count"] == 4
++    assert features["hole_corner"] == "bottom_right"
++    assert features["target_cells"] >= 300
++    assert features["targets_touching_boundary"] >= 3
++    assert canonical["test"][3]["output"] != alternate["test"][3]["output"]
++
++
++def test_public_projection_omits_private_setting_program_and_query_answers():
++    prototype = _prototype()
++    episode = prototype.generate_episode(17, stamp_anchor="hole_corner", demos=3, queries=4)
+     public = prototype.public_challenge(episode)
+     assert set(public) == {"train", "test"}
+     assert all(set(pair) == {"input", "output"} for pair in public["train"])
+     assert all(set(pair) == {"input"} for pair in public["test"])
+-    serialized = json.dumps(public, sort_keys=True)
+-    for forbidden in (
+-        "stamp_anchor", "racket_source", "parameter_rivals", "ambiguities", '"seed"'
+-    ):
+-        assert forbidden not in serialized
+-
+-    before = copy.deepcopy(episode)
+-    public["train"][0]["input"][0][0] = 9
+-    assert episode == before
+-
+-
+-def test_evidence_retains_exact_private_racket_and_hashes_all_files(tmp_path):
+-    prototype = _load_prototype()
+-    out = tmp_path / "evidence"
+-    report = prototype.write_evidence((0, 1), out=out, root=ROOT)
+-    assert report["status"] == "proposed_unapproved"
+-    assert report["counts"]["episodes"] == 2
+-    assert report["counts"]["ambiguous_parameter_rivals"] == 0
+-    assert report["counts"]["settings_covered"] == 2
+-    assert report["counts"]["canonical_pairs_checked"] >= 3
+-
+-    for row in report["episodes"]:
+-        public = json.loads((out / row["public_path"]).read_text())
+-        private = json.loads((out / row["private_path"]).read_text())
+-        source = (out / private["racket_path"]).read_text()
+-        assert hashlib.sha256(source.encode()).hexdigest() == private["racket_sha256"]
+-        assert public == prototype.public_challenge(private)
+-        assert "output" in private["test"][0]
+-        assert "output" not in public["test"][0]
+-        assert not private["ambiguities"]
+-
+-    witness = json.loads((out / "private/distinguishing_witness.json").read_text())
+-    assert witness["different"] is True
+-    for row in report["files"]:
+-        assert hashlib.sha256((out / row["path"]).read_bytes()).hexdigest() == row["sha256"]
+-    with pytest.raises(FileExistsError):
+-        prototype.write_evidence((0, 1), out=out, root=ROOT)
++    assert "hole_corner" not in json.dumps(public)
++    assert episode["settings"] == {"stamp_anchor": "hole_corner"}
++
++    changed_private = copy.deepcopy(episode)
++    changed_private["settings"] = {"stamp_anchor": "top_left"}
++    changed_private["program_solution"] = "private-change"
++    for pair in changed_private["test"]:
++        pair["output"] = [[9]]
++    assert prototype.public_challenge(changed_private) == public
++    assert prototype.public_id(changed_private) == prototype.public_id(episode)
++
++
++def test_self_review_audit_is_racket_labeled_and_keeps_minimal_case(tmp_path):
++    audit = _load(PARAMETRIC / "audit.py", "b985d561c63b_parametric_audit_test")
++    report = audit.run_audit(seeds=(0,), out=tmp_path / "audit")
++    assert report["schema"] == "arcpuzzles-parametric-self-review-v1"
++    assert report["status"] == "passed"
++    assert report["racket"]["backend"] == "racket"
++    assert report["racket"]["protected"] is True
++    assert report["counts"]["jobs"] == 2
++    assert report["counts"]["ambiguous_wrong_rivals"] == 0
++    case = json.loads((tmp_path / "audit" / "minimal-counterexample.json").read_text())
++    assert case["actual_output"] != case["wrong_intermediate_output"]
++    assert case["intermediate_value"] == "top_right"
++    assert case["ablation"] == "wrong_intermediate"
+diff --git a/repo/generators/b985d561c63b/workspace/parametric/README.md b/repo/generators/b985d561c63b/workspace/parametric/README.md
+--- a/repo/generators/b985d561c63b/workspace/parametric/README.md
++++ b/repo/generators/b985d561c63b/workspace/parametric/README.md
+@@ -1,19 +1,62 @@
+-# Proposed `stamp_anchor` episode rule
++# Native parametric family for `b985d561c63b`
+ 
+-Status: **proposed and unapproved**. This directory does not change the fixed-rule production generator.
++This workspace is an opt-in native adapter. It does not change the approved
++production generator or the selected canonical Racket rule.
+ 
+-The prototype selects exactly one hidden value per complete episode:
++## Episode-fixed parameter
+ 
+-- `top_left` — the byte-exact canonical Racket rule and default behavior.
+-- `bottom_right` — the same full-bounding-box stamp, including source zeros, aligned to the target rectangle's lower-right corner.
++`stamp_anchor` has two values:
+ 
+-Each episode contains three labeled demonstrations and one masked query. Inputs are produced by the selected `b985d561c63b` sampler independently of the hidden value, with a dense source and exactly one row and one column of gray surplus. Those controls force the two anchors to disagree while preserving the same source/target roles and stamping concept. Both retained labels and rival predictions are executed through `RacketBridge`; an independent Python mirror is only a cross-check.
++- `top_left` — the exact canonical program, byte-for-byte. Copy the complete
++  colored-source bounding box, including its internal zero, into the upper-left
++  corner of every gray target.
++- `hole_corner` — first locate the source crop's unique zero-valued corner, then
++  align the complete crop to that same corner of every larger gray target.
+ 
+-Run from the review repository through the bundled wrapper:
++The alternate setting has a real sequential dependency:
++
++1. **Step A:** locate the unique zero inside the source bounding box and classify
++   it as `top_left`, `top_right`, `bottom_left`, or `bottom_right`.
++2. **Intermediate:** the input-dependent corner name.
++3. **Step B:** use that corner to choose the destination origin inside every gray
++   rectangle, then copy the complete source crop.
++
++A fixed anchor cannot be selected before Step A without failing the minimum
++lesson. The first two demonstrations use `top_right` and `bottom_left` cues.
++
++## Native files
++
++- `prototype.py` — deterministic episode construction, guarded Racket source
++  materialization, Python claim labels, public projection, and feature helpers.
++- `adapter.py` — thin native `program(settings)` / `generate(...)` boundary.
++- `promotion.json` — two settings, 2–6 demonstrations, and 1–4 queries.
++- `rules/hole_corner_anchor.rkt` — exact guarded alternative rule.
++- `rules/fixed_bottom_left.rkt` — bounded wrong-intermediate counterfactual used
++  by the causal witness.
++- `audit.py` — finite protected-Racket label check plus plausible shortcut audit.
++
++The four query profiles include changed geometry, border contacts, and a dense
++30×30 case with four 9×9 gray targets. Inputs are independent of the setting;
++demonstration and query prefixes are deterministic and independent of requested
++counts.
++
++## Focused checks
++
++From the extracted packet root:
+ 
+ ```bash
+-python3 review.py run python3 generators/b985d561c63b/workspace/parametric/prototype.py \
+-  --seeds 0 1 --out ../checks/parametric/stamp-anchor-v1
++python3 review.py run python3 -m pytest \
++  generators/b985d561c63b/tests/test_parametric_anchor.py -q
++
++python3 review.py run python3 \
++  generators/b985d561c63b/workspace/parametric/audit.py \
++  --seed 0 --seed 17 \
++  --out generators/b985d561c63b/workspace/parametric/evidence/current
++
++python3 review.py run python3 -m arcpuzzles parametric qualify b985d561c63b \
++  --seed 0 --seed 17 --demos 3 --queries 4 \
++  --out ../checks/b985d561c63b/qualification --summary
+ ```
+ 
+-The `public/` files expose labeled demonstrations and query inputs only. Exact rule text, hidden parameters, query labels, rival predictions, canonical replay, and source snapshots remain under `private/`.
++The audit and native qualification are bounded evidence only. Owner exact-source
++acceptance and any downstream training admission remain separate actions.
+diff --git a/repo/generators/b985d561c63b/workspace/parametric/adapter.py b/repo/generators/b985d561c63b/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b985d561c63b/workspace/parametric/adapter.py
+@@ -0,0 +1,38 @@
++"""Native opt-in adapter for the b985d561c63b parametric family."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++import sys
++from typing import Any
++
++
++_TARGET = Path(__file__).resolve().with_name("prototype.py")
++_SPEC = importlib.util.spec_from_file_location(
++    "_parametric_b985d561c63b_prototype", _TARGET
++)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(f"cannot load {_TARGET}")
++_PROTOTYPE = importlib.util.module_from_spec(_SPEC)
++sys.modules[_SPEC.name] = _PROTOTYPE
++_SPEC.loader.exec_module(_PROTOTYPE)
++
++
++def program(settings: Any) -> str:
++    normalized = _PROTOTYPE.validate_settings(settings)
++    return _PROTOTYPE.program_for(normalized["stamp_anchor"])
++
++
++def generate(
++    seed: Any,
++    settings: Any,
++    demos: Any = 3,
++    queries: Any = 4,
++) -> dict[str, Any]:
++    normalized = _PROTOTYPE.validate_settings(settings)
++    return _PROTOTYPE.generate_episode(
++        seed,
++        stamp_anchor=normalized["stamp_anchor"],
++        demos=demos,
++        queries=queries,
++    )
+diff --git a/repo/generators/b985d561c63b/workspace/parametric/audit.py b/repo/generators/b985d561c63b/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b985d561c63b/workspace/parametric/audit.py
+@@ -0,0 +1,328 @@
++#!/usr/bin/env python3
++"""Bounded Racket-backed teaching audit for the b985d561c63b family.
++
++This tool is intentionally finite.  It checks exact selected labels through the
++protected Racket bridge, probes a compact bank of plausible fixed/cue shortcuts
++against demonstrations only, retains one causal counterexample, and verifies the
++public/private projection boundary.  It grants no owner acceptance.
++"""
++from __future__ import annotations
++
++import argparse
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any
++
++
++HERE = Path(__file__).resolve().parent
++_PROTOTYPE_PATH = HERE / "prototype.py"
++_SPEC = importlib.util.spec_from_file_location(
++    "_b985d561c63b_parametric_audit_prototype", _PROTOTYPE_PATH
++)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(f"cannot load {_PROTOTYPE_PATH}")
++P = importlib.util.module_from_spec(_SPEC)
++sys.modules[_SPEC.name] = P
++_SPEC.loader.exec_module(P)
++
++
++def _sha_bytes(value: bytes) -> str:
++    return hashlib.sha256(value).hexdigest()
++
++
++def _sha_text(value: str) -> str:
++    return _sha_bytes(value.encode("utf-8"))
++
++
++def _grid_sha(grid: Any) -> str:
++    return _sha_text(json.dumps(grid, sort_keys=True, separators=(",", ":")))
++
++
++def _write(path: Path, value: Any) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++
++
++def _corner_variants(grid: Any) -> dict[str, list[list[int]]]:
++    derived = P.hole_corner_intermediate(grid)["corner"]
++    row_only = "top_left" if derived.startswith("top") else "bottom_left"
++    col_only = "top_left" if derived.endswith("left") else "top_right"
++    opposite = {
++        "top_left": "bottom_right",
++        "top_right": "bottom_left",
++        "bottom_left": "top_right",
++        "bottom_right": "top_left",
++    }[derived]
++    return {
++        "row_only": P.apply_python(
++            grid, stamp_anchor="hole_corner", corner_override=row_only
++        ),
++        "column_only": P.apply_python(
++            grid, stamp_anchor="hole_corner", corner_override=col_only
++        ),
++        "opposite_corner": P.apply_python(
++            grid, stamp_anchor="hole_corner", corner_override=opposite
++        ),
++    }
++
++
++def _projection_check(episode: dict[str, Any]) -> dict[str, Any]:
++    public = P.public_challenge(episode)
++    original_id = P.public_id(episode)
++    changed = copy.deepcopy(episode)
++    changed["settings"] = {"stamp_anchor": "private-mutated"}
++    changed["program_solution"] = "private-mutated"
++    for pair in changed["test"]:
++        pair["output"] = [[9]]
++    changed_id = P.public_id(changed)
++    visible = json.dumps(public, sort_keys=True)
++    return {
++        "public_id": original_id,
++        "private_mutation_id": changed_id,
++        "stable_under_private_mutation": original_id == changed_id,
++        "public_keys": sorted(public),
++        "demo_pair_keys": sorted(public["train"][0]),
++        "query_pair_keys": sorted(public["test"][0]),
++        "private_setting_absent": episode["settings"]["stamp_anchor"] not in visible,
++    }
++
++
++def _rival_rows(
++    bridge: Any,
++    episode: dict[str, Any],
++    chosen: str,
++) -> tuple[list[dict[str, Any]], int]:
++    pairs = episode["train"] + episode["test"]
++    demos = len(episode["train"])
++    labels = [pair["output"] for pair in pairs]
++    evaluations = 0
++
++    racket_programs = {
++        "declared_top_left": P.program_for("top_left"),
++        "declared_hole_corner": P.program_for("hole_corner"),
++        "fixed_top_left": P.fixed_anchor_program("top_left"),
++        "fixed_top_right": P.fixed_anchor_program("top_right"),
++        "fixed_bottom_left": P.fixed_anchor_program("bottom_left"),
++        "fixed_bottom_right": P.fixed_anchor_program("bottom_right"),
++    }
++    predictions: dict[str, list[list[list[int]]]] = {}
++    for name, source in racket_programs.items():
++        predictions[name] = [
++            P.execute_rule(source, pair["input"], bridge=bridge) for pair in pairs
++        ]
++        evaluations += len(pairs)
++
++    python_names = ("row_only", "column_only", "opposite_corner")
++    for name in python_names:
++        predictions[name] = [_corner_variants(pair["input"])[name] for pair in pairs]
++    predictions["nonzero_only"] = [
++        P.apply_python(
++            pair["input"],
++            stamp_anchor=chosen,
++            copy_template_zeros=False,
++        )
++        for pair in pairs
++    ]
++
++    intended_names = {
++        "top_left": {"declared_top_left", "fixed_top_left"},
++        "hole_corner": {"declared_hole_corner"},
++    }[chosen]
++    rows: list[dict[str, Any]] = []
++    for name, outputs in predictions.items():
++        demo_mismatches = [
++            index for index in range(demos) if outputs[index] != labels[index]
++        ]
++        query_mismatches = [
++            index
++            for index in range(len(pairs) - demos)
++            if outputs[demos + index] != labels[demos + index]
++        ]
++        intended_equivalent = name in intended_names
++        rows.append(
++            {
++                "name": name,
++                "authority": "protected_racket" if name in racket_programs else "python_hypothesis",
++                "program_sha256": (
++                    _sha_text(racket_programs[name]) if name in racket_programs else None
++                ),
++                "intended_equivalent": intended_equivalent,
++                "demonstration_mismatch_indices": demo_mismatches,
++                "query_mismatch_indices": query_mismatches,
++                "fits_all_demonstrations": not demo_mismatches,
++                "ambiguous_wrong_rival": (
++                    not intended_equivalent and not demo_mismatches and bool(query_mismatches)
++                ),
++            }
++        )
++    return rows, evaluations
++
++
++def run_audit(*, seeds: tuple[int, ...] = (0, 17), out: Path) -> dict[str, Any]:
++    if type(seeds) is not tuple or not seeds or len(set(seeds)) != len(seeds):
++        raise ValueError("seeds must be a nonempty tuple of distinct exact integers")
++    for seed in seeds:
++        P._validate_seed(seed)
++    out = Path(out)
++    out.mkdir(parents=True, exist_ok=False)
++
++    jobs: list[dict[str, Any]] = []
++    ambiguous = 0
++    selected_evaluations = 0
++    rival_evaluations = 0
++    minimal_case: dict[str, Any] | None = None
++    with P.RacketBridge(max_calls_before_restart=128) as bridge:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise ValueError("audit requires a protected Racket backend")
++        for seed in seeds:
++            for chosen in P.ALLOWED_STAMP_ANCHORS:
++                episode = P.generate_episode(
++                    seed,
++                    stamp_anchor=chosen,
++                    demos=2,
++                    queries=4,
++                )
++                source = episode["program_solution"]
++                all_pairs = episode["train"] + episode["test"]
++                actual = [
++                    P.execute_rule(source, pair["input"], bridge=bridge)
++                    for pair in all_pairs
++                ]
++                selected_evaluations += len(all_pairs)
++                if actual != [pair["output"] for pair in all_pairs]:
++                    raise AssertionError("Python claim differs from protected Racket label")
++                rivals, count = _rival_rows(bridge, episode, chosen)
++                rival_evaluations += count
++                ambiguous += sum(row["ambiguous_wrong_rival"] for row in rivals)
++                projection = _projection_check(episode)
++                if not all(
++                    (
++                        projection["stable_under_private_mutation"],
++                        projection["private_setting_absent"],
++                        projection["demo_pair_keys"] == ["input", "output"],
++                        projection["query_pair_keys"] == ["input"],
++                    )
++                ):
++                    raise AssertionError("public/private projection check failed")
++                jobs.append(
++                    {
++                        "seed": seed,
++                        "settings": episode["settings"],
++                        "program_sha256": _sha_text(source),
++                        "input_sha256": [_grid_sha(pair["input"]) for pair in all_pairs],
++                        "output_sha256": [_grid_sha(pair["output"]) for pair in all_pairs],
++                        "intermediate_values": [
++                            P.hole_corner_intermediate(pair["input"])["corner"]
++                            for pair in all_pairs
++                        ],
++                        "rivals": rivals,
++                        "projection": projection,
++                    }
++                )
++
++                if minimal_case is None and chosen == "hole_corner":
++                    pair = episode["train"][0]
++                    wrong = P.fixed_anchor_program("bottom_left")
++                    wrong_output = P.execute_rule(wrong, pair["input"], bridge=bridge)
++                    selected_evaluations += 1
++                    if wrong_output == pair["output"]:
++                        raise AssertionError("selected causal counterexample does not change output")
++                    minimal_case = {
++                        "schema": "arcpuzzles-parametric-minimal-counterexample-v1",
++                        "task_id": P.TASK_ID,
++                        "settings": episode["settings"],
++                        "input": pair["input"],
++                        "actual_output": pair["output"],
++                        "wrong_intermediate_output": wrong_output,
++                        "program": source,
++                        "program_sha256": _sha_text(source),
++                        "counterfactual_program": wrong,
++                        "counterfactual_program_sha256": _sha_text(wrong),
++                        "intermediate_value": P.hole_corner_intermediate(pair["input"])["corner"],
++                        "wrong_intermediate_value": "bottom_left",
++                        "ablation": "wrong_intermediate",
++                        "qualified_selector": {"seed": seed, "split": "train", "pair_index": 0},
++                        "racket": {"backend": "racket", "protected": True},
++                    }
++
++    if minimal_case is None:
++        raise AssertionError("no alternate-setting counterexample was retained")
++    stress = P.input_features(
++        P.generate_episode(seeds[0], stamp_anchor="hole_corner", demos=2, queries=4)["test"][3]["input"]
++    )
++    report = {
++        "schema": "arcpuzzles-parametric-self-review-v1",
++        "task_id": P.TASK_ID,
++        "prototype_version": P.VERSION,
++        "status": "passed" if ambiguous == 0 else "ambiguous",
++        "settings": list(P.ALLOWED_STAMP_ANCHORS),
++        "seeds": list(seeds),
++        "counts": {
++            "jobs": len(jobs),
++            "demonstrations_per_job": 2,
++            "queries_per_job": 4,
++            "selected_racket_evaluations": selected_evaluations,
++            "rival_racket_evaluations": rival_evaluations,
++            "ambiguous_wrong_rivals": ambiguous,
++        },
++        "canonical_source_sha256": P.CANONICAL_SHA256,
++        "alternate_source_sha256": _sha_text(P.program_for("hole_corner")),
++        "prototype_sha256": _sha_bytes(_PROTOTYPE_PATH.read_bytes()),
++        "adapter_sha256": _sha_bytes((HERE / "adapter.py").read_bytes()),
++        "promotion_sha256": _sha_bytes((HERE / "promotion.json").read_bytes()),
++        "racket": {
++            key: identity[key]
++            for key in (
++                "schema",
++                "backend",
++                "protected",
++                "binary_sha256",
++                "prelude_sha256",
++                "bridge_sha256",
++                "boot_script_sha256",
++                "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        },
++        "stress_30x30": stress,
++        "jobs": jobs,
++        "minimal_counterexample": "minimal-counterexample.json",
++        "limits": [
++            "finite rival bank; no universal uniqueness claim",
++            "Python-only shortcut predictions are compared to protected-Racket labels",
++            "reviewer audit does not perform owner acceptance or training admission",
++        ],
++    }
++    _write(out / "minimal-counterexample.json", minimal_case)
++    _write(out / "report.json", report)
++    return report
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seed", type=int, action="append", dest="seeds")
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    report = run_audit(seeds=tuple(args.seeds or (0, 17)), out=args.out)
++    print(
++        json.dumps(
++            {
++                "status": report["status"],
++                "jobs": report["counts"]["jobs"],
++                "ambiguous_wrong_rivals": report["counts"]["ambiguous_wrong_rivals"],
++                "report": str((args.out / "report.json").resolve()),
++            },
++            indent=2,
++            sort_keys=True,
++        )
++    )
++    return 0 if report["status"] == "passed" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/b985d561c63b/workspace/parametric/evidence/current/minimal-counterexample.json b/repo/generators/b985d561c63b/workspace/parametric/evidence/current/minimal-counterexample.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b985d561c63b/workspace/parametric/evidence/current/minimal-counterexample.json
+@@ -0,0 +1,449 @@
++{
++  "ablation": "wrong_intermediate",
++  "actual_output": [
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      5,
++      1,
++      3,
++      0
++    ],
++    [
++      0,
++      1,
++      3,
++      0,
++      0,
++      0,
++      0,
++      5,
++      5,
++      3,
++      3,
++      3
++    ],
++    [
++      0,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      5,
++      5,
++      1,
++      1,
++      1
++    ],
++    [
++      0,
++      1,
++      1,
++      1,
++      0,
++      0,
++      0,
++      5,
++      5,
++      5,
++      5,
++      5
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      5,
++      5,
++      1,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      5,
++      5,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      5,
++      5,
++      1,
++      1,
++      1,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      5,
++      5,
++      5,
++      5,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ]
++  ],
++  "counterfactual_program": "(rule! (lambda (g)\n         (let* ((h (rows g))\n                (w (cols g)))\n           (let* ((hh (rows g))\n                  (ww (cols g))\n                  (template-cells (for*/list ((r (range 0 hh)) (c (range 0 ww))\n                                      #:when\n                                      (and (!= (at g r c) 0) (!= (at g r c) 5)))\n                                    (list r c (at g r c))))\n                  (tr1 (min-of first template-cells))\n                  (tc1 (min-of second template-cells))\n                  (tr2 (max-of first template-cells))\n                  (tc2 (max-of second template-cells))\n                  (th (+ 1 (- tr2 tr1)))\n                  (tw (+ 1 (- tc2 tc1)))\n                  (visited (make-hash))\n                  (gray-regions (list))\n                  (dummy (for* ((r (range 0 hh)) (c (range 0 ww)))\n                               (when\n                                 (and\n                                   (= (at g r c) 5)\n                                   (not (hash-has-key? visited (list r c))))\n                                 (let ((cells (list)))\n                                   (let bfs\n                                        ((q (list (list r c))))\n                                        (unless\n                                          (null? q)\n                                          (let ((cr (first (car q)))\n                                                (cc (second (car q))))\n                                            (cond\n                                              ((or\n                                                 (hash-has-key? visited (list cr cc))\n                                                 (< cr 0)\n                                                 (>= cr hh)\n                                                 (< cc 0)\n                                                 (>= cc ww)\n                                                 (!= (at g cr cc) 5)) (bfs (cdr q)))\n                                              (else (hash-set! visited (list cr cc) #t)\n                                                    (set! cells\n                                                          (cons (list cr cc) cells))\n                                                    (bfs (append (cdr q)\n                                                                 (list (list (- cr 1)\n                                                                             cc)\n                                                                       (list (+ cr 1)\n                                                                             cc)\n                                                                       (list cr\n                                                                             (- cc 1))\n                                                                       (list cr\n                                                                             (+ cc 1))))))))))\n                                   (set! gray-regions\n                                         (append gray-regions (list cells)))))))\n                  (result (make-hash)))\n             (for* ((r (range 0 hh)) (c (range 0 ww)))\n                   (hash-set! result (list r c) (at g r c)))\n             (for ((region gray-regions))\n               (let* ((rmin (min-of first region))\n                      (cmin (min-of second region))\n                      (rmax (max-of first region))\n                      (cmax (max-of second region))\n                      (target-r0 (+ 1 (- rmax th)))\n                      (target-c0 cmin))\n                 (for* ((dr (range 0 th)) (dc (range 0 tw)))\n                       (let ((nr (+ target-r0 dr))\n                             (nc (+ target-c0 dc)))\n                         (when\n                           (and (>= nr 0) (< nr hh) (>= nc 0) (< nc ww))\n                           (hash-set! result (list nr nc) (at g (+ tr1 dr) (+ tc1 dc))))))))\n             (build-grid hh ww (r c) (hash-ref result (list r c) 0))))))",
++  "counterfactual_program_sha256": "b0b84e51e8231bbed9af0a899e8fe1632e66d51d85af7499febb4ca7c3d5e72b",
++  "input": [
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      5,
++      5,
++      5,
++      5
++    ],
++    [
++      0,
++      1,
++      3,
++      0,
++      0,
++      0,
++      0,
++      5,
++      5,
++      5,
++      5,
++      5
++    ],
++    [
++      0,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      5,
++      5,
++      5,
++      5,
++      5
++    ],
++    [
++      0,
++      1,
++      1,
++      1,
++      0,
++      0,
++      0,
++      5,
++      5,
++      5,
++      5,
++      5
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      5,
++      5,
++      5,
++      5,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      5,
++      5,
++      5,
++      5,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      5,
++      5,
++      5,
++      5,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      5,
++      5,
++      5,
++      5,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ]
++  ],
++  "intermediate_value": "top_right",
++  "program": "(rule! (lambda (g)\n         (let* ((h (rows g))\n                (w (cols g)))\n           (let* ((hh (rows g))\n                  (ww (cols g))\n                  (template-cells (for*/list ((r (range 0 hh)) (c (range 0 ww))\n                                      #:when\n                                      (and (!= (at g r c) 0) (!= (at g r c) 5)))\n                                    (list r c (at g r c))))\n                  (tr1 (min-of first template-cells))\n                  (tc1 (min-of second template-cells))\n                  (tr2 (max-of first template-cells))\n                  (tc2 (max-of second template-cells))\n                  (th (+ 1 (- tr2 tr1)))\n                  (tw (+ 1 (- tc2 tc1)))\n                  (visited (make-hash))\n                  (gray-regions (list))\n                  (dummy (for* ((r (range 0 hh)) (c (range 0 ww)))\n                               (when\n                                 (and\n                                   (= (at g r c) 5)\n                                   (not (hash-has-key? visited (list r c))))\n                                 (let ((cells (list)))\n                                   (let bfs\n                                        ((q (list (list r c))))\n                                        (unless\n                                          (null? q)\n                                          (let ((cr (first (car q)))\n                                                (cc (second (car q))))\n                                            (cond\n                                              ((or\n                                                 (hash-has-key? visited (list cr cc))\n                                                 (< cr 0)\n                                                 (>= cr hh)\n                                                 (< cc 0)\n                                                 (>= cc ww)\n                                                 (!= (at g cr cc) 5)) (bfs (cdr q)))\n                                              (else (hash-set! visited (list cr cc) #t)\n                                                    (set! cells\n                                                          (cons (list cr cc) cells))\n                                                    (bfs (append (cdr q)\n                                                                 (list (list (- cr 1)\n                                                                             cc)\n                                                                       (list (+ cr 1)\n                                                                             cc)\n                                                                       (list cr\n                                                                             (- cc 1))\n                                                                       (list cr\n                                                                             (+ cc 1))))))))))\n                                   (set! gray-regions\n                                         (append gray-regions (list cells)))))))\n                  (hole-cells\n                    (for*/list ((r (range tr1 (+ tr2 1)))\n                                (c (range tc1 (+ tc2 1)))\n                                #:when (= (at g r c) 0))\n                      (list r c)))\n                  (hole (first hole-cells))\n                  (anchor-bottom? (>= (* 2 (- (first hole) tr1)) th))\n                  (anchor-right? (>= (* 2 (- (second hole) tc1)) tw))\n                  (result (make-hash)))\n             (for* ((r (range 0 hh)) (c (range 0 ww)))\n                   (hash-set! result (list r c) (at g r c)))\n             (for ((region gray-regions))\n               (let* ((rmin (min-of first region))\n                      (cmin (min-of second region))\n                      (rmax (max-of first region))\n                      (cmax (max-of second region))\n                      (target-r0\n                        (if anchor-bottom? (+ 1 (- rmax th)) rmin))\n                      (target-c0\n                        (if anchor-right? (+ 1 (- cmax tw)) cmin)))\n                 (for* ((dr (range 0 th)) (dc (range 0 tw)))\n                       (let ((nr (+ target-r0 dr))\n                             (nc (+ target-c0 dc)))\n                         (when\n                           (and (>= nr 0) (< nr hh) (>= nc 0) (< nc ww))\n                           (hash-set! result (list nr nc) (at g (+ tr1 dr) (+ tc1 dc))))))))\n             (build-grid hh ww (r c) (hash-ref result (list r c) 0))))))",
++  "program_sha256": "6bff7d4cc48aa009175409086f345c4c026082a647b43c80dc3e8c98b7c1d061",
++  "qualified_selector": {
++    "pair_index": 0,
++    "seed": 0,
++    "split": "train"
++  },
++  "racket": {
++    "backend": "racket",
++    "protected": true
++  },
++  "schema": "arcpuzzles-parametric-minimal-counterexample-v1",
++  "settings": {
++    "stamp_anchor": "hole_corner"
++  },
++  "task_id": "b985d561c63b",
++  "wrong_intermediate_output": [
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      5,
++      5,
++      5,
++      5
++    ],
++    [
++      0,
++      1,
++      3,
++      0,
++      0,
++      0,
++      0,
++      1,
++      3,
++      0,
++      5,
++      5
++    ],
++    [
++      0,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      5,
++      5
++    ],
++    [
++      0,
++      1,
++      1,
++      1,
++      0,
++      0,
++      0,
++      1,
++      1,
++      1,
++      5,
++      5
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      5,
++      5,
++      5,
++      5,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      1,
++      3,
++      0,
++      5,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      3,
++      3,
++      3,
++      5,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      1,
++      1,
++      1,
++      5,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ]
++  ],
++  "wrong_intermediate_value": "bottom_left"
++}
+diff --git a/repo/generators/b985d561c63b/workspace/parametric/evidence/current/report.json b/repo/generators/b985d561c63b/workspace/parametric/evidence/current/report.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b985d561c63b/workspace/parametric/evidence/current/report.json
+@@ -0,0 +1,917 @@
++{
++  "adapter_sha256": "aaccc974d9dafbdc31292df950ca3d5ce55c29a84cab35d79c3c411fc8d6bf9a",
++  "alternate_source_sha256": "6bff7d4cc48aa009175409086f345c4c026082a647b43c80dc3e8c98b7c1d061",
++  "canonical_source_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++  "counts": {
++    "ambiguous_wrong_rivals": 0,
++    "demonstrations_per_job": 2,
++    "jobs": 4,
++    "queries_per_job": 4,
++    "rival_racket_evaluations": 144,
++    "selected_racket_evaluations": 25
++  },
++  "jobs": [
++    {
++      "input_sha256": [
++        "cd88505bd46d572540df0c752c4509a4c99f3271644aa82ae95e6663de6c62b2",
++        "71fc1333af4c13c8f0d44419e009c6c352f74ef57849d5b16e0b8662df6da646",
++        "9d2c699e68487fb6df4f845a204554013008f800b9353e820614734018ef84d7",
++        "42f7c08a6756880a6b9e1ede8aa0156d9517259f607ad9544ac2fec4a7117ef6",
++        "d3324285fd9cf771cf7c9023f36bc84e0b38ae50a17b9d0c24fe7a0f89ca228f",
++        "3d495adc8f4d5638ccf2a66ca892dea7ef295fb82226b269925093f810b6ebc6"
++      ],
++      "intermediate_values": [
++        "top_right",
++        "bottom_left",
++        "top_left",
++        "top_right",
++        "bottom_left",
++        "bottom_right"
++      ],
++      "output_sha256": [
++        "03c1b596a1474f03a8a782fed7d0524826d4c28d9d43441756bfe83d9657feca",
++        "06f010b495fc1a9d2b223eeb690c284041ebbbabf2302d742fb3e0447f08b748",
++        "db063aefb37c1adaa18058c695817e134f66455c69be9014fbf368214901a6b0",
++        "a975e56f76fdf30eea530111e27310a56d15cc72c3f2fb68aac9787aed3a12bc",
++        "904fd6fc0f7ca6337c4b3e057561cc90786b1807457a0a257e4797ef770f2348",
++        "0c4ad6a13078404709d9e2acb024f530610ea1f89b9cc7cb19513d4dd3031962"
++      ],
++      "program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++      "projection": {
++        "demo_pair_keys": [
++          "input",
++          "output"
++        ],
++        "private_mutation_id": "9e28932c18825b48284d7e923f6e0c089668b17a39cd1a248d4c4ce3c294d7f6",
++        "private_setting_absent": true,
++        "public_id": "9e28932c18825b48284d7e923f6e0c089668b17a39cd1a248d4c4ce3c294d7f6",
++        "public_keys": [
++          "test",
++          "train"
++        ],
++        "query_pair_keys": [
++          "input"
++        ],
++        "stable_under_private_mutation": true
++      },
++      "rivals": [
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [],
++          "fits_all_demonstrations": true,
++          "intended_equivalent": true,
++          "name": "declared_top_left",
++          "program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++          "query_mismatch_indices": []
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "declared_hole_corner",
++          "program_sha256": "6bff7d4cc48aa009175409086f345c4c026082a647b43c80dc3e8c98b7c1d061",
++          "query_mismatch_indices": [
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [],
++          "fits_all_demonstrations": true,
++          "intended_equivalent": true,
++          "name": "fixed_top_left",
++          "program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++          "query_mismatch_indices": []
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_top_right",
++          "program_sha256": "57b7edf3d57d80af13e3b47943ceaf5b4743570a87e65583ae483427c4219dea",
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_bottom_left",
++          "program_sha256": "b0b84e51e8231bbed9af0a899e8fe1632e66d51d85af7499febb4ca7c3d5e72b",
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_bottom_right",
++          "program_sha256": "35b03f5d482ca25126871ba6a0b72176e979c911ea8d41ace9496fa4f261b1da",
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "row_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "column_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            1,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "opposite_corner",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            0,
++            1,
++            2
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "nonzero_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        }
++      ],
++      "seed": 0,
++      "settings": {
++        "stamp_anchor": "top_left"
++      }
++    },
++    {
++      "input_sha256": [
++        "cd88505bd46d572540df0c752c4509a4c99f3271644aa82ae95e6663de6c62b2",
++        "71fc1333af4c13c8f0d44419e009c6c352f74ef57849d5b16e0b8662df6da646",
++        "9d2c699e68487fb6df4f845a204554013008f800b9353e820614734018ef84d7",
++        "42f7c08a6756880a6b9e1ede8aa0156d9517259f607ad9544ac2fec4a7117ef6",
++        "d3324285fd9cf771cf7c9023f36bc84e0b38ae50a17b9d0c24fe7a0f89ca228f",
++        "3d495adc8f4d5638ccf2a66ca892dea7ef295fb82226b269925093f810b6ebc6"
++      ],
++      "intermediate_values": [
++        "top_right",
++        "bottom_left",
++        "top_left",
++        "top_right",
++        "bottom_left",
++        "bottom_right"
++      ],
++      "output_sha256": [
++        "69559727b946a126904c5b427a9352dd238881248c55b49158e56b48f513dc47",
++        "1884211f79cd0a82b62a20b96d2deda4753d47793d2b5d49d4a017b0aaddd222",
++        "db063aefb37c1adaa18058c695817e134f66455c69be9014fbf368214901a6b0",
++        "44a7e59dbe81fdf759a31b35db779ded45ce231ec132601d218e1957060fbb53",
++        "ca9b6f7ad02276fee217ed374d810fcd811b2c5d22e7c0a6e5fc3b4270a9d714",
++        "a8b91932456444cd6ec78544b78419be75445efabe754fcd35b29ff4e69a19f3"
++      ],
++      "program_sha256": "6bff7d4cc48aa009175409086f345c4c026082a647b43c80dc3e8c98b7c1d061",
++      "projection": {
++        "demo_pair_keys": [
++          "input",
++          "output"
++        ],
++        "private_mutation_id": "3b81d4f296f511024c847dbda9b84da5bc3b29c00f8f7a2acc356ba40d2fc7ca",
++        "private_setting_absent": true,
++        "public_id": "3b81d4f296f511024c847dbda9b84da5bc3b29c00f8f7a2acc356ba40d2fc7ca",
++        "public_keys": [
++          "test",
++          "train"
++        ],
++        "query_pair_keys": [
++          "input"
++        ],
++        "stable_under_private_mutation": true
++      },
++      "rivals": [
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "declared_top_left",
++          "program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++          "query_mismatch_indices": [
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [],
++          "fits_all_demonstrations": true,
++          "intended_equivalent": true,
++          "name": "declared_hole_corner",
++          "program_sha256": "6bff7d4cc48aa009175409086f345c4c026082a647b43c80dc3e8c98b7c1d061",
++          "query_mismatch_indices": []
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_top_left",
++          "program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++          "query_mismatch_indices": [
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_top_right",
++          "program_sha256": "57b7edf3d57d80af13e3b47943ceaf5b4743570a87e65583ae483427c4219dea",
++          "query_mismatch_indices": [
++            0,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_bottom_left",
++          "program_sha256": "b0b84e51e8231bbed9af0a899e8fe1632e66d51d85af7499febb4ca7c3d5e72b",
++          "query_mismatch_indices": [
++            0,
++            1,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_bottom_right",
++          "program_sha256": "35b03f5d482ca25126871ba6a0b72176e979c911ea8d41ace9496fa4f261b1da",
++          "query_mismatch_indices": [
++            0,
++            1,
++            2
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "row_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            1,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "column_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "opposite_corner",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "nonzero_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        }
++      ],
++      "seed": 0,
++      "settings": {
++        "stamp_anchor": "hole_corner"
++      }
++    },
++    {
++      "input_sha256": [
++        "c0264b3619a28a00e298175d4eb5a9e78ba5de4c76576dbe2c079375217e805b",
++        "ca6e0f248b084ba31265b2061dcc2eb3a2c0ad6b6d8795e44880698ee37f9c7f",
++        "0cd5f65b9639af9000bf88ed9e208f2dcac2be627b9057afb067e97775553831",
++        "56ec68f9900418898d993b298998f62d93860f2a68272f2a1f497e8fc00947f2",
++        "7c6d06f750b12dc96c1d121e7dfe15843235cfc7ddf5df456a279c859ee34895",
++        "612ecb9dc5abbe5ecf6ddc7fc1ba765f9bc5e092b75eb5480e3b36da521ec27b"
++      ],
++      "intermediate_values": [
++        "top_right",
++        "bottom_left",
++        "top_left",
++        "top_right",
++        "bottom_left",
++        "bottom_right"
++      ],
++      "output_sha256": [
++        "b7ab5593ca2271b58b6e0876affba3a4d3581ab0d04c4d9b1e169f04008bd562",
++        "707afdaa111baea97137d2cd18a3eab3c3e4d772ca9d2e7a4428228c1c7e528b",
++        "3675b0168653626e71d931086a29a622d00c32e0086fdf0d497a722d4792e4f1",
++        "cab0a2218d7dfd2d80b065be6d06f08289e1511f6a85c43d63cd5fd7910c3513",
++        "cea5ef3d8f0b860a098878c1b527dd48beff2a15cf313ab8b425945e8bf09186",
++        "8cca04657f1b5f575020a1759faf035c0a4c85619c84179f79676b269ed4284b"
++      ],
++      "program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++      "projection": {
++        "demo_pair_keys": [
++          "input",
++          "output"
++        ],
++        "private_mutation_id": "2c9b96c81dcd0f6e814a198e9ea4faa1406a5ae74550fad1cad1ee0bdc3af39e",
++        "private_setting_absent": true,
++        "public_id": "2c9b96c81dcd0f6e814a198e9ea4faa1406a5ae74550fad1cad1ee0bdc3af39e",
++        "public_keys": [
++          "test",
++          "train"
++        ],
++        "query_pair_keys": [
++          "input"
++        ],
++        "stable_under_private_mutation": true
++      },
++      "rivals": [
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [],
++          "fits_all_demonstrations": true,
++          "intended_equivalent": true,
++          "name": "declared_top_left",
++          "program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++          "query_mismatch_indices": []
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "declared_hole_corner",
++          "program_sha256": "6bff7d4cc48aa009175409086f345c4c026082a647b43c80dc3e8c98b7c1d061",
++          "query_mismatch_indices": [
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [],
++          "fits_all_demonstrations": true,
++          "intended_equivalent": true,
++          "name": "fixed_top_left",
++          "program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++          "query_mismatch_indices": []
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_top_right",
++          "program_sha256": "57b7edf3d57d80af13e3b47943ceaf5b4743570a87e65583ae483427c4219dea",
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_bottom_left",
++          "program_sha256": "b0b84e51e8231bbed9af0a899e8fe1632e66d51d85af7499febb4ca7c3d5e72b",
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_bottom_right",
++          "program_sha256": "35b03f5d482ca25126871ba6a0b72176e979c911ea8d41ace9496fa4f261b1da",
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "row_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "column_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            1,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "opposite_corner",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            0,
++            1,
++            2
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "nonzero_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        }
++      ],
++      "seed": 17,
++      "settings": {
++        "stamp_anchor": "top_left"
++      }
++    },
++    {
++      "input_sha256": [
++        "c0264b3619a28a00e298175d4eb5a9e78ba5de4c76576dbe2c079375217e805b",
++        "ca6e0f248b084ba31265b2061dcc2eb3a2c0ad6b6d8795e44880698ee37f9c7f",
++        "0cd5f65b9639af9000bf88ed9e208f2dcac2be627b9057afb067e97775553831",
++        "56ec68f9900418898d993b298998f62d93860f2a68272f2a1f497e8fc00947f2",
++        "7c6d06f750b12dc96c1d121e7dfe15843235cfc7ddf5df456a279c859ee34895",
++        "612ecb9dc5abbe5ecf6ddc7fc1ba765f9bc5e092b75eb5480e3b36da521ec27b"
++      ],
++      "intermediate_values": [
++        "top_right",
++        "bottom_left",
++        "top_left",
++        "top_right",
++        "bottom_left",
++        "bottom_right"
++      ],
++      "output_sha256": [
++        "8641547ef4efdddaca75bf0bd8b5b1229c6d364c47a5392aa45fb7bb2f5996c6",
++        "402ce4e4e6dca465e8026e47d67e56d7952a500c588650e1a61811e32241c718",
++        "3675b0168653626e71d931086a29a622d00c32e0086fdf0d497a722d4792e4f1",
++        "3c86c0d44fd15f628f6fc2cbd47764b15cfa6ad7e1078e309a33958175de03c3",
++        "b4eb06d7c6babc13384a326e9ded25caa0bec0e72469c171c137354c980ab450",
++        "c4b64735307a37f95f3cbd39c70ea9ed9a747aabca566d8e27956acb8adec843"
++      ],
++      "program_sha256": "6bff7d4cc48aa009175409086f345c4c026082a647b43c80dc3e8c98b7c1d061",
++      "projection": {
++        "demo_pair_keys": [
++          "input",
++          "output"
++        ],
++        "private_mutation_id": "4229b6cc4e230a9beb23a4770d5a3c9ae7d8769fb4e9c3a4e32e13be87ea9142",
++        "private_setting_absent": true,
++        "public_id": "4229b6cc4e230a9beb23a4770d5a3c9ae7d8769fb4e9c3a4e32e13be87ea9142",
++        "public_keys": [
++          "test",
++          "train"
++        ],
++        "query_pair_keys": [
++          "input"
++        ],
++        "stable_under_private_mutation": true
++      },
++      "rivals": [
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "declared_top_left",
++          "program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++          "query_mismatch_indices": [
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [],
++          "fits_all_demonstrations": true,
++          "intended_equivalent": true,
++          "name": "declared_hole_corner",
++          "program_sha256": "6bff7d4cc48aa009175409086f345c4c026082a647b43c80dc3e8c98b7c1d061",
++          "query_mismatch_indices": []
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_top_left",
++          "program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
++          "query_mismatch_indices": [
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_top_right",
++          "program_sha256": "57b7edf3d57d80af13e3b47943ceaf5b4743570a87e65583ae483427c4219dea",
++          "query_mismatch_indices": [
++            0,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_bottom_left",
++          "program_sha256": "b0b84e51e8231bbed9af0a899e8fe1632e66d51d85af7499febb4ca7c3d5e72b",
++          "query_mismatch_indices": [
++            0,
++            1,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "protected_racket",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "fixed_bottom_right",
++          "program_sha256": "35b03f5d482ca25126871ba6a0b72176e979c911ea8d41ace9496fa4f261b1da",
++          "query_mismatch_indices": [
++            0,
++            1,
++            2
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "row_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            1,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "column_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "opposite_corner",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        },
++        {
++          "ambiguous_wrong_rival": false,
++          "authority": "python_hypothesis",
++          "demonstration_mismatch_indices": [
++            0,
++            1
++          ],
++          "fits_all_demonstrations": false,
++          "intended_equivalent": false,
++          "name": "nonzero_only",
++          "program_sha256": null,
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ]
++        }
++      ],
++      "seed": 17,
++      "settings": {
++        "stamp_anchor": "hole_corner"
++      }
++    }
++  ],
++  "limits": [
++    "finite rival bank; no universal uniqueness claim",
++    "Python-only shortcut predictions are compared to protected-Racket labels",
++    "reviewer audit does not perform owner acceptance or training admission"
++  ],
++  "minimal_counterexample": "minimal-counterexample.json",
++  "promotion_sha256": "cdda4fd03472f06ea7eb36cd2b79702972962240c5c0050361d6eac2ef176db0",
++  "prototype_sha256": "d9014bd698444a79e38d079f46ebae347982cca978341703353ed09ffb14e774",
++  "prototype_version": "native-hole-corner-anchor-v1",
++  "racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "schema": "arcpuzzles-parametric-self-review-v1",
++  "seeds": [
++    0,
++    17
++  ],
++  "settings": [
++    "top_left",
++    "hole_corner"
++  ],
++  "status": "passed",
++  "stress_30x30": {
++    "grid_shape": [
++      30,
++      30
++    ],
++    "hole_corner": "bottom_right",
++    "hole_relative": [
++      4,
++      4
++    ],
++    "source_bbox": [
++      0,
++      0,
++      5,
++      5
++    ],
++    "source_shape": [
++      5,
++      5
++    ],
++    "target_cells": 324,
++    "target_count": 4,
++    "target_shapes": [
++      [
++        9,
++        9
++      ],
++      [
++        9,
++        9
++      ],
++      [
++        9,
++        9
++      ],
++      [
++        9,
++        9
++      ]
++    ],
++    "targets_touching_boundary": 4
++  },
++  "task_id": "b985d561c63b"
++}
+diff --git a/repo/generators/b985d561c63b/workspace/parametric/evidence/manifest.json b/repo/generators/b985d561c63b/workspace/parametric/evidence/manifest.json
+--- a/repo/generators/b985d561c63b/workspace/parametric/evidence/manifest.json
++++ b/repo/generators/b985d561c63b/workspace/parametric/evidence/manifest.json
+@@ -1,95 +1,92 @@
+ {
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a",
+   "canonical_rule_hash": "c86839f15a5d",
++  "default": {
++    "stamp_anchor": "top_left"
++  },
++  "evidence_root": "generators/b985d561c63b/workspace/parametric/evidence/current",
+   "files": [
+     {
+-      "bytes": 1342,
+-      "path": "generators/b985d561c63b/workspace/parametric/README.md",
+-      "sha256": "26411d48beefc3a17536b5bb8f8105b732539bfb1f766c62d5ffc7f4e0830c7a"
+-    },
+-    {
+-      "bytes": 2042,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/private/canonical_replay.json",
+-      "sha256": "270bcd6d9ded360ab1d49804d02285a6f714b1159ba1d331071b46c02df085b7"
+-    },
+-    {
+-      "bytes": 8026,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/private/distinguishing_witness.json",
+-      "sha256": "654b499afea4a39390f92c14d01c41f4b1550b980a20577c6ab4461dc011ea2a"
+-    },
+-    {
+-      "bytes": 62106,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/private/episode-000.json",
+-      "sha256": "14c6f42fa125fb8e63957f32764b40b2111c6b7773cb596429317b98be2684f6"
+-    },
+-    {
+-      "bytes": 49527,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/private/episode-001.json",
+-      "sha256": "0a83c0d51c26e5ff4a7170e80ceb631a9d4368b9a26201a58cebba538b598104"
+-    },
+-    {
+-      "bytes": 3832,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/private/rules/stamp-anchor-bottom_right.rkt",
+-      "sha256": "a327dd4b87edb6f9d0111cbc45107c1d88a93a1f8bc19d73a298670b1cac5e96"
+-    },
+-    {
+-      "bytes": 3814,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/private/rules/stamp-anchor-top_left.rkt",
+-      "sha256": "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a"
+-    },
+-    {
+-      "bytes": 1342,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/private/source_snapshot/README.md",
+-      "sha256": "26411d48beefc3a17536b5bb8f8105b732539bfb1f766c62d5ffc7f4e0830c7a"
+-    },
+-    {
+       "bytes": 17737,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/private/source_snapshot/generator.py",
++      "path": "generators/b985d561c63b/generator.py",
+       "sha256": "8a81e88ddb5d46c6eadd3fed5f2f283a532bde46e512ee1bc4d06ff3eec621a0"
+     },
+     {
+-      "bytes": 20916,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/private/source_snapshot/prototype.py",
+-      "sha256": "d7ccf0c487936c99f1aa00cfbf312e56b8c099cd49733c9d523b7a3be2622b71"
++      "bytes": 9210,
++      "path": "generators/b985d561c63b/tests/test_parametric_anchor.py",
++      "sha256": "4962770f8fb1bc4cdd8dfb71ea76ac3d1d00837de1b6205e57011f7e412406dc"
+     },
+     {
+-      "bytes": 5485,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/private/source_snapshot/test_parametric_anchor.py",
+-      "sha256": "c573426490cd177ebb5f01216fa73596b93219ab7a52e4511b60d350ce981d6b"
++      "bytes": 2670,
++      "path": "generators/b985d561c63b/workspace/parametric/README.md",
++      "sha256": "ebe3511a9b95aeef90dea5994c344d070a8b445e5afc68d8cc53e7f0cd59faed"
+     },
+     {
+-      "bytes": 19566,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/public/episode-000.json",
+-      "sha256": "7c31c50a0d64f4b8461104496d9d06241e59a33d790303923246aea3472492bb"
++      "bytes": 1043,
++      "path": "generators/b985d561c63b/workspace/parametric/adapter.py",
++      "sha256": "aaccc974d9dafbdc31292df950ca3d5ce55c29a84cab35d79c3c411fc8d6bf9a"
+     },
+     {
+-      "bytes": 14272,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/public/episode-001.json",
+-      "sha256": "91a894a40bbe5c1ef0ad831f7cd9913af2b701f563752ad5e50b93e36e3c17fb"
++      "bytes": 13242,
++      "path": "generators/b985d561c63b/workspace/parametric/audit.py",
++      "sha256": "04a1b3b87013d2534464b0451d86fd6a7fc19d97316cb5dd0dc4de9a62f314ec"
+     },
+     {
+-      "bytes": 3843,
+-      "path": "generators/b985d561c63b/workspace/parametric/evidence/returned/report.json",
+-      "sha256": "ecb7c9b9bcdc007a905ece35f0063fb131905b6a4bbc818ee3a375d0556d8b9d"
++      "bytes": 13057,
++      "path": "generators/b985d561c63b/workspace/parametric/evidence/current/minimal-counterexample.json",
++      "sha256": "945a885733aafc20ba1ebed37288a5b7868594550c7135aaadf243c17afbb3e0"
+     },
+     {
+-      "bytes": 20916,
++      "bytes": 28329,
++      "path": "generators/b985d561c63b/workspace/parametric/evidence/current/report.json",
++      "sha256": "7273f3ad60f45be1248f966a8fde81a31064bc6502cc47f5c76f05f9b57abbb9"
++    },
++    {
++      "bytes": 571,
++      "path": "generators/b985d561c63b/workspace/parametric/promotion.json",
++      "sha256": "cdda4fd03472f06ea7eb36cd2b79702972962240c5c0050361d6eac2ef176db0"
++    },
++    {
++      "bytes": 20679,
+       "path": "generators/b985d561c63b/workspace/parametric/prototype.py",
+-      "sha256": "d7ccf0c487936c99f1aa00cfbf312e56b8c099cd49733c9d523b7a3be2622b71"
++      "sha256": "d9014bd698444a79e38d079f46ebae347982cca978341703353ed09ffb14e774"
++    },
++    {
++      "bytes": 4020,
++      "path": "generators/b985d561c63b/workspace/parametric/rules/fixed_bottom_left.rkt",
++      "sha256": "b0b84e51e8231bbed9af0a899e8fe1632e66d51d85af7499febb4ca7c3d5e72b"
++    },
++    {
++      "bytes": 4552,
++      "path": "generators/b985d561c63b/workspace/parametric/rules/hole_corner_anchor.rkt",
++      "sha256": "6bff7d4cc48aa009175409086f345c4c026082a647b43c80dc3e8c98b7c1d061"
+     }
+   ],
+   "generator_sha256": "8a81e88ddb5d46c6eadd3fed5f2f283a532bde46e512ee1bc4d06ff3eec621a0",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
+   "parameters": {
+     "stamp_anchor": [
+       "top_left",
+-      "bottom_right"
++      "hole_corner"
+     ]
+   },
+   "production_parametric_api": false,
+-  "return_id": "review-c238e83a9e70bf6d:v0001",
+-  "return_zip_sha256": "f5b29665e2c0c7998786243c433bab68e3697db703ba9572ea865166ba7a491b",
++  "reported_checks": "Focused parametric tests 8/8; protected-Racket self-review on seeds 0 and 17, both settings, 2 demos and 4 queries per job; zero finite wrong-rival ambiguities; deterministic prefix/count and public/private projection checks; dense 30x30 boundary stress; no owner acceptance or training admission.",
++  "rule_task_id": "b985d561c63b",
+   "schema": "arcpuzzles-parametric-prototype-evidence-v1",
+-  "scope": "Strict call-scalar boundary before schedule/RNG;19 retained valid calls byte-identical,output digest32d50739a73fbd03c2a92c8b0c968c7998b1b53e753abe854ce18f54cbe785ee. Reviewer reports12/12 final battery,318 focused/portable and318 fresh patch-replay tests.300three-demo/query lessons,1200unique inputs/1200rotations without declared-rival ambiguity. Canonical Racket unchanged. Prototype two stamp anchors,two episodes,six demos,two queries,24actual Racket executions,zero surviving parameter rivals;top_left canonical default. Finite declared-setting scope. Public/private artifacts separate;descriptive filenames must be hidden or renamed for model-visible use. No owner repair battery rerun or trajectory admission.",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
+   "task_id": "b985d561c63b",
++  "training_admitted": false,
+   "variant_approved": false,
+   "verification_status": "reviewer_reported"
+ }
+diff --git a/repo/generators/b985d561c63b/workspace/parametric/promotion.json b/repo/generators/b985d561c63b/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b985d561c63b/workspace/parametric/promotion.json
+@@ -0,0 +1,28 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/b985d561c63b/workspace/parametric/adapter.py",
++  "parameters": {
++    "stamp_anchor": [
++      "top_left",
++      "hole_corner"
++    ]
++  },
++  "default": {
++    "stamp_anchor": "top_left"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/b985d561c63b/workspace/parametric/rules/hole_corner_anchor.rkt",
++    "generators/b985d561c63b/workspace/parametric/rules/fixed_bottom_left.rkt"
++  ]
++}
+diff --git a/repo/generators/b985d561c63b/workspace/parametric/prototype.py b/repo/generators/b985d561c63b/workspace/parametric/prototype.py
+--- a/repo/generators/b985d561c63b/workspace/parametric/prototype.py
++++ b/repo/generators/b985d561c63b/workspace/parametric/prototype.py
+@@ -1,136 +1,256 @@
+-#!/usr/bin/env python3
+-"""Proposed episode-level stamp-anchor parameter for b985d561c63b.
+-
+-This is a task-local authoring prototype, not a production generator change.
+-It selects one anchor per complete episode, generates inputs independently of
+-that hidden choice, and obtains every retained label and rival prediction by
+-executing exact, hash-pinned Racket through the bundled bridge.
++"""Task-local native authoring implementation for b985d561c63b.
++
++The canonical setting stamps the complete colored-source bounding box at the
++upper-left of each gray target, byte-for-byte using the selected canonical
++Racket rule.  The alternate setting adds a real input-dependent dependency:
++first locate the source crop's unique zero-valued corner, then use that corner
++as the alignment corner for every larger gray target before copying the full
++crop (including the zero).
++
++Python outputs are deterministic authoring claims.  Native qualification
++re-executes every label through the protected Racket runtime.
+ """
+ from __future__ import annotations
+ 
+-import argparse
+ import copy
+ import hashlib
+-import importlib.util
+ import json
+ import random
+ from pathlib import Path
+-import sys
++from typing import Any
+ 
+ from arc_repl.racket_bridge import RacketBridge
+-from reviewer_support import canonical_pairs, canonical_path, find_root, normalize_grid
++from reviewer_support import (
++    canonical_path,
++    find_root,
++    normalize_grid,
++    public_challenge_id,
++)
+ 
+ 
+ TASK_ID = "b985d561c63b"
+-VERSION = "proposed-stamp-anchor-v1"
+-ALLOWED_STAMP_ANCHORS = ("top_left", "bottom_right")
++VERSION = "native-hole-corner-anchor-v1"
++ALLOWED_STAMP_ANCHORS = ("top_left", "hole_corner")
+ DEFAULT_STAMP_ANCHOR = "top_left"
++CORNERS = ("top_left", "top_right", "bottom_left", "bottom_right")
+ CANONICAL_RULE_HASH = "c86839f15a5d"
+ CANONICAL_SHA256 = "d28ede61a9c78ba345f33b47b9db17b0ea2334f382d7c6f17c8a1ec9cb6ef51a"
+-
+-# The replacement is deliberately narrow and reversible.  The default returns
+-# the canonical source byte-for-byte; only the target-origin calculation moves.
+-CANONICAL_ANCHOR_SITE = """               (let ((rmin (min-of first region))
++HERE = Path(__file__).resolve().parent
++
++_CANONICAL_RESULT_SITE = """                  (result (make-hash)))"""
++_HOLE_RESULT_SITE = """                  (hole-cells
++                    (for*/list ((r (range tr1 (+ tr2 1)))
++                                (c (range tc1 (+ tc2 1)))
++                                #:when (= (at g r c) 0))
++                      (list r c)))
++                  (hole (first hole-cells))
++                  (anchor-bottom? (>= (* 2 (- (first hole) tr1)) th))
++                  (anchor-right? (>= (* 2 (- (second hole) tc1)) tw))
++                  (result (make-hash)))"""
++_CANONICAL_ANCHOR_SITE = """               (let ((rmin (min-of first region))
+                      (cmin (min-of second region)))
+                  (for* ((dr (range 0 th)) (dc (range 0 tw)))
+                        (let ((nr (+ rmin dr))
+                              (nc (+ cmin dc)))"""
+-ALTERNATIVE_ANCHOR_SITE = """               (let ((rmax (max-of first region))
+-                     (cmax (max-of second region)))
++_HOLE_ANCHOR_SITE = """               (let* ((rmin (min-of first region))
++                      (cmin (min-of second region))
++                      (rmax (max-of first region))
++                      (cmax (max-of second region))
++                      (target-r0
++                        (if anchor-bottom? (+ 1 (- rmax th)) rmin))
++                      (target-c0
++                        (if anchor-right? (+ 1 (- cmax tw)) cmin)))
+                  (for* ((dr (range 0 th)) (dc (range 0 tw)))
+-                       (let ((nr (+ 1 (- rmax th) dr))
+-                             (nc (+ 1 (- cmax tw) dc)))"""
+-_DIFFICULTIES = (None, "easy", "medium", "hard")
+-
+-
+-def _sha256(value):
+-    return hashlib.sha256(value.encode() if isinstance(value, str) else value).hexdigest()
+-
+-
+-def _json(value):
+-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+-
+-
+-def grid_sha256(grid):
+-    return _sha256(_json(normalize_grid(grid)))
+-
+-
+-def _validate_seed(seed):
+-    if type(seed) is not int or not 0 <= seed < 2**63:
+-        raise ValueError("seed must be a literal integer in 0..2**63-1")
+-
+-
+-def _validate_anchor(stamp_anchor):
+-    if type(stamp_anchor) is not str:
+-        raise TypeError("stamp_anchor must be text")
+-    if stamp_anchor not in ALLOWED_STAMP_ANCHORS:
++                       (let ((nr (+ target-r0 dr))
++                             (nc (+ target-c0 dc)))"""
++
++# Profiles are deliberately prefix-stable.  The first two demonstrations use
++# different non-top-left cue corners, so either declared setting is identified
++# with the minimum supported context.  The fourth query is a dense 30x30 case.
++_DEMO_PROFILES = (
++    {
++        "canvas": (10, 12), "source_shape": (3, 3), "hole_corner": "top_right",
++        "target_shape": (4, 5), "source": (1, 1), "targets": ((0, 7), (6, 0)),
++        "palette_size": 2,
++    },
++    {
++        "canvas": (13, 14), "source_shape": (4, 3), "hole_corner": "bottom_left",
++        "target_shape": (6, 5), "source": (0, 0), "targets": ((0, 9), (7, 4)),
++        "palette_size": 3,
++    },
++    {
++        "canvas": (15, 16), "source_shape": (3, 4), "hole_corner": "bottom_right",
++        "target_shape": (5, 6), "source": (0, 0),
++        "targets": ((0, 10), (6, 0), (10, 10)), "palette_size": 2,
++    },
++    {
++        "canvas": (18, 19), "source_shape": (5, 4), "hole_corner": "top_right",
++        "target_shape": (6, 6), "source": (0, 0),
++        "targets": ((0, 13), (7, 0), (12, 13)), "palette_size": 3,
++    },
++    {
++        "canvas": (21, 22), "source_shape": (4, 5), "hole_corner": "bottom_left",
++        "target_shape": (6, 7), "source": (0, 0),
++        "targets": ((0, 15), (7, 0), (15, 15)), "palette_size": 2,
++    },
++    {
++        "canvas": (24, 25), "source_shape": (5, 5), "hole_corner": "bottom_right",
++        "target_shape": (7, 7), "source": (0, 0),
++        "targets": ((0, 18), (8, 0), (17, 0), (17, 18)), "palette_size": 3,
++    },
++)
++_QUERY_PROFILES = (
++    {
++        "canvas": (11, 13), "source_shape": (3, 4), "hole_corner": "top_left",
++        "target_shape": (4, 6), "source": (0, 0), "targets": ((0, 7), (7, 3)),
++        "palette_size": 2,
++    },
++    {
++        "canvas": (16, 17), "source_shape": (4, 4), "hole_corner": "top_right",
++        "target_shape": (6, 6), "source": (0, 0),
++        "targets": ((0, 11), (7, 0), (10, 11)), "palette_size": 3,
++    },
++    {
++        "canvas": (23, 24), "source_shape": (5, 4), "hole_corner": "bottom_left",
++        "target_shape": (7, 7), "source": (0, 0),
++        "targets": ((0, 17), (8, 0), (16, 0), (16, 17)), "palette_size": 2,
++    },
++    {
++        "canvas": (30, 30), "source_shape": (5, 5), "hole_corner": "bottom_right",
++        "target_shape": (9, 9), "source": (0, 0),
++        "targets": ((0, 21), (10, 0), (21, 0), (21, 21)), "palette_size": 3,
++    },
++)
++
++
++def _sha256(data: bytes | str) -> str:
++    if isinstance(data, str):
++        data = data.encode("utf-8")
++    return hashlib.sha256(data).hexdigest()
++
++
++def _validate_seed(seed: Any) -> int:
++    if type(seed) is not int or not 0 <= seed <= 2**63 - 1:
++        raise ValueError("seed must be an exact integer in 0..2^63-1")
++    return seed
++
++
++def _validate_count(value: Any, low: int, high: int, name: str) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++    return value
++
++
++def _validate_stamp_anchor(value: Any) -> str:
++    if type(value) is not str or value not in ALLOWED_STAMP_ANCHORS:
+         raise ValueError(f"stamp_anchor must be one of {ALLOWED_STAMP_ANCHORS}")
+-    return stamp_anchor
+-
+-
+-def _check_canonical_source(source):
+-    if not isinstance(source, str) or _sha256(source) != CANONICAL_SHA256:
+-        raise ValueError("canonical source SHA256 does not match the pinned rule")
+-    if source.count(CANONICAL_ANCHOR_SITE) != 1:
+-        raise ValueError("canonical source must contain exactly one anchor site")
++    return value
++
++
++def _validate_corner(value: Any) -> str:
++    if type(value) is not str or value not in CORNERS:
++        raise ValueError(f"corner must be one of {CORNERS}")
++    return value
++
++
++def validate_settings(settings: Any) -> dict[str, str]:
++    if type(settings) is not dict or set(settings) != {"stamp_anchor"}:
++        raise ValueError("settings must contain exactly stamp_anchor")
++    return {"stamp_anchor": _validate_stamp_anchor(settings["stamp_anchor"])}
++
++
++def _checked_canonical(source: Any) -> str:
++    if type(source) is not str or _sha256(source) != CANONICAL_SHA256:
++        raise ValueError("canonical source SHA-256 differs from the pinned authority")
++    if source.count(_CANONICAL_RESULT_SITE) != 1:
++        raise ValueError("canonical source has an unexpected result binding")
++    if source.count(_CANONICAL_ANCHOR_SITE) != 1:
++        raise ValueError("canonical source has an unexpected stamp site")
+     return source
+ 
+ 
+-def canonical_source(*, root=None):
+-    root = find_root(__file__) if root is None else Path(root)
+-    sources = set()
++def canonical_source(*, root: Path | None = None) -> str:
++    root = find_root(__file__) if root is None else Path(root).resolve()
++    rows: set[str] = set()
+     with canonical_path(root).open(encoding="utf-8") as handle:
+         for line in handle:
+             if not line.strip():
+                 continue
+             row = json.loads(line)
+             if row.get("task_id") == TASK_ID:
+-                sources.add(row.get("program_solution"))
+-    if len(sources) != 1:
+-        raise ValueError(f"expected exactly one canonical source for {TASK_ID}")
+-    return _check_canonical_source(sources.pop())
+-
+-
+-def materialize_rule(stamp_anchor=DEFAULT_STAMP_ANCHOR, *, root=None, source=None):
+-    stamp_anchor = _validate_anchor(stamp_anchor)
+-    canonical = canonical_source(root=root) if source is None else _check_canonical_source(source)
++                value = row.get("program_solution")
++                if type(value) is not str:
++                    raise ValueError("canonical task row has no exact program_solution")
++                rows.add(value)
++    if len(rows) != 1:
++        raise ValueError(f"expected one canonical program for {TASK_ID}, found {len(rows)}")
++    return _checked_canonical(next(iter(rows)))
++
++
++def materialize_hole_corner_rule(source: str) -> str:
++    source = _checked_canonical(source)
++    alternate = source.replace(_CANONICAL_RESULT_SITE, _HOLE_RESULT_SITE, 1)
++    alternate = alternate.replace(_CANONICAL_ANCHOR_SITE, _HOLE_ANCHOR_SITE, 1)
++    if alternate.count(_HOLE_RESULT_SITE) != 1 or alternate.count(_HOLE_ANCHOR_SITE) != 1:
++        raise AssertionError("hole-corner source edit was not unique")
++    return alternate
++
++
++def _fixed_anchor_site(corner: str) -> str:
++    corner = _validate_corner(corner)
++    bottom = corner.startswith("bottom")
++    right = corner.endswith("right")
++    row_origin = "(+ 1 (- rmax th))" if bottom else "rmin"
++    col_origin = "(+ 1 (- cmax tw))" if right else "cmin"
++    return f"""               (let* ((rmin (min-of first region))
++                      (cmin (min-of second region))
++                      (rmax (max-of first region))
++                      (cmax (max-of second region))
++                      (target-r0 {row_origin})
++                      (target-c0 {col_origin}))
++                 (for* ((dr (range 0 th)) (dc (range 0 tw)))
++                       (let ((nr (+ target-r0 dr))
++                             (nc (+ target-c0 dc)))"""
++
++
++def fixed_anchor_program(corner: Any, *, root: Path | None = None, source: str | None = None) -> str:
++    corner = _validate_corner(corner)
++    canonical = canonical_source(root=root) if source is None else _checked_canonical(source)
++    if corner == "top_left":
++        return canonical
++    result = canonical.replace(_CANONICAL_ANCHOR_SITE, _fixed_anchor_site(corner), 1)
++    if result == canonical:
++        raise AssertionError("fixed-anchor source edit did not change the canonical program")
++    return result
++
++
++def program_for(stamp_anchor: Any = DEFAULT_STAMP_ANCHOR, *, root: Path | None = None) -> str:
++    stamp_anchor = _validate_stamp_anchor(stamp_anchor)
++    canonical = canonical_source(root=root)
+     if stamp_anchor == DEFAULT_STAMP_ANCHOR:
+         return canonical
+-    alternative = canonical.replace(
+-        CANONICAL_ANCHOR_SITE,
+-        ALTERNATIVE_ANCHOR_SITE,
+-        1,
+-    )
+-    if alternative.count(ALTERNATIVE_ANCHOR_SITE) != 1:
+-        raise AssertionError("bottom-right anchor edit was not unique")
+-    return alternative
+-
+-
+-def restore_canonical_rule(source):
+-    if not isinstance(source, str):
+-        raise TypeError("Racket source must be text")
+-    if _sha256(source) == CANONICAL_SHA256:
+-        return _check_canonical_source(source)
+-    if source.count(ALTERNATIVE_ANCHOR_SITE) != 1:
+-        raise ValueError("source is neither the canonical nor proposed anchor rule")
+-    return _check_canonical_source(
+-        source.replace(ALTERNATIVE_ANCHOR_SITE, CANONICAL_ANCHOR_SITE, 1)
+-    )
+-
+-
+-def rule_callable(source):
+-    """Convert one validated `(rule! (lambda ...))` body to a callable lambda."""
+-    restore_canonical_rule(source)
+-    if not source.startswith("(rule! ") or not source.endswith(")"):
+-        raise ValueError("unexpected canonical rule wrapper")
++    expected = materialize_hole_corner_rule(canonical)
++    path = HERE / "rules" / "hole_corner_anchor.rkt"
++    actual = path.read_text(encoding="utf-8")
++    if actual != expected:
++        raise ValueError("hole-corner Racket resource differs from the guarded canonical edit")
++    return actual
++
++
++def program(settings: Any) -> str:
++    normalized = validate_settings(settings)
++    return program_for(normalized["stamp_anchor"])
++
++
++def rule_callable(source: Any) -> str:
++    if type(source) is not str or not source.startswith("(rule! ") or not source.endswith(")"):
++        raise ValueError("expected one complete rule! source")
+     return source[len("(rule! ") : -1]
+ 
+ 
+-def execute_rule(source, grid, *, bridge=None):
++def execute_rule(source: str, grid: Any, *, bridge: RacketBridge | None = None) -> list[list[int]]:
+     grid = normalize_grid(grid)
+-    literal = "'(" + " ".join(
+-        "(" + " ".join(map(str, row)) + ")" for row in grid
+-    ) + ")"
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
+     expression = f"({rule_callable(source)} {literal})"
+     if bridge is None:
+         with RacketBridge() as owned:
+@@ -138,400 +258,273 @@
+     return normalize_grid(bridge.eval_text(expression))
+ 
+ 
+-def _components(points):
++def _components(points: list[tuple[int, int]]) -> list[list[tuple[int, int]]]:
+     remaining = set(points)
+-    components = []
++    result: list[list[tuple[int, int]]] = []
+     while remaining:
+         start = min(remaining)
+         remaining.remove(start)
+-        pending = [start]
+-        component = []
+-        while pending:
+-            row, col = pending.pop()
+-            component.append((row, col))
+-            for neighbor in (
+-                (row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)
+-            ):
++        stack = [start]
++        cells: list[tuple[int, int]] = []
++        while stack:
++            row, col = stack.pop()
++            cells.append((row, col))
++            for neighbor in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)):
+                 if neighbor in remaining:
+                     remaining.remove(neighbor)
+-                    pending.append(neighbor)
+-        components.append(component)
+-    return components
+-
+-
+-def _bbox(cells):
++                    stack.append(neighbor)
++        result.append(sorted(cells))
++    return sorted(result, key=lambda cells: _bbox(cells))
++
++
++def _bbox(cells: list[tuple[int, int]]) -> tuple[int, int, int, int]:
+     rows, cols = zip(*cells)
+     return min(rows), min(cols), max(rows) + 1, max(cols) + 1
+ 
+ 
+-def python_mirror(grid, *, stamp_anchor=DEFAULT_STAMP_ANCHOR):
+-    """Independent executable mirror used only to cross-check Racket labels."""
+-    stamp_anchor = _validate_anchor(stamp_anchor)
+-    grid = normalize_grid(grid)
++def _normalize_grid(grid: Any) -> list[list[int]]:
++    value = normalize_grid(grid)
++    if (
++        type(value) is not list
++        or not 1 <= len(value) <= 30
++        or type(value[0]) is not list
++        or not 1 <= len(value[0]) <= 30
++        or any(
++            type(row) is not list
++            or len(row) != len(value[0])
++            or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++            for row in value
++        )
++    ):
++        raise ValueError("grid must be rectangular 1..30 with exact ARC colors")
++    return value
++
++
++def _corner_for_relative(row: int, col: int, height: int, width: int) -> str:
++    if (row, col) == (0, 0):
++        return "top_left"
++    if (row, col) == (0, width - 1):
++        return "top_right"
++    if (row, col) == (height - 1, 0):
++        return "bottom_left"
++    if (row, col) == (height - 1, width - 1):
++        return "bottom_right"
++    raise ValueError("the unique source zero must occupy a bounding-box corner")
++
++
++def _analyze(grid: Any) -> dict[str, Any]:
++    grid = _normalize_grid(grid)
++    height, width = len(grid), len(grid[0])
+     source = [
+         (row, col)
+-        for row, cells in enumerate(grid)
+-        for col, value in enumerate(cells)
+-        if value not in (0, 5)
++        for row, values in enumerate(grid)
++        for col, cell in enumerate(values)
++        if cell not in (0, 5)
+     ]
+     gray = [
+         (row, col)
+-        for row, cells in enumerate(grid)
+-        for col, value in enumerate(cells)
+-        if value == 5
++        for row, values in enumerate(grid)
++        for col, cell in enumerate(values)
++        if cell == 5
+     ]
+     if not source or not gray:
+         raise ValueError("input needs a colored source and at least one gray target")
+-    sr0, sc0, sr1, sc1 = _bbox(source)
+-    template_h, template_w = sr1 - sr0, sc1 - sc0
+-    result = [list(row) for row in grid]
+-    for region in _components(gray):
+-        rr0, rc0, rr1, rc1 = _bbox(region)
+-        if rr1 - rr0 < template_h or rc1 - rc0 < template_w:
+-            raise ValueError("target is smaller than source bounding box")
+-        if stamp_anchor == "top_left":
+-            target_r0, target_c0 = rr0, rc0
+-        else:
+-            target_r0, target_c0 = rr1 - template_h, rc1 - template_w
+-        for dr in range(template_h):
+-            for dc in range(template_w):
+-                result[target_r0 + dr][target_c0 + dc] = grid[sr0 + dr][sc0 + dc]
+-    return result
+-
+-
+-def _load_generator(root):
+-    path = Path(root) / "generators" / TASK_ID / "generator.py"
+-    spec = importlib.util.spec_from_file_location(
+-        f"{TASK_ID}_parametric_input_generator", path
++    source_box = _bbox(source)
++    sr0, sc0, sr1, sc1 = source_box
++    source_h, source_w = sr1 - sr0, sc1 - sc0
++    holes = [
++        (row, col)
++        for row in range(sr0, sr1)
++        for col in range(sc0, sc1)
++        if grid[row][col] == 0
++    ]
++    if len(holes) != 1:
++        raise ValueError("source bounding box must contain exactly one zero cue")
++    hole_row, hole_col = holes[0]
++    hole_relative = (hole_row - sr0, hole_col - sc0)
++    hole_corner = _corner_for_relative(*hole_relative, source_h, source_w)
++
++    targets: list[dict[str, Any]] = []
++    for cells in _components(gray):
++        box = _bbox(cells)
++        r0, c0, r1, c1 = box
++        target_h, target_w = r1 - r0, c1 - c0
++        if len(cells) != target_h * target_w:
++            raise ValueError("every gray target must be a solid rectangle")
++        if target_h < source_h or target_w < source_w:
++            raise ValueError("every gray target must contain the source crop")
++        targets.append({"cells": cells, "bbox": box, "shape": (target_h, target_w)})
++    return {
++        "grid": grid,
++        "height": height,
++        "width": width,
++        "source_cells": source,
++        "source_bbox": source_box,
++        "source_shape": (source_h, source_w),
++        "hole": holes[0],
++        "hole_relative": hole_relative,
++        "hole_corner": hole_corner,
++        "targets": targets,
++    }
++
++
++def hole_corner_intermediate(grid: Any) -> dict[str, Any]:
++    analysis = _analyze(grid)
++    return {
++        "corner": analysis["hole_corner"],
++        "source_bbox": list(analysis["source_bbox"]),
++        "hole_cell": list(analysis["hole"]),
++        "hole_relative": list(analysis["hole_relative"]),
++    }
++
++
++def _target_origin(box: tuple[int, int, int, int], source_shape: tuple[int, int], corner: str) -> tuple[int, int]:
++    r0, c0, r1, c1 = box
++    source_h, source_w = source_shape
++    top = corner.startswith("top")
++    left = corner.endswith("left")
++    return (r0 if top else r1 - source_h, c0 if left else c1 - source_w)
++
++
++def apply_python(
++    grid: Any,
++    *,
++    stamp_anchor: Any = DEFAULT_STAMP_ANCHOR,
++    corner_override: Any | None = None,
++    copy_template_zeros: Any = True,
++) -> list[list[int]]:
++    stamp_anchor = _validate_stamp_anchor(stamp_anchor)
++    if type(copy_template_zeros) is not bool:
++        raise ValueError("copy_template_zeros must be a literal bool")
++    if corner_override is not None:
++        if stamp_anchor != "hole_corner":
++            raise ValueError("corner_override is only valid for hole_corner")
++        corner_override = _validate_corner(corner_override)
++    analysis = _analyze(grid)
++    source_r0, source_c0, _, _ = analysis["source_bbox"]
++    source_h, source_w = analysis["source_shape"]
++    corner = (
++        "top_left"
++        if stamp_anchor == "top_left"
++        else corner_override or analysis["hole_corner"]
+     )
+-    if spec is None or spec.loader is None:
+-        raise RuntimeError(f"cannot import selected generator at {path}")
+-    module = importlib.util.module_from_spec(spec)
+-    sys.modules[spec.name] = module
+-    spec.loader.exec_module(module)
+-    return module
+-
+-
+-def _input_seed(episode_seed, slot, attempt):
+-    material = f"{TASK_ID}:{VERSION}:input:{episode_seed}:{slot}:{attempt}".encode()
+-    return int.from_bytes(hashlib.sha256(material).digest()[:8], "big") & (2**63 - 1)
+-
+-
+-def generated_inputs(seed, *, root=None):
+-    """Create four parameter-independent lawful inputs from the selected sampler."""
+-    _validate_seed(seed)
+-    root = find_root(__file__) if root is None else Path(root).resolve()
+-    generator = _load_generator(root)
+-    rows = []
+-    seen = set()
+-    for slot, difficulty in enumerate(_DIFFICULTIES):
+-        for attempt in range(100):
+-            input_seed = _input_seed(seed, slot, attempt)
+-            grid = generator.generate(
+-                input_seed,
+-                slot,
+-                difficulty=difficulty,
+-                template_style="dense",
+-                extra_rows=1,
+-                extra_cols=1,
+-            )
+-            errors = generator.self_check(grid, difficulty=difficulty)
+-            if errors:
+-                raise AssertionError(f"selected generator self_check failed: {errors}")
+-            digest = grid_sha256(grid)
+-            if digest in seen:
+-                continue
+-            observation = generator.observe_overrides(grid)
+-            required = {"template_style": "dense", "extra_rows": 1, "extra_cols": 1}
+-            if any(observation[key] != value for key, value in required.items()):
+-                raise AssertionError(f"selected sampler violated required witness controls: {observation}")
+-            seen.add(digest)
+-            rows.append({
+-                "fixture_id": f"generated-{slot}",
+-                "input": grid,
+-                "input_sha256": digest,
+-                "input_observation": observation,
+-                "generator_call": {
+-                    "seed": input_seed,
+-                    "sample_index": slot,
+-                    "difficulty": difficulty,
+-                    "overrides": required,
+-                    "attempt": attempt,
+-                },
+-            })
+-            break
+-        else:
+-            raise AssertionError(f"could not obtain a unique input for slot {slot}")
+-    return rows
+-
+-
+-def parameters_for_seed(seed):
+-    _validate_seed(seed)
+-    return {"stamp_anchor": random.Random(seed).choice(ALLOWED_STAMP_ANCHORS)}
+-
+-
+-def make_episode(seed, *, root=None, bridge=None):
+-    _validate_seed(seed)
+-    parameters = parameters_for_seed(seed)
+-    if bridge is None:
+-        with RacketBridge() as owned:
+-            return _make_episode(seed, parameters, root=root, bridge=owned)
+-    return _make_episode(seed, parameters, root=root, bridge=bridge)
+-
+-
+-def _make_episode(seed, parameters, *, root, bridge):
+-    root = find_root(__file__) if root is None else Path(root).resolve()
+-    canonical = canonical_source(root=root)
+-    rules = {
+-        anchor: materialize_rule(anchor, source=canonical)
+-        for anchor in ALLOWED_STAMP_ANCHORS
++    output = copy.deepcopy(analysis["grid"])
++    for target in analysis["targets"]:
++        target_r0, target_c0 = _target_origin(target["bbox"], analysis["source_shape"], corner)
++        for dr in range(source_h):
++            for dc in range(source_w):
++                value = analysis["grid"][source_r0 + dr][source_c0 + dc]
++                if value == 0 and not copy_template_zeros:
++                    continue
++                output[target_r0 + dr][target_c0 + dc] = value
++    return output
++
++
++def input_features(grid: Any) -> dict[str, Any]:
++    analysis = _analyze(grid)
++    touching = 0
++    target_cells = 0
++    shapes: list[list[int]] = []
++    for target in analysis["targets"]:
++        r0, c0, r1, c1 = target["bbox"]
++        if r0 == 0 or c0 == 0 or r1 == analysis["height"] or c1 == analysis["width"]:
++            touching += 1
++        target_cells += len(target["cells"])
++        shapes.append(list(target["shape"]))
++    return {
++        "grid_shape": [analysis["height"], analysis["width"]],
++        "source_shape": list(analysis["source_shape"]),
++        "source_bbox": list(analysis["source_bbox"]),
++        "hole_corner": analysis["hole_corner"],
++        "hole_relative": list(analysis["hole_relative"]),
++        "target_count": len(analysis["targets"]),
++        "target_shapes": shapes,
++        "target_cells": target_cells,
++        "targets_touching_boundary": touching,
+     }
+-    inputs = generated_inputs(seed, root=root)
+-    outputs = {
+-        anchor: [
+-            execute_rule(source, pair["input"], bridge=bridge)
+-            for pair in inputs
+-        ]
+-        for anchor, source in rules.items()
++
++
++def _seeded_rng(seed: int, split: str, index: int) -> random.Random:
++    material = f"{TASK_ID}:{VERSION}:{seed}:{split}:{index}".encode("utf-8")
++    return random.Random(int.from_bytes(hashlib.sha256(material).digest()[:16], "big"))
++
++
++def _corner_offset(corner: str, height: int, width: int) -> tuple[int, int]:
++    corner = _validate_corner(corner)
++    return (
++        0 if corner.startswith("top") else height - 1,
++        0 if corner.endswith("left") else width - 1,
++    )
++
++
++def _build_input(seed: int, split: str, index: int) -> list[list[int]]:
++    profiles = _DEMO_PROFILES if split == "demo" else _QUERY_PROFILES
++    profile = profiles[index]
++    height, width = profile["canvas"]
++    source_h, source_w = profile["source_shape"]
++    target_h, target_w = profile["target_shape"]
++    grid = [[0] * width for _ in range(height)]
++    rng = _seeded_rng(seed, split, index)
++    palette = rng.sample((1, 2, 3, 4, 6, 7, 8, 9), profile["palette_size"])
++    cells = [(r, c) for r in range(source_h) for c in range(source_w)]
++    hole = _corner_offset(profile["hole_corner"], source_h, source_w)
++    cells.remove(hole)
++    rng.shuffle(cells)
++    source_r0, source_c0 = profile["source"]
++    for position, (dr, dc) in enumerate(cells):
++        grid[source_r0 + dr][source_c0 + dc] = palette[position % len(palette)]
++    for target_r0, target_c0 in profile["targets"]:
++        for dr in range(target_h):
++            for dc in range(target_w):
++                if grid[target_r0 + dr][target_c0 + dc] != 0:
++                    raise AssertionError("profile objects overlap")
++                grid[target_r0 + dr][target_c0 + dc] = 5
++    features = input_features(grid)
++    if features["hole_corner"] != profile["hole_corner"]:
++        raise AssertionError("profile cue corner changed during construction")
++    return grid
++
++
++def generate_episode(
++    seed: Any,
++    *,
++    stamp_anchor: Any = DEFAULT_STAMP_ANCHOR,
++    demos: Any = 3,
++    queries: Any = 4,
++    root: Path | None = None,
++) -> dict[str, Any]:
++    seed = _validate_seed(seed)
++    stamp_anchor = _validate_stamp_anchor(stamp_anchor)
++    demos = _validate_count(demos, 2, 6, "demos")
++    queries = _validate_count(queries, 1, 4, "queries")
++    train = []
++    test = []
++    for index in range(demos):
++        grid = _build_input(seed, "demo", index)
++        train.append({"input": grid, "output": apply_python(grid, stamp_anchor=stamp_anchor)})
++    for index in range(queries):
++        grid = _build_input(seed, "query", index)
++        test.append({"input": grid, "output": apply_python(grid, stamp_anchor=stamp_anchor)})
++    return {
++        "train": train,
++        "test": test,
++        "program_solution": program_for(stamp_anchor, root=root),
++        "settings": {"stamp_anchor": stamp_anchor},
++        "prototype_version": VERSION,
+     }
+-    for anchor, anchor_outputs in outputs.items():
+-        for pair, output in zip(inputs, anchor_outputs, strict=True):
+-            mirror = python_mirror(pair["input"], stamp_anchor=anchor)
+-            if output != mirror:
+-                raise AssertionError(
+-                    f"Racket/Python disagreement for {anchor} on {pair['fixture_id']}"
+-                )
+-
+-    target = parameters["stamp_anchor"]
+-    pairs = [
+-        {
+-            **copy.deepcopy(pair),
+-            "output": output,
+-            "output_sha256": grid_sha256(output),
+-        }
+-        for pair, output in zip(inputs, outputs[target], strict=True)
+-    ]
+-    rival_rows = []
+-    ambiguities = []
+-    for rival_anchor in ALLOWED_STAMP_ANCHORS:
+-        demo_mismatches = [
+-            index for index in range(3)
+-            if outputs[rival_anchor][index] != outputs[target][index]
+-        ]
+-        query_mismatches = [0] if outputs[rival_anchor][3] != outputs[target][3] else []
+-        status = (
+-            "refuted_by_demonstrations" if demo_mismatches
+-            else "ambiguous_query" if query_mismatches
+-            else "matches_episode"
+-        )
+-        row = {
+-            "stamp_anchor": rival_anchor,
+-            "racket_sha256": _sha256(rules[rival_anchor]),
+-            "status": status,
+-            "demonstration_mismatch_indices": demo_mismatches,
+-            "query_mismatch_indices": query_mismatches,
+-            "train_predictions": outputs[rival_anchor][:3],
+-            "query_predictions": outputs[rival_anchor][3:],
+-        }
+-        rival_rows.append(row)
+-        if status == "ambiguous_query":
+-            ambiguities.append(row)
+-
+-    other = next(row for row in rival_rows if row["stamp_anchor"] != target)
+-    if other["demonstration_mismatch_indices"] != [0, 1, 2]:
+-        raise AssertionError("every demonstration must refute the other anchor")
+-    if other["query_mismatch_indices"] != [0]:
+-        raise AssertionError("query must distinguish the two anchors")
+-
+-    source = rules[target]
++
++
++def public_challenge(episode: Any) -> dict[str, Any]:
++    if type(episode) is not dict:
++        raise ValueError("episode must be an object")
+     return {
+-        "schema": "arcpuzzles-proposed-parametric-episode-v1",
+-        "task_id": TASK_ID,
+-        "prototype_version": VERSION,
+-        "status": "proposed_unapproved",
+-        "approved": False,
+-        "seed": seed,
+-        "parameters": parameters,
+-        "parameter_selection": (
+-            "one random.Random(seed).choice(('top_left', 'bottom_right')) before all pairs"
+-        ),
+-        "input_constraints_depend_on_parameter": False,
+-        "canonical_rule_hash": CANONICAL_RULE_HASH,
+-        "canonical_source_sha256": CANONICAL_SHA256,
+-        "prototype_sha256": _sha256(Path(__file__).read_bytes()),
+-        "racket_source": source,
+-        "racket_sha256": _sha256(source),
+-        "racket_callable": rule_callable(source),
+-        "racket_callable_sha256": _sha256(rule_callable(source)),
+-        "racket_path": f"private/rules/stamp-anchor-{target}.rkt",
+-        "train": pairs[:3],
+-        "test": pairs[3:],
+-        "parameter_rivals": rival_rows,
+-        "ambiguities": ambiguities,
+-        "racket_evaluations": 8,
+-    }
+-
+-
+-def public_challenge(episode):
+-    return copy.deepcopy({
+         "train": [
+-            {"input": pair["input"], "output": pair["output"]}
++            {"input": copy.deepcopy(pair["input"]), "output": copy.deepcopy(pair["output"])}
+             for pair in episode["train"]
+         ],
+-        "test": [{"input": pair["input"]} for pair in episode["test"]],
+-    })
+-
+-
+-def _write_json(path, value):
+-    path.parent.mkdir(parents=True, exist_ok=True)
+-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+-
+-
+-def _files_manifest(out):
+-    rows = []
+-    for path in sorted(p for p in out.rglob("*") if p.is_file() and p.name != "report.json"):
+-        rows.append({
+-            "path": path.relative_to(out).as_posix(),
+-            "sha256": _sha256(path.read_bytes()),
+-            "bytes": path.stat().st_size,
+-        })
+-    return rows
+-
+-
+-def write_evidence(seeds, *, out, root=None):
+-    seeds = tuple(seeds)
+-    if not seeds or len(set(seeds)) != len(seeds):
+-        raise ValueError("provide at least one distinct episode seed")
+-    for seed in seeds:
+-        _validate_seed(seed)
+-    root = find_root(__file__) if root is None else Path(root).resolve()
+-    out = Path(out)
+-    out.mkdir(parents=True, exist_ok=False)
+-    try:
+-        with RacketBridge() as bridge:
+-            canonical = canonical_source(root=root)
+-            canonical_checks = []
+-            for row in canonical_pairs(TASK_ID, root=root, labeled_only=True):
+-                actual = execute_rule(canonical, row["input"], bridge=bridge)
+-                canonical_checks.append({
+-                    "split": row["split"],
+-                    "pair_index": row["pair_index"],
+-                    "matches": actual == row["output"],
+-                    "input_sha256": grid_sha256(row["input"]),
+-                    "expected_sha256": grid_sha256(row["output"]),
+-                    "actual_sha256": grid_sha256(actual),
+-                })
+-            if not canonical_checks or not all(row["matches"] for row in canonical_checks):
+-                raise AssertionError("canonical default failed canonical pair replay")
+-
+-            episodes = [make_episode(seed, root=root, bridge=bridge) for seed in seeds]
+-            witness = generated_inputs(seeds[0], root=root)[0]["input"]
+-            witness_outputs = {
+-                anchor: execute_rule(
+-                    materialize_rule(anchor, source=canonical), witness, bridge=bridge
+-                )
+-                for anchor in ALLOWED_STAMP_ANCHORS
+-            }
+-
+-        source_snapshot = out / "private" / "source_snapshot"
+-        source_snapshot.mkdir(parents=True, exist_ok=True)
+-        for source_path in (
+-            Path(__file__),
+-            root / "generators" / TASK_ID / "tests" / "test_parametric_anchor.py",
+-            root / "generators" / TASK_ID / "workspace" / "parametric" / "README.md",
+-            root / "generators" / TASK_ID / "generator.py",
+-        ):
+-            if source_path.is_file():
+-                (source_snapshot / source_path.name).write_bytes(source_path.read_bytes())
+-
+-        rule_dir = out / "private" / "rules"
+-        rule_dir.mkdir(parents=True, exist_ok=True)
+-        for anchor in ALLOWED_STAMP_ANCHORS:
+-            (rule_dir / f"stamp-anchor-{anchor}.rkt").write_text(
+-                materialize_rule(anchor, source=canonical), encoding="utf-8"
+-            )
+-
+-        rows = []
+-        for episode in episodes:
+-            seed = episode["seed"]
+-            private_path = Path("private") / f"episode-{seed:03d}.json"
+-            public_path = Path("public") / f"episode-{seed:03d}.json"
+-            _write_json(out / private_path, episode)
+-            _write_json(out / public_path, public_challenge(episode))
+-            rows.append({
+-                "seed": seed,
+-                "stamp_anchor": episode["parameters"]["stamp_anchor"],
+-                "private_path": private_path.as_posix(),
+-                "public_path": public_path.as_posix(),
+-                "racket_sha256": episode["racket_sha256"],
+-                "ambiguities": len(episode["ambiguities"]),
+-            })
+-
+-        _write_json(out / "private" / "canonical_replay.json", canonical_checks)
+-        _write_json(out / "private" / "distinguishing_witness.json", {
+-            "input": witness,
+-            "input_sha256": grid_sha256(witness),
+-            "outputs_by_stamp_anchor": witness_outputs,
+-            "output_sha256_by_stamp_anchor": {
+-                anchor: grid_sha256(output)
+-                for anchor, output in witness_outputs.items()
+-            },
+-            "different": len({_json(value) for value in witness_outputs.values()}) == 2,
+-        })
+-        report = {
+-            "schema": "arcpuzzles-proposed-parametric-evidence-v1",
+-            "task_id": TASK_ID,
+-            "prototype_version": VERSION,
+-            "status": "proposed_unapproved",
+-            "approved": False,
+-            "parameter": {
+-                "name": "stamp_anchor",
+-                "allowed_values": list(ALLOWED_STAMP_ANCHORS),
+-                "original_default": DEFAULT_STAMP_ANCHOR,
+-                "selected_once_per_episode": True,
+-                "input_constraints_depend_on_parameter": False,
+-            },
+-            "canonical_rule_hash": CANONICAL_RULE_HASH,
+-            "canonical_source_sha256": CANONICAL_SHA256,
+-            "prototype_sha256": _sha256(Path(__file__).read_bytes()),
+-            "episodes": rows,
+-            "counts": {
+-                "episodes": len(episodes),
+-                "demonstrations": 3 * len(episodes),
+-                "queries": len(episodes),
+-                "settings_covered": len({row["stamp_anchor"] for row in rows}),
+-                "canonical_pairs_checked": len(canonical_checks),
+-                "ambiguous_parameter_rivals": sum(row["ambiguities"] for row in rows),
+-                "racket_rule_applications": 8 * len(episodes) + len(canonical_checks) + 2,
+-            },
+-            "limits": [
+-                "finite evidence for the declared two anchor settings and retained seeds",
+-                "the selected production sampler is constrained to dense sources with one-cell surplus",
+-                "declared parameter rivals do not prove universal rule identifiability",
+-                "prototype status does not change canonical approval or production APIs",
+-            ],
+-        }
+-        report["files"] = _files_manifest(out)
+-        _write_json(out / "report.json", report)
+-        return report
+-    except Exception as exc:
+-        _write_json(out / "failure.json", {
+-            "status": "error",
+-            "error_type": type(exc).__name__,
+-            "error": str(exc),
+-            "seeds": list(seeds),
+-        })
+-        raise
+-
+-
+-def main(argv=None):
+-    parser = argparse.ArgumentParser()
+-    parser.add_argument("--seeds", nargs="+", type=int, required=True)
+-    parser.add_argument("--out", type=Path, required=True)
+-    args = parser.parse_args(argv)
+-    report = write_evidence(args.seeds, out=args.out)
+-    print(json.dumps(report, indent=2, sort_keys=True))
+-
+-
+-if __name__ == "__main__":
+-    main()
++        "test": [{"input": copy.deepcopy(pair["input"])} for pair in episode["test"]],
++    }
++
++
++def public_id(episode: Any) -> str:
++    return public_challenge_id(public_challenge(episode))
+diff --git a/repo/generators/b985d561c63b/workspace/parametric/rules/fixed_bottom_left.rkt b/repo/generators/b985d561c63b/workspace/parametric/rules/fixed_bottom_left.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b985d561c63b/workspace/parametric/rules/fixed_bottom_left.rkt
+@@ -0,0 +1,68 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (let* ((hh (rows g))
++                  (ww (cols g))
++                  (template-cells (for*/list ((r (range 0 hh)) (c (range 0 ww))
++                                      #:when
++                                      (and (!= (at g r c) 0) (!= (at g r c) 5)))
++                                    (list r c (at g r c))))
++                  (tr1 (min-of first template-cells))
++                  (tc1 (min-of second template-cells))
++                  (tr2 (max-of first template-cells))
++                  (tc2 (max-of second template-cells))
++                  (th (+ 1 (- tr2 tr1)))
++                  (tw (+ 1 (- tc2 tc1)))
++                  (visited (make-hash))
++                  (gray-regions (list))
++                  (dummy (for* ((r (range 0 hh)) (c (range 0 ww)))
++                               (when
++                                 (and
++                                   (= (at g r c) 5)
++                                   (not (hash-has-key? visited (list r c))))
++                                 (let ((cells (list)))
++                                   (let bfs
++                                        ((q (list (list r c))))
++                                        (unless
++                                          (null? q)
++                                          (let ((cr (first (car q)))
++                                                (cc (second (car q))))
++                                            (cond
++                                              ((or
++                                                 (hash-has-key? visited (list cr cc))
++                                                 (< cr 0)
++                                                 (>= cr hh)
++                                                 (< cc 0)
++                                                 (>= cc ww)
++                                                 (!= (at g cr cc) 5)) (bfs (cdr q)))
++                                              (else (hash-set! visited (list cr cc) #t)
++                                                    (set! cells
++                                                          (cons (list cr cc) cells))
++                                                    (bfs (append (cdr q)
++                                                                 (list (list (- cr 1)
++                                                                             cc)
++                                                                       (list (+ cr 1)
++                                                                             cc)
++                                                                       (list cr
++                                                                             (- cc 1))
++                                                                       (list cr
++                                                                             (+ cc 1))))))))))
++                                   (set! gray-regions
++                                         (append gray-regions (list cells)))))))
++                  (result (make-hash)))
++             (for* ((r (range 0 hh)) (c (range 0 ww)))
++                   (hash-set! result (list r c) (at g r c)))
++             (for ((region gray-regions))
++               (let* ((rmin (min-of first region))
++                      (cmin (min-of second region))
++                      (rmax (max-of first region))
++                      (cmax (max-of second region))
++                      (target-r0 (+ 1 (- rmax th)))
++                      (target-c0 cmin))
++                 (for* ((dr (range 0 th)) (dc (range 0 tw)))
++                       (let ((nr (+ target-r0 dr))
++                             (nc (+ target-c0 dc)))
++                         (when
++                           (and (>= nr 0) (< nr hh) (>= nc 0) (< nc ww))
++                           (hash-set! result (list nr nc) (at g (+ tr1 dr) (+ tc1 dc))))))))
++             (build-grid hh ww (r c) (hash-ref result (list r c) 0))))))
+\ No newline at end of file
+diff --git a/repo/generators/b985d561c63b/workspace/parametric/rules/hole_corner_anchor.rkt b/repo/generators/b985d561c63b/workspace/parametric/rules/hole_corner_anchor.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b985d561c63b/workspace/parametric/rules/hole_corner_anchor.rkt
+@@ -0,0 +1,78 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (let* ((hh (rows g))
++                  (ww (cols g))
++                  (template-cells (for*/list ((r (range 0 hh)) (c (range 0 ww))
++                                      #:when
++                                      (and (!= (at g r c) 0) (!= (at g r c) 5)))
++                                    (list r c (at g r c))))
++                  (tr1 (min-of first template-cells))
++                  (tc1 (min-of second template-cells))
++                  (tr2 (max-of first template-cells))
++                  (tc2 (max-of second template-cells))
++                  (th (+ 1 (- tr2 tr1)))
++                  (tw (+ 1 (- tc2 tc1)))
++                  (visited (make-hash))
++                  (gray-regions (list))
++                  (dummy (for* ((r (range 0 hh)) (c (range 0 ww)))
++                               (when
++                                 (and
++                                   (= (at g r c) 5)
++                                   (not (hash-has-key? visited (list r c))))
++                                 (let ((cells (list)))
++                                   (let bfs
++                                        ((q (list (list r c))))
++                                        (unless
++                                          (null? q)
++                                          (let ((cr (first (car q)))
++                                                (cc (second (car q))))
++                                            (cond
++                                              ((or
++                                                 (hash-has-key? visited (list cr cc))
++                                                 (< cr 0)
++                                                 (>= cr hh)
++                                                 (< cc 0)
++                                                 (>= cc ww)
++                                                 (!= (at g cr cc) 5)) (bfs (cdr q)))
++                                              (else (hash-set! visited (list cr cc) #t)
++                                                    (set! cells
++                                                          (cons (list cr cc) cells))
++                                                    (bfs (append (cdr q)
++                                                                 (list (list (- cr 1)
++                                                                             cc)
++                                                                       (list (+ cr 1)
++                                                                             cc)
++                                                                       (list cr
++                                                                             (- cc 1))
++                                                                       (list cr
++                                                                             (+ cc 1))))))))))
++                                   (set! gray-regions
++                                         (append gray-regions (list cells)))))))
++                  (hole-cells
++                    (for*/list ((r (range tr1 (+ tr2 1)))
++                                (c (range tc1 (+ tc2 1)))
++                                #:when (= (at g r c) 0))
++                      (list r c)))
++                  (hole (first hole-cells))
++                  (anchor-bottom? (>= (* 2 (- (first hole) tr1)) th))
++                  (anchor-right? (>= (* 2 (- (second hole) tc1)) tw))
++                  (result (make-hash)))
++             (for* ((r (range 0 hh)) (c (range 0 ww)))
++                   (hash-set! result (list r c) (at g r c)))
++             (for ((region gray-regions))
++               (let* ((rmin (min-of first region))
++                      (cmin (min-of second region))
++                      (rmax (max-of first region))
++                      (cmax (max-of second region))
++                      (target-r0
++                        (if anchor-bottom? (+ 1 (- rmax th)) rmin))
++                      (target-c0
++                        (if anchor-right? (+ 1 (- cmax tw)) cmin)))
++                 (for* ((dr (range 0 th)) (dc (range 0 tw)))
++                       (let ((nr (+ target-r0 dr))
++                             (nc (+ target-c0 dc)))
++                         (when
++                           (and (>= nr 0) (< nr hh) (>= nc 0) (< nc ww))
++                           (hash-set! result (list nr nc) (at g (+ tr1 dr) (+ tc1 dc))))))))
++             (build-grid hh ww (r c) (hash-ref result (list r c) 0))))))
+\ No newline at end of file
+diff --git a/repo/generators/bfa4f83b9dbd/notes.md b/repo/generators/bfa4f83b9dbd/notes.md
+--- a/repo/generators/bfa4f83b9dbd/notes.md
++++ b/repo/generators/bfa4f83b9dbd/notes.md
+@@ -1,3 +1,15 @@
++# Current assignment: `review-529fa06ea6394047`
++
++## Advisory color-gate counterexample
++
++Production generator and canonical rule were not changed. A reusable source-bound probe at `workspace/color_gate_probe.py` scanned 768 two-demo/one-query lessons (256 seeds × easy/medium/hard) and found four simple palette-gated rivals that can survive every demonstration yet fail the query. The minimal retained example is seed 21/easy: both demonstrations use only colors 2 and 4, so an “expand even colors only” program matches both, while the query uses colors 7 and 3 and differs.
++
++The retained report `checks/bfa4f83b9dbd/color-gate-probe.json` includes protected-Racket replays (24 evaluations), exact source hashes, counterexample grids, and four rival families. The staged peer suite passed 11/11 after adding probe regressions.
++
++Recommended owner action: add a color-diversity lesson guard or include simple palette-gated competitors in `lesson_identifiable`. This is advisory peer work, not an integrated repair, approval, or training-admission claim.
++
++---
++
+ # Working notes: bfa4f83b9dbd
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+diff --git a/repo/generators/bfa4f83b9dbd/tests/test_color_gate_probe.py b/repo/generators/bfa4f83b9dbd/tests/test_color_gate_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bfa4f83b9dbd/tests/test_color_gate_probe.py
+@@ -0,0 +1,51 @@
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++import sys
++
++import pytest
++
++HOME = Path(__file__).resolve().parents[1]
++PROBE = HOME / "workspace/color_gate_probe.py"
++
++
++def load_probe():
++    spec = importlib.util.spec_from_file_location("bfa_color_gate_probe", PROBE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_guarded_rival_materialization_and_known_two_demo_counterexample():
++    probe = load_probe()
++    canonical = probe.canonical_program()
++    rival = probe.materialize_rival(canonical, "even_only")
++    assert canonical != rival
++    assert canonical.count(probe.CANONICAL_CONDITION) == 1
++    assert rival.count("(= (remainder v 2) 0)") == 1
++
++    report = probe.scan(seed_limit=22, bands=("easy",), verify_racket=False)
++    witness = next(row for row in report["witnesses"] if row["rival"] == "even_only")
++    assert witness["seed"] == 21
++    assert witness["demo_colors"] == [[2, 4], [2, 4]]
++    assert witness["query_colors"] == [7, 3]
++    assert witness["demo_matches"] == [True, True]
++    assert witness["query_matches"] == [False]
++
++
++def test_probe_rejects_invalid_scan_limits_before_generation():
++    probe = load_probe()
++    with pytest.raises(ValueError, match="seed_limit"):
++        probe.scan(seed_limit=True, bands=("easy",), verify_racket=False)
++    with pytest.raises(ValueError, match="bands"):
++        probe.scan(seed_limit=1, bands=(), verify_racket=False)
++
++
++def test_body_form_canonical_rule_is_wrapped_for_bare_racket_bridge():
++    probe = load_probe()
++    callable_text = probe._rule_callable(probe.canonical_program())
++    assert callable_text.startswith("(lambda (g)")
++    assert "(let* ((h (rows g)) (w (cols g)))" in callable_text
+diff --git a/repo/generators/bfa4f83b9dbd/workspace/color_gate_probe.py b/repo/generators/bfa4f83b9dbd/workspace/color_gate_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bfa4f83b9dbd/workspace/color_gate_probe.py
+@@ -0,0 +1,275 @@
++#!/usr/bin/env python3
++"""Bounded source-bound audit for color-gated plus-expansion shortcuts.
++
++The production rule expands every isolated colored singleton.  This probe asks
++whether a two-demonstration lesson can instead be explained by a simple color
++predicate (for example, "expand even colors only") and then fail on the query.
++It retains the first counterexample for each predicate and can replay both the
++canonical and rival programs through the protected Racket bridge.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any, Callable
++
++from arc_repl.racket_bridge import RacketBridge
++from reviewer_support import canonical_path, find_root, normalize_grid
++from puzzle_generators.rule_wrap import wrap_rule
++
++TASK_ID = "bfa4f83b9dbd"
++HERE = Path(__file__).resolve().parent
++GENERATOR_PATH = HERE.parent / "generator.py"
++CANONICAL_CONDITION = (
++    "(and (not (= v 0)) "
++    "(all? (lambda (d) (= (at g (+ r (first d)) (+ c (second d))) 0)) dirs4)"
++)
++RIVAL_PREDICATES = {
++    "even_only": "(= (remainder v 2) 0)",
++    "odd_only": "(= (remainder v 2) 1)",
++    "low_1_4_only": "(<= v 4)",
++    "high_5_9_only": "(>= v 5)",
++}
++PYTHON_PREDICATES: dict[str, Callable[[int], bool]] = {
++    "even_only": lambda value: value % 2 == 0,
++    "odd_only": lambda value: value % 2 == 1,
++    "low_1_4_only": lambda value: value <= 4,
++    "high_5_9_only": lambda value: value >= 5,
++}
++VALID_BANDS = ("easy", "medium", "hard")
++
++
++def _sha_bytes(data: bytes) -> str:
++    return hashlib.sha256(data).hexdigest()
++
++
++def _sha_text(text: str) -> str:
++    return _sha_bytes(text.encode("utf-8"))
++
++
++def _grid_sha(grid: Any) -> str:
++    return _sha_text(json.dumps(grid, separators=(",", ":"), sort_keys=False))
++
++
++def _load_generator():
++    spec = importlib.util.spec_from_file_location("bfa4f83b9dbd_color_probe_generator", GENERATOR_PATH)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load {GENERATOR_PATH}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def canonical_program() -> str:
++    root = find_root(__file__)
++    rows: set[str] = set()
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        for line in handle:
++            if not line.strip():
++                continue
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                source = row.get("program_solution")
++                if type(source) is not str:
++                    raise ValueError("canonical row has no exact program_solution")
++                rows.add(source)
++    if len(rows) != 1:
++        raise ValueError(f"expected one canonical program for {TASK_ID}, found {len(rows)}")
++    source = next(iter(rows))
++    if source.count(CANONICAL_CONDITION) != 1:
++        raise ValueError("canonical program has an unexpected singleton condition")
++    return source
++
++
++def materialize_rival(source: str, rival: str) -> str:
++    if type(source) is not str or source.count(CANONICAL_CONDITION) != 1:
++        raise ValueError("source must contain the exact canonical singleton condition once")
++    if rival not in RIVAL_PREDICATES:
++        raise ValueError(f"unknown rival {rival!r}")
++    predicate = RIVAL_PREDICATES[rival]
++    replacement = CANONICAL_CONDITION.replace(
++        "(and (not (= v 0)) ", f"(and (not (= v 0)) {predicate} ", 1
++    )
++    result = source.replace(CANONICAL_CONDITION, replacement, 1)
++    if result == source or result.count(predicate) != 1:
++        raise AssertionError("rival source edit did not apply exactly once")
++    return result
++
++
++def _rule_callable(source: str) -> str:
++    if type(source) is not str:
++        raise ValueError("expected one complete rule! source")
++    return wrap_rule(source)
++
++
++def _execute(source: str, grid: Any, bridge: RacketBridge) -> list[list[int]]:
++    normalized = normalize_grid(grid)
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in normalized) + ")"
++    expression = f"({_rule_callable(source)} {literal})"
++    return normalize_grid(bridge.eval_text(expression))
++
++
++def _prediction(generator: Any, grid: Any, rival: str) -> list[list[int]]:
++    if rival not in PYTHON_PREDICATES:
++        raise ValueError(f"unknown rival {rival!r}")
++    analysis = generator._analyze(grid)
++    if analysis["errors"]:
++        raise ValueError("; ".join(analysis["errors"]))
++    predicate = PYTHON_PREDICATES[rival]
++    out = [row[:] for row in analysis["grid"]]
++    for row, col, color in analysis["markers"]:
++        if not predicate(color):
++            continue
++        for delta_row, delta_col in generator._DIRS4:
++            out[row + delta_row][col + delta_col] = color
++    return out
++
++
++def _colors(generator: Any, grid: Any) -> list[int]:
++    analysis = generator._analyze(grid)
++    if analysis["errors"]:
++        raise ValueError("; ".join(analysis["errors"]))
++    return list(analysis["colors"])
++
++
++def scan(
++    *,
++    seed_limit: int = 256,
++    bands: tuple[str, ...] = VALID_BANDS,
++    verify_racket: bool = True,
++) -> dict[str, Any]:
++    if type(seed_limit) is not int or not 1 <= seed_limit <= 100_000:
++        raise ValueError("seed_limit must be an exact integer in 1..100000")
++    if (
++        type(bands) is not tuple
++        or not bands
++        or len(set(bands)) != len(bands)
++        or any(type(band) is not str or band not in VALID_BANDS for band in bands)
++    ):
++        raise ValueError(f"bands must be a nonempty distinct tuple from {VALID_BANDS}")
++    if type(verify_racket) is not bool:
++        raise ValueError("verify_racket must be boolean")
++
++    generator = _load_generator()
++    canonical = canonical_program()
++    witnesses: dict[str, dict[str, Any]] = {}
++    survivor_counts = {name: 0 for name in RIVAL_PREDICATES}
++    lesson_count = 0
++
++    for band in bands:
++        for seed in range(seed_limit):
++            grids = [generator.generate(seed, index, difficulty=band) for index in range(3)]
++            expected = [generator._expected_output(grid) for grid in grids]
++            lesson_count += 1
++            for rival in RIVAL_PREDICATES:
++                predictions = [_prediction(generator, grid, rival) for grid in grids]
++                demo_matches = [predictions[index] == expected[index] for index in range(2)]
++                query_matches = [predictions[2] == expected[2]]
++                if all(demo_matches):
++                    survivor_counts[rival] += 1
++                if all(demo_matches) and not all(query_matches) and rival not in witnesses:
++                    witnesses[rival] = {
++                        "rival": rival,
++                        "band": band,
++                        "seed": seed,
++                        "sample_indices": [0, 1, 2],
++                        "demo_colors": [_colors(generator, grid) for grid in grids[:2]],
++                        "query_colors": _colors(generator, grids[2]),
++                        "inputs": grids,
++                        "canonical_outputs": expected,
++                        "rival_outputs": predictions,
++                        "input_sha256": [_grid_sha(grid) for grid in grids],
++                        "canonical_output_sha256": [_grid_sha(grid) for grid in expected],
++                        "rival_output_sha256": [_grid_sha(grid) for grid in predictions],
++                        "demo_matches": demo_matches,
++                        "query_matches": query_matches,
++                    }
++
++    runtime_identity = None
++    racket_evaluations = 0
++    if verify_racket and witnesses:
++        with RacketBridge(max_calls_before_restart=128) as bridge:
++            runtime_identity = bridge.runtime_identity
++            if runtime_identity.get("backend") != "racket" or runtime_identity.get("protected") is not True:
++                raise ValueError("probe requires the protected Racket backend")
++            for rival, witness in witnesses.items():
++                rival_source = materialize_rival(canonical, rival)
++                canonical_racket = [_execute(canonical, grid, bridge) for grid in witness["inputs"]]
++                rival_racket = [_execute(rival_source, grid, bridge) for grid in witness["inputs"]]
++                racket_evaluations += 6
++                if canonical_racket != witness["canonical_outputs"]:
++                    raise AssertionError("canonical Python evidence differs from protected Racket")
++                if rival_racket != witness["rival_outputs"]:
++                    raise AssertionError("rival Python evidence differs from protected Racket")
++                witness["canonical_program_sha256"] = _sha_text(canonical)
++                witness["rival_program"] = rival_source
++                witness["rival_program_sha256"] = _sha_text(rival_source)
++                witness["protected_racket_replayed"] = True
++
++    ordered = [witnesses[name] for name in RIVAL_PREDICATES if name in witnesses]
++    return {
++        "schema": "bfa4f83b9dbd-color-gate-probe-v1",
++        "status": "counterexample_found" if ordered else "no_finding",
++        "task_id": TASK_ID,
++        "generator_sha256": _sha_bytes(GENERATOR_PATH.read_bytes()),
++        "canonical_program_sha256": _sha_text(canonical),
++        "scan": {
++            "seed_range": [0, seed_limit - 1],
++            "bands": list(bands),
++            "lessons": lesson_count,
++            "lesson_shape": "same seed, sample indexes 0 and 1 as demos, 2 as query",
++            "demonstrations": 2,
++            "queries": 1,
++        },
++        "rival_survival_counts": survivor_counts,
++        "witnesses": ordered,
++        "protected_racket": {
++            "requested": verify_racket,
++            "evaluations": racket_evaluations,
++            "runtime_identity": runtime_identity,
++        },
++        "recommendation": (
++            "Add a color-diversity lesson guard or include simple palette-gated rivals in "
++            "lesson_identifiable; seed 21/easy is a minimal even-only counterexample."
++            if ordered
++            else "No palette-gated survivor found in this finite scan."
++        ),
++        "limits": [
++            "Finite seed/band scan; does not prove universal lesson uniqueness.",
++            "The rival bank is limited to four simple color predicates.",
++            "Peer evidence is advisory and requires owner review before integration.",
++        ],
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seed-limit", type=int, default=256)
++    parser.add_argument("--bands", default=",".join(VALID_BANDS))
++    parser.add_argument("--python-only", action="store_true")
++    parser.add_argument("--out", type=Path, required=True)
++    options = parser.parse_args(argv)
++    bands = tuple(part.strip() for part in options.bands.split(",") if part.strip())
++    report = scan(
++        seed_limit=options.seed_limit,
++        bands=bands,
++        verify_racket=not options.python_only,
++    )
++    options.out.parent.mkdir(parents=True, exist_ok=True)
++    options.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(json.dumps({
++        "status": report["status"],
++        "lessons": report["scan"]["lessons"],
++        "witnesses": len(report["witnesses"]),
++        "out": str(options.out),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

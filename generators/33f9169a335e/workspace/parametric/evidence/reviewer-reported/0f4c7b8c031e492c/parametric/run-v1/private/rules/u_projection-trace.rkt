@@ -1,0 +1,13 @@
+(rule!
+  (lambda (g)
+    (let* ((h (rows g)) (w (cols g)))
+      (cellmap g (r c v)
+        (if (and (zero? v) (> c 0) (< c (- w 1))
+                 (for/or ((top (range 0 r)))
+                   (and (!= 0 (at g top (- c 1)))
+                        (!= 0 (at g top c))
+                        (!= 0 (at g top (+ c 1)))
+                        (!= 0 (at g (+ top 1) (- c 1)))
+                        (zero? (at g (+ top 1) c))
+                        (!= 0 (at g (+ top 1) (+ c 1))))))
+            4 v)))))

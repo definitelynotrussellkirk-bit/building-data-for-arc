@@ -1,0 +1,156 @@
+diff --git a/shared/tools/README.md b/shared/tools/README.md
+index 61cda6090..4129e798f 100644
+--- a/shared/tools/README.md
++++ b/shared/tools/README.md
+@@ -38,6 +38,20 @@ direct library ancestor wins. It does not inspect cwd, `ARCPUZZLES_HOME`,
+ arbitrary siblings, or escaping repository/ledger symlinks. Scripts under other
+ layouts still need an explicit supported repository root.
+ 
++For concise authoring coverage, `python3 -m arcpuzzles.review_base_preflight`
++prints job/setting counts, parametric labelled-pair counts, canonical base-pair
++counts, and protected-Racket evaluation counts alongside its receipt path.
++`racket_evaluations` covers the parametric worker; it excludes separate base
++canonical and generation checks. These finite counts do not grant owner
++acceptance or training admission. Full source bindings stay in the receipt.
++For the separate native `arcpuzzles parametric qualify` command, use its existing
++`--summary` option to avoid printing the full source-binding inventory.
++
++The optional witness helper distinguishes output kinds: `review_witness build --out-dir DIR` creates `DIR/witness.json` and `DIR/replay.json`; the legacy
++`build --out DIR` spelling still works. `template --out FILE` writes a recipe
++JSON file, and `check --out FILE` writes a replay JSON file. All outputs must be
++new. These helpers keep their existing source checks and protected execution.
++
+ | Use | Entry point | Checks / limits |
+ |---|---|---|
+ | Observe export sizes and query/demo ratios | `arcpuzzles inspect-export DIR --sizes [--detailed-shapes]` | Verifies artifact hashes/projection, then measures four grid roles and within-episode novel-query counts. Controller-only query-output dimensions; no Racket rerun, token/complexity claim or training admission. [Guide](../../docs/datasets.md#observe-exported-sizes-and-supervision-ratios). |
+diff --git a/src/arcpuzzles/review_base_preflight.py b/src/arcpuzzles/review_base_preflight.py
+index b7618a887..6f1fb9783 100644
+--- a/src/arcpuzzles/review_base_preflight.py
++++ b/src/arcpuzzles/review_base_preflight.py
+@@ -167,7 +167,22 @@ def main():
+     parser.add_argument('--demos', type=int)
+     args = parser.parse_args()
+     report = preflight(args.root, args.task_id, args.out, demos=args.demos)
+-    print(json.dumps({k: report[k] for k in ('status', 'verification_status', 'owner_accepted', 'receipt')}))
++    execution_path = Path(report['receipt']).parent / report['execution']['path']
++    execution_bytes = execution_path.read_bytes()
++    if hashlib.sha256(execution_bytes).hexdigest() != report['execution']['sha256']:
++        raise ValueError('Authoring execution changed before summary')
++    execution = json.loads(execution_bytes)
++    print(json.dumps({
++        **{k: report[k] for k in ('status', 'verification_status', 'owner_accepted',
++                                  'training_admitted', 'receipt')},
++        'job_count': len(report['jobs']),
++        'settings_count': len(report['programs']),
++        'parametric_labelled_pairs': sum(len(e['train']) + len(e['test'])
++                                        for e in execution['episodes']),
++        'base_canonical_pairs': len(execution['base_review']['pairs']),
++        'protected_racket': execution['racket']['protected'],
++        'racket_evaluations': execution['racket_evaluations'],
++    }))
+ 
+ 
+ if __name__ == '__main__':
+diff --git a/src/arcpuzzles/review_witness.py b/src/arcpuzzles/review_witness.py
+index c03526632..00ae231b4 100644
+--- a/src/arcpuzzles/review_witness.py
++++ b/src/arcpuzzles/review_witness.py
+@@ -425,7 +425,13 @@ def main(argv=None):
+         source = command.add_mutually_exclusive_group(required=True)
+         source.add_argument('--qualification', type=Path)
+         source.add_argument('--public-preflight', type=Path, help='Explicit unapproved public authoring receipt')
+-        command.add_argument('--out', type=Path, required=True)
++        if name == 'build':
++            command.add_argument('--out', '--out-dir', dest='out', type=Path, required=True,
++                                 metavar='DIR', help='new directory for witness.json and replay.json')
++        else:
++            kind = 'recipe' if name == 'template' else 'replay'
++            command.add_argument('--out', type=Path, required=True, metavar='FILE',
++                                 help=f'new {kind} JSON file')
+         if name == 'template':
+             command.add_argument('--counterfactual-settings', type=json.loads,
+                                  help='Distinct complete qualified setting for the draft alternate program; build still must prove disagreement')
+diff --git a/tests/test_review_authoring_cli.py b/tests/test_review_authoring_cli.py
+new file mode 100644
+index 000000000..d8a9dec2e
+--- /dev/null
++++ b/tests/test_review_authoring_cli.py
+@@ -0,0 +1,78 @@
++"""Authoring CLI output paths and concise execution counts stay evidence-bound."""
++import hashlib
++import json
++import sys
++
++import pytest
++
++from arcpuzzles import parametric_promotion as native
++from arcpuzzles import review_base_preflight as author
++from arcpuzzles import review_witness as witness
++from test_parametric_promotion import candidate, fake_execution
++from test_review_base_preflight import unapprove
++from test_review_witness import qualified, recipe
++from test_review_sequential_replay import runtime
++
++
++@pytest.mark.parametrize('action, expected', [
++    ('build', 'new directory'), ('template', 'new recipe JSON file'),
++    ('check', 'new replay JSON file'),
++])
++def test_witness_help_names_output_kind(action, expected, capsys):
++    with pytest.raises(SystemExit) as result:
++        witness.main([action, '--help'])
++    assert result.value.code == 0
++    help_text = capsys.readouterr().out
++    assert expected in help_text
++    assert ('--out-dir' in help_text) is (action == 'build')
++
++
++@pytest.mark.parametrize('option', ['--out', '--out-dir'])
++def test_witness_build_alias_preserves_file_layout_and_check(qualified, tmp_path, capsys, option):
++    root, qualification = qualified
++    draft = tmp_path/'recipe.json'
++    draft.write_text(json.dumps(recipe()))
++    out = tmp_path/'causal'
++    common = ['--library', str(root)]
++    assert witness.main(common + ['build', '--qualification', str(qualification),
++        '--recipe', str(draft), option, str(out)]) == 0
++    printed = json.loads(capsys.readouterr().out)
++    assert printed['witness_path'] == str(out/'witness.json')
++    assert sorted(p.name for p in out.iterdir()) == ['replay.json', 'witness.json']
++    original = (out/'witness.json').read_bytes()
++    check = tmp_path/'checked.json'
++    assert witness.main(common + ['check', '--qualification', str(qualification),
++        '--witness', str(out/'witness.json'), '--out', str(check)]) == 0
++    assert check.is_file() and (out/'witness.json').read_bytes() == original
++    assert json.loads(check.read_text())['training_admitted'] is False
++
++
++def test_base_preflight_summary_uses_execution_counts_without_rewriting_receipts(
++        candidate, monkeypatch, capsys, tmp_path):
++    catalog, tid, _ = candidate
++    metadata = unapprove(catalog.root)
++    before = metadata.read_bytes()
++    monkeypatch.setattr(author, '_base_checks', lambda catalog, tid: {
++        'status': 'passed', 'pairs': [1, 2, 3], 'generation': [[], []],
++        'canonical_records_sha256': author._records_hash(catalog, tid)})
++    monkeypatch.setattr(native, '_execute', fake_execution)
++    out = tmp_path/'preflight'
++    monkeypatch.setattr(sys, 'argv', ['review_base_preflight', tid,
++        '--root', str(catalog.root), '--out', str(out)])
++    author.main()
++    printed = json.loads(capsys.readouterr().out)
++    receipt = json.loads((out/'qualification.json').read_text())
++    execution_bytes = (out/'execution.json').read_bytes()
++    execution = json.loads(execution_bytes)
++    assert printed['job_count'] == len(receipt['jobs']) == 4
++    assert printed['settings_count'] == len(receipt['programs']) == 2
++    assert printed['racket_evaluations'] == execution['racket_evaluations']
++    assert printed['parametric_labelled_pairs'] == sum(
++        len(e['train']) + len(e['test']) for e in execution['episodes'])
++    assert printed['base_canonical_pairs'] == 3
++    assert printed['protected_racket'] is True
++    assert printed['owner_accepted'] is False and printed['training_admitted'] is False
++    assert 'source_binding' not in printed and 'jobs' not in printed
++    assert 'job_count' not in receipt
++    assert hashlib.sha256(execution_bytes).hexdigest() == receipt['execution']['sha256']
++    assert metadata.read_bytes() == before

@@ -1,0 +1,6 @@
+# 871c3c1b8469
+
+0-bg fixed-size 7×17 grid with: (a) TOP LIBRARY BAND at rows 1-5 — THREE 5-COLUMN PANELS separated by 1-COLUMN GAPS (panel k at cols k*6+1..k*6+5 for k=0,1,2), each containing ONE LIBRARY SHAPE drawn from _SHAPE_FAMILIES bank (4 families × 3 shapes each, each shape 4-8 cells fitting in 3×3), painted in a DISTINCT SELECTOR COLOR drawn from {2..9} (one per panel); (b) ROW 6 SEQUENCE — a list of (SELECTOR_COLOR, TRANSFORM_CODE) PAIRS drawn from _SEQUENCE_PATTERNS bank: each pair stored as 2 adjacent cells, g[6][pos*2] = colors[selector_idx], g[6][pos*2+1] = code ∈ {1..5} (transform code: 1=identity, 2=cw90, 3=180, 4=ccw90, 5=flip-LR, etc.). Rule (DECODE THE BOTTOM SEQUENCE: FOR EACH (SELECTOR, CODE) PAIR, LOOK UP THE MATCHING LIBRARY PANEL, TRANSFORM THE SHAPE BY THE CODE, EMIT INTO A LEFT-TO-RIGHT OUTPUT STRIP WITH 1-CELL GAPS): PARSE the row-6 SEQUENCE into pairs. For EACH PAIR (selector, code): FIND the library panel with that selector color; EXTRACT its shape. APPLY the transform indicated by code. EMIT the transformed shape into the output strip, left-to-right, separated by 1-cell gaps. Net: bottom sequence decodes into a horizontal gallery of transformed library shapes.
+
+Kind: `per_puzzle`. Imported version: `3.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

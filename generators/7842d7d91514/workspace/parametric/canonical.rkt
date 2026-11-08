@@ -1,0 +1,16 @@
+(rule! (lambda (grid)
+  (define (shape-grid obj)
+    (recolor
+      (crop-to-content
+        (subgrid (keep-only grid (obj-color obj))
+                 (obj-r1 obj) (obj-c1 obj) (obj-r2 obj) (obj-c2 obj)))
+      (obj-color obj) 1))
+  (let* ((objects-list (objects grid 0))
+         (template (first (filter (lambda (obj) (= (obj-color obj) 5)) objects-list)))
+         (template-shape (shape-grid template)))
+    (reduce (lambda (acc obj)
+      (if (= (obj-color obj) 2)
+          (recolor-cells acc (obj-cells obj)
+            (if (= (shape-grid obj) template-shape) 4 1))
+          acc))
+      grid objects-list))))

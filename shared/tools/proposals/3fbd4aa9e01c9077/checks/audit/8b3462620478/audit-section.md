@@ -1,0 +1,19 @@
+## 8b3462620478
+
+**Two reproduced, source-bound findings; target source unchanged.** Audited generator SHA-256 `f3794014b466fab737ca0249cdb02fe187d86f16bd46a40a45657da1d49008d0` (version 3.1.0), selected/executed canonical rule hash `805506f84e33`, actual executed callable-text SHA-256 `a5c743241e94c2d94ba74c27fa12882e011971a932ce44e04d6b325b1c07e05d`.
+
+### Ordinary lesson ambiguity beyond the declared rival inventory
+
+At **seed 0, default difficulty, no overrides**, consecutive sample indices **0, 1, 2** produce three ordinary demonstrations encountering **2, 3, 4 mirrors**, and index **3** produces the ordinary query encountering **5 mirrors**. Every input passes the selected `self_check` and the public reference command's generator-domain check. A separately implemented rival that reflects at the **first four encountered mirrors only**, then continues straight through subsequent mirrors while still respecting walls and the canonical 500-step budget, fits **all five labeled canonical pairs** and **all three actual Racket demonstration outputs**, but differs from the actual query output at **five cells**.
+
+The current `lesson_identifiable(demos, query)` returns `[]` for this lesson. All six currently declared rivals are refuted by its demonstrations, so this does **not** contradict the documented finite-inventory claim. It demonstrates a concrete additional canonical-fitting competitor missing from that inventory: covering `first_three_mirrors_only` does not establish later reflections when the query introduces a fifth mirror. A targeted improvement is to add finite-depth competitors for the remaining generated mirror counts and require actual demonstration counterexamples before queries depending on those reflections, including required query rotations. No prevalence estimate is inferred from this single deliberately selected lesson.
+
+### Validator-admitted route disagrees with the selected Python mirror
+
+A separately constructed **18×28 serpentine input** has one red source at `(0,0)`, one blue heading at `(0,1)`, and paired edge mirrors that traverse the grid without repeating a position/direction state. It passes the selected `self_check`. The route visits **502 positions after the heading marker**. The selected Racket program stops after its **500-step fuel budget**, leaving `(17,0)` and `(17,1)` black (`0`); the generator's `_intended_output` continues to the grid edge and paints both cells cyan (`8`). Actual Racket execution agrees exactly with the independent fuel-bounded tracer and disagrees with the selected Python mirror at those **two cells**.
+
+This is a **hand-constructed validator-domain mismatch**, outside the ordinary constructor's dimension/mirror-count family. The four sampled ordinary outputs all agree with Racket; no ordinary generated-label mismatch is claimed. The narrow fix is to align the Python mirror's launch position and fuel semantics with the selected Racket authority, or explicitly restrict the validator domain where parity is promised. The canonical Racket rule was not modified.
+
+### Evidence and limits
+
+Only **four ordinary scenes** were generated, at one seed/default band. Reference execution covered **ten inputs**: the five labeled canonical pairs, those four ordinary scenes, and one constructed domain probe. No broad seed search, stage battery, target edit, or claimed exhaustive coverage was performed. Exact inputs, actual outputs, rival/mirror predictions, differing cells, observed overrides and validator results are in `checks/audit/8b3462620478/findings.json` and `checks/audit/8b3462620478/racket.json`. The independent reproducer is `checks/audit/8b3462620478/probe.py`; exact commands, exit codes, stdout/stderr and source hashes are retained in `checks/audit/8b3462620478/commands.json` and `checks/audit/8b3462620478/apply-command.json`. An initial read-only `show --format json` launcher error is recorded and corrected; it is not a task defect.

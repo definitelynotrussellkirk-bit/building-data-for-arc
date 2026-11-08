@@ -1,0 +1,6687 @@
+diff --git a/repo/generators/bdcb4c9eb6bd/notes.md b/repo/generators/bdcb4c9eb6bd/notes.md
+--- a/repo/generators/bdcb4c9eb6bd/notes.md
++++ b/repo/generators/bdcb4c9eb6bd/notes.md
+@@ -147,3 +147,15 @@
+ **Decision:** stop with no remaining source blocker after the exact-path battery, portable task tests, 300-lesson census, independent 400-draw probe, 37-grid Racket parity, both solve records, two adversarial audits, and fresh-delta replay.
+ 
+ **Reason:** additional undeclared rival search may still find hypotheses, but the requested repair is bounded and all required gates are green. Catalog approval and masked-query scoring remain maintainer-owned.
++
++## D11 — Native rectangle-scope family (review-2897d39f7102ccb7)
++
++**Decision:** preserve the exact canonical `all_rectangles` Racket program and add `largest_interior`, which parses the one-gap rectangles, computes each interior area, selects the unique largest interior, and applies the canonical fill-and-ray transform only to that rectangle.
++
++**Why this parameter:** the source rule's geometric parser and gap-direction logic remain intact. The variant introduces a meaningful input-derived selector whose exact rectangle identity controls both the filled interior and projected ray.
++
++**Teaching contract:** the minimum two demonstrations deliberately distinguish largest interior area from largest outline size and alternate source order. Declared smallest/first/last/largest-outline/no-ray/no-fill rivals are rejected before the four private queries; inputs are matched across settings and count prefixes are stable.
++
++**Stress/evidence:** the fourth query is 30×30 with four separated one-gap rectangles, boundary contacts, more than 100 outline cells, and a largest interior of at least 64 cells. Focused staged tests passed (138 tests), the 18-case bounded self-audit passed, protected-Racket qualifications passed at 2, 3, and 6 demonstrations (136 evaluations), sixteen one-query public projections passed, and the qualified largest-interior versus largest-outline witness was independently replayed; the retained counterfactual changes 29 cells.
++
++**Limit:** this is reviewer-ready evidence, not owner acceptance, universal identifiability, or training admission.
+diff --git a/repo/generators/bdcb4c9eb6bd/tests/test_parametric_rectangle_scope.py b/repo/generators/bdcb4c9eb6bd/tests/test_parametric_rectangle_scope.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/tests/test_parametric_rectangle_scope.py
+@@ -0,0 +1,150 @@
++"""Native-contract and teaching checks for the rectangle-scope family."""
++from __future__ import annotations
++
++import copy
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from reviewer_support import canonical_path, find_root, public_challenge_bytes, public_challenge_id
++
++TASK_ID = "bdcb4c9eb6bd"
++HERE = Path(__file__).resolve()
++ROOT = find_root(HERE)
++HOME = HERE.parents[1] / "workspace" / "parametric"
++PROTOTYPE = HOME / "prototype.py"
++ADAPTER = HOME / "adapter.py"
++PROMOTION = HOME / "promotion.json"
++CANONICAL = {"rectangle_scope": "all_rectangles"}
++SELECTED = {"rectangle_scope": "largest_interior"}
++
++
++def _load(path: Path, name: str):
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture(scope="module")
++def family():
++    assert PROTOTYPE.is_file(), f"missing prototype: {PROTOTYPE}"
++    return _load(PROTOTYPE, "_test_bdcb4c9eb6bd_parametric")
++
++
++def _canonical_program() -> str:
++    found = set()
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID and isinstance(row.get("program_solution"), str):
++                found.add(row["program_solution"])
++    assert len(found) == 1
++    return next(iter(found))
++
++
++def test_default_program_is_exact_canonical_and_alternative_is_distinct(family):
++    canonical = _canonical_program()
++    assert family.program(CANONICAL) == canonical
++    assert (HOME / "canonical.rkt").read_text(encoding="utf-8") == canonical
++    alternative = family.program(SELECTED)
++    assert alternative != canonical
++    assert (HOME / "largest-interior.rkt").read_text(encoding="utf-8") == alternative
++
++
++@pytest.mark.parametrize("settings", [None, {}, [], {"rectangle_scope": "bad"}, {"rectangle_scope": "all_rectangles", "x": 1}])
++def test_settings_are_strict(family, settings):
++    with pytest.raises(ValueError):
++        family.program(settings)
++
++
++def test_generation_is_matched_count_stable_and_prefix_stable(family):
++    canonical = family.generate(123, CANONICAL, 2, 1)
++    selected = family.generate(123, SELECTED, 2, 1)
++    extended = family.generate(123, CANONICAL, 6, 4)
++    assert [p["input"] for p in canonical["train"]] == [p["input"] for p in selected["train"]]
++    assert [p["input"] for p in canonical["test"]] == [p["input"] for p in selected["test"]]
++    assert canonical["train"] == extended["train"][:2]
++    assert canonical["test"] == extended["test"][:1]
++    assert all(a["output"] != b["output"] for split in ("train", "test") for a, b in zip(canonical[split], selected[split]))
++    grids = [p["input"] for split in ("train", "test") for p in extended[split]]
++    assert len({json.dumps(g, separators=(",", ":")) for g in grids}) == 10
++
++
++@pytest.mark.parametrize("demos", range(2, 7))
++@pytest.mark.parametrize("queries", range(1, 5))
++@pytest.mark.parametrize("settings", [CANONICAL, SELECTED])
++def test_supported_counts(family, demos, queries, settings):
++    episode = family.generate(1000 + demos * 10 + queries, settings, demos, queries)
++    assert len(episode["train"]) == demos
++    assert len(episode["test"]) == queries
++    assert episode["program_solution"] == family.program(settings)
++
++
++@pytest.mark.parametrize("demos,queries", [(1, 4), (7, 4), (3, 0), (3, 5), (True, 4)])
++def test_bad_counts_reject(family, demos, queries):
++    with pytest.raises(ValueError):
++        family.generate(0, CANONICAL, demos, queries)
++
++
++def test_two_demos_identify_each_setting_and_reject_shortcuts(family):
++    for seed in (0, 17, 2718):
++        for settings in (CANONICAL, SELECTED):
++            episode = family.generate(seed, settings, 2, 4)
++            cert = family.lesson_certificate(episode["train"], [p["input"] for p in episode["test"]])
++            assert cert["surviving_settings"] == [settings]
++            assert cert["surviving_shortcuts"] == []
++            assert cert["query_outputs_consulted"] is False
++
++
++def test_first_demo_separates_largest_area_from_largest_perimeter(family):
++    grid = family.generate(0, SELECTED, 2, 4)["train"][0]["input"]
++    facts = family.rectangle_facts(grid)
++    by_area = max(facts, key=lambda x: x["interior_area"])
++    by_outline = max(facts, key=lambda x: x["outline_size"])
++    assert by_area["bbox"] != by_outline["bbox"]
++
++
++def test_fourth_query_is_substantive_30x30_boundary_stress(family):
++    episode = family.generate(41, SELECTED, 3, 4)
++    pair = episode["test"][3]
++    grid = pair["input"]
++    assert (len(grid), len(grid[0])) == (30, 30)
++    facts = family.rectangle_facts(grid)
++    assert len(facts) == 4
++    assert max(f["interior_area"] for f in facts) >= 64
++    assert sum(v == 1 for row in grid for v in row) >= 80
++    assert any(grid[0][c] == 1 for c in range(30))
++    assert any(row[0] == 1 for row in grid)
++    assert sum(v == 2 for row in pair["output"] for v in row) >= 64
++
++
++def test_public_projection_hides_settings_program_answers_and_future_queries(family):
++    episode = family.generate(88, SELECTED, 3, 4)
++    private = {**copy.deepcopy(episode), "settings": SELECTED, "seed": 88}
++    expected = public_challenge_bytes(private)
++    assert family.public_bytes(private) == expected
++    assert family.public_id(private) == public_challenge_id(private)
++    changed = copy.deepcopy(private)
++    changed["settings"] = CANONICAL
++    changed["program_solution"] = "private"
++    for pair in changed["test"]:
++        pair["output"] = [[9 for _ in row] for row in pair["output"]]
++    assert family.public_bytes(changed) == expected
++    assert family.visible_turn_bytes(changed, 0) == family.visible_turn_bytes(private, 0)
++
++
++def test_adapter_contract(family):
++    contract = json.loads(PROMOTION.read_text(encoding="utf-8"))
++    assert contract["schema"] == "arcpuzzles-parametric-adapter-v1"
++    assert contract["adapter"] == f"generators/{TASK_ID}/workspace/parametric/adapter.py"
++    assert contract["parameters"] == {"rectangle_scope": ["all_rectangles", "largest_interior"]}
++    assert contract["default"] == CANONICAL
++    assert contract["limits"] == {"demos": [2, 6], "queries": [1, 4]}
++    adapter = _load(ADAPTER, "_test_bdcb4c9eb6bd_adapter")
++    for settings in (CANONICAL, SELECTED):
++        assert adapter.program(settings) == family.program(settings)
++        assert adapter.generate(17, settings, 3, 4) == family.generate(17, settings, 3, 4)
+diff --git a/repo/generators/bdcb4c9eb6bd/workspace/parametric/README.md b/repo/generators/bdcb4c9eb6bd/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/workspace/parametric/README.md
+@@ -0,0 +1,13 @@
++# Parametric rectangle scope
++
++`all_rectangles` preserves the exact canonical rule: fill every one-gap
++rectangle and extend a red ray from each gap to the canvas edge.
++`largest_interior` computes each rectangle's interior area, selects the unique
++largest rectangle, and applies the same fill-and-ray operation only to that
++input-derived object.
++
++The first two demonstrations deliberately alternate whether the selected object
++is first or last in reading order. The first also separates interior area from
++outline perimeter (6×6 versus 3×10). Episodes support 2–6 demonstrations and
++stable 1–4 query prefixes. The fourth query is a 30×30 four-rectangle stress case
++with boundary contacts and 110 outline cells.
+diff --git a/repo/generators/bdcb4c9eb6bd/workspace/parametric/adapter.py b/repo/generators/bdcb4c9eb6bd/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/workspace/parametric/adapter.py
+@@ -0,0 +1,19 @@
++"""Exact-path native adapter for bdcb4c9eb6bd."""
++from __future__ import annotations
++import importlib.util
++from pathlib import Path
++import sys
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_SPEC = importlib.util.spec_from_file_location("_arc_bdcb4c9eb6bd_parametric_prototype", _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(f"cannot load adjacent prototype: {_PATH}")
++_PROTOTYPE = importlib.util.module_from_spec(_SPEC)
++sys.modules[_SPEC.name] = _PROTOTYPE
++_SPEC.loader.exec_module(_PROTOTYPE)
++
++def program(settings: dict) -> str:
++    return _PROTOTYPE.program(settings)
++
++def generate(seed: int, settings: dict, demos: int, queries: int) -> dict:
++    return _PROTOTYPE.generate(seed, settings, demos, queries)
+diff --git a/repo/generators/bdcb4c9eb6bd/workspace/parametric/audit.py b/repo/generators/bdcb4c9eb6bd/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/workspace/parametric/audit.py
+@@ -0,0 +1,138 @@
++"""Replayable bounded self-audit for bdcb4c9eb6bd."""
++from __future__ import annotations
++import argparse
++import copy
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_SPEC = importlib.util.spec_from_file_location("_arc_bdcb4c9eb6bd_audit_family", _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(_PATH)
++family = importlib.util.module_from_spec(_SPEC)
++sys.modules[_SPEC.name] = family
++_SPEC.loader.exec_module(family)
++
++
++def _racket_apply(program: str, grid: list[list[int]], bridge: Any) -> list[list[int]]:
++    from puzzle_generators.rule_wrap import wrap_rule
++    wrapped = wrap_rule(program)
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return bridge.eval_text(f"({wrapped} {literal})")
++
++
++def _racket_case() -> dict[str, Any]:
++    from arc_repl.racket_bridge import RacketBridge
++    settings = {"rectangle_scope": "largest_interior"}
++    episode = family.generate(0, settings, 2, 4)
++    pair = episode["train"][0]
++    correct_program = family.program(settings)
++    wrong_program = family.counterfactual_program()
++    bridge = RacketBridge()
++    try:
++        identity = bridge.runtime_identity
++        correct = _racket_apply(correct_program, pair["input"], bridge)
++        wrong = _racket_apply(wrong_program, pair["input"], bridge)
++    finally:
++        bridge.close()
++    facts = family.rectangle_facts(pair["input"])
++    wrong_index = max(range(len(facts)), key=lambda i: facts[i]["outline_size"])
++    return {
++        "settings": settings,
++        "input": pair["input"],
++        "program": correct_program,
++        "output": correct,
++        "counterfactual_program": wrong_program,
++        "counterfactual_output": wrong,
++        "intermediate_value": family.largest_interior_intermediate(pair["input"]),
++        "wrong_intermediate": {
++            "selected_index": wrong_index,
++            "selected_bbox": facts[wrong_index]["bbox"],
++            "selected_outline_size": facts[wrong_index]["outline_size"],
++            "source": "largest outline perimeter instead of largest interior area",
++        },
++        "ablation": "wrong_intermediate",
++        "changes_final_output": correct != wrong,
++        "racket": {k: identity.get(k) for k in ("schema", "backend", "protected", "binary_sha256", "prelude_sha256") if k in identity},
++    }
++
++
++def build_report(*, seeds=(0, 17, 2718), demo_counts=(2, 3, 6), include_racket=True) -> dict[str, Any]:
++    settings_space = [
++        {"rectangle_scope": "all_rectangles"},
++        {"rectangle_scope": "largest_interior"},
++    ]
++    cases = []
++    matched_all = unique_all = shortcuts_all = private_all = True
++    for seed in seeds:
++        for demos in demo_counts:
++            episodes = {s["rectangle_scope"]: family.generate(seed, s, demos, 4) for s in settings_space}
++            matched = all(
++                [p["input"] for p in episodes["all_rectangles"][split]]
++                == [p["input"] for p in episodes["largest_interior"][split]]
++                for split in ("train", "test")
++            )
++            matched_all &= matched
++            for settings in settings_space:
++                episode = episodes[settings["rectangle_scope"]]
++                cert = family.lesson_certificate(episode["train"], [p["input"] for p in episode["test"]])
++                unique = cert["surviving_settings"] == [settings]
++                no_shortcuts = cert["surviving_shortcuts"] == []
++                unique_all &= unique
++                shortcuts_all &= no_shortcuts
++                private = {**copy.deepcopy(episode), "settings": settings, "seed": seed}
++                visible = family.public_bytes(private)
++                changed = copy.deepcopy(private)
++                changed["program_solution"] = "private"
++                changed["settings"] = settings_space[1 if settings == settings_space[0] else 0]
++                for pair in changed["test"]:
++                    pair["output"] = [[9 for _ in row] for row in pair["output"]]
++                invariant = family.public_bytes(changed) == visible
++                private_all &= invariant
++                cases.append({
++                    "seed": seed,
++                    "demos": demos,
++                    "settings": settings,
++                    "matched_inputs": matched,
++                    "unique_setting": unique,
++                    "shortcuts_rejected": no_shortcuts,
++                    "public_private_invariant": invariant,
++                    "query_shapes": [[len(p["input"]), len(p["input"][0])] for p in episode["test"]],
++                    "query_rectangles": [[r["interior_area"] for r in family.rectangle_facts(p["input"])] for p in episode["test"]],
++                })
++    report = {
++        "schema": "bdcb4c9eb6bd-parametric-self-audit-v1",
++        "task_id": family.TASK_ID,
++        "status": "passed" if matched_all and unique_all and shortcuts_all and private_all else "failed",
++        "summary": {
++            "cases": len(cases),
++            "all_lessons_unique": unique_all,
++            "all_shortcuts_rejected": shortcuts_all,
++            "all_inputs_setting_independent": matched_all,
++            "all_public_projections_private_invariant": private_all,
++            "query_outputs_consulted": False,
++        },
++        "cases": cases,
++        "racket_case": _racket_case() if include_racket else None,
++    }
++    if include_racket and not report["racket_case"]["changes_final_output"]:
++        report["status"] = "failed"
++    return report
++
++
++def main(argv=None) -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--no-racket", action="store_true")
++    args = parser.parse_args(argv)
++    report = build_report(include_racket=not args.no_racket)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(json.dumps(report["summary"], sort_keys=True))
++    return 0 if report["status"] == "passed" else 1
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/bdcb4c9eb6bd/workspace/parametric/canonical.rkt b/repo/generators/bdcb4c9eb6bd/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/workspace/parametric/canonical.rkt
+@@ -0,0 +1,62 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (let* ((hh (rows g))
++                  (ww (cols g))
++                  (bg (mode g -1))
++                  (objs (objects g bg))
++                  (result g))
++             (for ((obj objs))
++               (when
++                 (= (obj-color obj) 1)
++                 (with-bbox obj
++                            (r1 c1 r2 c2)
++                            (let* ((top-full (for/and ((c (range c1 (+ c2 1))))
++                                                      (= (at g r1 c) 1)))
++                                   (bot-full (for/and ((c (range c1 (+ c2 1))))
++                                                      (= (at g r2 c) 1)))
++                                   (lft-full (for/and ((r (range r1 (+ r2 1))))
++                                                      (= (at g r c1) 1)))
++                                   (rgt-full (for/and ((r (range r1 (+ r2 1))))
++                                                      (= (at g r c2) 1)))
++                                   (open-dir (cond
++                                               ((not top-full) 'up)
++                                               ((not bot-full) 'down)
++                                               ((not lft-full) 'left)
++                                               ((not rgt-full) 'right)
++                                               (else 'none))))
++                              (begin
++                                (for* ((r (range (+ r1 1) r2)) (c (range (+ c1 1) c2)))
++                                      (when
++                                        (= (at result r c) bg)
++                                        (set! result (set-cell result r c 2))))
++                                (cond
++                                  ((equal? open-dir 'left) (for ((r (range (+ r1 1) r2)))
++                                      (when
++                                        (!= (at g r c1) 1)
++                                        (for ((c (range 0 (+ c1 1))))
++                                          (when
++                                            (= (at result r c) bg)
++                                            (set! result (set-cell result r c 2)))))))
++                                  ((equal? open-dir 'right) (for ((r (range (+ r1 1) r2)))
++                                      (when
++                                        (!= (at g r c2) 1)
++                                        (for ((c (range c2 ww)))
++                                          (when
++                                            (= (at result r c) bg)
++                                            (set! result (set-cell result r c 2)))))))
++                                  ((equal? open-dir 'up) (for ((c (range (+ c1 1) c2)))
++                                      (when
++                                        (!= (at g r1 c) 1)
++                                        (for ((r (range 0 (+ r1 1))))
++                                          (when
++                                            (= (at result r c) bg)
++                                            (set! result (set-cell result r c 2)))))))
++                                  ((equal? open-dir 'down) (for ((c (range (+ c1 1) c2)))
++                                      (when
++                                        (!= (at g r2 c) 1)
++                                        (for ((r (range r2 hh)))
++                                          (when
++                                            (= (at result r c) bg)
++                                            (set! result (set-cell result r c 2)))))))))))))
++             result))))
+\ No newline at end of file
+diff --git a/repo/generators/bdcb4c9eb6bd/workspace/parametric/evidence/current/audit-command.json b/repo/generators/bdcb4c9eb6bd/workspace/parametric/evidence/current/audit-command.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/workspace/parametric/evidence/current/audit-command.json
+@@ -0,0 +1,46 @@
++{
++  "delegated": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "/mnt/data/arcpuzzles_review_20261025_092135/WORK/run_with_racket.py",
++      "/opt/pyvenv/bin/python3",
++      "generators/bdcb4c9eb6bd/workspace/parametric/audit.py",
++      "--out",
++      "../checks/bdcb4c9eb6bd/self-audit.json"
++    ],
++    "cwd": "/mnt/data/arcpuzzles_review_20261025_092135/WORK"
++  },
++  "elapsed_seconds": 4.4764467649999915,
++  "evidence_directory": "checks/bdcb4c9eb6bd",
++  "exit_scope": "run_with_racket.py, which execs the payload after setup",
++  "invocation": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "/mnt/data/arcpuzzles_review_20261025_092135/review.py",
++      "run",
++      "--receipt",
++      "checks/bdcb4c9eb6bd/audit-command.json",
++      "python3",
++      "generators/bdcb4c9eb6bd/workspace/parametric/audit.py",
++      "--out",
++      "../checks/bdcb4c9eb6bd/self-audit.json"
++    ],
++    "cwd": "/mnt/data/arcpuzzles_review_20261025_092135"
++  },
++  "limits": [
++    "Payload cwd is the launcher contract; setup or exec can fail before payload starts.",
++    "This receipt records process completion, not semantic validation or evidence contents."
++  ],
++  "payload": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "generators/bdcb4c9eb6bd/workspace/parametric/audit.py",
++      "--out",
++      "../checks/bdcb4c9eb6bd/self-audit.json"
++    ],
++    "expected_cwd": "/mnt/data/arcpuzzles_review_20261025_092135/WORK/repo"
++  },
++  "returncode": 0,
++  "schema": "arcpuzzles-run-command-v1",
++  "status": "completed"
++}
+diff --git a/repo/generators/bdcb4c9eb6bd/workspace/parametric/evidence/current/self-audit.json b/repo/generators/bdcb4c9eb6bd/workspace/parametric/evidence/current/self-audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/workspace/parametric/evidence/current/self-audit.json
+@@ -0,0 +1,2017 @@
++{
++  "cases": [
++    {
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "rectangle_scope": "all_rectangles"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "rectangle_scope": "largest_interior"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "rectangle_scope": "all_rectangles"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "rectangle_scope": "largest_interior"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "rectangle_scope": "all_rectangles"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "rectangle_scope": "largest_interior"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "rectangle_scope": "all_rectangles"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "rectangle_scope": "largest_interior"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "rectangle_scope": "all_rectangles"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "rectangle_scope": "largest_interior"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "rectangle_scope": "all_rectangles"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "rectangle_scope": "largest_interior"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "rectangle_scope": "all_rectangles"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "rectangle_scope": "largest_interior"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "rectangle_scope": "all_rectangles"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "rectangle_scope": "largest_interior"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "rectangle_scope": "all_rectangles"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_rectangles": [
++        [
++          21,
++          20
++        ],
++        [
++          25,
++          20,
++          24
++        ],
++        [
++          24,
++          30,
++          40
++        ],
++        [
++          12,
++          64,
++          24,
++          21
++        ]
++      ],
++      "query_shapes": [
++        [
++          15,
++          25
++        ],
++        [
++          19,
++          27
++        ],
++        [
++          24,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "rectangle_scope": "largest_interior"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    }
++  ],
++  "racket_case": {
++    "ablation": "wrong_intermediate",
++    "changes_final_output": true,
++    "counterfactual_output": [
++      [
++        8,
++        8,
++        2,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        1,
++        2,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        1,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ]
++    ],
++    "counterfactual_program": "(rule! (lambda (g)\n         (let* ((h (rows g))\n                (w (cols g)))\n           (let* ((hh (rows g))\n                  (ww (cols g))\n                  (bg (mode g -1))\n                  (objs (objects g bg))\n                  (selected (pick-max objs obj-size))\n                  (result g))\n             (for ((obj objs))\n               (when\n                 (and (= (obj-color obj) 1) (equal? obj selected))\n                 (with-bbox obj\n                            (r1 c1 r2 c2)\n                            (let* ((top-full (for/and ((c (range c1 (+ c2 1))))\n                                                      (= (at g r1 c) 1)))\n                                   (bot-full (for/and ((c (range c1 (+ c2 1))))\n                                                      (= (at g r2 c) 1)))\n                                   (lft-full (for/and ((r (range r1 (+ r2 1))))\n                                                      (= (at g r c1) 1)))\n                                   (rgt-full (for/and ((r (range r1 (+ r2 1))))\n                                                      (= (at g r c2) 1)))\n                                   (open-dir (cond\n                                               ((not top-full) 'up)\n                                               ((not bot-full) 'down)\n                                               ((not lft-full) 'left)\n                                               ((not rgt-full) 'right)\n                                               (else 'none))))\n                              (begin\n                                (for* ((r (range (+ r1 1) r2)) (c (range (+ c1 1) c2)))\n                                      (when\n                                        (= (at result r c) bg)\n                                        (set! result (set-cell result r c 2))))\n                                (cond\n                                  ((equal? open-dir 'left) (for ((r (range (+ r1 1) r2)))\n                                      (when\n                                        (!= (at g r c1) 1)\n                                        (for ((c (range 0 (+ c1 1))))\n                                          (when\n                                            (= (at result r c) bg)\n                                            (set! result (set-cell result r c 2)))))))\n                                  ((equal? open-dir 'right) (for ((r (range (+ r1 1) r2)))\n                                      (when\n                                        (!= (at g r c2) 1)\n                                        (for ((c (range c2 ww)))\n                                          (when\n                                            (= (at result r c) bg)\n                                            (set! result (set-cell result r c 2)))))))\n                                  ((equal? open-dir 'up) (for ((c (range (+ c1 1) c2)))\n                                      (when\n                                        (!= (at g r1 c) 1)\n                                        (for ((r (range 0 (+ r1 1))))\n                                          (when\n                                            (= (at result r c) bg)\n                                            (set! result (set-cell result r c 2)))))))\n                                  ((equal? open-dir 'down) (for ((c (range (+ c1 1) c2)))\n                                      (when\n                                        (!= (at g r2 c) 1)\n                                        (for ((r (range r2 hh)))\n                                          (when\n                                            (= (at result r c) bg)\n                                            (set! result (set-cell result r c 2)))))))))))))\n             result))))",
++    "input": [
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        1,
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ]
++    ],
++    "intermediate_value": {
++      "rectangles": [
++        {
++          "bbox": [
++            1,
++            1,
++            3,
++            10
++          ],
++          "gap": [
++            1,
++            2
++          ],
++          "interior_area": 8,
++          "open_dir": "up",
++          "outline_size": 21
++        },
++        {
++          "bbox": [
++            7,
++            14,
++            12,
++            19
++          ],
++          "gap": [
++            9,
++            19
++          ],
++          "interior_area": 16,
++          "open_dir": "right",
++          "outline_size": 19
++        }
++      ],
++      "selected_bbox": [
++        7,
++        14,
++        12,
++        19
++      ],
++      "selected_index": 1,
++      "selected_interior_area": 16,
++      "selected_outline_size": 19
++    },
++    "output": [
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        1,
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        2,
++        2,
++        2,
++        2,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2,
++        2
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        2,
++        2,
++        2,
++        2,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        2,
++        2,
++        2,
++        2,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        1,
++        1,
++        1,
++        1,
++        1,
++        1,
++        8,
++        8
++      ],
++      [
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8,
++        8
++      ]
++    ],
++    "program": "(rule! (lambda (g)\n         (let* ((h (rows g))\n                (w (cols g)))\n           (let* ((hh (rows g))\n                  (ww (cols g))\n                  (bg (mode g -1))\n                  (objs (objects g bg))\n                  (selected (pick-max objs (lambda (o) (* (- (obj-h o) 2) (- (obj-w o) 2)))))\n                  (result g))\n             (for ((obj objs))\n               (when\n                 (and (= (obj-color obj) 1) (equal? obj selected))\n                 (with-bbox obj\n                            (r1 c1 r2 c2)\n                            (let* ((top-full (for/and ((c (range c1 (+ c2 1))))\n                                                      (= (at g r1 c) 1)))\n                                   (bot-full (for/and ((c (range c1 (+ c2 1))))\n                                                      (= (at g r2 c) 1)))\n                                   (lft-full (for/and ((r (range r1 (+ r2 1))))\n                                                      (= (at g r c1) 1)))\n                                   (rgt-full (for/and ((r (range r1 (+ r2 1))))\n                                                      (= (at g r c2) 1)))\n                                   (open-dir (cond\n                                               ((not top-full) 'up)\n                                               ((not bot-full) 'down)\n                                               ((not lft-full) 'left)\n                                               ((not rgt-full) 'right)\n                                               (else 'none))))\n                              (begin\n                                (for* ((r (range (+ r1 1) r2)) (c (range (+ c1 1) c2)))\n                                      (when\n                                        (= (at result r c) bg)\n                                        (set! result (set-cell result r c 2))))\n                                (cond\n                                  ((equal? open-dir 'left) (for ((r (range (+ r1 1) r2)))\n                                      (when\n                                        (!= (at g r c1) 1)\n                                        (for ((c (range 0 (+ c1 1))))\n                                          (when\n                                            (= (at result r c) bg)\n                                            (set! result (set-cell result r c 2)))))))\n                                  ((equal? open-dir 'right) (for ((r (range (+ r1 1) r2)))\n                                      (when\n                                        (!= (at g r c2) 1)\n                                        (for ((c (range c2 ww)))\n                                          (when\n                                            (= (at result r c) bg)\n                                            (set! result (set-cell result r c 2)))))))\n                                  ((equal? open-dir 'up) (for ((c (range (+ c1 1) c2)))\n                                      (when\n                                        (!= (at g r1 c) 1)\n                                        (for ((r (range 0 (+ r1 1))))\n                                          (when\n                                            (= (at result r c) bg)\n                                            (set! result (set-cell result r c 2)))))))\n                                  ((equal? open-dir 'down) (for ((c (range (+ c1 1) c2)))\n                                      (when\n                                        (!= (at g r2 c) 1)\n                                        (for ((r (range r2 hh)))\n                                          (when\n                                            (= (at result r c) bg)\n                                            (set! result (set-cell result r c 2)))))))))))))\n             result))))",
++    "racket": {
++      "backend": "racket",
++      "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++      "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++      "protected": true,
++      "schema": "arc-protected-racket-runtime-v1"
++    },
++    "settings": {
++      "rectangle_scope": "largest_interior"
++    },
++    "wrong_intermediate": {
++      "selected_bbox": [
++        1,
++        1,
++        3,
++        10
++      ],
++      "selected_index": 0,
++      "selected_outline_size": 21,
++      "source": "largest outline perimeter instead of largest interior area"
++    }
++  },
++  "schema": "bdcb4c9eb6bd-parametric-self-audit-v1",
++  "status": "passed",
++  "summary": {
++    "all_inputs_setting_independent": true,
++    "all_lessons_unique": true,
++    "all_public_projections_private_invariant": true,
++    "all_shortcuts_rejected": true,
++    "cases": 18,
++    "query_outputs_consulted": false
++  },
++  "task_id": "bdcb4c9eb6bd"
++}
+diff --git a/repo/generators/bdcb4c9eb6bd/workspace/parametric/evidence/manifest.json b/repo/generators/bdcb4c9eb6bd/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,92 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "aedef28e967d2a72ad80347ca85964c3481bb47b7801314bdd462766b54d90e1",
++  "canonical_rule_hash": "c507f6de75fe",
++  "default": {
++    "rectangle_scope": "all_rectangles"
++  },
++  "evidence_root": "generators/bdcb4c9eb6bd/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 18564,
++      "path": "generators/bdcb4c9eb6bd/generator.py",
++      "sha256": "74d53ab4ff66c8067fecd04bbabdeecc99eb1e489723735ac01bd6b7ca49bef4"
++    },
++    {
++      "bytes": 6226,
++      "path": "generators/bdcb4c9eb6bd/tests/test_generator.py",
++      "sha256": "4b995fc7f9ea5f1efbb8b024e0f71e3c8ad26c11560205745b96151453e9fdb2"
++    },
++    {
++      "bytes": 6488,
++      "path": "generators/bdcb4c9eb6bd/tests/test_parametric_rectangle_scope.py",
++      "sha256": "2e50b34e565c95eedca1169ae0e1b39e2bee0add9f1a855edd7c945ea70c489c"
++    },
++    {
++      "bytes": 749,
++      "path": "generators/bdcb4c9eb6bd/workspace/parametric/adapter.py",
++      "sha256": "04022099a357e299d41cb3c6126c802b105e5e8adf69b9dd3b352c5c1ca6b6fd"
++    },
++    {
++      "bytes": 6162,
++      "path": "generators/bdcb4c9eb6bd/workspace/parametric/audit.py",
++      "sha256": "bf89e52f5e057e4b5d37b49fd8b9eddff136fa2e61067d81b9c441f34b3a33da"
++    },
++    {
++      "bytes": 3649,
++      "path": "generators/bdcb4c9eb6bd/workspace/parametric/canonical.rkt",
++      "sha256": "aedef28e967d2a72ad80347ca85964c3481bb47b7801314bdd462766b54d90e1"
++    },
++    {
++      "bytes": 1521,
++      "path": "generators/bdcb4c9eb6bd/workspace/parametric/evidence/current/audit-command.json",
++      "sha256": "607521894914a0c321c74dfda26fe21e1116e46f6f429affb63ca57ebd2338c6"
++    },
++    {
++      "bytes": 34214,
++      "path": "generators/bdcb4c9eb6bd/workspace/parametric/evidence/current/self-audit.json",
++      "sha256": "26f1326e9649d6ef66b3e729812eadb45f6e74e6b03881e035efd728ce643f7d"
++    },
++    {
++      "bytes": 3771,
++      "path": "generators/bdcb4c9eb6bd/workspace/parametric/largest-interior.rkt",
++      "sha256": "a673bec37475ca7c30764882e68d9178d1ed3cd2630927f83ea65960229269c6"
++    },
++    {
++      "bytes": 662,
++      "path": "generators/bdcb4c9eb6bd/workspace/parametric/promotion.json",
++      "sha256": "bcb2cda10f1e64c3a1aa0cb09ae021d888006894e348f6a3182f39c2368f317a"
++    },
++    {
++      "bytes": 16055,
++      "path": "generators/bdcb4c9eb6bd/workspace/parametric/prototype.py",
++      "sha256": "2f040991c8792aa1f33194d234d61fa8e4866e4259d1aed8202b57454d33ca0f"
++    }
++  ],
++  "generator_sha256": "74d53ab4ff66c8067fecd04bbabdeecc99eb1e489723735ac01bd6b7ca49bef4",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "rectangle_scope": [
++      "all_rectangles",
++      "largest_interior"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "138 focused target tests passed; bounded 18-case self-audit passed with protected-Racket largest-area versus largest-perimeter replay, two-demo setting identification, named-shortcut rejection, matched inputs, public/private invariance, and 30x30 stress.",
++  "rule_task_id": "bdcb4c9eb6bd",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "bdcb4c9eb6bd",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/bdcb4c9eb6bd/workspace/parametric/largest-interior.rkt b/repo/generators/bdcb4c9eb6bd/workspace/parametric/largest-interior.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/workspace/parametric/largest-interior.rkt
+@@ -0,0 +1,63 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (let* ((hh (rows g))
++                  (ww (cols g))
++                  (bg (mode g -1))
++                  (objs (objects g bg))
++                  (selected (pick-max objs (lambda (o) (* (- (obj-h o) 2) (- (obj-w o) 2)))))
++                  (result g))
++             (for ((obj objs))
++               (when
++                 (and (= (obj-color obj) 1) (equal? obj selected))
++                 (with-bbox obj
++                            (r1 c1 r2 c2)
++                            (let* ((top-full (for/and ((c (range c1 (+ c2 1))))
++                                                      (= (at g r1 c) 1)))
++                                   (bot-full (for/and ((c (range c1 (+ c2 1))))
++                                                      (= (at g r2 c) 1)))
++                                   (lft-full (for/and ((r (range r1 (+ r2 1))))
++                                                      (= (at g r c1) 1)))
++                                   (rgt-full (for/and ((r (range r1 (+ r2 1))))
++                                                      (= (at g r c2) 1)))
++                                   (open-dir (cond
++                                               ((not top-full) 'up)
++                                               ((not bot-full) 'down)
++                                               ((not lft-full) 'left)
++                                               ((not rgt-full) 'right)
++                                               (else 'none))))
++                              (begin
++                                (for* ((r (range (+ r1 1) r2)) (c (range (+ c1 1) c2)))
++                                      (when
++                                        (= (at result r c) bg)
++                                        (set! result (set-cell result r c 2))))
++                                (cond
++                                  ((equal? open-dir 'left) (for ((r (range (+ r1 1) r2)))
++                                      (when
++                                        (!= (at g r c1) 1)
++                                        (for ((c (range 0 (+ c1 1))))
++                                          (when
++                                            (= (at result r c) bg)
++                                            (set! result (set-cell result r c 2)))))))
++                                  ((equal? open-dir 'right) (for ((r (range (+ r1 1) r2)))
++                                      (when
++                                        (!= (at g r c2) 1)
++                                        (for ((c (range c2 ww)))
++                                          (when
++                                            (= (at result r c) bg)
++                                            (set! result (set-cell result r c 2)))))))
++                                  ((equal? open-dir 'up) (for ((c (range (+ c1 1) c2)))
++                                      (when
++                                        (!= (at g r1 c) 1)
++                                        (for ((r (range 0 (+ r1 1))))
++                                          (when
++                                            (= (at result r c) bg)
++                                            (set! result (set-cell result r c 2)))))))
++                                  ((equal? open-dir 'down) (for ((c (range (+ c1 1) c2)))
++                                      (when
++                                        (!= (at g r2 c) 1)
++                                        (for ((r (range r2 hh)))
++                                          (when
++                                            (= (at result r c) bg)
++                                            (set! result (set-cell result r c 2)))))))))))))
++             result))))
+\ No newline at end of file
+diff --git a/repo/generators/bdcb4c9eb6bd/workspace/parametric/promotion.json b/repo/generators/bdcb4c9eb6bd/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/workspace/parametric/promotion.json
+@@ -0,0 +1,24 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/bdcb4c9eb6bd/workspace/parametric/adapter.py",
++  "parameters": {
++    "rectangle_scope": [
++      "all_rectangles",
++      "largest_interior"
++    ]
++  },
++  "default": {
++    "rectangle_scope": "all_rectangles"
++  },
++  "limits": {
++    "demos": [2, 6],
++    "queries": [1, 4]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/bdcb4c9eb6bd/workspace/parametric/prototype.py",
++    "generators/bdcb4c9eb6bd/workspace/parametric/canonical.rkt",
++    "generators/bdcb4c9eb6bd/workspace/parametric/largest-interior.rkt",
++    "generators/bdcb4c9eb6bd/workspace/parametric/audit.py"
++  ]
++}
+diff --git a/repo/generators/bdcb4c9eb6bd/workspace/parametric/prototype.py b/repo/generators/bdcb4c9eb6bd/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/bdcb4c9eb6bd/workspace/parametric/prototype.py
+@@ -0,0 +1,430 @@
++"""Native finite parametric family for ARC generator bdcb4c9eb6bd.
++
++``all_rectangles`` is the exact canonical rule: fill every one-gap rectangle's
++interior red and extend red from its gap to the corresponding canvas edge.
++``largest_interior`` first computes the input-dependent interior area of every
++rectangle, selects the unique largest one, and applies the same fill-and-ray
++operation only to that selected rectangle.
++"""
++from __future__ import annotations
++
++from collections import Counter
++import copy
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any
++
++TASK_ID = "bdcb4c9eb6bd"
++PARAMETER_NAME = "rectangle_scope"
++SCOPES = ("all_rectangles", "largest_interior")
++DEFAULT_SETTINGS = {PARAMETER_NAME: "all_rectangles"}
++
++_HOME = Path(__file__).resolve().parent
++CANONICAL_PROGRAM = (_HOME / "canonical.rkt").read_text(encoding="utf-8")
++LARGEST_INTERIOR_PROGRAM = (_HOME / "largest-interior.rkt").read_text(encoding="utf-8")
++
++SHORTCUTS = (
++    "smallest_interior",
++    "first_rectangle",
++    "last_rectangle",
++    "largest_outline",
++    "all_interiors_no_rays",
++    "all_rays_no_interiors",
++)
++_DIRS = ((-1, 0), (0, -1), (1, 0), (0, 1))
++_SIDES = ("up", "right", "down", "left")
++_BACKGROUNDS = (3, 4, 5, 6, 7, 8, 9)
++
++# (height, width, rectangles as r,c,h,w)
++DEMO_SCENES = (
++    (14, 22, ((1, 1, 3, 10), (7, 14, 6, 6))),
++    (16, 22, ((1, 1, 7, 5), (10, 12, 4, 9))),
++    (18, 24, ((1, 1, 5, 7), (1, 12, 3, 11), (10, 2, 6, 5))),
++    (20, 26, ((1, 1, 4, 10), (8, 2, 8, 5), (13, 15, 5, 9))),
++    (22, 24, ((0, 1, 6, 6), (8, 0, 5, 12), (15, 15, 6, 8))),
++    (24, 28, ((2, 1, 9, 5), (1, 11, 5, 10), (15, 4, 6, 11))),
++)
++QUERY_SCENES = (
++    (15, 25, ((1, 1, 5, 9), (8, 15, 6, 7))),
++    (19, 27, ((0, 2, 7, 7), (9, 1, 4, 12), (12, 18, 6, 8))),
++    (24, 30, ((1, 1, 8, 6), (2, 13, 5, 12), (15, 4, 7, 10))),
++    (30, 30, ((1, 1, 10, 10), (0, 15, 3, 14), (16, 0, 6, 8), (22, 19, 5, 9))),
++)
++
++
++def _validate_settings(settings: Any) -> str:
++    if type(settings) is not dict or set(settings) != {PARAMETER_NAME}:
++        raise ValueError(f"settings must contain only {PARAMETER_NAME}")
++    scope = settings[PARAMETER_NAME]
++    if type(scope) is not str or scope not in SCOPES:
++        raise ValueError(f"{PARAMETER_NAME} must be one of {SCOPES}")
++    return scope
++
++
++def _exact_int(value: Any, name: str, low: int, high: int) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++    return value
++
++
++def _validate_grid(grid: Any) -> list[list[int]]:
++    if (
++        type(grid) is not list
++        or not 1 <= len(grid) <= 30
++        or type(grid[0]) is not list
++        or not 1 <= len(grid[0]) <= 30
++    ):
++        raise ValueError("grid must have 1..30 rows and columns")
++    width = len(grid[0])
++    if any(
++        type(row) is not list
++        or len(row) != width
++        or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++        for row in grid
++    ):
++        raise ValueError("grid must be rectangular with exact integer colors 0..9")
++    return grid
++
++
++def program(settings: Any) -> str:
++    scope = _validate_settings(settings)
++    return CANONICAL_PROGRAM if scope == "all_rectangles" else LARGEST_INTERIOR_PROGRAM
++
++
++def counterfactual_program(kind: str = "largest_outline") -> str:
++    if kind != "largest_outline":
++        raise ValueError("only largest_outline is retained")
++    old = "(selected (pick-max objs (lambda (o) (* (- (obj-h o) 2) (- (obj-w o) 2)))))"
++    new = "(selected (pick-max objs obj-size))"
++    if LARGEST_INTERIOR_PROGRAM.count(old) != 1:
++        raise ValueError("selected-rectangle source guard failed")
++    return LARGEST_INTERIOR_PROGRAM.replace(old, new, 1)
++
++
++def _background(grid: list[list[int]]) -> int:
++    counts = Counter(value for row in grid for value in row)
++    if not counts:
++        raise ValueError("empty grid")
++    return counts.most_common(1)[0][0]
++
++
++def _components_of_one(grid: list[list[int]]) -> list[list[tuple[int, int]]]:
++    h, w = len(grid), len(grid[0])
++    remaining = {(r, c) for r in range(h) for c in range(w) if grid[r][c] == 1}
++    result: list[list[tuple[int, int]]] = []
++    while remaining:
++        first = min(remaining)
++        remaining.remove(first)
++        stack = [first]
++        cells: list[tuple[int, int]] = []
++        while stack:
++            r, c = stack.pop()
++            cells.append((r, c))
++            for dr, dc in _DIRS:
++                point = (r + dr, c + dc)
++                if point in remaining:
++                    remaining.remove(point)
++                    stack.append(point)
++        result.append(sorted(cells))
++    return result
++
++
++def rectangle_facts(grid: list[list[int]]) -> list[dict[str, Any]]:
++    _validate_grid(grid)
++    bg = _background(grid)
++    if bg in (1, 2):
++        raise ValueError("background must differ from outline 1 and answer 2")
++    facts: list[dict[str, Any]] = []
++    for cells in _components_of_one(grid):
++        rows = [r for r, _ in cells]
++        cols = [c for _, c in cells]
++        r0, r1 = min(rows), max(rows)
++        c0, c1 = min(cols), max(cols)
++        height, width = r1 - r0 + 1, c1 - c0 + 1
++        if height < 3 or width < 3:
++            raise ValueError("rectangle must be at least 3x3")
++        perimeter = {
++            (r, c)
++            for r in range(r0, r1 + 1)
++            for c in range(c0, c1 + 1)
++            if r in (r0, r1) or c in (c0, c1)
++        }
++        cellset = set(cells)
++        missing = sorted(perimeter - cellset)
++        if cellset - perimeter or len(missing) != 1:
++            raise ValueError("each component must be a rectangle outline with one gap")
++        gr, gc = missing[0]
++        if gr == r0 and c0 < gc < c1:
++            side = "up"
++        elif gr == r1 and c0 < gc < c1:
++            side = "down"
++        elif gc == c0 and r0 < gr < r1:
++            side = "left"
++        elif gc == c1 and r0 < gr < r1:
++            side = "right"
++        else:
++            raise ValueError("gap must be a non-corner boundary cell")
++        facts.append({
++            "cells": [list(cell) for cell in cells],
++            "bbox": [r0, c0, r1, c1],
++            "height": height,
++            "width": width,
++            "interior_area": (height - 2) * (width - 2),
++            "outline_size": len(cells),
++            "gap": [gr, gc],
++            "open_dir": side,
++        })
++    facts.sort(key=lambda row: tuple(row["bbox"]))
++    if len(facts) < 2:
++        raise ValueError("family inputs require at least two rectangles")
++    areas = [row["interior_area"] for row in facts]
++    if len(areas) != len(set(areas)):
++        raise ValueError("family inputs require distinct interior areas")
++    return facts
++
++
++def largest_interior_intermediate(grid: list[list[int]]) -> dict[str, Any]:
++    facts = rectangle_facts(grid)
++    index = max(range(len(facts)), key=lambda i: facts[i]["interior_area"])
++    return {
++        "selected_index": index,
++        "selected_bbox": facts[index]["bbox"],
++        "selected_interior_area": facts[index]["interior_area"],
++        "selected_outline_size": facts[index]["outline_size"],
++        "rectangles": [
++            {
++                "bbox": row["bbox"],
++                "interior_area": row["interior_area"],
++                "outline_size": row["outline_size"],
++                "gap": row["gap"],
++                "open_dir": row["open_dir"],
++            }
++            for row in facts
++        ],
++    }
++
++
++def _apply_facts(
++    grid: list[list[int]],
++    facts: list[dict[str, Any]],
++    selected_indices: set[int],
++    *,
++    interiors: bool = True,
++    rays: bool = True,
++) -> list[list[int]]:
++    bg = _background(grid)
++    h, w = len(grid), len(grid[0])
++    result = copy.deepcopy(grid)
++    for index, fact in enumerate(facts):
++        if index not in selected_indices:
++            continue
++        r0, c0, r1, c1 = fact["bbox"]
++        if interiors:
++            for r in range(r0 + 1, r1):
++                for c in range(c0 + 1, c1):
++                    if result[r][c] == bg:
++                        result[r][c] = 2
++        if not rays:
++            continue
++        gr, gc = fact["gap"]
++        side = fact["open_dir"]
++        if side == "left":
++            points = ((gr, c) for c in range(0, c0 + 1))
++        elif side == "right":
++            points = ((gr, c) for c in range(c1, w))
++        elif side == "up":
++            points = ((r, gc) for r in range(0, r0 + 1))
++        else:
++            points = ((r, gc) for r in range(r1, h))
++        for r, c in points:
++            if result[r][c] == bg:
++                result[r][c] = 2
++    return result
++
++
++def transform(grid: list[list[int]], settings: Any) -> list[list[int]]:
++    scope = _validate_settings(settings)
++    facts = rectangle_facts(grid)
++    if scope == "all_rectangles":
++        selected = set(range(len(facts)))
++    else:
++        selected = {largest_interior_intermediate(grid)["selected_index"]}
++    return _apply_facts(grid, facts, selected)
++
++
++def _draw_rectangle(
++    grid: list[list[int]],
++    rect: tuple[int, int, int, int],
++    side: str,
++    offset: int,
++    background: int,
++) -> None:
++    r0, c0, height, width = rect
++    r1, c1 = r0 + height - 1, c0 + width - 1
++    for c in range(c0, c1 + 1):
++        grid[r0][c] = 1
++        grid[r1][c] = 1
++    for r in range(r0, r1 + 1):
++        grid[r][c0] = 1
++        grid[r][c1] = 1
++    if side == "up":
++        gap = (r0, c0 + offset)
++    elif side == "down":
++        gap = (r1, c0 + offset)
++    elif side == "left":
++        gap = (r0 + offset, c0)
++    elif side == "right":
++        gap = (r0 + offset, c1)
++    else:
++        raise ValueError(side)
++    grid[gap[0]][gap[1]] = background
++
++
++def _scene(seed: int, split: str, index: int) -> list[list[int]]:
++    scenes = DEMO_SCENES if split == "train" else QUERY_SCENES
++    height, width, rectangles = scenes[index]
++    rng = random.Random(f"{TASK_ID}:{seed}:{split}:{index}")
++    background = _BACKGROUNDS[rng.randrange(len(_BACKGROUNDS))]
++    grid = [[background] * width for _ in range(height)]
++    side_offset = rng.randrange(4)
++    for rect_index, rect in enumerate(rectangles):
++        r0, c0, rh, rw = rect
++        if r0 < 0 or c0 < 0 or r0 + rh > height or c0 + rw > width:
++            raise RuntimeError("rectangle escaped scene")
++        side = _SIDES[(side_offset + rect_index + index) % 4]
++        span = rw if side in ("up", "down") else rh
++        local_rng = random.Random(f"{TASK_ID}:{seed}:{split}:{index}:{rect_index}:gap")
++        gap_offset = local_rng.randint(1, span - 2)
++        _draw_rectangle(grid, rect, side, gap_offset, background)
++    facts = rectangle_facts(grid)
++    if len(facts) != len(rectangles):
++        raise RuntimeError("rectangle objects touched")
++    return grid
++
++
++def sample_inputs(seed: int) -> dict[str, list[list[list[int]]]]:
++    _exact_int(seed, "seed", 0, 2**63 - 1)
++    return {
++        "train": [_scene(seed, "train", i) for i in range(len(DEMO_SCENES))],
++        "test": [_scene(seed, "test", i) for i in range(len(QUERY_SCENES))],
++    }
++
++
++def generate(seed: int, settings: Any, demos: int, queries: int) -> dict[str, Any]:
++    _exact_int(seed, "seed", 0, 2**63 - 1)
++    _exact_int(demos, "demos", 2, 6)
++    _exact_int(queries, "queries", 1, 4)
++    _validate_settings(settings)
++    sampled = sample_inputs(seed)
++    return {
++        "train": [
++            {"input": copy.deepcopy(grid), "output": transform(grid, settings)}
++            for grid in sampled["train"][:demos]
++        ],
++        "test": [
++            {"input": copy.deepcopy(grid), "output": transform(grid, settings)}
++            for grid in sampled["test"][:queries]
++        ],
++        "program_solution": program(settings),
++    }
++
++
++def shortcut_output(grid: list[list[int]], shortcut: str) -> list[list[int]]:
++    facts = rectangle_facts(grid)
++    if shortcut == "smallest_interior":
++        selected = {min(range(len(facts)), key=lambda i: facts[i]["interior_area"])}
++        return _apply_facts(grid, facts, selected)
++    if shortcut == "first_rectangle":
++        return _apply_facts(grid, facts, {0})
++    if shortcut == "last_rectangle":
++        return _apply_facts(grid, facts, {len(facts) - 1})
++    if shortcut == "largest_outline":
++        selected = {max(range(len(facts)), key=lambda i: facts[i]["outline_size"])}
++        return _apply_facts(grid, facts, selected)
++    if shortcut == "all_interiors_no_rays":
++        return _apply_facts(grid, facts, set(range(len(facts))), interiors=True, rays=False)
++    if shortcut == "all_rays_no_interiors":
++        return _apply_facts(grid, facts, set(range(len(facts))), interiors=False, rays=True)
++    raise ValueError(shortcut)
++
++
++def lesson_certificate(train: list[dict[str, Any]], query_inputs: list[list[list[int]]]) -> dict[str, Any]:
++    if type(train) is not list or not train:
++        raise ValueError("train must contain demonstrations")
++    if type(query_inputs) is not list or not query_inputs:
++        raise ValueError("query_inputs must contain at least one grid")
++    candidates = [{PARAMETER_NAME: value} for value in SCOPES]
++    survivors: list[dict[str, str]] = []
++    settings_rows: dict[str, dict[str, Any]] = {}
++    for candidate in candidates:
++        predictions = [transform(pair["input"], candidate) for pair in train]
++        fits = all(pred == pair["output"] for pred, pair in zip(predictions, train))
++        key = candidate[PARAMETER_NAME]
++        settings_rows[key] = {
++            "fits_all_demos": fits,
++            "first_eliminating_demo": next(
++                (i for i, (pred, pair) in enumerate(zip(predictions, train)) if pred != pair["output"]),
++                None,
++            ),
++        }
++        if fits:
++            survivors.append(copy.deepcopy(candidate))
++    intended = survivors[0] if len(survivors) == 1 else None
++    surviving_shortcuts: list[str] = []
++    shortcut_rows: dict[str, dict[str, Any]] = {}
++    for shortcut in SHORTCUTS:
++        predictions = [shortcut_output(pair["input"], shortcut) for pair in train]
++        fits = all(pred == pair["output"] for pred, pair in zip(predictions, train))
++        if fits:
++            surviving_shortcuts.append(shortcut)
++        disagreements = None
++        if intended is not None:
++            disagreements = sum(
++                shortcut_output(grid, shortcut) != transform(grid, intended)
++                for grid in query_inputs
++            )
++        shortcut_rows[shortcut] = {
++            "fits_all_demos": fits,
++            "first_eliminating_demo": next(
++                (i for i, (pred, pair) in enumerate(zip(predictions, train)) if pred != pair["output"]),
++                None,
++            ),
++            "query_disagreements": disagreements,
++        }
++    return {
++        "surviving_settings": survivors,
++        "declared_settings": settings_rows,
++        "surviving_shortcuts": surviving_shortcuts,
++        "shortcuts": shortcut_rows,
++        "query_outputs_consulted": False,
++        "scope": "finite two-setting family plus six named shortcuts; not universal uniqueness",
++    }
++
++
++def public_projection(episode: dict[str, Any]) -> dict[str, Any]:
++    return {
++        "train": [
++            {"input": copy.deepcopy(pair["input"]), "output": copy.deepcopy(pair["output"])}
++            for pair in episode["train"]
++        ],
++        "test": [{"input": copy.deepcopy(pair["input"])} for pair in episode["test"]],
++    }
++
++
++def public_bytes(episode: dict[str, Any]) -> bytes:
++    return (json.dumps(public_projection(episode), sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
++
++
++def public_id(episode: dict[str, Any]) -> str:
++    return hashlib.sha256(public_bytes(episode)).hexdigest()
++
++
++def visible_turn(episode: dict[str, Any], query_index: int) -> dict[str, Any]:
++    _exact_int(query_index, "query_index", 0, len(episode["test"]) - 1)
++    return public_projection({"train": episode["train"], "test": [episode["test"][query_index]]})
++
++
++def visible_turn_bytes(episode: dict[str, Any], query_index: int) -> bytes:
++    return (json.dumps(visible_turn(episode, query_index), sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+diff --git a/repo/generators/c1b540a1d7b0/notes.md b/repo/generators/c1b540a1d7b0/notes.md
+--- a/repo/generators/c1b540a1d7b0/notes.md
++++ b/repo/generators/c1b540a1d7b0/notes.md
+@@ -8,3 +8,17 @@
+ 
+ Current source-bound ticket observations: `generators/c1b540a1d7b0/evidence/supplementary-current.json`. Results are reviewer-reported; blocked or unknown stays explicit. These observations do not approve a generator or variant, resolve audits, or admit data to training.
+ <!-- arcpuzzles-current-supplementary:end -->
++
++## D1 — Native component-scope family (review-2897d39f7102ccb7)
++
++**Decision:** preserve the exact canonical `all_components` Racket program and add `largest_component`, which first identifies the unique largest 4-connected gray component and then applies the canonical arm-versus-room classifier only inside it. The other gray components remain unchanged.
++
++**Why this parameter:** it preserves the source task's object decomposition and local classifier while adding a real input-derived selector. The output mask cannot be produced until the selected component identity is known.
++
++**Teaching contract:** every two-demonstration prefix separates both settings and rejects the declared smallest/first/last/topmost/bottommost and uniform-color rivals. Inputs are matched across settings; demonstrations and queries are independently prefix-stable for 2–6 and 1–4 counts.
++
++**Stress/evidence:** the fourth query is a substantive 30×30 case with multiple components, boundary contact, distractors, and a largest component exceeding 50 occupied cells. Focused staged tests passed (61 tests plus 13 subtests), the 18-case bounded self-audit passed, protected-Racket qualifications passed at 2, 3, and 6 demonstrations (136 evaluations), sixteen one-query public projections passed, and the qualified wrong-intermediate witness was independently replayed.
++
++**Baseline repair:** the pre-existing canonical-fixture test assumed a fixed `__file__.parents` depth and failed in the staged task layout. It now uses `reviewer_support.find_root`, `load_selected_generator`, and `canonical_pairs`.
++
++**Limit:** this is reviewer-ready evidence, not owner acceptance, universal identifiability, or training admission.
+diff --git a/repo/generators/c1b540a1d7b0/tests/test_generator_c1b540a1d7b0.py b/repo/generators/c1b540a1d7b0/tests/test_generator_c1b540a1d7b0.py
+--- a/repo/generators/c1b540a1d7b0/tests/test_generator_c1b540a1d7b0.py
++++ b/repo/generators/c1b540a1d7b0/tests/test_generator_c1b540a1d7b0.py
+@@ -1,13 +1,12 @@
+ from __future__ import annotations
+ 
+-import json
+ import unittest
+-from pathlib import Path
+ 
+-from puzzle_generators.per_puzzle.c1b540a1d7b0 import generator
++from reviewer_support import canonical_pairs as _canonical_pairs, find_root, load_selected_generator
+ 
+ 
+-ROOT = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
++generator, _GENERATOR_PATH, _GENERATOR_SHA256 = load_selected_generator("c1b540a1d7b0", root=ROOT)
+ OFFICIAL_PROFILES = {
+     (8, 10, 1, 3, 2, 9, 12),
+     (9, 11, 1, 2, 3, 9, 12),
+@@ -17,24 +16,8 @@
+ 
+ 
+ def canonical_pairs():
+-    with (ROOT / "data" / "canonical" / "puzzles.jsonl").open() as handle:
+-        for line in handle:
+-            row = json.loads(line)
+-            if row.get("task_id") != generator.TASK_ID:
+-                continue
+-            for split in ("train", "test"):
+-                pairs = row.get(split)
+-                pairs = [pairs] if isinstance(pairs, dict) else pairs
+-                for pair in pairs or []:
+-                    grid = pair["input"]
+-                    if isinstance(grid[0], str):
+-                        grid = [[int(value) for value in row] for row in grid]
+-                    output = pair.get("output")
+-                    if output and isinstance(output[0], str):
+-                        output = [
+-                            [int(value) for value in row] for row in output
+-                        ]
+-                    yield grid, output
++    for row in _canonical_pairs(generator.TASK_ID, root=ROOT):
++        yield row["input"], row.get("output")
+ 
+ 
+ def grid_with(cells):
+diff --git a/repo/generators/c1b540a1d7b0/tests/test_parametric_component_scope.py b/repo/generators/c1b540a1d7b0/tests/test_parametric_component_scope.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/tests/test_parametric_component_scope.py
+@@ -0,0 +1,142 @@
++"""Native-contract and teaching checks for the component-scope family."""
++from __future__ import annotations
++
++import copy
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from reviewer_support import canonical_path, find_root, public_challenge_bytes, public_challenge_id
++
++TASK_ID = "c1b540a1d7b0"
++HERE = Path(__file__).resolve()
++ROOT = find_root(HERE)
++HOME = HERE.parents[1] / "workspace" / "parametric"
++PROTOTYPE = HOME / "prototype.py"
++ADAPTER = HOME / "adapter.py"
++PROMOTION = HOME / "promotion.json"
++CANONICAL = {"component_scope": "all_components"}
++SELECTED = {"component_scope": "largest_component"}
++
++
++def _load(path: Path, name: str):
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture(scope="module")
++def family():
++    assert PROTOTYPE.is_file(), f"missing prototype: {PROTOTYPE}"
++    return _load(PROTOTYPE, "_test_c1b540a1d7b0_parametric")
++
++
++def _canonical_program() -> str:
++    found = set()
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID and isinstance(row.get("program_solution"), str):
++                found.add(row["program_solution"])
++    assert len(found) == 1
++    return next(iter(found))
++
++
++def test_default_program_is_exact_canonical_and_alternative_is_distinct(family):
++    canonical = _canonical_program()
++    assert family.program(CANONICAL) == canonical
++    assert (HOME / "canonical.rkt").read_text(encoding="utf-8") == canonical
++    alternative = family.program(SELECTED)
++    assert alternative != canonical
++    assert (HOME / "largest-component.rkt").read_text(encoding="utf-8") == alternative
++
++
++@pytest.mark.parametrize("settings", [None, {}, [], {"component_scope": "bad"}, {"component_scope": "all_components", "x": 1}])
++def test_settings_are_strict(family, settings):
++    with pytest.raises(ValueError):
++        family.program(settings)
++
++
++def test_generation_is_matched_count_stable_and_prefix_stable(family):
++    canonical = family.generate(123, CANONICAL, demos=2, queries=1)
++    selected = family.generate(123, SELECTED, demos=2, queries=1)
++    extended = family.generate(123, CANONICAL, demos=6, queries=4)
++    assert [p["input"] for p in canonical["train"]] == [p["input"] for p in selected["train"]]
++    assert [p["input"] for p in canonical["test"]] == [p["input"] for p in selected["test"]]
++    assert canonical["train"] == extended["train"][:2]
++    assert canonical["test"] == extended["test"][:1]
++    assert all(a["output"] != b["output"] for split in ("train", "test") for a, b in zip(canonical[split], selected[split]))
++    grids = [p["input"] for split in ("train", "test") for p in extended[split]]
++    assert len({json.dumps(g, separators=(",", ":")) for g in grids}) == 10
++
++
++@pytest.mark.parametrize("demos", range(2, 7))
++@pytest.mark.parametrize("queries", range(1, 5))
++@pytest.mark.parametrize("settings", [CANONICAL, SELECTED])
++def test_supported_counts(family, demos, queries, settings):
++    episode = family.generate(1000 + demos * 10 + queries, settings, demos, queries)
++    assert len(episode["train"]) == demos
++    assert len(episode["test"]) == queries
++    assert episode["program_solution"] == family.program(settings)
++
++
++@pytest.mark.parametrize("demos,queries", [(1, 4), (7, 4), (3, 0), (3, 5), (True, 4)])
++def test_bad_counts_reject(family, demos, queries):
++    with pytest.raises(ValueError):
++        family.generate(0, CANONICAL, demos, queries)
++
++
++def test_two_demos_identify_each_setting_and_reject_shortcuts(family):
++    for seed in (0, 17, 2718):
++        for settings in (CANONICAL, SELECTED):
++            episode = family.generate(seed, settings, 2, 4)
++            cert = family.lesson_certificate(episode["train"], [p["input"] for p in episode["test"]])
++            assert cert["surviving_settings"] == [settings]
++            assert cert["surviving_shortcuts"] == []
++            assert cert["query_outputs_consulted"] is False
++
++
++def test_fourth_query_is_substantive_30x30_and_selector_is_nontrivial(family):
++    episode = family.generate(41, SELECTED, 3, 4)
++    grid = episode["test"][3]["input"]
++    assert (len(grid), len(grid[0])) == (30, 30)
++    components = family.components5(grid)
++    assert len(components) >= 3
++    assert len({len(c) for c in components}) == len(components)
++    assert max(len(c) for c in components) >= 50
++    occupied = [(r, c) for r, row in enumerate(grid) for c, v in enumerate(row) if v == 5]
++    assert len(occupied) >= 75
++    assert min(r for r, _ in occupied) == 0 or min(c for _, c in occupied) == 0
++    assert max(r for r, _ in occupied) == 29 or max(c for _, c in occupied) == 29
++
++
++def test_public_projection_hides_settings_program_answers_and_future_queries(family):
++    episode = family.generate(88, SELECTED, 3, 4)
++    private = {**copy.deepcopy(episode), "settings": SELECTED, "seed": 88}
++    expected = public_challenge_bytes(private)
++    assert family.public_bytes(private) == expected
++    assert family.public_id(private) == public_challenge_id(private)
++    changed = copy.deepcopy(private)
++    changed["settings"] = CANONICAL
++    changed["program_solution"] = "private"
++    for pair in changed["test"]:
++        pair["output"] = [[9 for _ in row] for row in pair["output"]]
++    assert family.public_bytes(changed) == expected
++    assert family.visible_turn_bytes(changed, 0) == family.visible_turn_bytes(private, 0)
++
++
++def test_adapter_contract(family):
++    contract = json.loads(PROMOTION.read_text(encoding="utf-8"))
++    assert contract["schema"] == "arcpuzzles-parametric-adapter-v1"
++    assert contract["adapter"] == f"generators/{TASK_ID}/workspace/parametric/adapter.py"
++    assert contract["parameters"] == {"component_scope": ["all_components", "largest_component"]}
++    assert contract["default"] == CANONICAL
++    assert contract["limits"] == {"demos": [2, 6], "queries": [1, 4]}
++    adapter = _load(ADAPTER, "_test_c1b540a1d7b0_adapter")
++    for settings in (CANONICAL, SELECTED):
++        assert adapter.program(settings) == family.program(settings)
++        assert adapter.generate(17, settings, 3, 4) == family.generate(17, settings, 3, 4)
+diff --git a/repo/generators/c1b540a1d7b0/workspace/parametric/README.md b/repo/generators/c1b540a1d7b0/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/workspace/parametric/README.md
+@@ -0,0 +1,13 @@
++# Parametric component scope
++
++The exact canonical setting, `all_components`, classifies arm and room cells in
++every gray component. `largest_component` first selects the uniquely largest
++gray component by occupied-cell count, then applies the same canonical
++classification only inside that selected component. Other components remain
++unchanged gray, so the selected component is a real input-derived intermediate
++consumed by the recoloring step.
++
++Episodes support 2–6 demonstrations and 1–4 stable query prefixes. The fourth
++query is a 30×30 three-component stress case with 100 gray cells, boundary
++contacts, six-room structure and multiple arm orientations. Settings, Racket
++programs and query answers remain controller-side.
+diff --git a/repo/generators/c1b540a1d7b0/workspace/parametric/adapter.py b/repo/generators/c1b540a1d7b0/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/workspace/parametric/adapter.py
+@@ -0,0 +1,19 @@
++"""Exact-path native adapter for c1b540a1d7b0."""
++from __future__ import annotations
++import importlib.util
++from pathlib import Path
++import sys
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_SPEC = importlib.util.spec_from_file_location("_arc_c1b540a1d7b0_parametric_prototype", _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(f"cannot load adjacent prototype: {_PATH}")
++_PROTOTYPE = importlib.util.module_from_spec(_SPEC)
++sys.modules[_SPEC.name] = _PROTOTYPE
++_SPEC.loader.exec_module(_PROTOTYPE)
++
++def program(settings: dict) -> str:
++    return _PROTOTYPE.program(settings)
++
++def generate(seed: int, settings: dict, demos: int, queries: int) -> dict:
++    return _PROTOTYPE.generate(seed, settings, demos, queries)
+diff --git a/repo/generators/c1b540a1d7b0/workspace/parametric/audit.py b/repo/generators/c1b540a1d7b0/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/workspace/parametric/audit.py
+@@ -0,0 +1,141 @@
++"""Replayable bounded self-audit for c1b540a1d7b0."""
++from __future__ import annotations
++import argparse
++import copy
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_SPEC = importlib.util.spec_from_file_location("_arc_c1b540a1d7b0_audit_family", _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(_PATH)
++family = importlib.util.module_from_spec(_SPEC)
++sys.modules[_SPEC.name] = family
++_SPEC.loader.exec_module(family)
++
++
++def _racket_apply(program: str, grid: list[list[int]], bridge: Any) -> list[list[int]]:
++    from puzzle_generators.rule_wrap import wrap_rule
++    wrapped = wrap_rule(program)
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return bridge.eval_text(f"({wrapped} {literal})")
++
++
++def _racket_case() -> dict[str, Any]:
++    from arc_repl.racket_bridge import RacketBridge
++    settings = {"component_scope": "largest_component"}
++    episode = family.generate(0, settings, 2, 4)
++    pair = episode["train"][0]
++    correct_program = family.program(settings)
++    wrong_program = family.counterfactual_program()
++    bridge = RacketBridge()
++    try:
++        identity = bridge.runtime_identity
++        correct = _racket_apply(correct_program, pair["input"], bridge)
++        wrong = _racket_apply(wrong_program, pair["input"], bridge)
++    finally:
++        bridge.close()
++    intermediate = family.largest_component_intermediate(pair["input"])
++    comps = family.components5(pair["input"])
++    smallest = min(comps, key=len)
++    return {
++        "settings": settings,
++        "input": pair["input"],
++        "program": correct_program,
++        "output": correct,
++        "counterfactual_program": wrong_program,
++        "counterfactual_output": wrong,
++        "intermediate_value": intermediate,
++        "wrong_intermediate": {
++            "selected_size": len(smallest),
++            "selected_bbox": list(family._bbox(smallest)),
++            "source": "smallest gray component",
++        },
++        "ablation": "wrong_intermediate",
++        "changes_final_output": correct != wrong,
++        "racket": {k: identity.get(k) for k in ("schema", "backend", "protected", "binary_sha256", "prelude_sha256") if k in identity},
++    }
++
++
++def build_report(*, seeds=(0, 17, 2718), demo_counts=(2, 3, 6), include_racket=True) -> dict[str, Any]:
++    settings_space = [
++        {"component_scope": "all_components"},
++        {"component_scope": "largest_component"},
++    ]
++    cases = []
++    matched_all = True
++    unique_all = True
++    shortcuts_all = True
++    private_all = True
++    for seed in seeds:
++        for demos in demo_counts:
++            episodes = {s["component_scope"]: family.generate(seed, s, demos, 4) for s in settings_space}
++            matched = all(
++                [p["input"] for p in episodes["all_components"][split]]
++                == [p["input"] for p in episodes["largest_component"][split]]
++                for split in ("train", "test")
++            )
++            matched_all &= matched
++            for settings in settings_space:
++                episode = episodes[settings["component_scope"]]
++                cert = family.lesson_certificate(episode["train"], [p["input"] for p in episode["test"]])
++                unique = cert["surviving_settings"] == [settings]
++                no_shortcuts = cert["surviving_shortcuts"] == []
++                unique_all &= unique
++                shortcuts_all &= no_shortcuts
++                private = {**copy.deepcopy(episode), "settings": settings, "seed": seed}
++                visible = family.public_bytes(private)
++                changed = copy.deepcopy(private)
++                changed["program_solution"] = "private"
++                changed["settings"] = settings_space[1 if settings == settings_space[0] else 0]
++                for pair in changed["test"]:
++                    pair["output"] = [[9 for _ in row] for row in pair["output"]]
++                invariant = family.public_bytes(changed) == visible
++                private_all &= invariant
++                cases.append({
++                    "seed": seed,
++                    "demos": demos,
++                    "settings": settings,
++                    "matched_inputs": matched,
++                    "unique_setting": unique,
++                    "shortcuts_rejected": no_shortcuts,
++                    "public_private_invariant": invariant,
++                    "query_shapes": [[len(p["input"]), len(p["input"][0])] for p in episode["test"]],
++                    "component_sizes": [family.largest_component_intermediate(p["input"])["component_sizes"] for p in episode["test"]],
++                })
++    report = {
++        "schema": "c1b540a1d7b0-parametric-self-audit-v1",
++        "task_id": family.TASK_ID,
++        "status": "passed" if matched_all and unique_all and shortcuts_all and private_all else "failed",
++        "summary": {
++            "cases": len(cases),
++            "all_lessons_unique": unique_all,
++            "all_shortcuts_rejected": shortcuts_all,
++            "all_inputs_setting_independent": matched_all,
++            "all_public_projections_private_invariant": private_all,
++            "query_outputs_consulted": False,
++        },
++        "cases": cases,
++        "racket_case": _racket_case() if include_racket else None,
++    }
++    if include_racket and not report["racket_case"]["changes_final_output"]:
++        report["status"] = "failed"
++    return report
++
++
++def main(argv=None) -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--no-racket", action="store_true")
++    args = parser.parse_args(argv)
++    report = build_report(include_racket=not args.no_racket)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(json.dumps(report["summary"], sort_keys=True))
++    return 0 if report["status"] == "passed" else 1
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/c1b540a1d7b0/workspace/parametric/canonical.rkt b/repo/generators/c1b540a1d7b0/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/workspace/parametric/canonical.rkt
+@@ -0,0 +1,34 @@
++(rule! (lambda (g)
++  ;; A gray(5) blob = 2x2 "nodes" joined by 1-wide arms. Recolor node cells cyan(8)
++  ;; and arm cells red(2). Each arm is a straight run of exactly 3 cells: seeded at
++  ;; a degree-1 tip (extend 3 toward its neighbor) or, for a bridge thin cell (not
++  ;; in any 2x2), extend 3 toward a thick neighbor (tie-break up,left,down,right).
++  (let* ((h (rows g)) (w (cols g))
++         (dirs (list (cons -1 0) (cons 0 -1) (cons 1 0) (cons 0 1))))
++    (define (sh? a b) (and (>= a 0) (< a h) (>= b 0) (< b w) (= (cell-at g a b) 5)))
++    (define (in2x2? a b)
++      (for*/or ((da (list -1 0)) (db (list -1 0)))
++        (and (sh? (+ a da 0) (+ b db 0)) (sh? (+ a da 0) (+ b db 1))
++             (sh? (+ a da 1) (+ b db 0)) (sh? (+ a da 1) (+ b db 1)))))
++    (define red (make-hash))
++    (define (add-arm a b da db)
++      (for ((k (list 0 1 2)))
++        (let ((x (+ a (* da k))) (y (+ b (* db k))))
++          (when (sh? x y) (hash-set! red (cons x y) #t)))))
++    ;; tip arms
++    (for* ((a (range h)) (b (range w)))
++      (when (sh? a b)
++        (let ((nb (filter (lambda (d) (sh? (+ a (car d)) (+ b (cdr d)))) dirs)))
++          (when (= (length nb) 1)
++            (add-arm a b (car (first nb)) (cdr (first nb)))))))
++    ;; bridge arms: thin cells not yet covered
++    (for* ((a (range h)) (b (range w)))
++      (when (and (sh? a b) (not (in2x2? a b)) (not (hash-has-key? red (cons a b))))
++        (let ((chosen (findf (lambda (d)
++                               (and (sh? (+ a (car d)) (+ b (cdr d)))
++                                    (in2x2? (+ a (car d)) (+ b (cdr d)))))
++                             dirs)))
++          (when chosen (add-arm a b (car chosen) (cdr chosen))))))
++    (grid-from-fn h w
++      (lambda (r c)
++        (if (sh? r c) (if (hash-has-key? red (cons r c)) 2 8) (cell-at g r c)))))))
+\ No newline at end of file
+diff --git a/repo/generators/c1b540a1d7b0/workspace/parametric/evidence/current/audit-command.json b/repo/generators/c1b540a1d7b0/workspace/parametric/evidence/current/audit-command.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/workspace/parametric/evidence/current/audit-command.json
+@@ -0,0 +1,46 @@
++{
++  "delegated": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "/mnt/data/arcpuzzles_review_20261025_092135/WORK/run_with_racket.py",
++      "/opt/pyvenv/bin/python3",
++      "generators/c1b540a1d7b0/workspace/parametric/audit.py",
++      "--out",
++      "../checks/c1b540a1d7b0/self-audit.json"
++    ],
++    "cwd": "/mnt/data/arcpuzzles_review_20261025_092135/WORK"
++  },
++  "elapsed_seconds": 4.814899742999955,
++  "evidence_directory": "checks/c1b540a1d7b0",
++  "exit_scope": "run_with_racket.py, which execs the payload after setup",
++  "invocation": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "/mnt/data/arcpuzzles_review_20261025_092135/review.py",
++      "run",
++      "--receipt",
++      "checks/c1b540a1d7b0/audit-command.json",
++      "python3",
++      "generators/c1b540a1d7b0/workspace/parametric/audit.py",
++      "--out",
++      "../checks/c1b540a1d7b0/self-audit.json"
++    ],
++    "cwd": "/mnt/data/arcpuzzles_review_20261025_092135"
++  },
++  "limits": [
++    "Payload cwd is the launcher contract; setup or exec can fail before payload starts.",
++    "This receipt records process completion, not semantic validation or evidence contents."
++  ],
++  "payload": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "generators/c1b540a1d7b0/workspace/parametric/audit.py",
++      "--out",
++      "../checks/c1b540a1d7b0/self-audit.json"
++    ],
++    "expected_cwd": "/mnt/data/arcpuzzles_review_20261025_092135/WORK/repo"
++  },
++  "returncode": 0,
++  "schema": "arcpuzzles-run-command-v1",
++  "status": "completed"
++}
+diff --git a/repo/generators/c1b540a1d7b0/workspace/parametric/evidence/current/self-audit.json b/repo/generators/c1b540a1d7b0/workspace/parametric/evidence/current/self-audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/workspace/parametric/evidence/current/self-audit.json
+@@ -0,0 +1,2427 @@
++{
++  "cases": [
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "component_scope": "all_components"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "component_scope": "largest_component"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "component_scope": "all_components"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "component_scope": "largest_component"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "component_scope": "all_components"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "settings": {
++        "component_scope": "largest_component"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "component_scope": "all_components"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "component_scope": "largest_component"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "component_scope": "all_components"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "component_scope": "largest_component"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "component_scope": "all_components"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "settings": {
++        "component_scope": "largest_component"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "component_scope": "all_components"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 2,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "component_scope": "largest_component"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "component_scope": "all_components"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 3,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "component_scope": "largest_component"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "component_scope": "all_components"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    },
++    {
++      "component_sizes": [
++        [
++          20,
++          7
++        ],
++        [
++          30,
++          13,
++          7
++        ],
++        [
++          13,
++          20,
++          30
++        ],
++        [
++          57,
++          13,
++          30
++        ]
++      ],
++      "demos": 6,
++      "matched_inputs": true,
++      "public_private_invariant": true,
++      "query_shapes": [
++        [
++          18,
++          28
++        ],
++        [
++          22,
++          30
++        ],
++        [
++          26,
++          30
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 2718,
++      "settings": {
++        "component_scope": "largest_component"
++      },
++      "shortcuts_rejected": true,
++      "unique_setting": true
++    }
++  ],
++  "racket_case": {
++    "ablation": "wrong_intermediate",
++    "changes_final_output": true,
++    "counterfactual_output": [
++      [
++        0,
++        0,
++        0,
++        8,
++        8,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        2,
++        2,
++        2,
++        8,
++        8,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        5,
++        5,
++        5,
++        5,
++        0,
++        0,
++        0,
++        5,
++        5,
++        0,
++        0,
++        0,
++        5,
++        5,
++        5,
++        5,
++        5
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0
++      ]
++    ],
++    "counterfactual_program": "(rule! (lambda (g)\n  ;; Apply the canonical room/arm recoloring only to the largest gray component.\n  ;; Step A selects the largest input component; step B consumes those exact cells.\n  (let* ((h (rows g)) (w (cols g))\n         (dirs (list (cons -1 0) (cons 0 -1) (cons 1 0) (cons 0 1)))\n         (components (objects g 0))\n         (selected (pick-min components obj-size)))\n    (define (sh? a b) (and (>= a 0) (< a h) (>= b 0) (< b w) (= (cell-at g a b) 5)))\n    (define (in2x2? a b)\n      (for*/or ((da (list -1 0)) (db (list -1 0)))\n        (and (sh? (+ a da 0) (+ b db 0)) (sh? (+ a da 0) (+ b db 1))\n             (sh? (+ a da 1) (+ b db 0)) (sh? (+ a da 1) (+ b db 1)))))\n    (define red (make-hash))\n    (define (add-arm a b da db)\n      (for ((k (list 0 1 2)))\n        (let ((x (+ a (* da k))) (y (+ b (* db k))))\n          (when (sh? x y) (hash-set! red (cons x y) #t)))))\n    (for* ((a (range h)) (b (range w)))\n      (when (sh? a b)\n        (let ((nb (filter (lambda (d) (sh? (+ a (car d)) (+ b (cdr d)))) dirs)))\n          (when (= (length nb) 1)\n            (add-arm a b (car (first nb)) (cdr (first nb)))))))\n    (for* ((a (range h)) (b (range w)))\n      (when (and (sh? a b) (not (in2x2? a b)) (not (hash-has-key? red (cons a b))))\n        (let ((chosen (findf (lambda (d)\n                               (and (sh? (+ a (car d)) (+ b (cdr d)))\n                                    (in2x2? (+ a (car d)) (+ b (cdr d)))))\n                             dirs)))\n          (when chosen (add-arm a b (car chosen) (cdr chosen))))))\n    (grid-from-fn h w\n      (lambda (r c)\n        (if (sh? r c)\n            (if (member (list r c) (obj-cells selected))\n                (if (hash-has-key? red (cons r c)) 2 8)\n                5)\n            (cell-at g r c)))))))",
++    "input": [
++      [
++        0,
++        0,
++        0,
++        5,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        5,
++        5,
++        5,
++        5,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        5,
++        5,
++        5,
++        5,
++        0,
++        0,
++        0,
++        5,
++        5,
++        0,
++        0,
++        0,
++        5,
++        5,
++        5,
++        5,
++        5
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        5,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0
++      ]
++    ],
++    "intermediate_value": {
++      "component_sizes": [
++        7,
++        30
++      ],
++      "selected_bbox": [
++        8,
++        8,
++        15,
++        25
++      ],
++      "selected_cells": [
++        [
++          8,
++          16
++        ],
++        [
++          9,
++          16
++        ],
++        [
++          10,
++          16
++        ],
++        [
++          11,
++          8
++        ],
++        [
++          11,
++          9
++        ],
++        [
++          11,
++          10
++        ],
++        [
++          11,
++          11
++        ],
++        [
++          11,
++          12
++        ],
++        [
++          11,
++          16
++        ],
++        [
++          11,
++          17
++        ],
++        [
++          11,
++          21
++        ],
++        [
++          11,
++          22
++        ],
++        [
++          11,
++          23
++        ],
++        [
++          11,
++          24
++        ],
++        [
++          11,
++          25
++        ],
++        [
++          12,
++          11
++        ],
++        [
++          12,
++          12
++        ],
++        [
++          12,
++          13
++        ],
++        [
++          12,
++          14
++        ],
++        [
++          12,
++          15
++        ],
++        [
++          12,
++          16
++        ],
++        [
++          12,
++          17
++        ],
++        [
++          12,
++          18
++        ],
++        [
++          12,
++          19
++        ],
++        [
++          12,
++          20
++        ],
++        [
++          12,
++          21
++        ],
++        [
++          12,
++          22
++        ],
++        [
++          13,
++          22
++        ],
++        [
++          14,
++          22
++        ],
++        [
++          15,
++          22
++        ]
++      ],
++      "selected_index": 1,
++      "selected_size": 30
++    },
++    "output": [
++      [
++        0,
++        0,
++        0,
++        5,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        5,
++        5,
++        5,
++        5,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        2,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        2,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        2,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        2,
++        2,
++        2,
++        8,
++        8,
++        0,
++        0,
++        0,
++        8,
++        8,
++        0,
++        0,
++        0,
++        8,
++        8,
++        2,
++        2,
++        2
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        2,
++        2,
++        2,
++        8,
++        2,
++        2,
++        2,
++        2,
++        8,
++        2,
++        2,
++        2,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        2,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        2,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        2,
++        0,
++        0,
++        0
++      ]
++    ],
++    "program": "(rule! (lambda (g)\n  ;; Apply the canonical room/arm recoloring only to the largest gray component.\n  ;; Step A selects the largest input component; step B consumes those exact cells.\n  (let* ((h (rows g)) (w (cols g))\n         (dirs (list (cons -1 0) (cons 0 -1) (cons 1 0) (cons 0 1)))\n         (components (objects g 0))\n         (selected (pick-max components obj-size)))\n    (define (sh? a b) (and (>= a 0) (< a h) (>= b 0) (< b w) (= (cell-at g a b) 5)))\n    (define (in2x2? a b)\n      (for*/or ((da (list -1 0)) (db (list -1 0)))\n        (and (sh? (+ a da 0) (+ b db 0)) (sh? (+ a da 0) (+ b db 1))\n             (sh? (+ a da 1) (+ b db 0)) (sh? (+ a da 1) (+ b db 1)))))\n    (define red (make-hash))\n    (define (add-arm a b da db)\n      (for ((k (list 0 1 2)))\n        (let ((x (+ a (* da k))) (y (+ b (* db k))))\n          (when (sh? x y) (hash-set! red (cons x y) #t)))))\n    (for* ((a (range h)) (b (range w)))\n      (when (sh? a b)\n        (let ((nb (filter (lambda (d) (sh? (+ a (car d)) (+ b (cdr d)))) dirs)))\n          (when (= (length nb) 1)\n            (add-arm a b (car (first nb)) (cdr (first nb)))))))\n    (for* ((a (range h)) (b (range w)))\n      (when (and (sh? a b) (not (in2x2? a b)) (not (hash-has-key? red (cons a b))))\n        (let ((chosen (findf (lambda (d)\n                               (and (sh? (+ a (car d)) (+ b (cdr d)))\n                                    (in2x2? (+ a (car d)) (+ b (cdr d)))))\n                             dirs)))\n          (when chosen (add-arm a b (car chosen) (cdr chosen))))))\n    (grid-from-fn h w\n      (lambda (r c)\n        (if (sh? r c)\n            (if (member (list r c) (obj-cells selected))\n                (if (hash-has-key? red (cons r c)) 2 8)\n                5)\n            (cell-at g r c)))))))",
++    "racket": {
++      "backend": "racket",
++      "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++      "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++      "protected": true,
++      "schema": "arc-protected-racket-runtime-v1"
++    },
++    "settings": {
++      "component_scope": "largest_component"
++    },
++    "wrong_intermediate": {
++      "selected_bbox": [
++        0,
++        0,
++        1,
++        4
++      ],
++      "selected_size": 7,
++      "source": "smallest gray component"
++    }
++  },
++  "schema": "c1b540a1d7b0-parametric-self-audit-v1",
++  "status": "passed",
++  "summary": {
++    "all_inputs_setting_independent": true,
++    "all_lessons_unique": true,
++    "all_public_projections_private_invariant": true,
++    "all_shortcuts_rejected": true,
++    "cases": 18,
++    "query_outputs_consulted": false
++  },
++  "task_id": "c1b540a1d7b0"
++}
+diff --git a/repo/generators/c1b540a1d7b0/workspace/parametric/evidence/manifest.json b/repo/generators/c1b540a1d7b0/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,92 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "3928289363d0acb8c1c479d007983660a3f1cb6c2e6391245966092919a1cc09",
++  "canonical_rule_hash": "e925582a7078",
++  "default": {
++    "component_scope": "all_components"
++  },
++  "evidence_root": "generators/c1b540a1d7b0/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 30205,
++      "path": "generators/c1b540a1d7b0/generator.py",
++      "sha256": "d1b226159005a11632c5b3f034899a7caa9a27034356e29db2edd081c97e2bb1"
++    },
++    {
++      "bytes": 5183,
++      "path": "generators/c1b540a1d7b0/tests/test_generator_c1b540a1d7b0.py",
++      "sha256": "3c9df5d88d1ae61bb9706581b6d6f14bf2212c7d8b920a901ae64331557350c8"
++    },
++    {
++      "bytes": 6300,
++      "path": "generators/c1b540a1d7b0/tests/test_parametric_component_scope.py",
++      "sha256": "7ed4a1e1c337e51f41d086bfd94fcd7686b33be5a3f7c7ac83cf58fbd3a93530"
++    },
++    {
++      "bytes": 749,
++      "path": "generators/c1b540a1d7b0/workspace/parametric/adapter.py",
++      "sha256": "122ad9020ef14fd2ebaf056781da70e88fa1fa95425d07bfd369684a1cbb009d"
++    },
++    {
++      "bytes": 6073,
++      "path": "generators/c1b540a1d7b0/workspace/parametric/audit.py",
++      "sha256": "fb11edaba22e58fdfdf5dd3c66b6a3f4e4953b94716b62172bf22e060baaf5e6"
++    },
++    {
++      "bytes": 1807,
++      "path": "generators/c1b540a1d7b0/workspace/parametric/canonical.rkt",
++      "sha256": "3928289363d0acb8c1c479d007983660a3f1cb6c2e6391245966092919a1cc09"
++    },
++    {
++      "bytes": 1520,
++      "path": "generators/c1b540a1d7b0/workspace/parametric/evidence/current/audit-command.json",
++      "sha256": "0b3dee03f5eb15cfa11ffa86fde0e9811eecd5dae9e9a7e1ed282b1a7a236e72"
++    },
++    {
++      "bytes": 34404,
++      "path": "generators/c1b540a1d7b0/workspace/parametric/evidence/current/self-audit.json",
++      "sha256": "89b25ca3d3b7b5672ad4bcbc2099fa34d8e2200f21351caaf618616e395888c0"
++    },
++    {
++      "bytes": 1766,
++      "path": "generators/c1b540a1d7b0/workspace/parametric/largest-component.rkt",
++      "sha256": "d0d5d4d4ef1aa2d499784d8f31a182f3e1fd8c5a37a55e43141ee0bf99967be0"
++    },
++    {
++      "bytes": 664,
++      "path": "generators/c1b540a1d7b0/workspace/parametric/promotion.json",
++      "sha256": "30ab39d07c4793f7d549c7b52ae774d07740b107c4b04c7f56483c4be75487bb"
++    },
++    {
++      "bytes": 16875,
++      "path": "generators/c1b540a1d7b0/workspace/parametric/prototype.py",
++      "sha256": "8ada66e9a77a3bba0628019a13716d0b9e3bc569ca43dc64e299a5ac2d61804e"
++    }
++  ],
++  "generator_sha256": "d1b226159005a11632c5b3f034899a7caa9a27034356e29db2edd081c97e2bb1",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "component_scope": [
++      "all_components",
++      "largest_component"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "61 focused tests plus 13 subtests passed; bounded 18-case self-audit passed with protected-Racket wrong-intermediate replay, two-demo setting identification, named-shortcut rejection, matched inputs, public/private invariance, and 30x30 stress.",
++  "rule_task_id": "c1b540a1d7b0",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "c1b540a1d7b0",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/c1b540a1d7b0/workspace/parametric/largest-component.rkt b/repo/generators/c1b540a1d7b0/workspace/parametric/largest-component.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/workspace/parametric/largest-component.rkt
+@@ -0,0 +1,36 @@
++(rule! (lambda (g)
++  ;; Apply the canonical room/arm recoloring only to the largest gray component.
++  ;; Step A selects the largest input component; step B consumes those exact cells.
++  (let* ((h (rows g)) (w (cols g))
++         (dirs (list (cons -1 0) (cons 0 -1) (cons 1 0) (cons 0 1)))
++         (components (objects g 0))
++         (selected (pick-max components obj-size)))
++    (define (sh? a b) (and (>= a 0) (< a h) (>= b 0) (< b w) (= (cell-at g a b) 5)))
++    (define (in2x2? a b)
++      (for*/or ((da (list -1 0)) (db (list -1 0)))
++        (and (sh? (+ a da 0) (+ b db 0)) (sh? (+ a da 0) (+ b db 1))
++             (sh? (+ a da 1) (+ b db 0)) (sh? (+ a da 1) (+ b db 1)))))
++    (define red (make-hash))
++    (define (add-arm a b da db)
++      (for ((k (list 0 1 2)))
++        (let ((x (+ a (* da k))) (y (+ b (* db k))))
++          (when (sh? x y) (hash-set! red (cons x y) #t)))))
++    (for* ((a (range h)) (b (range w)))
++      (when (sh? a b)
++        (let ((nb (filter (lambda (d) (sh? (+ a (car d)) (+ b (cdr d)))) dirs)))
++          (when (= (length nb) 1)
++            (add-arm a b (car (first nb)) (cdr (first nb)))))))
++    (for* ((a (range h)) (b (range w)))
++      (when (and (sh? a b) (not (in2x2? a b)) (not (hash-has-key? red (cons a b))))
++        (let ((chosen (findf (lambda (d)
++                               (and (sh? (+ a (car d)) (+ b (cdr d)))
++                                    (in2x2? (+ a (car d)) (+ b (cdr d)))))
++                             dirs)))
++          (when chosen (add-arm a b (car chosen) (cdr chosen))))))
++    (grid-from-fn h w
++      (lambda (r c)
++        (if (sh? r c)
++            (if (member (list r c) (obj-cells selected))
++                (if (hash-has-key? red (cons r c)) 2 8)
++                5)
++            (cell-at g r c)))))))
+\ No newline at end of file
+diff --git a/repo/generators/c1b540a1d7b0/workspace/parametric/promotion.json b/repo/generators/c1b540a1d7b0/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/workspace/parametric/promotion.json
+@@ -0,0 +1,24 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/c1b540a1d7b0/workspace/parametric/adapter.py",
++  "parameters": {
++    "component_scope": [
++      "all_components",
++      "largest_component"
++    ]
++  },
++  "default": {
++    "component_scope": "all_components"
++  },
++  "limits": {
++    "demos": [2, 6],
++    "queries": [1, 4]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/c1b540a1d7b0/workspace/parametric/prototype.py",
++    "generators/c1b540a1d7b0/workspace/parametric/canonical.rkt",
++    "generators/c1b540a1d7b0/workspace/parametric/largest-component.rkt",
++    "generators/c1b540a1d7b0/workspace/parametric/audit.py"
++  ]
++}
+diff --git a/repo/generators/c1b540a1d7b0/workspace/parametric/prototype.py b/repo/generators/c1b540a1d7b0/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1b540a1d7b0/workspace/parametric/prototype.py
+@@ -0,0 +1,458 @@
++"""Native finite parametric family for ARC generator c1b540a1d7b0.
++
++``all_components`` is the exact canonical rule: identify straight three-cell
++arms in every gray component, paint arms red (2), and paint the remaining gray
++cells cyan (8). ``largest_component`` first recovers the uniquely largest gray
++component by occupied-cell count, then applies the same room/arm classification
++only to that selected component while leaving the other gray components intact.
++"""
++from __future__ import annotations
++
++import copy
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any, Iterable
++
++TASK_ID = "c1b540a1d7b0"
++PARAMETER_NAME = "component_scope"
++SCOPES = ("all_components", "largest_component")
++DEFAULT_SETTINGS = {PARAMETER_NAME: "all_components"}
++
++_HOME = Path(__file__).resolve().parent
++CANONICAL_PROGRAM = (_HOME / "canonical.rkt").read_text(encoding="utf-8")
++LARGEST_COMPONENT_PROGRAM = (_HOME / "largest-component.rkt").read_text(encoding="utf-8")
++
++SHORTCUTS = (
++    "smallest_component",
++    "first_component",
++    "last_component",
++    "topmost_component",
++    "bottommost_component",
++    "all_red",
++    "all_cyan",
++)
++
++_DIRS = ((-1, 0), (0, -1), (1, 0), (0, 1))
++
++
++def _validate_settings(settings: Any) -> str:
++    if type(settings) is not dict or set(settings) != {PARAMETER_NAME}:
++        raise ValueError(f"settings must contain only {PARAMETER_NAME}")
++    scope = settings[PARAMETER_NAME]
++    if type(scope) is not str or scope not in SCOPES:
++        raise ValueError(f"{PARAMETER_NAME} must be one of {SCOPES}")
++    return scope
++
++
++def _exact_int(value: Any, name: str, low: int, high: int) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++    return value
++
++
++def _validate_grid(grid: Any) -> list[list[int]]:
++    if (
++        type(grid) is not list
++        or not 1 <= len(grid) <= 30
++        or type(grid[0]) is not list
++        or not 1 <= len(grid[0]) <= 30
++    ):
++        raise ValueError("grid must have 1..30 rows and columns")
++    width = len(grid[0])
++    if any(
++        type(row) is not list
++        or len(row) != width
++        or any(type(cell) is not int or cell not in (0, 5) for cell in row)
++        for row in grid
++    ):
++        raise ValueError("grid must be rectangular over colors {0,5}")
++    return grid
++
++
++def program(settings: Any) -> str:
++    scope = _validate_settings(settings)
++    return CANONICAL_PROGRAM if scope == "all_components" else LARGEST_COMPONENT_PROGRAM
++
++
++def counterfactual_program(kind: str = "smallest_component") -> str:
++    if kind != "smallest_component":
++        raise ValueError("only smallest_component is retained")
++    old = "(selected (pick-max components obj-size))"
++    new = "(selected (pick-min components obj-size))"
++    if LARGEST_COMPONENT_PROGRAM.count(old) != 1:
++        raise ValueError("selected-component source guard failed")
++    return LARGEST_COMPONENT_PROGRAM.replace(old, new, 1)
++
++
++def components5(grid: list[list[int]]) -> list[list[tuple[int, int]]]:
++    _validate_grid(grid)
++    h, w = len(grid), len(grid[0])
++    remaining = {(r, c) for r in range(h) for c in range(w) if grid[r][c] == 5}
++    result: list[list[tuple[int, int]]] = []
++    while remaining:
++        first = min(remaining)
++        remaining.remove(first)
++        stack = [first]
++        cells: list[tuple[int, int]] = []
++        while stack:
++            r, c = stack.pop()
++            cells.append((r, c))
++            for dr, dc in _DIRS:
++                point = (r + dr, c + dc)
++                if point in remaining:
++                    remaining.remove(point)
++                    stack.append(point)
++        result.append(sorted(cells))
++    return result
++
++
++def _bbox(cells: Iterable[tuple[int, int]]) -> tuple[int, int, int, int]:
++    cells = list(cells)
++    rows = [r for r, _ in cells]
++    cols = [c for _, c in cells]
++    return min(rows), min(cols), max(rows), max(cols)
++
++
++def largest_component_intermediate(grid: list[list[int]]) -> dict[str, Any]:
++    comps = components5(grid)
++    if len(comps) < 2:
++        raise ValueError("family inputs require at least two gray components")
++    sizes = [len(comp) for comp in comps]
++    if len(sizes) != len(set(sizes)):
++        raise ValueError("family inputs require distinct component sizes")
++    index = max(range(len(comps)), key=lambda i: sizes[i])
++    return {
++        "selected_index": index,
++        "selected_size": sizes[index],
++        "selected_bbox": list(_bbox(comps[index])),
++        "component_sizes": sizes,
++        "selected_cells": [list(cell) for cell in comps[index]],
++    }
++
++
++def _canonical_transform(grid: list[list[int]]) -> list[list[int]]:
++    _validate_grid(grid)
++    h, w = len(grid), len(grid[0])
++
++    def sh(r: int, c: int) -> bool:
++        return 0 <= r < h and 0 <= c < w and grid[r][c] == 5
++
++    def in2x2(r: int, c: int) -> bool:
++        return any(
++            sh(r + dr, c + dc)
++            and sh(r + dr, c + dc + 1)
++            and sh(r + dr + 1, c + dc)
++            and sh(r + dr + 1, c + dc + 1)
++            for dr in (-1, 0)
++            for dc in (-1, 0)
++        )
++
++    red: set[tuple[int, int]] = set()
++
++    def add_arm(r: int, c: int, dr: int, dc: int) -> None:
++        for k in range(3):
++            point = (r + dr * k, c + dc * k)
++            if sh(*point):
++                red.add(point)
++
++    for r in range(h):
++        for c in range(w):
++            if sh(r, c):
++                neighbors = [(dr, dc) for dr, dc in _DIRS if sh(r + dr, c + dc)]
++                if len(neighbors) == 1:
++                    add_arm(r, c, *neighbors[0])
++    for r in range(h):
++        for c in range(w):
++            if sh(r, c) and not in2x2(r, c) and (r, c) not in red:
++                chosen = next(
++                    (
++                        (dr, dc)
++                        for dr, dc in _DIRS
++                        if sh(r + dr, c + dc) and in2x2(r + dr, c + dc)
++                    ),
++                    None,
++                )
++                if chosen is not None:
++                    add_arm(r, c, *chosen)
++    return [
++        [2 if (r, c) in red else (8 if grid[r][c] == 5 else grid[r][c]) for c in range(w)]
++        for r in range(h)
++    ]
++
++
++def _transform_selected(grid: list[list[int]], selected: list[tuple[int, int]]) -> list[list[int]]:
++    canonical = _canonical_transform(grid)
++    selected_set = set(selected)
++    return [
++        [
++            canonical[r][c] if (r, c) in selected_set else grid[r][c]
++            for c in range(len(grid[0]))
++        ]
++        for r in range(len(grid))
++    ]
++
++
++def transform(grid: list[list[int]], settings: Any) -> list[list[int]]:
++    scope = _validate_settings(settings)
++    if scope == "all_components":
++        return _canonical_transform(grid)
++    intermediate = largest_component_intermediate(grid)
++    selected = [tuple(cell) for cell in intermediate["selected_cells"]]
++    return _transform_selected(grid, selected)
++
++
++def _normalise(cells: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
++    cells = list(cells)
++    min_r = min(r for r, _ in cells)
++    min_c = min(c for _, c in cells)
++    return tuple(sorted((r - min_r, c - min_c) for r, c in cells))
++
++
++def _room(cells: set[tuple[int, int]], r: int, c: int) -> None:
++    cells.update({(r, c), (r, c + 1), (r + 1, c), (r + 1, c + 1)})
++
++
++def _templates() -> dict[str, tuple[tuple[int, int], ...]]:
++    result: dict[str, tuple[tuple[int, int], ...]] = {}
++
++    small: set[tuple[int, int]] = set()
++    _room(small, 0, 0)
++    small.update({(0, 2), (0, 3), (0, 4)})
++    result["small"] = _normalise(small)
++
++    medium: set[tuple[int, int]] = set()
++    _room(medium, 3, 3)
++    medium.update({(2, 3), (1, 3), (0, 3)})
++    medium.update({(4, 2), (4, 1), (4, 0)})
++    medium.update({(3, 5), (3, 6), (3, 7)})
++    result["medium"] = _normalise(medium)
++
++    chain2: set[tuple[int, int]] = set()
++    _room(chain2, 3, 3)
++    _room(chain2, 3, 8)
++    chain2.update({(3, 5), (3, 6), (3, 7)})
++    chain2.update({(2, 3), (1, 3), (0, 3)})
++    chain2.update({(5, 9), (6, 9), (7, 9)})
++    chain2.update({(4, 10), (4, 11), (4, 12)})
++    result["chain2"] = _normalise(chain2)
++
++    chain3: set[tuple[int, int]] = set()
++    for c in (3, 8, 13):
++        _room(chain3, 3, c)
++    chain3.update({(3, 5), (3, 6), (3, 7), (3, 10), (3, 11), (3, 12)})
++    chain3.update({(2, 3), (1, 3), (0, 3)})
++    chain3.update({(5, 9), (6, 9), (7, 9)})
++    chain3.update({(4, 15), (4, 16), (4, 17)})
++    chain3.update({(4, 2), (4, 1), (4, 0)})
++    result["chain3"] = _normalise(chain3)
++
++    mega: set[tuple[int, int]] = set()
++    for r in (3, 8):
++        for c in (3, 8, 13):
++            _room(mega, r, c)
++    for r in (3, 8):
++        mega.update({(r, 5), (r, 6), (r, 7), (r, 10), (r, 11), (r, 12)})
++    for c in (3, 8, 13):
++        mega.update({(5, c), (6, c), (7, c)})
++    mega.update({(2, 3), (1, 3), (0, 3)})
++    mega.update({(3, 15), (3, 16), (3, 17)})
++    mega.update({(9, 2), (9, 1), (9, 0)})
++    mega.update({(10, 14), (11, 14), (12, 14)})
++    result["mega"] = _normalise(mega)
++    return result
++
++
++TEMPLATES = _templates()
++
++# (height, width, ((template, row, col), ...))
++DEMO_SCENES = (
++    (16, 26, (("small", 0, 0), ("chain3", 8, 8))),
++    (18, 26, (("chain2", 0, 0), ("small", 11, 21))),
++    (20, 28, (("medium", 0, 20), ("chain3", 12, 0))),
++    (20, 30, (("chain3", 0, 0), ("medium", 12, 22))),
++    (22, 28, (("small", 0, 23), ("chain2", 10, 0), ("medium", 12, 20))),
++    (24, 30, (("chain3", 0, 12), ("chain2", 14, 0), ("small", 20, 25))),
++)
++QUERY_SCENES = (
++    (18, 28, (("chain2", 0, 15), ("small", 13, 0))),
++    (22, 30, (("chain3", 0, 0), ("medium", 13, 22), ("small", 19, 0))),
++    (26, 30, (("medium", 0, 0), ("chain2", 9, 0), ("chain3", 18, 12))),
++    (30, 30, (("mega", 0, 0), ("medium", 15, 0), ("chain3", 22, 12))),
++)
++
++
++def _transform_cells(cells: tuple[tuple[int, int], ...], variant: int) -> tuple[tuple[int, int], ...]:
++    h = max(r for r, _ in cells) + 1
++    w = max(c for _, c in cells) + 1
++    if variant % 4 == 0:
++        changed = cells
++    elif variant % 4 == 1:
++        changed = tuple((r, w - 1 - c) for r, c in cells)
++    elif variant % 4 == 2:
++        changed = tuple((h - 1 - r, c) for r, c in cells)
++    else:
++        changed = tuple((h - 1 - r, w - 1 - c) for r, c in cells)
++    return _normalise(changed)
++
++
++def _scene(seed: int, split: str, index: int) -> list[list[int]]:
++    scenes = DEMO_SCENES if split == "train" else QUERY_SCENES
++    h, w, placements = scenes[index]
++    grid = [[0] * w for _ in range(h)]
++    for part_index, (name, r0, c0) in enumerate(placements):
++        rng = random.Random(f"{TASK_ID}:{seed}:{split}:{index}:{part_index}")
++        cells = _transform_cells(TEMPLATES[name], rng.randrange(4))
++        for dr, dc in cells:
++            r, c = r0 + dr, c0 + dc
++            if not (0 <= r < h and 0 <= c < w):
++                raise RuntimeError(f"{name} placement escaped {h}x{w}")
++            if grid[r][c] != 0:
++                raise RuntimeError("component placement overlap")
++            grid[r][c] = 5
++    comps = components5(grid)
++    if len(comps) != len(placements):
++        raise RuntimeError(f"components touched: expected {len(placements)}, got {len(comps)}")
++    sizes = [len(comp) for comp in comps]
++    if len(sizes) != len(set(sizes)):
++        raise RuntimeError("component sizes must be unique")
++    return grid
++
++
++def sample_inputs(seed: int) -> dict[str, list[list[list[int]]]]:
++    _exact_int(seed, "seed", 0, 2**63 - 1)
++    return {
++        "train": [_scene(seed, "train", i) for i in range(len(DEMO_SCENES))],
++        "test": [_scene(seed, "test", i) for i in range(len(QUERY_SCENES))],
++    }
++
++
++def generate(seed: int, settings: Any, demos: int, queries: int) -> dict[str, Any]:
++    _exact_int(seed, "seed", 0, 2**63 - 1)
++    _exact_int(demos, "demos", 2, 6)
++    _exact_int(queries, "queries", 1, 4)
++    _validate_settings(settings)
++    sampled = sample_inputs(seed)
++    return {
++        "train": [
++            {"input": copy.deepcopy(grid), "output": transform(grid, settings)}
++            for grid in sampled["train"][:demos]
++        ],
++        "test": [
++            {"input": copy.deepcopy(grid), "output": transform(grid, settings)}
++            for grid in sampled["test"][:queries]
++        ],
++        "program_solution": program(settings),
++    }
++
++
++def _select_shortcut(grid: list[list[int]], shortcut: str) -> list[tuple[int, int]]:
++    comps = components5(grid)
++    if shortcut == "smallest_component":
++        return min(comps, key=len)
++    if shortcut == "first_component":
++        return comps[0]
++    if shortcut == "last_component":
++        return comps[-1]
++    if shortcut == "topmost_component":
++        return min(comps, key=lambda c: _bbox(c)[0])
++    if shortcut == "bottommost_component":
++        return max(comps, key=lambda c: _bbox(c)[2])
++    raise ValueError(shortcut)
++
++
++def shortcut_output(grid: list[list[int]], shortcut: str) -> list[list[int]]:
++    if shortcut in {
++        "smallest_component",
++        "first_component",
++        "last_component",
++        "topmost_component",
++        "bottommost_component",
++    }:
++        return _transform_selected(grid, _select_shortcut(grid, shortcut))
++    if shortcut == "all_red":
++        return [[2 if value == 5 else value for value in row] for row in grid]
++    if shortcut == "all_cyan":
++        return [[8 if value == 5 else value for value in row] for row in grid]
++    raise ValueError(f"unknown shortcut: {shortcut}")
++
++
++def lesson_certificate(train: list[dict[str, Any]], query_inputs: list[list[list[int]]]) -> dict[str, Any]:
++    if type(train) is not list or not train:
++        raise ValueError("train must contain demonstrations")
++    if type(query_inputs) is not list or not query_inputs:
++        raise ValueError("query_inputs must contain at least one grid")
++    candidates = [{PARAMETER_NAME: value} for value in SCOPES]
++    survivors: list[dict[str, str]] = []
++    settings_rows: dict[str, dict[str, Any]] = {}
++    for candidate in candidates:
++        predictions = [transform(pair["input"], candidate) for pair in train]
++        fits = all(pred == pair["output"] for pred, pair in zip(predictions, train))
++        key = candidate[PARAMETER_NAME]
++        settings_rows[key] = {
++            "fits_all_demos": fits,
++            "first_eliminating_demo": next(
++                (i for i, (pred, pair) in enumerate(zip(predictions, train)) if pred != pair["output"]),
++                None,
++            ),
++        }
++        if fits:
++            survivors.append(copy.deepcopy(candidate))
++    intended = survivors[0] if len(survivors) == 1 else None
++    surviving_shortcuts: list[str] = []
++    shortcut_rows: dict[str, dict[str, Any]] = {}
++    for shortcut in SHORTCUTS:
++        predictions = [shortcut_output(pair["input"], shortcut) for pair in train]
++        fits = all(pred == pair["output"] for pred, pair in zip(predictions, train))
++        if fits:
++            surviving_shortcuts.append(shortcut)
++        disagreements = None
++        if intended is not None:
++            disagreements = sum(
++                shortcut_output(grid, shortcut) != transform(grid, intended)
++                for grid in query_inputs
++            )
++        shortcut_rows[shortcut] = {
++            "fits_all_demos": fits,
++            "first_eliminating_demo": next(
++                (i for i, (pred, pair) in enumerate(zip(predictions, train)) if pred != pair["output"]),
++                None,
++            ),
++            "query_disagreements": disagreements,
++        }
++    return {
++        "surviving_settings": survivors,
++        "declared_settings": settings_rows,
++        "surviving_shortcuts": surviving_shortcuts,
++        "shortcuts": shortcut_rows,
++        "query_outputs_consulted": False,
++        "scope": "finite two-setting family plus seven named shortcuts; not universal uniqueness",
++    }
++
++
++def public_projection(episode: dict[str, Any]) -> dict[str, Any]:
++    return {
++        "train": [
++            {"input": copy.deepcopy(pair["input"]), "output": copy.deepcopy(pair["output"])}
++            for pair in episode["train"]
++        ],
++        "test": [{"input": copy.deepcopy(pair["input"])} for pair in episode["test"]],
++    }
++
++
++def public_bytes(episode: dict[str, Any]) -> bytes:
++    return (json.dumps(public_projection(episode), sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
++
++
++def public_id(episode: dict[str, Any]) -> str:
++    return hashlib.sha256(public_bytes(episode)).hexdigest()
++
++
++def visible_turn(episode: dict[str, Any], query_index: int) -> dict[str, Any]:
++    _exact_int(query_index, "query_index", 0, len(episode["test"]) - 1)
++    return public_projection({"train": episode["train"], "test": [episode["test"][query_index]]})
++
++
++def visible_turn_bytes(episode: dict[str, Any], query_index: int) -> bytes:
++    return (json.dumps(visible_turn(episode, query_index), sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")

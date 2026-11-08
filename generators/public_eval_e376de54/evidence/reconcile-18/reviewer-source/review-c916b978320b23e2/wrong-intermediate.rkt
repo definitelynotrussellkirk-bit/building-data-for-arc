@@ -1,0 +1,12 @@
+(rule!
+ (let ((dummy 0))
+  (define bg (mode g -1)) (define objs (objects-8 g bg))
+  (define (same? f cells) (all? (lambda (p) (= (f p) (f (first cells)))) cells))
+  (define (dir cells) (cond ((same? first cells) (list 0 1)) ((same? second cells) (list 1 0)) ((same? (lambda (p) (- (first p) (second p))) cells) (list 1 1)) (else (list 1 -1))))
+  (define d (dir (obj-cells (first objs)))) (define (anchor o) (first (sort (obj-cells o) cell<)))
+  (define (offset o) (let ((a (anchor o))) (cond ((equal? d (list 0 1)) (first a)) ((equal? d (list 1 0)) (second a)) ((equal? d (list 1 1)) (- (first a) (second a))) (else (+ (first a) (second a))))))
+  (define (shift delta) (cond ((equal? d (list 0 1)) (list delta 0)) ((equal? d (list 1 0)) (list 0 delta)) ((equal? d (list 1 1)) (list (quotient delta 2) (- (quotient delta 2)))) (else (list (quotient delta 2) (quotient delta 2)))))
+  (define ordered (sort objs (lambda (a b) (< (offset a) (offset b))))) (define central (list-ref ordered (quotient (length ordered) 2))) (define largest (apply max (map obj-size objs)))
+  (define (target o) (let ((s (shift (- (offset o) (offset central))))) (map (lambda (p) (list (+ (first p) (first s)) (+ (second p) (second s)))) (obj-cells central))))
+  (define cleared (for/fold ((out g)) ((o (in-list objs))) (paint-cells out (obj-cells o) bg)))
+  (for/fold ((out cleared)) ((o (in-list objs))) (paint-cells out (target o) (if (= (obj-size o) largest) 9 (obj-color o))))))

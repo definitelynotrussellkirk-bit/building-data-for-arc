@@ -1,0 +1,156 @@
+from __future__ import annotations
+import copy
+import importlib.util
+import json
+from pathlib import Path
+import random
+import pytest
+from reviewer_support import find_root
+
+ROOT = find_root(Path(__file__))
+HOME = ROOT / 'generators/public_eval_b0039139'
+
+def load(name, path):
+    assert path.is_file(), f'Missing implementation: {path.name}'
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+@pytest.fixture
+def gen():
+    return load('b0039139_generator_test', HOME/'generator.py')
+
+@pytest.fixture
+def adapter():
+    return load('b0039139_adapter_test', HOME/'workspace/parametric/adapter.py')
+
+def original_pairs():
+    challenges = json.loads((ROOT/'shared/data/raw/arc-agi_evaluation_challenges.json').read_text())['b0039139']
+    gold = json.loads((ROOT/'shared/data/raw/arc-agi_evaluation_solutions.json').read_text())['b0039139']
+    grid = lambda g: [[int(v) for v in row] for row in g]
+    return [(grid(p['input']), grid(p['output'])) for p in challenges['train']] + [(grid(p['input']), grid(o)) for p,o in zip(challenges['test'],gold)]
+
+@pytest.mark.parametrize('index',range(6))
+def test_original_labels(gen,index):
+    inp,out=original_pairs()[index]
+    assert gen.solve(inp) == out
+    assert gen.self_check(inp) == []
+
+@pytest.mark.parametrize('mode',['canonical','area_parity_relay'])
+@pytest.mark.parametrize('demos',range(2,7))
+@pytest.mark.parametrize('queries',range(1,5))
+def test_counts_prefixes_matched_inputs(adapter,gen,mode,demos,queries):
+    s={'mode':mode}; e=adapter.generate(17,s,demos,queries); f=adapter.generate(17,s,6,4)
+    assert len(e['train'])==demos and len(e['test'])==queries
+    assert e['train']==f['train'][:demos] and e['test']==f['test'][:queries]
+    assert e['program_solution']==adapter.program(s)
+    other=adapter.generate(17,{'mode':'canonical'},demos,queries)
+    for split in ('train','test'):
+        assert [p['input'] for p in e[split]] == [p['input'] for p in other[split]]
+        for p in e[split]:
+            assert gen.self_check(p['input']) == []
+            assert p['output'] == gen.solve(p['input'],mode)
+    inputs=[json.dumps(p['input']) for sp in ('train','test') for p in e[sp]]
+    assert len(set(inputs)) == len(inputs)
+
+@pytest.mark.parametrize('seed',[0,1,17,43,103])
+def test_minimum_teaching_and_boundary(adapter,gen,seed):
+    e=adapter.generate(seed,{'mode':'area_parity_relay'},2,4)
+    assert any(gen.solve(p['input']) != p['output'] for p in e['train'])
+    assert any(len(p['input'])==len(p['input'][0])==30 for p in e['test'])
+    big=next(p for p in e['test'] if len(p['input'])==len(p['input'][0])==30)
+    assert sum(v!=0 for row in big['input'] for v in row) > 350
+    assert any(max(len(p['output']),len(p['output'][0]))==30 for p in e['test'])
+    failures=gen.teaching_failures(e,'area_parity_relay')
+    assert failures == []
+
+@pytest.mark.parametrize('bad',[[[True]],[[1.0]],[[10]],[[-1]],[],[[]],[[0],[0,1]],[[0]*31]])
+def test_invalid_grid(gen,bad):
+    with pytest.raises(ValueError): gen.solve(bad)
+    assert gen.self_check(bad)
+
+@pytest.mark.parametrize('settings',[{}, {'mode':'bad'},{'mode':True},{'mode':'canonical','extra':1}])
+def test_invalid_settings(adapter,settings):
+    with pytest.raises(ValueError): adapter.program(settings)
+
+@pytest.mark.parametrize('demos,queries',[(1,4),(7,4),(True,4),(2,0),(2,5),(2,True),(2,1.0)])
+def test_invalid_counts(adapter,demos,queries):
+    with pytest.raises(ValueError): adapter.generate(0,{'mode':'canonical'},demos,queries)
+
+def test_default_exact_and_no_global_rng(adapter):
+    assert adapter.program({'mode':'canonical'})==(HOME/'reference.rkt').read_text()
+    before=random.getstate(); s={'mode':'canonical'}
+    e=adapter.generate(9,s,2,4)
+    assert random.getstate()==before and s=={'mode':'canonical'}
+    assert e==adapter.generate(9,s,2,4)
+
+def test_public_first_turn_and_private_invariance(adapter):
+    e=adapter.generate(43,{'mode':'area_parity_relay'},3,4)
+    one=adapter.generate(43,{'mode':'area_parity_relay'},3,1)
+    visible=adapter.public_bytes(e,0)
+    assert visible==adapter.public_bytes(one,0)
+    changed=copy.deepcopy(e)
+    changed['program_solution']='secret';changed['settings']={'secret':True}
+    for pair in changed['test']: pair['output']={'secret':True}
+    changed['test'][1:]=[{'invalid_future':True}]
+    assert adapter.public_bytes(changed,0)==visible
+    assert json.loads(visible)=={'train':e['train'],'test':[{'input':e['test'][0]['input']}]}
+    changed['test'][0]['input'][0][0]=(changed['test'][0]['input'][0][0]+1)%10
+    assert adapter.public_bytes(changed,0)!=visible
+
+def test_presentation_not_fixed(adapter):
+    orders={tuple(adapter.generate(i,{'mode':'canonical'},2,4)['query_source_indices']) for i in range(16)}
+    assert len(orders)>5
+    assert any(o[0]!=0 for o in orders)
+
+def test_verifier_rejects_stale_source(tmp_path):
+    import hashlib
+    verify=load('b0039139_verify_test',HOME/'workspace/parametric/verify.py')
+    source=tmp_path/'source.py';source.write_text('a=1\n')
+    binding={'files':[{'path':'source.py','sha256':hashlib.sha256(source.read_bytes()).hexdigest()}]}
+    verify.check_binding(tmp_path,binding)
+    source.write_text('a=2\n')
+    with pytest.raises(ValueError,match='Source binding'): verify.check_binding(tmp_path,binding)
+
+
+def test_literal_reference_authority():
+    from arcpuzzles.review_public_creation import validate_reference_id
+    assert validate_reference_id(HOME/'generator.py','b0039139') == 'ee_b0039139'
+
+
+def test_canonical_resource_is_local(adapter,monkeypatch,tmp_path):
+    # Native packaging retains parametric resources, not arbitrary parent reads.
+    canonical=HOME/'workspace/parametric/canonical.rkt'
+    assert canonical.is_file(), 'Native canonical resource is missing'
+    expected=(HOME/'reference.rkt').read_text()
+    assert canonical.read_text()==expected
+    monkeypatch.setattr(adapter,'HOME',tmp_path/'unavailable-home')
+    assert adapter.program({'mode':'canonical'})==expected
+
+
+def test_shape_changing_causal_difference_counts_extra_cells():
+    verify=load('shape_difference_'+HOME.name,HOME/'workspace/parametric/verify.py')
+    assert hasattr(verify,'grid_difference'), 'Causal audit must account for different output shapes'
+    result=verify.grid_difference([[1,2]],[[1,3],[4,5]])
+    assert result == {'output_shape':[1,2], 'counterfactual_shape':[2,2],
+                      'overlap_changed_cells':1,'missing_or_extra_cells':2,'changed_cells':3}
+    assert verify.grid_difference([[1,2],[3,4]],[[1,2],[3,4]])['changed_cells']==0
+
+
+def test_native_resource_closure_without_parent_reference(tmp_path):
+    import shutil
+    local=tmp_path/'generators'/HOME.name
+    resources=local/'workspace/parametric';resources.mkdir(parents=True)
+    shutil.copy2(HOME/'generator.py',local/'generator.py')
+    for file in (HOME/'workspace/parametric').iterdir():
+        if file.is_file() and file.suffix in ('.py','.rkt','.json'):
+            shutil.copy2(file,resources/file.name)
+    assert not (local/'reference.rkt').exists()
+    local_adapter=load('closed_adapter_'+HOME.name,resources/'adapter.py')
+    contract=json.loads((resources/'promotion.json').read_text())
+    for mode in contract['parameters']['mode']:
+        episode=local_adapter.generate(17,{'mode':mode},2,4)
+        assert len(episode['test'])==4
+        assert episode['program_solution']==local_adapter.program({'mode':mode})
+    assert local_adapter.program(contract['default'])==(HOME/'reference.rkt').read_text()

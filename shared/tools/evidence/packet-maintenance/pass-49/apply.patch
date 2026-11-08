@@ -1,0 +1,290 @@
+--- a/src/arcpuzzles/review_workspace_files/review.py
++++ b/src/arcpuzzles/review_workspace_files/review.py
+@@ -4,11 +4,13 @@
+ 
+ import hashlib
+ import json
++import math
+ import os
+ from pathlib import Path
+ import re
+ import stat
+ import shlex
++import signal
+ import subprocess
+ import sys
+ import tempfile
+@@ -406,8 +408,9 @@
+         print("paths prints resolved command roots and path examples without runtime setup.")
+         return 0
+     if command == "run" and rest in (["--help"], ["-h"]):
+-        print("Usage: python3 review.py run [--receipt checks/NAME/command.json] COMMAND [ARGS...]")
+-        print("--receipt must precede COMMAND; use a new checks/... file relative to WORK.")
++        print("Usage: python3 review.py run [--timeout SECONDS] [--receipt checks/NAME/command.json] COMMAND [ARGS...]")
++        print("--timeout and --receipt must precede COMMAND; use a new checks/... file relative to WORK.")
++        print("--timeout is a positive finite wall-clock budget including runtime setup; expiry kills the process group and exits 124.")
+         print("The launcher selects the packet Racket runtime, then runs COMMAND from WORK/repo.")
+         print("Payload paths are relative to WORK/repo: ../checks/NAME reaches WORK/checks/NAME.")
+         print("Bare python/python3 uses this controller's interpreter; payload options pass through unchanged.")
+@@ -490,12 +493,27 @@
+     else:
+         raise ValueError(f"Unknown command: {command}; run python3 review.py --help")
+     receipt_name = None
+-    if command in {"run", "preview-public"} and rest and rest[0] == "--receipt":
+-        if len(rest) < 3:
+-            raise ValueError(f"Usage: review.py {command} --receipt checks/NAME/command.json COMMAND [ARGS...]")
+-        receipt_name = rest[1]
++    timeout_seconds = None
++    seen_options = set()
++    while command in {"run", "preview-public"} and rest and (
++            rest[0] == "--receipt" or (command == "run" and rest[0] == "--timeout")):
++        option = rest[0]
++        if len(rest) < 3 or option in seen_options:
++            raise ValueError(f"{option} requires one value before COMMAND and must not repeat")
++        seen_options.add(option)
++        if option == "--receipt":
++            receipt_name = rest[1]
++            run_receipt_path(receipt_name)
++        else:
++            try:
++                timeout_seconds = float(rest[1])
++            except ValueError:
++                raise ValueError("--timeout must be positive finite seconds") from None
++            if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
++                raise ValueError("--timeout must be positive finite seconds")
++        rest = rest[2:]
++    if receipt_name is not None:
+         run_receipt_path(receipt_name).parent.mkdir(parents=True, exist_ok=True)
+-        rest = rest[2:]
+     # Bare Python means the environment chosen for this outer wrapper. Explicit
+     # paths and other commands retain the launcher's normal resolution.
+     if command == "run" and rest and rest[0] in {"python", "python3"}:
+@@ -503,9 +521,25 @@
+     delegated = [sys.executable, str(WORK / script), *prefix, *rest]
+     started = time.monotonic()
+     delegated_cwd = WORK / "repo" if command == "preview-public" else WORK
+-    result = subprocess.run(delegated, cwd=delegated_cwd)
++    timed_out = False
++    if timeout_seconds is None:
++        result = subprocess.run(delegated, cwd=delegated_cwd)
++    else:
++        with subprocess.Popen(delegated, cwd=delegated_cwd, start_new_session=True) as child:
++            try:
++                returncode = child.wait(timeout=timeout_seconds)
++            except subprocess.TimeoutExpired:
++                timed_out = True
++                try:
++                    os.killpg(child.pid, signal.SIGKILL)
++                except ProcessLookupError:
++                    pass
++                child.wait()
++                returncode = 124
++            result = subprocess.CompletedProcess(delegated, returncode)
+     if receipt_name is not None:
+-        row = dict(schema="arcpuzzles-run-command-v1", status="completed",
++        row = dict(schema="arcpuzzles-run-command-v1", status="timed_out" if timed_out else "completed",
++                   timeout_seconds=timeout_seconds, timed_out=timed_out,
+                    invocation=invocation, delegated=dict(argv=delegated, cwd=str(delegated_cwd)),
+                    payload=dict(argv=delegated if command == "preview-public" else rest,
+                                 expected_cwd=str(WORK / "repo")),
+--- a/src/arcpuzzles/review_witness.py
++++ b/src/arcpuzzles/review_witness.py
+@@ -246,7 +246,39 @@
+             'task_id': q['task_id'], 'instructions': 'Fill descriptions, intermediate_value and standalone counterfactual_program; then build.'}
+ 
+ 
+-def _cases(recipe, execution):
++def _counterfactual(row, root):
++    if 'counterfactual_program_path' not in row:
++        return row.get('counterfactual_program')
++    if row.get('counterfactual_program') not in (None, ''):
++        raise ValueError('Choose counterfactual_program or counterfactual_program_path, not both')
++    name = row['counterfactual_program_path']
++    expected = row.get('counterfactual_program_sha256')
++    if (not isinstance(expected, str) or len(expected) != 64
++            or any(c not in '0123456789abcdef' for c in expected)):
++        raise ValueError('counterfactual_program_path requires its exact counterfactual_program_sha256')
++    if not isinstance(name, str) or not name or root is None:
++        raise ValueError('counterfactual_program_path requires a nonempty library-relative path')
++    relative = Path(name)
++    if relative.is_absolute() or '..' in relative.parts:
++        raise ValueError('counterfactual_program_path must stay inside the library')
++    path = Path(root).resolve()
++    for part in relative.parts:
++        path = path / part
++        if path.is_symlink():
++            raise ValueError('counterfactual_program_path must not contain symlinks')
++    if not path.is_file() or path.stat().st_size > 100000:
++        raise ValueError('counterfactual_program_path must be a regular file of at most 100000 bytes')
++    with path.open('rb') as handle:
++        raw = handle.read(100001)
++    if len(raw) > 100000 or hashlib.sha256(raw).hexdigest() != expected:
++        raise ValueError('counterfactual program file differs from its expected SHA-256 or size limit')
++    try:
++        return raw.decode('utf-8')
++    except UnicodeError as exc:
++        raise ValueError('counterfactual program file must be UTF-8') from exc
++
++
++def _cases(recipe, execution, *, root=None):
+     rows = recipe.get('cases')
+     if not isinstance(rows, list) or not 1 <= len(rows) <= 16:
+         raise ValueError('Recipe requires 1..16 cases')
+@@ -261,7 +293,7 @@
+         split = row.get('split')
+         if split not in ('train', 'test') or type(pair_index) is not int or not 0 <= pair_index < len(episode[split]):
+             raise ValueError('split/pair_index must select a qualified pair')
+-        program = row.get('counterfactual_program')
++        program = _counterfactual(row, root)
+         if not isinstance(program, str) or not program.strip() or len(program.encode()) > 100000:
+             raise ValueError('counterfactual_program must be nonempty bounded Racket text')
+         if row.get('ablation') not in {'skip_a', 'wrong_intermediate', 'wrong_order'}:
+@@ -271,6 +303,7 @@
+         pair = episode[split][pair_index]
+         cases.append(dict(input=pair['input'], output=pair['output'], settings=episode['settings'],
+                           program=episode['program'], counterfactual_program=program,
++                          counterfactual_program_sha256=_sha_text(program),
+                           intermediate_value=row['intermediate_value'], ablation=row['ablation'],
+                           qualified_case=dict(episode_index=index, split=split, pair_index=pair_index)))
+     return deepcopy(cases)
+@@ -348,7 +381,7 @@
+     output = _fresh(output)
+     q, execution = _receipt(root, qualification, public_preflight)
+     descriptions = _descriptions(recipe)
+-    constructed = _execute(root, _cases(recipe, execution), timeout)
++    constructed = _execute(root, _cases(recipe, execution, root=root), timeout)
+     witness = {'schema': 'arcpuzzles-sequential-dependency-witness-v1',
+                'source_binding': q['source_binding'], **descriptions,
+                'racket': {'backend': 'racket', 'protected': True},
+--- a/src/arcpuzzles/review_full_packet_files/PARAMETRIC-RULES.md
++++ b/src/arcpuzzles/review_full_packet_files/PARAMETRIC-RULES.md
+@@ -122,6 +122,9 @@
+   --out ../checks/TASK/witness-recipe.json
+ # Fill the four descriptions and each case's intermediate_value,
+ # counterfactual_program (standalone Racket text), and ablation in that recipe.
++# Alternatively use counterfactual_program_path (relative to WORK/repo) and
++# counterfactual_program_sha256 (exact file SHA-256); leave inline text empty.
++# Build embeds the UTF-8 bytes and hash; later replay does not need that file.
+ python3 review.py run python3 -m arcpuzzles.review_witness build \
+   --qualification ../checks/TASK/qualification/qualification.json \
+   --recipe ../checks/TASK/witness-recipe.json --out ../checks/TASK/causal
+--- a/tests/test_review_run_receipt.py
++++ b/tests/test_review_run_receipt.py
+@@ -158,3 +158,43 @@
+         cwd=packet.parent, text=True, capture_output=True, timeout=10)
+     assert result.returncode == 2
+     assert 'CHILD RAN' not in result.stdout
++
++
++@pytest.mark.parametrize('options', [
++    ['--timeout', '2', '--receipt', 'checks/bounded.json'],
++    ['--receipt', 'checks/bounded.json', '--timeout', '2'],
++])
++def test_explicit_timeout_preserves_payload_arguments_and_records_budget(packet, options):
++    result = invoke(packet, [*options, sys.executable, '-c',
++                            'import sys; print(sys.argv[1:])', '--timeout', 'payload-value'])
++    assert result.returncode == 0, result.stderr
++    assert "['--timeout', 'payload-value']" in result.stdout
++    row = json.loads((packet / 'WORK/checks/bounded.json').read_text())
++    assert row['timeout_seconds'] == 2
++    assert row['timed_out'] is False
++
++
++@pytest.mark.parametrize('budget', ['0', '-1', 'nan', 'inf', 'nonsense'])
++def test_invalid_timeout_never_launches_payload(packet, budget):
++    result = invoke(packet, ['--timeout', budget, sys.executable, '-c', 'print("CHILD RAN")'])
++    assert result.returncode == 2
++    assert 'CHILD RAN' not in result.stdout
++    assert 'timeout' in result.stderr.lower()
++
++
++def test_timeout_receipt_and_group_cleanup(packet):
++    probe = ('import subprocess, sys, time; '
++             'subprocess.Popen([sys.executable, "-c", '
++             '"import time; from pathlib import Path; time.sleep(1); Path(\'late-child\').write_text(\'bad\')"]); '
++             'print("started", flush=True); time.sleep(10)')
++    result = invoke(packet, ['--timeout', '0.3', '--receipt', 'checks/timeout.json', sys.executable, '-c', probe])
++    assert result.returncode == 124, result.stderr
++    assert 'started' in result.stdout
++    row = json.loads((packet / 'WORK/checks/timeout.json').read_text())
++    assert row['status'] == 'timed_out'
++    assert row['timed_out'] is True
++    assert row['timeout_seconds'] == 0.3
++    assert row['returncode'] == 124
++    import time
++    time.sleep(1.1)
++    assert not (packet / 'WORK/repo/late-child').exists()
+--- /dev/null
++++ b/tests/test_review_witness_program_file.py
+@@ -0,0 +1,71 @@
++"""Hashed recipe files become self-contained witness program strings."""
++from copy import deepcopy
++import hashlib
++import pytest
++from arcpuzzles.review_witness import _cases
++
++
++def fixture(root):
++    raw = b'(rule! (lambda (g) g))\r\n'
++    path = root / 'generators/task/workspace/alternate.rkt'
++    path.parent.mkdir(parents=True)
++    path.write_bytes(raw)
++    recipe = {'cases': [dict(episode_index=0, split='test', pair_index=0,
++        counterfactual_program_path='generators/task/workspace/alternate.rkt',
++        counterfactual_program_sha256=hashlib.sha256(raw).hexdigest(),
++        intermediate_value=[[2, 1]], ablation='wrong_order')]}
++    execution = {'episodes': [dict(settings={}, program='(rule! (flip-lr g))',
++        train=[], test=[{'input': [[1, 2]], 'output': [[2, 1]]}])]}
++    return raw, path, recipe, execution
++
++
++def test_copies_exact_bytes_and_hash_then_no_longer_needs_file(tmp_path):
++    raw, path, recipe, execution = fixture(tmp_path)
++    cases = _cases(recipe, execution, root=tmp_path)
++    path.unlink()
++    assert cases[0]['counterfactual_program'].encode() == raw
++    assert cases[0]['counterfactual_program_sha256'] == hashlib.sha256(raw).hexdigest()
++    assert 'counterfactual_program_path' not in cases[0]
++
++
++@pytest.mark.parametrize('change', ['hash', 'missing_hash', 'absolute', 'traversal', 'symlink', 'ambiguous', 'oversize', 'bad_utf8'])
++def test_rejects_unbound_or_unsafe_program_files(tmp_path, change):
++    raw, path, recipe, execution = fixture(tmp_path)
++    case = recipe['cases'][0]
++    if change == 'hash': case['counterfactual_program_sha256'] = '0' * 64
++    if change == 'missing_hash': case.pop('counterfactual_program_sha256')
++    if change == 'absolute': case['counterfactual_program_path'] = str(path)
++    if change == 'traversal': case['counterfactual_program_path'] = '../outside.rkt'
++    if change == 'symlink':
++        saved = path.with_suffix('.saved'); path.rename(saved); path.symlink_to(saved)
++    if change == 'ambiguous': case['counterfactual_program'] = '(rule! g)'
++    if change in ('oversize', 'bad_utf8'):
++        raw = b'x' * 100001 if change == 'oversize' else b'\xff'
++        path.write_bytes(raw); case['counterfactual_program_sha256'] = hashlib.sha256(raw).hexdigest()
++    with pytest.raises(ValueError):
++        _cases(recipe, execution, root=tmp_path)
++
++
++from test_review_witness import qualified, recipe as witness_recipe
++from test_parametric_promotion import candidate
++from test_review_sequential_replay import runtime
++
++
++def test_file_program_survives_source_deletion_and_protected_replay(qualified, tmp_path):
++    from arcpuzzles.review_witness import build_witness, check_witness
++    import json
++    root, qualification = qualified
++    draft = witness_recipe()
++    raw = draft['cases'][0].pop('counterfactual_program').encode() + b'\r\n'
++    path = root / 'alternate.rkt'; path.write_bytes(raw)
++    draft['cases'][0].update(counterfactual_program_path='alternate.rkt',
++        counterfactual_program_sha256=hashlib.sha256(raw).hexdigest())
++    built = tmp_path / 'file-built'
++    result = build_witness(root, qualification, draft, built)
++    assert result['status'] == 'reviewer_replayed'
++    path.unlink()
++    witness = json.loads((built / 'witness.json').read_bytes())
++    assert witness['cases'][0]['counterfactual_program'].encode() == raw
++    result = check_witness(root, qualification, built / 'witness.json', tmp_path / 'file-replayed.json')
++    assert result['status'] == 'reviewer_replayed'
++    assert result['training_admitted'] is False

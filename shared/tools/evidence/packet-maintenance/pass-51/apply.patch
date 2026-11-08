@@ -1,0 +1,187 @@
+--- a/src/arcpuzzles/review_workspace_files/review.py
++++ b/src/arcpuzzles/review_workspace_files/review.py
+@@ -413,7 +413,7 @@
+         print("--timeout is a positive finite wall-clock budget including runtime setup; expiry kills the process group and exits 124.")
+         print("The launcher selects the packet Racket runtime, then runs COMMAND from WORK/repo.")
+         print("Payload paths are relative to WORK/repo: ../checks/NAME reaches WORK/checks/NAME.")
+-        print("Bare python/python3 uses this controller's interpreter; payload options pass through unchanged.")
++        print("Bare python/python3 uses this controller's interpreter; bare arcpuzzles uses that interpreter with -m arcpuzzles.")
+         print("Example: python3 review.py run --receipt checks/probe/command.json python3 generators/TASK/tests/probe.py")
+         print("Receipts record launcher exit status, not semantic validation; help starts no runtime.")
+         return 0
+@@ -514,10 +514,12 @@
+         rest = rest[2:]
+     if receipt_name is not None:
+         run_receipt_path(receipt_name).parent.mkdir(parents=True, exist_ok=True)
+-    # Bare Python means the environment chosen for this outer wrapper. Explicit
++    # Bare Python and arcpuzzles use this outer wrapper's environment. Explicit
+     # paths and other commands retain the launcher's normal resolution.
+     if command == "run" and rest and rest[0] in {"python", "python3"}:
+         rest = [sys.executable, *rest[1:]]
++    elif command == "run" and rest and rest[0] == "arcpuzzles":
++        rest = [sys.executable, "-m", "arcpuzzles", *rest[1:]]
+     delegated = [sys.executable, str(WORK / script), *prefix, *rest]
+     started = time.monotonic()
+     delegated_cwd = WORK / "repo" if command == "preview-public" else WORK
+--- a/src/arcpuzzles/review_witness.py
++++ b/src/arcpuzzles/review_witness.py
+@@ -56,7 +56,11 @@
+                 or q.get('verification_status') != 'authoring_preflight_not_owner_qualification'):
+             raise ValueError('Invalid base authoring preflight receipt')
+     elif q.get('schema') != native.QUALIFICATION or q.get('status') != 'qualified':
+-        raise ValueError('Expected native qualified receipt')
++        from .review_public_creation import PREFLIGHT
++        if q.get('schema') == PREFLIGHT:
++            raise ValueError('Expected native qualified receipt or base authoring receipt with --qualification; '
++                             'public-evaluation creation receipts require --public-preflight')
++        raise ValueError('Expected native qualified receipt or base authoring receipt with --qualification')
+     execution_path = path.with_name('execution.json')
+     if q.get('execution') != {'path': 'execution.json', 'sha256': _sha(execution_path)}:
+         raise ValueError('Qualification execution hash/path differs')
+@@ -89,6 +93,12 @@
+             raise ValueError('Public preflight evidence must be regular files without symlinks')
+         return member.read_bytes()
+     q = json.loads(evidence(path))
++    if q.get('schema') != PREFLIGHT:
++        from .review_base_preflight import SCHEMA as AUTHORING_SCHEMA
++        if q.get('schema') in {AUTHORING_SCHEMA, native.QUALIFICATION}:
++            raise ValueError(f"Receipt schema {q['schema']} requires --qualification; "
++                             '--public-preflight is only for public-evaluation creation receipts')
++        raise ValueError('Expected public authoring preflight, not owner qualification')
+     tid = q['task_id']; item = q['public_creation']
+     if (q.get('schema') != PREFLIGHT or q.get('status') != 'passed'
+             or q.get('verification_status') != 'authoring_preflight_not_owner_qualification'
+@@ -423,8 +433,8 @@
+     for name in ('template', 'build', 'check'):
+         command = actions.add_parser(name)
+         source = command.add_mutually_exclusive_group(required=True)
+-        source.add_argument('--qualification', type=Path)
+-        source.add_argument('--public-preflight', type=Path, help='Explicit unapproved public authoring receipt')
++        source.add_argument('--qualification', type=Path, help='Native qualification or review_base_preflight receipt (including unapproved bases)')
++        source.add_argument('--public-preflight', type=Path, help='Only public-evaluation creation preflight receipts; not review_base_preflight')
+         if name == 'build':
+             command.add_argument('--out', '--out-dir', dest='out', type=Path, required=True,
+                                  metavar='DIR', help='new directory for witness.json and replay.json')
+--- a/src/arcpuzzles/review_full_packet_files/preview_public.py
++++ b/src/arcpuzzles/review_full_packet_files/preview_public.py
+@@ -4,7 +4,7 @@
+ --qualification ../checks/NAME/qualification.json --out ../checks/preview``;
+ use ``review.py preview-public verify --bundle ../checks/preview``
+ to check a saved projection. Unregistered public authors use
+-``--public-preflight checks/TASK/preflight/preflight.json`` instead of
++``--public-preflight ../checks/TASK/preflight/preflight.json`` instead of
+ ``--qualification``; this retains authoring-only status. Only one ``public/<sha256>.json`` is a model turn.
+ The bundle, its directory listing, and all of ``private/`` belong to the caller;
+ they contain future queries, order, labels, and source metadata. This module
+@@ -242,8 +242,8 @@
+     commands = parser.add_subparsers(dest="command", required=True)
+     export = commands.add_parser("export")
+     source = export.add_mutually_exclusive_group(required=True)
+-    source.add_argument("--qualification", type=Path)
+-    source.add_argument("--public-preflight", type=Path, help="Unapproved public-authoring receipt; no owner qualification")
++    source.add_argument("--qualification", type=Path, help="Native qualification or review_base_preflight receipt (including unapproved bases)")
++    source.add_argument("--public-preflight", type=Path, help="Only public-evaluation creation preflight receipts; not review_base_preflight")
+     export.add_argument("--out", type=Path, required=True)
+     export.add_argument("--presentation-seed", type=int, default=0)
+     verify = commands.add_parser("verify")
+--- a/shared/tools/README.md
++++ b/shared/tools/README.md
+@@ -37,6 +37,19 @@
+ direct library ancestor wins. It does not inspect cwd, `ARCPUZZLES_HOME`,
+ arbitrary siblings, or escaping repository/ledger symlinks. Scripts under other
+ layouts still need an explicit supported repository root.
++
++In an extracted packet, `review.py run arcpuzzles ...` uses the launcher's
++Python interpreter with `-m arcpuzzles`, so no installed console script is
++required. Explicit executable paths keep their normal behavior. The launcher
++receipt retains the original invocation and the actual module command.
++
++For witness and preview helpers, choose the flag by the receipt type:
++`review_base_preflight` produces `qualification.json` and uses `--qualification`,
++including for unapproved bases. Native qualification also uses `--qualification`.
++Only public-evaluation creation's `preflight.json` uses `--public-preflight`.
++Payload paths are relative to `WORK/repo`, for example
++`--qualification ../checks/TASK/qualification/qualification.json`.
++These flags retain the existing source validation and approval boundaries.
+ 
+ For concise authoring coverage, `python3 -m arcpuzzles.review_base_preflight`
+ prints job/setting counts, parametric labelled-pair counts, canonical base-pair
+--- /dev/null
++++ b/tests/test_review_cli_friction.py
+@@ -0,0 +1,76 @@
++"""Portable launcher and receipt-kind diagnostics preserve explicit boundaries."""
++import json
++import sys
++
++import pytest
++
++from arcpuzzles import review_witness as witness
++from arcpuzzles.review_base_preflight import SCHEMA as BASE
++from arcpuzzles.parametric_promotion import QUALIFICATION
++from arcpuzzles.review_public_creation import PREFLIGHT as PUBLIC
++from test_review_qualified_projection import EXPORTER
++from test_review_run_receipt import packet, invoke
++
++
++def test_bare_arcpuzzles_uses_controller_module_and_records_actual_argv(packet, monkeypatch):
++    package = packet/'WORK/repo/src/arcpuzzles'
++    package.mkdir(parents=True)
++    (package/'__init__.py').write_text('')
++    (package/'__main__.py').write_text('import sys,json; print(json.dumps([sys.executable,sys.argv[1:]])); raise SystemExit(7)')
++    monkeypatch.setenv('PATH', '')
++    result = invoke(packet, ['--receipt', 'checks/module.json', 'arcpuzzles', 'parametric', 'manifest', '--help'])
++    assert result.returncode == 7, result.stderr
++    assert json.loads(result.stdout) == [sys.executable, ['parametric', 'manifest', '--help']]
++    row = json.loads((packet/'WORK/checks/module.json').read_text())
++    assert row['payload']['argv'] == [sys.executable, '-m', 'arcpuzzles', 'parametric', 'manifest', '--help']
++    assert 'arcpuzzles' in row['invocation']['argv']
++
++
++def test_explicit_arcpuzzles_executable_is_not_rewritten(packet):
++    executable = packet/'custom-arcpuzzles'
++    executable.write_text(f'#!{sys.executable}\nprint("explicit executable")\n')
++    executable.chmod(0o755)
++    result = invoke(packet, [str(executable), '--help'])
++    assert result.returncode == 0 and result.stdout.strip() == 'explicit executable'
++
++
++@pytest.mark.parametrize('tool', ['witness', 'preview'])
++@pytest.mark.parametrize('schema', [BASE, QUALIFICATION])
++def test_wrong_public_flag_explains_correct_base_or_native_flag(tool, schema, tmp_path, capsys):
++    receipt = tmp_path/'qualification.json'
++    receipt.write_text(json.dumps({'schema': schema, 'task_id': 'fixture'}))
++    (tmp_path/'execution.json').write_text('{}')
++    output = tmp_path/'output'
++    before = receipt.read_bytes()
++    if tool == 'witness':
++        result = witness.main(['--library', str(tmp_path), 'template', '--public-preflight', str(receipt), '--out', str(output)])
++    else:
++        result = EXPORTER.main(['export', '--public-preflight', str(receipt), '--out', str(output)])
++    assert result == 1
++    error = capsys.readouterr().err
++    assert '--qualification' in error and '--public-preflight' in error
++    assert schema in error
++    assert receipt.read_bytes() == before and not output.exists()
++
++
++@pytest.mark.parametrize('tool', ['witness', 'preview'])
++def test_wrong_qualification_flag_names_public_creation_mode(tool, tmp_path, capsys):
++    receipt = tmp_path/'preflight.json'
++    receipt.write_text(json.dumps({'schema': PUBLIC}))
++    (tmp_path/'execution.json').write_text('{}')
++    output = tmp_path/'out'
++    args = ['--qualification', str(receipt), '--out', str(output)]
++    result = witness.main(['template', *args]) if tool == 'witness' else EXPORTER.main(['export', *args])
++    assert result == 1
++    assert '--public-preflight' in capsys.readouterr().err
++    assert not output.exists()
++
++
++@pytest.mark.parametrize('tool', ['witness', 'preview'])
++def test_receipt_help_distinguishes_base_from_public_creation(tool, capsys):
++    with pytest.raises(SystemExit) as status:
++        witness.main(['template', '--help']) if tool == 'witness' else EXPORTER.main(['export', '--help'])
++    assert status.value.code == 0
++    output = capsys.readouterr().out
++    assert 'review_base_preflight' in output
++    assert 'public-evaluation creation' in output

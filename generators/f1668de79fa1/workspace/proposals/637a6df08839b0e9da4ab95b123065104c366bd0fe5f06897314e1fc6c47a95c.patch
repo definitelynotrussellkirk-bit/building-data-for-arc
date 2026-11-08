@@ -1,0 +1,996 @@
+diff --git a/repo/generators/f1668de79fa1/SUMMARY.md b/repo/generators/f1668de79fa1/SUMMARY.md
+--- a/repo/generators/f1668de79fa1/SUMMARY.md
++++ b/repo/generators/f1668de79fa1/SUMMARY.md
+@@ -1,6 +1,10 @@
+ # f1668de79fa1
+ 
+-0-bg grid with one connected color-2 template (3-6 cells, asymmetric under horizontal mirror) and exactly one color-1 marker cell. Rule: compute the template's cell offsets relative to its bbox top-left, apply HORIZONTAL MIRROR (flip-lr) to those offsets, then on a FRESH 0-grid paint color 8 at every (marker_r + dr, marker_c + dc) for transformed offset (dr, dc). Cells outside the grid are silently dropped. Output is a fresh grid containing only the mirrored stamp; original template and marker do NOT appear in the output.
++A 0-background grid contains one connected color-2 template of 4–7 cells and one color-1 anchor. The template is normalized to its tight bounding box, reflected left-to-right, recolored 8, and stamped on a fresh 0-grid with the anchor as the stamp bounding-box top-left. The original template and anchor do not remain in the output.
+ 
+-Kind: `per_puzzle`. Imported version: `1.4.0`.
++The production schedule includes canonical 8×13, 8×14, and 9×14 profiles in every difficulty band, plus repeated five-cell templates that are asymmetric under both left-right and up-down reflection. Those five-cell cases distinguish the canonical rule from the canonical-fitting shortcut “rotate 180° for five-cell templates, otherwise reflect left-to-right.”
++
++Exact controls: `grid_h=8..15`, `grid_w=13..18`, and `template_size=4..7`. All joint combinations are supported.
++
++Kind: `per_puzzle`. Current version: `2.0.0`. Canonical `RULE_HASH`: `6fbd99546842`.
+ Approval is derived by the catalog from current code and retained evidence.
+diff --git a/repo/generators/f1668de79fa1/generator.py b/repo/generators/f1668de79fa1/generator.py
+--- a/repo/generators/f1668de79fa1/generator.py
++++ b/repo/generators/f1668de79fa1/generator.py
+@@ -1,258 +1,386 @@
+ """Generator for arc_puzzle_bank_21_set15:S15_E3.
+ 
+-Rule: a color-2 template is horizontally mirrored and stamped at a
+-single color-1 marker.
+-
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, palette_size,
+-position_bias, n_distinct_colors, density, texture.
+-Degenerates: no_template (no color-2 shape → rule has no source);
+-no_marker (template present but no color-1 → rule has no
+-destination); lr_symmetric_template (template invariant under
+-hmirror → mirrored stamp identical to original, no contrast).
++A connected color-2 template is normalized to its tight bounding box, reflected
++left-to-right, recolored 8, and stamped on a fresh background at the single
++color-1 marker.  The sampler deliberately alternates five-cell discriminator
++cases with other template sizes: the public canonical pairs also admit the
++plausible shortcut "rotate 180 degrees when the template has five cells", so a
++training lesson must contain generated five-cell shapes that are not vertically
++symmetric.
+ """
+ from __future__ import annotations
+ 
++from copy import deepcopy
++
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "f1668de79fa1"
+-VERSION = "1.4.0"  # random LR-asymmetric polyominoes + bigger grids (was 12 curated shapes, 8-13 grid)
+-TASK_ID = "f1668de79fa1"
++TASK_ID = GENERATOR_ID
++RULE_HASH = "6fbd99546842"
++VERSION = "2.0.0"
+ SUMMARY = (
+-    "0-bg grid with one connected color-2 template (3-6 cells, "
+-    "asymmetric under horizontal mirror) and exactly one color-1 "
+-    "marker cell. Rule: compute the template's cell offsets relative "
+-    "to its bbox top-left, apply HORIZONTAL MIRROR (flip-lr) to those "
+-    "offsets, then on a FRESH 0-grid paint color 8 at every "
+-    "(marker_r + dr, marker_c + dc) for transformed offset (dr, dc). "
+-    "Cells outside the grid are silently dropped. Output is a fresh "
+-    "grid containing only the mirrored stamp; original template and "
+-    "marker do NOT appear in the output."
++    "A 0-background grid contains one connected LR-asymmetric color-2 template "
++    "of 4..7 cells and one color-1 anchor. Normalize the template to its tight "
++    "bbox, reflect it left-to-right, and paint that shape in color 8 on a fresh "
++    "0-grid with the anchor as the bbox top-left."
+ )
+ 
+-# Rivals: 'output is input' refuted by demos (output has only 8s).
+-# 'identity stamp (no mirror)' refuted by demos with an LR-asymmetric
+-# template — the mirrored shape is visibly distinct from the original.
+-# 'rotation instead of mirror' refuted by demos where the stamp is
+-# specifically the LR mirror (different from rot-cw/ccw). 'flip-ud
+-# instead of flip-lr' refuted by demos. 'preserve template color (2)'
+-# refuted by demos showing stamp is 8. 'stamp at template position,
+-# not marker' refuted by demos with marker far from template.
+-# 4 demos with varied asymmetric shapes pin flip-lr.
+ EXAMPLES_NEEDED = 4
++MIN_STRICT_FRAC = 1.0
+ 
+ INVARIANTS = [
+-    "background is 0",
+-    "exactly one connected color-2 template (3-6 cells)",
+-    "template is NOT LR-symmetric (so flip-lr is distinguishable from identity)",
+-    "template is NOT UD-symmetric (so flip-lr is distinguishable from flip-ud)",
+-    "exactly one color-1 marker cell, NOT overlapping the template",
+-    "the mirrored stamp has ≥1 cell that lands in-bounds",
++    "cells are literal ARC colors 0, 1, or 2",
++    "exactly one connected color-2 template of 4..7 cells",
++    "the normalized template is asymmetric under left-right reflection",
++    "exactly one color-1 marker",
++    "the complete reflected stamp fits in the grid",
+ ]
+ 
+-PALETTE_KINDS = ("default", "warm", "cool", "varied")
+-DEGENERATE_TEXTURES = ("no_template", "no_marker", "lr_symmetric_template")
+-HELPFUL_TEXTURES = PALETTE_KINDS
+-
+ AXES = {
+-    "grid_h":            {"type": "int", "default": "rng 8..11", "valid": "6..14"},
+-    "grid_w":            {"type": "int", "default": "rng 10..13", "valid": "8..16"},
+-    "palette_kind":      {"type": "str", "default": "rng helpful",
+-                          "valid": "|".join(PALETTE_KINDS)},
+-    "palette_size":      {"type": "int", "default": "rng 2..2", "valid": "2..2"},
+-    "position_bias":     {"type": "str", "default": "template_with_marker",
+-                          "valid": "template_with_marker"},
+-    "n_distinct_colors": {"type": "int", "default": "rng 2..2", "valid": "2..2"},
+-    "density":           {"type": "str", "default": "sparse", "valid": "sparse"},
+-    "texture":           {"type": "str", "default": "alias for palette_kind",
+-                          "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "grid_h": {"type": "int", "default": "scheduled 8..12", "valid": "8..15"},
++    "grid_w": {"type": "int", "default": "scheduled 13..17", "valid": "13..18"},
++    "template_size": {"type": "int", "default": "scheduled 4..7", "valid": "4..7"},
+ }
+-
+-_SHAPES = [
+-    [(0, 0), (1, 0), (2, 0), (2, 1)],                       # L-tetromino
+-    [(0, 0), (0, 1), (1, 1), (2, 1)],                       # mirrored L
+-    [(0, 0), (1, 0), (1, 1), (1, 2)],                       # T-rotated
+-    [(0, 1), (1, 1), (2, 0), (2, 1)],                       # J-tetromino
+-    [(0, 0), (1, 0), (1, 1), (2, 1)],                       # S-tetromino
+-    [(0, 0), (0, 1), (1, 0), (1, 1), (2, 0)],               # P-5 left
+-    [(0, 0), (0, 1), (1, 1), (1, 2), (2, 2)],               # zigzag-5
+-    [(0, 0), (1, 0), (1, 1), (1, 2), (2, 2)],               # corner-5
+-    [(0, 0), (0, 1), (0, 2), (1, 0)],                       # J-tetromino flat
+-    [(0, 0), (0, 1), (0, 2), (1, 2)],                       # L-tetromino flat
+-    [(0, 0), (1, 0), (2, 0), (3, 0), (3, 1)],               # L-5 tall
+-    [(0, 0), (0, 1), (0, 2), (1, 1), (2, 1)],               # T-down-tall
+-]
++INCOMPATIBLE_OVERRIDE_COMBINATIONS = []
++
++# Three of every six profiles are explicit five-cell discriminator cases.  Thus
++# every consecutive five-pair lesson has at least two such cases, so holding out
++# any one pair still leaves a demonstration that refutes the declared shortcut.
++_PROFILE_ROWS = (
++    ("canonical_8x13_k5", 8, 13, 5),
++    ("canonical_8x14_k4", 8, 14, 4),
++    ("canonical_9x14_k5", 9, 14, 5),
++    ("expanded_10x15_k6", 10, 15, 6),
++    ("canonical_8x14_k5", 8, 14, 5),
++    ("expanded_12x17_k7", 12, 17, 7),
++)
++SCHEDULE_PROFILES = tuple(row[0] for row in _PROFILE_ROWS)
++_BAND_SHIFT = {None: 0, "easy": 0, "medium": 1, "hard": 2}
++
++# Deterministic emergency shapes preserve requested size and both asymmetries.
++_FALLBACK_SHAPES = {
++    4: ((0, 0), (1, 0), (2, 0), (2, 1)),
++    5: ((0, 0), (1, 0), (2, 0), (2, 1), (2, 2)),
++    6: ((0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (3, 2)),
++    7: ((0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (3, 2), (3, 3)),
++}
++
++
++def _validate_difficulty(difficulty):
++    if difficulty not in _BAND_SHIFT:
++        raise ValueError("difficulty must be one of None, easy, medium, hard")
++
++
++def schedule_profile(seed, sample_index, difficulty=None):
++    """Name the exact default profile selected for a production draw."""
++    del seed  # schedule is intentionally indexed, not seed-aliased
++    _validate_difficulty(difficulty)
++    return SCHEDULE_PROFILES[(sample_index + _BAND_SHIFT[difficulty]) % len(SCHEDULE_PROFILES)]
++
++
++def _scheduled_values(seed, sample_index, difficulty):
++    name = schedule_profile(seed, sample_index, difficulty)
++    return next(row for row in _PROFILE_ROWS if row[0] == name)
+ 
+ 
+ def _size(shape):
+-    return max(r for r, _ in shape) + 1, max(c for _, c in shape) + 1
+-
+-
+-def _rand_asym(rng, k):
+-    """A random connected polyomino of k cells that is LR-asymmetric (its
+-    horizontal mirror differs from itself), so the flip-lr stamp is visible."""
+-    for _ in range(40):
++    return max(row for row, _ in shape) + 1, max(col for _, col in shape) + 1
++
++
++def _normalize(cells):
++    points = tuple(cells)
++    if not points:
++        return []
++    top = min(row for row, _ in points)
++    left = min(col for _, col in points)
++    return sorted((row - top, col - left) for row, col in points)
++
++
++def _hmirror(shape):
++    points = _normalize(shape)
++    _, width = _size(points)
++    return sorted((row, width - 1 - col) for row, col in points)
++
++
++def _vmirror(shape):
++    points = _normalize(shape)
++    height, _ = _size(points)
++    return sorted((height - 1 - row, col) for row, col in points)
++
++
++def _rotate_180(shape):
++    points = _normalize(shape)
++    height, width = _size(points)
++    return sorted((height - 1 - row, width - 1 - col) for row, col in points)
++
++
++def _connected(shape):
++    points = set(shape)
++    if not points:
++        return False
++    seen = {next(iter(points))}
++    stack = list(seen)
++    while stack:
++        row, col = stack.pop()
++        for drow, dcol in ((1, 0), (-1, 0), (0, 1), (0, -1)):
++            nxt = (row + drow, col + dcol)
++            if nxt in points and nxt not in seen:
++                seen.add(nxt)
++                stack.append(nxt)
++    return seen == points
++
++
++def _two_boxes_fit(shape, height, width):
++    shape_h, shape_w = _size(shape)
++    return 2 * shape_h + 1 <= height or 2 * shape_w + 1 <= width
++
++
++def _rand_asym(rng, count, height, width):
++    """Return a connected exact-size polyomino distinguishable from both mirrors."""
++    for _ in range(200):
+         cells = {(0, 0)}
+-        while len(cells) < k:
+-            r, c = rng.choice(list(cells))
+-            dr, dc = rng.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
+-            cells.add((r + dr, c + dc))
+-        mr = min(r for r, _ in cells); mc = min(c for _, c in cells)
+-        norm = sorted((r - mr, c - mc) for r, c in cells)
+-        if _hmirror(norm) != norm and _vmirror(norm) != norm:
+-            return norm
+-    candidates = [shape for shape in _SHAPES if _hmirror(shape) != shape and _vmirror(shape) != shape]
++        while len(cells) < count:
++            row, col = rng.choice(sorted(cells))
++            drow, dcol = rng.choice(((1, 0), (-1, 0), (0, 1), (0, -1)))
++            cells.add((row + drow, col + dcol))
++        shape = _normalize(cells)
++        if (
++            len(shape) == count
++            and _hmirror(shape) != shape
++            and _vmirror(shape) != shape
++            and _two_boxes_fit(shape, height, width)
++        ):
++            return shape
++    shape = list(_FALLBACK_SHAPES[count])
++    if not _two_boxes_fit(shape, height, width):
++        raise ValueError("requested dimensions cannot place two separated template boxes")
++    return shape
++
++
++def _components_color(grid, color):
++    height, width = len(grid), len(grid[0])
++    seen = set()
++    components = []
++    for row in range(height):
++        for col in range(width):
++            if grid[row][col] != color or (row, col) in seen:
++                continue
++            component = []
++            stack = [(row, col)]
++            seen.add((row, col))
++            while stack:
++                current = stack.pop()
++                component.append(current)
++                r, c = current
++                for drow, dcol in ((1, 0), (-1, 0), (0, 1), (0, -1)):
++                    nxt = (r + drow, c + dcol)
++                    if (
++                        0 <= nxt[0] < height
++                        and 0 <= nxt[1] < width
++                        and nxt not in seen
++                        and grid[nxt[0]][nxt[1]] == color
++                    ):
++                        seen.add(nxt)
++                        stack.append(nxt)
++            components.append(component)
++    return components
++
++
++def _template_and_marker(grid):
++    components = _components_color(grid, 2)
++    if len(components) != 1:
++        raise ValueError(f"expected one connected color-2 template, found {len(components)}")
++    markers = [
++        (row, col)
++        for row, values in enumerate(grid)
++        for col, value in enumerate(values)
++        if value == 1
++    ]
++    if len(markers) != 1:
++        raise ValueError(f"expected one color-1 marker, found {len(markers)}")
++    return _normalize(components[0]), markers[0]
++
++
++def _draw_scheduled_int(ctx, name, low, high, default):
++    # Explicit overrides are drawn against the entire advertised domain.  The
++    # default path is singleton-scheduled so lesson composition is reproducible.
++    if name in ctx.overrides and ctx.overrides[name] is not None:
++        return ctx.draw_int(name, low, high)
++    return ctx.draw_choice(name, (default,))
++
++
++def _separated_origins(height, width, shape, rng):
++    """Choose template/stamp bbox origins with at least one blank row/column."""
++    shape_h, shape_w = _size(shape)
++    origins = [
++        (row, col)
++        for row in range(height - shape_h + 1)
++        for col in range(width - shape_w + 1)
++    ]
++    candidates = []
++    for template_origin in origins:
++        tr, tc = template_origin
++        for marker_origin in origins:
++            mr, mc = marker_origin
++            separated = (
++                tr + shape_h < mr
++                or mr + shape_h < tr
++                or tc + shape_w < mc
++                or mc + shape_w < tc
++            )
++            if separated:
++                candidates.append((template_origin, marker_origin))
++    if not candidates:
++        raise ValueError("could not place separated template and reflected stamp")
+     return rng.choice(candidates)
+ 
+ 
+-def _hmirror(shape):
+-    _, sw = _size(shape)
+-    return sorted((r, sw - 1 - c) for r, c in shape)
+-
+-
+-def _vmirror(shape):
+-    sh, _ = _size(shape)
+-    return sorted((sh - 1 - r, c) for r, c in shape)
+-
+-
+-def _components_color(grid, color):
+-    h, w = len(grid), len(grid[0])
+-    seen = set()
+-    comps = []
+-    for r in range(h):
+-        for c in range(w):
+-            if grid[r][c] != color or (r, c) in seen:
+-                continue
+-            stack = [(r, c)]
+-            seen.add((r, c))
+-            comp = []
+-            while stack:
+-                y, x = stack.pop()
+-                comp.append((y, x))
+-                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+-                    ny, nx = y + dy, x + dx
+-                    if 0 <= ny < h and 0 <= nx < w and (ny, nx) not in seen and grid[ny][nx] == color:
+-                        seen.add((ny, nx))
+-                        stack.append((ny, nx))
+-            comps.append(comp)
+-    return comps
+-
+-
+-def _normalize_abs(cells):
+-    r0 = min(r for r, _ in cells)
+-    c0 = min(c for _, c in cells)
+-    return sorted((r - r0, c - c0) for r, c in cells)
+-
+-
+-def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    errors: list[str] = []
+-    if not grid or any(len(row) != len(grid[0]) for row in grid):
+-        return ["grid must be nonempty and rectangular"]
+-    h, w = len(grid), len(grid[0])
+-    markers = [(r, c) for r in range(h) for c in range(w) if grid[r][c] == 1]
++def _paint(grid, origin, shape, color):
++    row0, col0 = origin
++    for drow, dcol in shape:
++        grid[row0 + drow][col0 + dcol] = color
++
++
++def generate(seed, sample_index, *, difficulty=None, **overrides):
++    _validate_difficulty(difficulty)
++    unknown = set(overrides) - set(AXES)
++    if unknown:
++        raise ValueError(f"unknown override axes: {sorted(unknown)}")
++    bounds = {"grid_h": (8, 15), "grid_w": (13, 18), "template_size": (4, 7)}
++    for name, value in overrides.items():
++        if value is None:
++            continue
++        if type(value) is not int:
++            raise ValueError(f"{name} must be an integer, not {type(value).__name__}")
++        low, high = bounds[name]
++        if not low <= value <= high:
++            raise ValueError(f"{name}={value} outside [{low}, {high}]")
++
++    _, default_h, default_w, default_size = _scheduled_values(seed, sample_index, difficulty)
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++    height = _draw_scheduled_int(ctx, "grid_h", 8, 15, default_h)
++    width = _draw_scheduled_int(ctx, "grid_w", 13, 18, default_w)
++    template_size = _draw_scheduled_int(ctx, "template_size", 4, 7, default_size)
++    shape = _rand_asym(ctx.draw_rng("template_shape"), template_size, height, width)
++    template_origin, marker = _separated_origins(
++        height, width, shape, ctx.draw_rng("layout")
++    )
++    grid = full_grid(height, width, 0)
++    _paint(grid, template_origin, shape, 2)
++    grid[marker[0]][marker[1]] = 1
++    return grid
++
++
++def observe_overrides(grid):
++    shape, _ = _template_and_marker(grid)
++    return {
++        "grid_h": len(grid),
++        "grid_w": len(grid[0]),
++        "template_size": len(shape),
++    }
++
++
++def self_check(grid, *, difficulty=None, meta=None):
++    del difficulty, meta
++    if not isinstance(grid, (list, tuple)) or not grid:
++        return ["expected a nonempty rectangular grid"]
++    if not isinstance(grid[0], (list, tuple)) or not grid[0]:
++        return ["expected a nonempty rectangular grid"]
++    width = len(grid[0])
++    if any(not isinstance(row, (list, tuple)) or len(row) != width for row in grid):
++        return ["grid must be rectangular"]
++    errors = []
++    if not 8 <= len(grid) <= 15:
++        errors.append(f"grid height {len(grid)} outside 8..15")
++    if not 13 <= width <= 18:
++        errors.append(f"grid width {width} outside 13..18")
++    if any(type(value) is not int or value not in (0, 1, 2) for row in grid for value in row):
++        errors.append("cells must be literal integer colors 0, 1, or 2")
++        return errors
++    markers = [
++        (row, col)
++        for row, values in enumerate(grid)
++        for col, value in enumerate(values)
++        if value == 1
++    ]
+     if len(markers) != 1:
+         errors.append(f"expected exactly one color-1 marker, found {len(markers)}")
+-    comps = _components_color(grid, 2)
+-    if len(comps) != 1:
+-        errors.append(f"expected exactly one connected color-2 template, found {len(comps)}")
++    components = _components_color(grid, 2)
++    if len(components) != 1:
++        errors.append(f"expected exactly one connected color-2 template, found {len(components)}")
+         return errors
+-    template = _normalize_abs(comps[0])
+-    if not (3 <= len(template) <= 7):
+-        errors.append(f"template size should be 3..7, found {len(template)}")
+-    if _hmirror(template) == template:
+-        errors.append("template is LR-symmetric; mirrored stamp may look like identity")
+-    if _vmirror(template) == template:
+-        errors.append("template is UD-symmetric; flip-lr and flip-ud are ambiguous")
++    shape = _normalize(components[0])
++    if not 4 <= len(shape) <= 7:
++        errors.append(f"template size should be 4..7, found {len(shape)}")
++    if _hmirror(shape) == shape:
++        errors.append("template is LR-symmetric; reflection would be indistinguishable from identity")
+     if markers:
+-        mr, mc = markers[0]
+-        for dr, dc in _hmirror(template):
+-            if not (0 <= mr + dr < h and 0 <= mc + dc < w):
+-                errors.append("mirrored stamp would land out of bounds")
++        marker_row, marker_col = markers[0]
++        for drow, dcol in _hmirror(shape):
++            if not (0 <= marker_row + drow < len(grid) and 0 <= marker_col + dcol < width):
++                errors.append("complete reflected stamp must fit in bounds")
+                 break
+     return errors
+ 
+ 
+-def _free_box(g, r0, c0, sh, sw, pad=1):
+-    h, w = len(g), len(g[0])
+-    if r0 < 0 or c0 < 0 or r0 + sh > h or c0 + sw > w:
++def strict_canonical_like(grid):
++    """This sampler's lawful manifold; canonical vertical symmetry is allowed."""
++    return self_check(grid)
++
++
++def _stamp_output(grid, transformed_shape):
++    height, width = len(grid), len(grid[0])
++    _, marker = _template_and_marker(grid)
++    output = full_grid(height, width, 0)
++    for drow, dcol in transformed_shape:
++        row, col = marker[0] + drow, marker[1] + dcol
++        if 0 <= row < height and 0 <= col < width:
++            output[row][col] = 8
++    return output
++
++
++def rule_mirror(grid):
++    """Independent Python mirror of the unchanged selected Racket authority."""
++    shape, _ = _template_and_marker(grid)
++    return _stamp_output(grid, _hmirror(shape))
++
++
++def _rotate_five_else_flip_lr(grid):
++    """RIVAL, not authority: rotate five-cell templates; mirror all others."""
++    shape, _ = _template_and_marker(grid)
++    transformed = _rotate_180(shape) if len(shape) == 5 else _hmirror(shape)
++    return _stamp_output(grid, transformed)
++
++
++def _five_cell_non_ud_symmetric(grid):
++    try:
++        shape, _ = _template_and_marker(grid)
++    except (TypeError, ValueError, IndexError):
+         return False
+-    for r in range(max(0, r0 - pad), min(h, r0 + sh + pad)):
+-        for c in range(max(0, c0 - pad), min(w, c0 + sw + pad)):
+-            if g[r][c] != 0:
+-                return False
+-    return True
+-
+-
+-def _paint(g, r0, c0, shape, color):
+-    for dr, dc in shape:
+-        g[r0 + dr][c0 + dc] = color
+-
+-
+-def _place_shape(g, rng, shape, color):
+-    sh, sw = _size(shape)
+-    h, w = len(g), len(g[0])
+-    for _ in range(80):
+-        r0 = rng.randint(0, h - sh)
+-        c0 = rng.randint(0, w - sw)
+-        if _free_box(g, r0, c0, sh, sw):
+-            _paint(g, r0, c0, shape, color)
+-            return
+-    raise ValueError("could not place template")
+-
+-
+-def _place_marker(g, rng, stamp_shape):
+-    sh, sw = _size(stamp_shape)
+-    h, w = len(g), len(g[0])
+-    for _ in range(120):
+-        r = rng.randint(0, h - sh)
+-        c = rng.randint(0, w - sw)
+-        if g[r][c] == 0 and _free_box(g, r, c, 1, 1):
+-            g[r][c] = 1
+-            return
+-    raise ValueError("could not place marker")
+-
+-
+-def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION,
+-                  task_id=TASK_ID, difficulty=difficulty, overrides=overrides)
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], None)
+-    if difficulty == "easy":
+-        h = ctx.draw_int("height", 8, 10)
+-        w = ctx.draw_int("width", 10, 12)
+-        ksz = (4, 5)
+-    elif difficulty == "hard":
+-        h = ctx.draw_int("height", 11, 15)
+-        w = ctx.draw_int("width", 13, 18)
+-        ksz = (4, 7)
+-    else:
+-        h = ctx.draw_int("height", 9, 12)
+-        w = ctx.draw_int("width", 11, 14)
+-        ksz = (4, 6)
+-    rng = ctx.draw_rng("layout")
+-    g = full_grid(h, w, 0)
+-    shape = _rand_asym(rng, rng.randint(*ksz))
+-    _place_shape(g, rng, shape, 2)
+-    _place_marker(g, rng, _hmirror(shape))
+-    return g
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    h, w = 9, 11
+-    g = full_grid(h, w, 0)
+-    if name == "no_template":
+-        # No color-2 template — rule has no source.
+-        g[5][5] = 1
+-        return g
+-    if name == "no_marker":
+-        # Template present but no color-1 marker — no destination.
+-        for dr, dc in [(0, 0), (1, 0), (2, 0), (2, 1)]:
+-            g[1 + dr][1 + dc] = 2
+-        return g
+-    if name == "lr_symmetric_template":
+-        # T-shape symmetric under h-mirror — mirrored stamp identical.
+-        for dr, dc in [(0, 0), (0, 1), (0, 2), (1, 1)]:
+-            g[1 + dr][1 + dc] = 2
+-        g[5][7] = 1
+-        return g
+-    return g
++    return len(shape) == 5 and _vmirror(shape) != shape
++
++
++_RIVAL_NAME = "rotate_five_else_flip_lr"
++SEMANTIC_WITNESSES = {"five_cell_non_ud_symmetric": _five_cell_non_ud_symmetric}
++SEMANTIC_RIVALS = {_RIVAL_NAME: _rotate_five_else_flip_lr}
++WITNESS_RIVALS = {"five_cell_non_ud_symmetric": [_RIVAL_NAME]}
++CANONICAL_SHORTCUTS = {_RIVAL_NAME: _rotate_five_else_flip_lr}
++LESSON_COMPETITORS = {_RIVAL_NAME: _rotate_five_else_flip_lr}
++
++
++def lesson_identifiable(demos, query):
++    """Report a declared rival only when it survives demos but differs on query."""
++    reasons = []
++    for name, rival in LESSON_COMPETITORS.items():
++        if all(rival(deepcopy(pair["input"])) == pair["output"] for pair in demos):
++            if rival(deepcopy(query["input"])) != query["output"]:
++                reasons.append(f"{name} fits every demonstration but changes the query answer")
++    return reasons
+diff --git a/repo/generators/f1668de79fa1/notes.md b/repo/generators/f1668de79fa1/notes.md
+--- a/repo/generators/f1668de79fa1/notes.md
++++ b/repo/generators/f1668de79fa1/notes.md
+@@ -1,4 +1,9 @@
+ # Working notes: f1668de79fa1
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## 2026-10-04 repair
++
++The imported 1.4.0 generator exposed eight mostly dead or overlapping controls, admitted declared degenerates that its own validator rejected, omitted `RULE_HASH`, rejected canonical examples, and had no executable rival/witness contract. The repair keeps the selected Racket rule unchanged and rebuilds the input sampler around three exact observable controls: grid height, grid width, and template size.
++
++The canonical pairs are also consistent with a plausible shortcut: rotate five-cell templates by 180 degrees, otherwise reflect left-to-right. Canonical five-cell templates are vertically symmetric, so rotation and horizontal reflection agree there. Generated five-cell templates are required to be vertically asymmetric, and every consecutive five-pair schedule window contains at least two such witnesses; therefore every permitted single-query rotation leaves a witness in the demonstrations.
++
++See task-local `workspace/reference_probe.py` and `tests/test_generator.py` for the independent oracle, rival, canonical checks, exact-control probes, cyclic-start teaching checks, and validator mutations. Imported associated notes remain in `evidence/associated_notes.jsonl`.
+diff --git a/repo/generators/f1668de79fa1/tests/test_generator.py b/repo/generators/f1668de79fa1/tests/test_generator.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f1668de79fa1/tests/test_generator.py
+@@ -0,0 +1,222 @@
++"""Task-local regression and teaching-contract tests for f1668de79fa1."""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++import pytest
++
++HOME = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(HOME / "workspace"))
++from reference_probe import (  # noqa: E402
++    canonical_pairs,
++    facts,
++    lesson,
++    load_generator,
++    oracle,
++    size_conditioned_rotation,
++)
++
++gen = load_generator(os.environ.get("GENERATOR_UNDER_TEST"))
++PAIRS = canonical_pairs()
++
++
++def _pinned_seed(band: str, index: int) -> int:
++    digest = hashlib.sha256(
++        f"profile-floor:v1:{gen.TASK_ID}:{band}:{index}".encode()
++    ).hexdigest()
++    return int(digest[:12], 16)
++
++
++def test_contract_surface_is_small_exact_and_rule_pinned():
++    assert gen.RULE_HASH == "6fbd99546842"
++    assert gen.VERSION == "2.0.0"
++    assert set(gen.AXES) == {"grid_h", "grid_w", "template_size"}
++    assert gen.INCOMPATIBLE_OVERRIDE_COMBINATIONS == []
++    assert gen.EXAMPLES_NEEDED == 4
++
++
++@pytest.mark.parametrize("pair", PAIRS, ids=["train0", "train1", "test0"])
++def test_canonical_inputs_are_owned_and_independent_oracle_matches(pair):
++    assert gen.self_check(pair["input"]) == []
++    assert gen.strict_canonical_like(pair["input"]) == []
++    assert oracle(pair["input"]) == pair["output"]
++    assert gen.rule_mirror(pair["input"]) == pair["output"]
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++def test_every_exact_override_combination_is_constructive_and_observable(band):
++    for height in range(8, 16):
++        for width in range(13, 19):
++            for size in range(4, 8):
++                grid = gen.generate(
++                    917,
++                    height * 100 + width * 10 + size,
++                    difficulty=band,
++                    grid_h=height,
++                    grid_w=width,
++                    template_size=size,
++                )
++                expected = {
++                    "grid_h": height,
++                    "grid_w": width,
++                    "template_size": size,
++                }
++                assert gen.self_check(grid) == []
++                assert facts(grid) | {} == expected | {
++                    "lr_asymmetric": True,
++                    "rival_disagrees": size == 5,
++                }
++                assert gen.observe_overrides(grid) == expected
++                assert gen.rule_mirror(grid) == oracle(grid)
++
++
++@pytest.mark.parametrize(
++    "kwargs",
++    [
++        {"typo": 1},
++        {"grid_h": 7}, {"grid_h": 16}, {"grid_h": True}, {"grid_h": 8.5},
++        {"grid_w": 12}, {"grid_w": 19}, {"grid_w": False}, {"grid_w": "13"},
++        {"template_size": 3}, {"template_size": 8},
++        {"template_size": True}, {"template_size": 5.0},
++    ],
++)
++def test_invalid_or_unknown_overrides_are_rejected(kwargs):
++    with pytest.raises(ValueError):
++        gen.generate(0, 0, **kwargs)
++
++
++def test_unknown_difficulty_is_rejected():
++    with pytest.raises(ValueError):
++        gen.generate(0, 0, difficulty="expert")
++
++
++@pytest.mark.parametrize("band", ["easy", "medium", "hard"])
++def test_pinned_profile_floor_has_exact_canonical_support_in_every_band(band):
++    canonical_profiles = {(8, 13, 3), (8, 14, 3), (9, 14, 3)}
++    profiles = []
++    for index in range(20):
++        seed = _pinned_seed(band, index)
++        grid = gen.generate(seed, seed % 7919 + index, difficulty=band)
++        profiles.append((len(grid), len(grid[0]), len({v for row in grid for v in row})))
++    assert any(profile in canonical_profiles for profile in profiles)
++
++
++@pytest.mark.parametrize("band", ["easy", "medium", "hard"])
++def test_every_five_pair_window_teaches_the_canonical_fitting_rival(band):
++    for start in range(18):
++        pairs = lesson(8300 + start, start, band, generator=gen)
++        witness_indexes = [
++            index
++            for index, pair in enumerate(pairs)
++            if size_conditioned_rotation(pair["input"]) != pair["output"]
++        ]
++        assert len(witness_indexes) >= 2
++        for held_out in range(len(pairs)):
++            demos = [pair for index, pair in enumerate(pairs) if index != held_out]
++            query = pairs[held_out]
++            assert any(
++                size_conditioned_rotation(pair["input"]) != pair["output"]
++                for pair in demos
++            )
++            assert gen.lesson_identifiable(demos, query) == []
++
++
++def test_declared_shortcut_fits_every_canonical_pair_and_generated_witness_refutes_it():
++    name = "rotate_five_else_flip_lr"
++    assert set(gen.CANONICAL_SHORTCUTS) == {name}
++    assert set(gen.LESSON_COMPETITORS) == {name}
++    assert set(gen.SEMANTIC_RIVALS) == {name}
++    rival = gen.CANONICAL_SHORTCUTS[name]
++    assert all(rival(pair["input"]) == pair["output"] for pair in PAIRS)
++
++    witness = gen.generate(41, 0, difficulty="easy", template_size=5)
++    assert gen.SEMANTIC_WITNESSES["five_cell_non_ud_symmetric"](witness)
++    assert gen.WITNESS_RIVALS["five_cell_non_ud_symmetric"] == [name]
++    assert rival(witness) == size_conditioned_rotation(witness)
++    assert rival(witness) != oracle(witness)
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++def test_default_distribution_is_valid_deterministic_and_diverse(band):
++    grids = [gen.generate(1200 + index, index, difficulty=band) for index in range(96)]
++    assert all(gen.self_check(grid) == [] for grid in grids)
++    assert all(gen.strict_canonical_like(grid) == [] for grid in grids)
++    assert all(
++        grid == gen.generate(1200 + index, index, difficulty=band)
++        for index, grid in enumerate(grids)
++    )
++    assert len({tuple(map(tuple, grid)) for grid in grids}) >= 90
++    assert {facts(grid)["template_size"] for grid in grids} == {4, 5, 6, 7}
++    assert sum(facts(grid)["rival_disagrees"] for grid in grids) >= 40
++
++
++@pytest.mark.parametrize(
++    "mutation",
++    ["ragged", "bool_cell", "unknown_color", "remove_marker", "extra_marker",
++     "disconnect_template", "lr_symmetric_template"],
++)
++def test_self_check_rejects_targeted_destructive_mutations(mutation):
++    grid = gen.generate(73, 5, grid_h=10, grid_w=15, template_size=5)
++    changed = deepcopy(grid)
++    if mutation == "ragged":
++        changed[0] = changed[0][:-1]
++    elif mutation == "bool_cell":
++        changed[0][0] = True
++    elif mutation == "unknown_color":
++        changed[0][0] = 9
++    elif mutation == "remove_marker":
++        for row in changed:
++            for col, value in enumerate(row):
++                if value == 1:
++                    row[col] = 0
++    elif mutation == "extra_marker":
++        row, col = next(
++            (r, c)
++            for r, values in enumerate(changed)
++            for c, value in enumerate(values)
++            if value == 0
++        )
++        changed[row][col] = 1
++    elif mutation == "disconnect_template":
++        points = [(r, c) for r, row in enumerate(changed) for c, value in enumerate(row) if value == 2]
++        r, c = points[-1]
++        changed[r][c] = 0
++        changed[-1][-1] = 2
++    elif mutation == "lr_symmetric_template":
++        changed = [[0] * 15 for _ in range(10)]
++        for r, c in ((1, 1), (1, 2), (1, 3), (2, 2), (3, 2)):
++            changed[r][c] = 2
++        changed[6][8] = 1
++    assert gen.self_check(changed)
++
++
++@pytest.mark.parametrize("grid", [None, [], [[]], [[0], [0, 1]], [[True] * 13 for _ in range(8)]])
++def test_self_check_is_diagnostic_on_malformed_values(grid):
++    errors = gen.self_check(grid)
++    assert errors
++    assert all(isinstance(error, str) and error for error in errors)
++
++
++def test_keyed_generation_is_independent_of_python_hash_seed():
++    script = (
++        "import importlib.util,json,sys;"
++        "p=sys.argv[1];s=importlib.util.spec_from_file_location('g',p);"
++        "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
++        "print(json.dumps(m.generate(31,8,difficulty='hard')))"
++    )
++    results = []
++    for hash_seed in ("1", "901"):
++        env = dict(os.environ, PYTHONHASHSEED=hash_seed, PYTHONDONTWRITEBYTECODE="1")
++        results.append(
++            subprocess.check_output(
++                [sys.executable, "-B", "-c", script, str(Path(gen.__file__).resolve())],
++                env=env,
++                text=True,
++            )
++        )
++    assert results[0] == results[1]
+diff --git a/repo/generators/f1668de79fa1/workspace/reference_probe.py b/repo/generators/f1668de79fa1/workspace/reference_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f1668de79fa1/workspace/reference_probe.py
+@@ -0,0 +1,120 @@
++"""Independent pixel oracle and curriculum probes for f1668de79fa1.
++
++This reviewer-owned helper never calls production transformation helpers.  It can
++load an alternate candidate through ``GENERATOR_UNDER_TEST`` and is retained so
++future reviewers can replay canonical, override, shortcut, and lesson checks.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import importlib.util
++import os
++from pathlib import Path
++import sys
++from typing import Iterable
++
++from reviewer_support import canonical_pairs as _canonical_pairs, find_root
++
++TASK_ID = "f1668de79fa1"
++HOME = Path(__file__).resolve().parents[1]
++
++
++def load_generator(path: str | os.PathLike[str] | None = None):
++    source = Path(path or os.environ.get("GENERATOR_UNDER_TEST") or HOME / "generator.py").resolve()
++    spec = importlib.util.spec_from_file_location(f"reviewed_{TASK_ID}", source)
++    if spec is None or spec.loader is None:
++        raise ImportError(f"cannot load generator from {source}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def canonical_pairs():
++    return _canonical_pairs(TASK_ID, root=find_root(__file__))
++
++
++def normalize(cells: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
++    points = tuple(cells)
++    if not points:
++        return ()
++    top = min(row for row, _ in points)
++    left = min(col for _, col in points)
++    return tuple(sorted((row - top, col - left) for row, col in points))
++
++
++def template(grid) -> tuple[tuple[int, int], ...]:
++    return normalize(
++        (row, col)
++        for row, values in enumerate(grid)
++        for col, value in enumerate(values)
++        if value == 2
++    )
++
++
++def marker(grid) -> tuple[int, int]:
++    hits = [
++        (row, col)
++        for row, values in enumerate(grid)
++        for col, value in enumerate(values)
++        if value == 1
++    ]
++    if len(hits) != 1:
++        raise ValueError(f"expected one marker, found {len(hits)}")
++    return hits[0]
++
++
++def flip_lr(shape: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
++    points = normalize(shape)
++    width = max(col for _, col in points) + 1
++    return tuple(sorted((row, width - 1 - col) for row, col in points))
++
++
++def rotate_180(shape: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
++    points = normalize(shape)
++    height = max(row for row, _ in points) + 1
++    width = max(col for _, col in points) + 1
++    return tuple(sorted((height - 1 - row, width - 1 - col) for row, col in points))
++
++
++def _stamp(grid, shape):
++    height, width = len(grid), len(grid[0])
++    anchor_row, anchor_col = marker(grid)
++    out = [[0] * width for _ in range(height)]
++    for drow, dcol in shape:
++        row, col = anchor_row + drow, anchor_col + dcol
++        if 0 <= row < height and 0 <= col < width:
++            out[row][col] = 8
++    return out
++
++
++def oracle(grid):
++    """Independent intended rule: horizontal bbox reflection at marker."""
++    return _stamp(grid, flip_lr(template(grid)))
++
++
++def size_conditioned_rotation(grid):
++    """Plausible rival: rotate five-cell templates, mirror all other sizes."""
++    shape = template(grid)
++    transformed = rotate_180(shape) if len(shape) == 5 else flip_lr(shape)
++    return _stamp(grid, transformed)
++
++
++def facts(grid):
++    shape = template(grid)
++    return {
++        "grid_h": len(grid),
++        "grid_w": len(grid[0]),
++        "template_size": len(shape),
++        "lr_asymmetric": flip_lr(shape) != shape,
++        "rival_disagrees": size_conditioned_rotation(grid) != oracle(grid),
++    }
++
++
++def lesson(seed: int, start: int, band: str, *, count: int = 5, generator=None):
++    module = generator or load_generator()
++    pairs = []
++    for offset in range(count):
++        grid = module.generate(seed, start + offset, difficulty=band)
++        pairs.append({"input": deepcopy(grid), "output": oracle(grid)})
++    return pairs

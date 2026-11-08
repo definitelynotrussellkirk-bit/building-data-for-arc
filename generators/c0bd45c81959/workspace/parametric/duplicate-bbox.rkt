@@ -1,0 +1,42 @@
+(rule!
+ (lambda (g)
+   (let ()
+     (define (mode-block r1 c1)
+       (let ((freq (make-hash))
+             (best 0)
+             (best-count -1))
+         (for* ((r (range r1 (+ r1 3)))
+                (c (range c1 (+ c1 2))))
+           (let ((v (cell-at g r c)))
+             (when (not (= v 0))
+               (hash-set! freq v (+ 1 (hash-ref freq v 0))))))
+         (hash-for-each freq
+           (lambda (k v)
+             (when (> v best-count)
+               (set! best k)
+               (set! best-count v))))
+         best))
+     (define modes
+       (for*/list ((br (range 0 2))
+                   (bc (range 0 3)))
+         (mode-block (+ 1 (* br 4)) (+ 1 (* bc 3)))))
+     (define (frequency value)
+       (length (filter (lambda (item) (= item value)) modes)))
+     (define target
+       (first (filter (lambda (value) (= (frequency value) 2)) modes)))
+     (define positions
+       (for*/list ((br (range 0 2))
+                   (bc (range 0 3))
+                   #:when (= (list-ref modes (+ (* br 3) bc)) target))
+         (list br bc)))
+     (define r0 (apply min (map first positions)))
+     (define r1 (apply max (map first positions)))
+     (define c0 (apply min (map second positions)))
+     (define c1 (apply max (map second positions)))
+     (grid-from-fn 4 5
+       (lambda (r c)
+         (cond
+           ((or (= r 0) (= r 3) (= c 0) (= c 4)) 0)
+           ((and (<= r0 (- r 1)) (<= (- r 1) r1)
+                 (<= c0 (- c 1)) (<= (- c 1) c1)) target)
+           (else 0)))))))

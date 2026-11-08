@@ -1,0 +1,33 @@
+(rule!
+  (let ((dummy 0))
+    (define (perimeter obj)
+      (apply +
+        (map (lambda (p)
+               (count-where (lambda (d)
+                              (not (member (list (+ (first p) (first d))
+                                                 (+ (second p) (second d)))
+                                           (obj-cells obj))))
+                            cardinal-deltas))
+             (obj-cells obj))))
+    (define items
+      (sort (map (lambda (obj) (list (perimeter obj)
+                                     (obj-color obj)
+                                     (subgrid g (obj-r1 obj) (obj-c1 obj) (obj-r2 obj) (obj-c2 obj))))
+                 (objects g 0))
+            (lambda (a b)
+              (if (= (first a) (first b))
+                  (< (second a) (second b))
+                  (> (first a) (first b))))))
+    (define shapes (map third items))
+    (define out-h (+ (apply + (map rows shapes)) (max 0 (- (length shapes) 1))))
+    (define out-w (apply max (map cols shapes)))
+    (let pack ([remaining shapes] [top 0] [out (empty-grid out-h out-w 0)])
+      (if (empty? remaining)
+          out
+          (let* ((shape (first remaining))
+                 (next (for*/fold ([acc out])
+                                   ([r (in-range (rows shape))]
+                                    [c (in-range (cols shape))])
+                         (let ((v (at shape r c)))
+                           (if (not (= v 0)) (set-cell acc (+ top r) c v) acc)))))
+            (pack (rest remaining) (+ top (rows shape) 1) next))))))

@@ -1,0 +1,1596 @@
+diff --git a/repo/generators/327c3478236b/generator.py b/repo/generators/327c3478236b/generator.py
+--- a/repo/generators/327c3478236b/generator.py
++++ b/repo/generators/327c3478236b/generator.py
+@@ -3,19 +3,17 @@
+ Rule: 3 = src anchor, 4 = dst anchor, 2 = template. Output: empty grid
+ + template translated by (dst-src) painted in 8 + dst itself painted 4.
+ 
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, blob_size,
+-palette_size, position_bias, n_distinct_colors, density, texture.
+-Degenerates: no_anchors, no_template, src_equals_dst.
++Combinatorial axes: grid_h, grid_w, and blob_size.
+ """
+ from __future__ import annotations
+ 
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+-from puzzle_generators.helpers.blobs import grow_blob
+ 
+ GENERATOR_ID = "327c3478236b"
+-VERSION = "2.0.2"
++VERSION = "2.1.0"
+ TASK_ID = "327c3478236b"
++RULE_HASH = "72a5479a7579"
+ SUMMARY = (
+     "0-bg grid (h ∈ 8-11, w ∈ 9-12) "
+     "with: (a) ONE COLOR-3 SRC ANCHOR "
+@@ -27,15 +25,16 @@
+     "h//3..2h//3, cols w//2..w-1) — "
+     "guarantees src and dst are "
+     "distinct; (c) ONE COLOR-2 "
+-    "TEMPLATE BLOB — a 3-4 cell "
+-    "irregular blob built by "
+-    "grow_blob random walk, placed at "
+-    "a random non-overlapping position. "
+-    "Rule (COMPUTE THE VECTOR FROM "
+-    "SRC-3 TO DST-4, TRANSLATE THE "
+-    "COLOR-2 TEMPLATE BY THAT VECTOR; "
+-    "PAINT THE TRANSLATED COPY AS "
+-    "COLOR 8 ON A FRESH GRID, "
++    "TEMPLATE BLOB — a connected 3-4 "
++    "cell irregular blob by default "
++    "(2-6 through the blob_size axis), "
++    "placed so every cell remains in "
++    "bounds after translation by the "
++    "anchor vector. Rule (COMPUTE THE "
++    "VECTOR FROM SRC-3 TO DST-4, "
++    "TRANSLATE THE COLOR-2 TEMPLATE BY "
++    "THAT VECTOR; PAINT THE TRANSLATED "
++    "COPY AS COLOR 8 ON A FRESH GRID, "
+     "PRESERVING DST-4): FIND the "
+     "COLOR-3 SRC cell at (sr, sc) "
+     "and the COLOR-4 DST cell at "
+@@ -49,10 +48,9 @@
+     "the DST cell at (dr, dc) = "
+     "COLOR 4 (preserving the "
+     "anchor). Net: template gets "
+-    "translated by anchor-to-"
+-    "anchor vector, recolored to "
+-    "cyan, with dst anchor "
+-    "preserved as a 4-marker."
++    "translated by anchor-to-anchor "
++    "vector, recolored to cyan, with "
++    "dst anchor preserved as a 4-marker."
+ )
+ 
+ INVARIANTS = [
+@@ -61,98 +59,218 @@
+     "translated cells are in-bounds",
+ ]
+ 
+-PALETTE_KINDS = ("default", "warm", "cool", "varied")
+-DEGENERATE_TEXTURES = ("no_anchors", "no_template", "src_equals_dst")
+-HELPFUL_TEXTURES = PALETTE_KINDS
+-
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 8..11", "valid": "7..14"},
+-    "grid_w":         {"type": "int", "default": "rng 9..12", "valid": "8..14"},
+-    "palette_kind":   {"type": "str", "default": "rng helpful",
+-                       "valid": "default|warm|cool|varied"},
+-    "blob_size":      {"type": "int", "default": "rng 3..4", "valid": "2..6"},
+-    "palette_size":   {"type": "int", "default": "3", "valid": "3..3"},
+-    "position_bias":  {"type": "str", "default": "src_dst_with_template",
+-                       "valid": "src_dst_with_template"},
+-    "n_distinct_colors": {"type": "int", "default": "3", "valid": "3..3"},
+-    "density":        {"type": "str", "default": "sparse", "valid": "sparse"},
+-    "texture":        {"type": "str", "default": "alias for palette_kind",
+-                       "valid": "default|warm|cool|varied|no_anchors|no_template|src_equals_dst"},
++    "grid_h": {"type": "int", "default": "difficulty-aware rng 8..11", "valid": "7..14"},
++    "grid_w": {"type": "int", "default": "difficulty-aware rng 9..12", "valid": "8..14"},
++    "blob_size": {"type": "int", "default": "rng 3..4", "valid": "2..6"},
+ }
+ 
++_INT_BOUNDS = {
++    "grid_h": (7, 14),
++    "grid_w": (8, 14),
++    "blob_size": (2, 6),
++}
++
++
++Cell = tuple[int, int]
++_CARDINAL = ((-1, 0), (1, 0), (0, -1), (0, 1))
++
++
++def _neighbors4(cell: Cell):
++    r, c = cell
++    for dr, dc in _CARDINAL:
++        yield r + dr, c + dc
++
++
++def _is_connected(cells: set[Cell]) -> bool:
++    if not cells:
++        return False
++    seen = {next(iter(cells))}
++    stack = list(seen)
++    while stack:
++        cell = stack.pop()
++        for neighbor in _neighbors4(cell):
++            if neighbor in cells and neighbor not in seen:
++                seen.add(neighbor)
++                stack.append(neighbor)
++    return seen == cells
++
++
++def _grow_blob_in_allowed(
++    rng,
++    allowed: set[Cell],
++    target_size: int,
++    *,
++    max_starts: int = 96,
++) -> set[Cell] | None:
++    """Grow an exact-size connected blob entirely inside ``allowed``.
++
++    The candidate frontier is recomputed from the current blob, so every added
++    cell is orthogonally adjacent to the blob and the result is connected.
++    Multiple shuffled starts avoid getting trapped in a narrow local pocket.
++    """
++    if target_size < 1 or len(allowed) < target_size:
++        return None
++    starts = sorted(allowed)
++    rng.shuffle(starts)
++    for start in starts[:max_starts]:
++        cells = {start}
++        while len(cells) < target_size:
++            frontier = sorted({
++                neighbor
++                for cell in cells
++                for neighbor in _neighbors4(cell)
++                if neighbor in allowed and neighbor not in cells
++            })
++            if not frontier:
++                break
++            cells.add(frontier[rng.randrange(len(frontier))])
++        if len(cells) == target_size:
++            return cells
++    return None
++
+ 
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Exactly one color-3 src, one color-4 dst, ≥2 color-2 template cells."""
++    """Validate anchors, connected template, and translated footprint."""
+     if not grid or not grid[0]:
+         return ["empty grid"]
+     if any(len(row) != len(grid[0]) for row in grid):
+         return ["ragged grid"]
++
+     h, w = len(grid), len(grid[0])
+-    errs = []
+-    for color, name, count_req in [(3, "src", 1), (4, "dst", 1)]:
+-        cells = [(r, c) for r in range(h) for c in range(w) if grid[r][c] == color]
+-        if len(cells) != count_req:
+-            errs.append(f"expected {count_req} color-{color} ({name}) cell(s), found {len(cells)}")
+-    twos = [(r, c) for r in range(h) for c in range(w) if grid[r][c] == 2]
+-    if len(twos) < 2:
+-        errs.append(f"only {len(twos)} color-2 template cell(s) (need >=2)")
+-    return errs
++    errors: list[str] = []
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if type(value) is not int or not (0 <= value <= 9):
++                errors.append(f"invalid cell value {value!r} at ({r},{c})")
++            elif value not in (0, 2, 3, 4):
++                errors.append(f"unexpected color {value} at ({r},{c})")
++
++    src_cells = [(r, c) for r in range(h) for c in range(w) if grid[r][c] == 3]
++    dst_cells = [(r, c) for r in range(h) for c in range(w) if grid[r][c] == 4]
++    if len(src_cells) != 1:
++        errors.append(f"expected 1 color-3 (src) cell(s), found {len(src_cells)}")
++    if len(dst_cells) != 1:
++        errors.append(f"expected 1 color-4 (dst) cell(s), found {len(dst_cells)}")
++
++    template = {(r, c) for r in range(h) for c in range(w) if grid[r][c] == 2}
++    if len(template) < 2:
++        errors.append(f"only {len(template)} color-2 template cell(s) (need >=2)")
++    elif not _is_connected(template):
++        errors.append("color-2 template cells are not orthogonally connected")
++
++    if len(src_cells) == 1 and len(dst_cells) == 1:
++        sr, sc = src_cells[0]
++        dr, dc = dst_cells[0]
++        if (sr, sc) == (dr, dc):
++            errors.append("src and dst anchors must be distinct")
++        vr, vc = dr - sr, dc - sc
++        for r, c in sorted(template):
++            tr, tc = r + vr, c + vc
++            if not (0 <= tr < h and 0 <= tc < w):
++                errors.append(
++                    f"translated template cell {(r, c)} is out of bounds at {(tr, tc)}"
++                )
++    return errors
++
++
++def _validate_call(seed, sample_index, difficulty, overrides) -> None:
++    if type(seed) is not int:
++        raise TypeError("seed must be an integer (not bool)")
++    if type(sample_index) is not int or sample_index < 0:
++        raise TypeError("sample_index must be a non-negative integer (not bool)")
++    if difficulty not in (None, "easy", "medium", "hard"):
++        raise ValueError("difficulty must be one of None, 'easy', 'medium', or 'hard'")
++    unknown = set(overrides) - set(AXES)
++    if unknown:
++        raise ValueError(f"unknown override axes: {sorted(unknown)}")
++    for name, value in overrides.items():
++        if value is None:
++            continue
++        lo, hi = _INT_BOUNDS[name]
++        if type(value) is not int or not lo <= value <= hi:
++            raise TypeError(f"{name} must be an integer in {lo}..{hi} (not bool)")
++
++
++def _draw_dimension(ctx, label: str, default_lo: int, default_hi: int) -> int:
++    if ctx.overrides.get(label) is not None:
++        lo, hi = _INT_BOUNDS[label]
++        return ctx.draw_int_strict(label, lo, hi)
++    return ctx.draw_int_strict(label, default_lo, default_hi)
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], None)
++    _validate_call(seed, sample_index, difficulty, overrides)
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++
+     if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 8, 9)
+-        w = ctx.draw_int("grid_w", 9, 10)
++        h = _draw_dimension(ctx, "grid_h", 8, 9)
++        w = _draw_dimension(ctx, "grid_w", 9, 10)
+     elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 10, 11)
+-        w = ctx.draw_int("grid_w", 11, 12)
++        h = _draw_dimension(ctx, "grid_h", 10, 11)
++        w = _draw_dimension(ctx, "grid_w", 11, 12)
+     else:
+-        h = ctx.draw_int("grid_h", 8, 11)
+-        w = ctx.draw_int("grid_w", 9, 12)
++        h = _draw_dimension(ctx, "grid_h", 8, 11)
++        w = _draw_dimension(ctx, "grid_w", 9, 12)
++
++    if overrides.get("blob_size") is not None:
++        blob_size = ctx.draw_int_strict("blob_size", 2, 6)
++    else:
++        blob_size = ctx.draw_int_strict("blob_size", 3, 4)
++
+     rng = ctx.draw_rng("layout")
+-    g = full_grid(h, w, 0)
+-    used: set[tuple[int, int]] = set()
+-    src = (rng.randint(0, h // 3), rng.randint(0, w // 2))
+-    # The src/dst sampling bands touch at (h//3, w//2); resample to
+-    # prevent the dst marker from overwriting the src marker.
+-    for _ in range(40):
++    for _ in range(256):
++        src = (rng.randint(0, h // 3), rng.randint(0, w // 2))
+         dst = (rng.randint(h // 3, 2 * h // 3), rng.randint(w // 2, w - 1))
+-        if dst != src:
+-            break
+-    else:
+-        dst = ((src[0] + 1) % h, min(w - 1, max(w // 2, src[1] + 1)))
+-    g[src[0]][src[1]] = 3
+-    g[dst[0]][dst[1]] = 4
+-    used.add(src); used.add(dst)
+-    blob = grow_blob(rng, h, w, used, rng.randint(3, 4), max_attempts=80)
+-    if blob is None:
+-        return g
+-    for r, c in blob:
+-        g[r][c] = 2
+-    return g
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    h, w = 9, 10
+-    g = full_grid(h, w, 0)
+-    if name == "no_anchors":
+-        # template only, no 3 or 4 anchors → no translation vector
+-        g[3][3] = 2; g[3][4] = 2; g[4][3] = 2
+-        return g
+-    if name == "no_template":
+-        # anchors but no 2-template → nothing to translate
+-        g[1][1] = 3
+-        g[5][6] = 4
+-        return g
+-    if name == "src_equals_dst":
+-        # both anchors at the same cell → vector is zero, rule is identity
+-        g[3][3] = 3
+-        g[3][3] = 4   # overwrites the 3 → ambiguous anchor
+-        g[5][5] = 2; g[5][6] = 2; g[6][5] = 2
+-        return g
+-    return g
++        if dst == src:
++            continue
++
++        vr, vc = dst[0] - src[0], dst[1] - src[1]
++        blocked = {src, dst}
++        # Preserve the original visual separation from the two anchors.
++        blocked.update(_neighbors4(src))
++        blocked.update(_neighbors4(dst))
++        allowed = {
++            (r, c)
++            for r in range(h)
++            for c in range(w)
++            if (r, c) not in blocked
++            and 0 <= r + vr < h
++            and 0 <= c + vc < w
++        }
++        blob = _grow_blob_in_allowed(rng, allowed, blob_size)
++        if blob is None:
++            continue
++
++        grid = full_grid(h, w, 0)
++        grid[src[0]][src[1]] = 3
++        grid[dst[0]][dst[1]] = 4
++        for r, c in blob:
++            grid[r][c] = 2
++        if not self_check(grid):
++            return grid
++
++    raise RuntimeError(
++        f"unable to place an in-bounds translated template of size {blob_size} "
++        f"on a {h}x{w} grid after 256 attempts"
++    )
++
++
++
++def observe_overrides(grid) -> dict[str, int]:
++    """Recover exact public axes from a generated grid."""
++    errors = self_check(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    return {
++        "grid_h": len(grid),
++        "grid_w": len(grid[0]),
++        "blob_size": sum(cell == 2 for row in grid for cell in row),
++    }
+diff --git a/repo/generators/327c3478236b/notes.md b/repo/generators/327c3478236b/notes.md
+--- a/repo/generators/327c3478236b/notes.md
++++ b/repo/generators/327c3478236b/notes.md
+@@ -2,3 +2,13 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 repair — guarantee the translated template survives
++
++**Root cause.** Version 2.0.2 grew the color-2 template anywhere on the canvas and validated only color counts. The anchor vector could move some or all template cells outside the grid; the retained default `seed=0, sample_index=0` lost all three translated cells despite the declared in-bounds invariant.
++
++**Repair.** Version 2.1.0 samples anchors and grows the connected template only inside the set of source cells whose translated coordinates are in bounds. `self_check` now verifies palette, unique anchors, template connectivity and every translated coordinate. Exact `blob_size` values 2–6 are honored. The public axis contract was reduced to the three real controls (`grid_h`, `grid_w`, `blob_size`), all endpoints are strict and observable, unknown/non-integer controls and invalid difficulty values are rejected, and `RULE_HASH=72a5479a7579` pins the unchanged canonical authority.
++
++**Evidence.** Eight portable regression tests pass. They include the retained clipping counterexample, a 480-draw default/easy/hard census, exact 2- and 6-cell templates, declared 7×8 and 14×14 endpoints, strict API controls, and protected-Racket checks requiring one cyan output cell per template cell. Repository lint, override contract and defect lint each pass on source SHA-256 `7d87996fa1a1839c588805cd12d2858b7b0d29ed7a0a11c163ce94f88c70a693` (`checks/327c3478236b-lint2`, `checks/327c3478236b-override`, `checks/327c3478236b-defect-lint2`).
++
++**Limits.** This peer repair received focused changed-surface checks rather than a repeated twelve-stage battery. The canonical Racket program was not edited, and integration/acceptance remain owner decisions.
+diff --git a/repo/generators/327c3478236b/tests/test_in_bounds_translation_repair.py b/repo/generators/327c3478236b/tests/test_in_bounds_translation_repair.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/327c3478236b/tests/test_in_bounds_translation_repair.py
+@@ -0,0 +1,143 @@
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++from reviewer_support import canonical_path, find_root
++
++TASK_ID = "327c3478236b"
++TASK_DIR = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
++
++
++def _load_generator():
++    path = TASK_DIR / "generator.py"
++    spec = importlib.util.spec_from_file_location("generator_327c3478236b_repair", path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _facts(grid):
++    h, w = len(grid), len(grid[0])
++    src = next((r, c) for r in range(h) for c in range(w) if grid[r][c] == 3)
++    dst = next((r, c) for r in range(h) for c in range(w) if grid[r][c] == 4)
++    template = [(r, c) for r in range(h) for c in range(w) if grid[r][c] == 2]
++    vector = (dst[0] - src[0], dst[1] - src[1])
++    translated = [(r + vector[0], c + vector[1]) for r, c in template]
++    return src, dst, template, vector, translated
++
++
++def _canonical_program():
++    rows = [json.loads(line) for line in canonical_path(ROOT).read_text().splitlines() if line.strip()]
++    matches = [row for row in rows if row.get("task_id") == TASK_ID]
++    assert len(matches) == 1
++    return matches[0]["program_solution"]
++
++
++def test_default_seed_zero_no_longer_clips_the_translated_template():
++    generator = _load_generator()
++    grid = generator.generate(0, 0)
++    _, _, template, _, translated = _facts(grid)
++
++    assert generator.self_check(grid) == []
++    assert len(template) in (3, 4)
++    assert all(0 <= r < len(grid) and 0 <= c < len(grid[0]) for r, c in translated)
++
++
++def test_self_check_rejects_the_retained_clipping_counterexample():
++    generator = _load_generator()
++    path = TASK_DIR / "counterexamples" / "review-c5fe8719feedc568-v0001" / "retained" / "checks" / "audit" / TASK_ID / "input.json"
++    payload = json.loads(path.read_text())
++    grid = payload["input"] if isinstance(payload, dict) else payload
++
++    errors = generator.self_check(grid)
++    assert any("out of bounds" in error for error in errors)
++
++
++def test_generated_census_is_connected_and_every_translation_is_in_bounds():
++    generator = _load_generator()
++    checked = 0
++    for difficulty in (None, "easy", "hard"):
++        for seed in range(40):
++            for sample_index in range(4):
++                grid = generator.generate(seed, sample_index, difficulty=difficulty)
++                src, dst, template, vector, translated = _facts(grid)
++                assert generator.self_check(grid) == []
++                assert src != dst
++                assert len(template) >= 2
++                assert all(0 <= r < len(grid) and 0 <= c < len(grid[0]) for r, c in translated)
++                remaining = set(template)
++                stack = [remaining.pop()]
++                seen = set(stack)
++                while stack:
++                    r, c = stack.pop()
++                    for nxt in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
++                        if nxt in remaining:
++                            remaining.remove(nxt)
++                            seen.add(nxt)
++                            stack.append(nxt)
++                assert len(seen) == len(template)
++                checked += 1
++    assert checked == 480
++
++
++def test_blob_size_override_two_and_six_remains_exact_and_lawful():
++    generator = _load_generator()
++    for blob_size in (2, 6):
++        for seed in range(12):
++            grid = generator.generate(seed, 0, blob_size=blob_size)
++            _, _, template, _, translated = _facts(grid)
++            assert len(template) == blob_size
++            assert generator.self_check(grid) == []
++            assert all(0 <= r < len(grid) and 0 <= c < len(grid[0]) for r, c in translated)
++
++
++def test_protected_racket_emits_one_cyan_cell_per_template_cell():
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    generator = _load_generator()
++    grids = [generator.generate(0, 0), generator.generate(17, 3, difficulty="hard", blob_size=6)]
++    with RacketBridge(timeout=30, max_calls_before_restart=8) as bridge:
++        callable_source = wrap_rule(_canonical_program())
++        for index, grid in enumerate(grids):
++            name = f"g{index}"
++            bridge.define_grid(name, grid)
++            output = bridge.eval_text(f"({callable_source} {name})")
++            template_count = sum(cell == 2 for row in grid for cell in row)
++            assert sum(cell == 8 for row in output for cell in row) == template_count
++            assert sum(cell == 4 for row in output for cell in row) == 1
++        assert bridge.runtime_identity["protected"] is True
++
++
++def test_declared_dimension_endpoints_are_exact_and_lawful():
++    generator = _load_generator()
++    for grid_h, grid_w in ((7, 8), (14, 14)):
++        grid = generator.generate(23, 2, grid_h=grid_h, grid_w=grid_w, blob_size=6)
++        assert (len(grid), len(grid[0])) == (grid_h, grid_w)
++        assert generator.self_check(grid) == []
++
++
++def test_unknown_and_non_integer_overrides_are_rejected():
++    import pytest
++
++    generator = _load_generator()
++    with pytest.raises(ValueError, match="unknown override"):
++        generator.generate(0, 0, mystery_axis=1)
++    for name, value in (("grid_h", True), ("grid_w", 9.5), ("blob_size", "3")):
++        with pytest.raises((TypeError, ValueError)):
++            generator.generate(0, 0, **{name: value})
++
++
++def test_difficulty_accepts_only_none_easy_medium_or_hard():
++    import pytest
++
++    generator = _load_generator()
++    for difficulty in (None, "easy", "medium", "hard"):
++        assert generator.self_check(generator.generate(5, 1, difficulty=difficulty)) == []
++    for difficulty in (True, False, 0, 1.0, "__invalid_difficulty__"):
++        with pytest.raises((TypeError, ValueError)):
++            generator.generate(5, 1, difficulty=difficulty)
+diff --git a/repo/generators/4e16917b1bde/notes.md b/repo/generators/4e16917b1bde/notes.md
+--- a/repo/generators/4e16917b1bde/notes.md
++++ b/repo/generators/4e16917b1bde/notes.md
+@@ -103,3 +103,17 @@
+ **Rationale:** The pre-repair task-test stage stopped before pytest in its copied runtime. The reproducer gives future reviewers one command that checks the strongest shortcut against canonical examples and the exact selected-rule output.
+ 
+ **Evidence:** `checks/task-tests/result.json` reports 16/16 portable tests passing. `checks/shortcut-probe.log` is the successful reproducer output; the prior failed import is retained in the same review history as an implementation iteration.
++
++## D8 / R8 — native parametric depth-placement family
++
++**Parameter.** `depth_policy ∈ {same_depth, reverse_depth}` is fixed for an episode. `same_depth` returns the selected canonical Racket program byte-for-byte. `reverse_depth` keeps divider discovery, source-side detection, colors and copy direction unchanged, but reverses copied depths within the input's observed source span.
++
++**Required sequential dependency.** Step A locates the unique full-height nonzero divider and measures the maximum absolute source-column distance `M`. The input-dependent intermediate is that measured `M`. Step B maps each source depth `d` to target depth `M + 1 - d` on the opposite side. Step B cannot choose its target columns before Step A supplies `M`; substituting `M - 1` changes the protected-Racket result by 30 cells on the retained qualified case.
++
++**Episode assembly.** The adapter supports 2–6 demonstrations and 1–4 queries, with native qualification at three demonstrations and four queries. Four stored queries are structurally distinct (14×17, 18×21, 24×27 and a substantive 30×30 case), and the public projector reveals exactly one query per turn without settings, programs, labels, answers, future inputs or count hints. The first public turn is identical to single-query use.
++
++**Learnability audit.** A task-local executable audit checked both settings, seeds 0 and 17, demonstration counts 2, 3 and 6, four queries per episode, and ten named wrong rules. Across 12 episodes and 48 queries it found no harmful survivor and no input failure. This is finite evidence against the named rivals, not a uniqueness proof.
++
++**Native evidence.** `workspace/parametric/promotion.json`, `workspace/parametric/evidence/manifest.json`, and `workspace/parametric/adapter.py` bind the source. Native qualification passed four jobs (two settings × two seeds), each with three demonstrations and four queries, for 40 protected-Racket pair executions. The protected causal witness is `checks/4e16917b1bde/causal/witness.json`; qualification is `checks/4e16917b1bde/qualification/qualification.json`. Portable task tests pass 27/27.
++
++**Approval boundary.** The family is reviewer-ready only. Exact integrated bytes still require owner qualification and acceptance; neither the variant nor any trajectory is training-admitted by this return.
+diff --git a/repo/generators/4e16917b1bde/tests/test_parametric_depth_policy.py b/repo/generators/4e16917b1bde/tests/test_parametric_depth_policy.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e16917b1bde/tests/test_parametric_depth_policy.py
+@@ -0,0 +1,301 @@
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++from reviewer_support import canonical_path, find_root, load_selected_generator
++
++TASK_ID = "4e16917b1bde"
++TASK_DIR = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
++PROTOTYPE_PATH = TASK_DIR / "workspace" / "parametric" / "prototype.py"
++ADAPTER_PATH = TASK_DIR / "workspace" / "parametric" / "adapter.py"
++PROMOTION_PATH = TASK_DIR / "workspace" / "parametric" / "promotion.json"
++AUDIT_PATH = TASK_DIR / "workspace" / "parametric" / "audit.py"
++POLICIES = ("same_depth", "reverse_depth")
++
++
++def _load(path: Path, name: str):
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _prototype():
++    return _load(PROTOTYPE_PATH, "parametric_depth_policy_prototype")
++
++
++def _canonical_source() -> str:
++    rows = [
++        json.loads(line)
++        for line in canonical_path(ROOT).read_text(encoding="utf-8").splitlines()
++        if line.strip()
++    ]
++    matches = [row for row in rows if row.get("task_id") == TASK_ID]
++    assert len(matches) == 1
++    return matches[0]["program_solution"]
++
++
++def _freeze(grid):
++    return tuple(tuple(row) for row in grid)
++
++
++def _fixture():
++    return [
++        [0, 0, 0, 2, 5, 0, 0, 0, 0],
++        [0, 3, 0, 0, 5, 0, 0, 0, 0],
++        [0, 0, 0, 0, 5, 0, 0, 0, 0],
++        [0, 0, 4, 0, 5, 0, 0, 0, 0],
++        [0, 0, 0, 0, 5, 0, 0, 0, 0],
++    ]
++
++
++def test_prototype_exports_required_interface_and_exact_default_program():
++    prototype = _prototype()
++
++    for name in (
++        "canonical_program",
++        "program_for",
++        "apply_policy",
++        "episode_inputs",
++        "generate_episode",
++        "public_turn",
++        "depth_facts",
++    ):
++        assert callable(getattr(prototype, name))
++    assert prototype.POLICIES == POLICIES
++    assert prototype.DEFAULT_POLICY == "same_depth"
++    assert prototype.canonical_program() == _canonical_source()
++    assert prototype.program_for("same_depth") == _canonical_source()
++    assert prototype.program_for("reverse_depth") != _canonical_source()
++    assert prototype.program_for("reverse_depth").startswith("(rule!")
++
++
++def test_reverse_depth_uses_input_maximum_depth_and_changes_placement():
++    prototype = _prototype()
++    grid = _fixture()
++
++    facts = prototype.depth_facts(grid)
++    assert facts["divider_col"] == 4
++    assert facts["source_side"] == "left"
++    assert facts["depths"] == [1, 2, 3]
++    assert facts["max_depth"] == 3
++
++    same = prototype.apply_policy(grid, "same_depth")
++    reverse = prototype.apply_policy(grid, "reverse_depth")
++    assert same != reverse
++    assert same[0][5] == 2 and same[1][7] == 3 and same[3][6] == 4
++    assert reverse[0][7] == 2 and reverse[1][5] == 3 and reverse[3][6] == 4
++    assert all(same[r][4] == reverse[r][4] == 5 for r in range(5))
++
++
++def test_episode_counts_are_independent_inputs_distinct_and_queries_reach_30x30():
++    prototype = _prototype()
++    minimum = prototype.episode_inputs(7, demos=2, queries=1)
++    maximum = prototype.episode_inputs(7, demos=6, queries=4)
++
++    assert len(minimum) == 3
++    assert len(maximum) == 10
++    assert len({_freeze(grid) for grid in maximum}) == len(maximum)
++    assert minimum == maximum[:2] + [maximum[6]]
++
++    queries = maximum[6:]
++    assert [(len(grid), len(grid[0])) for grid in queries] == [
++        (14, 17),
++        (18, 21),
++        (24, 27),
++        (30, 30),
++    ]
++    large = queries[-1]
++    nonzero = sum(cell != 0 for row in large for cell in row)
++    assert nonzero >= 70  # 30-cell divider plus substantive source content.
++
++
++def test_minimum_demos_cover_opposite_sides_width_parities_colors_and_depth_gaps():
++    prototype = _prototype()
++    generator, _, _ = load_selected_generator(TASK_ID, root=ROOT)
++    first, second = prototype.episode_inputs(11, demos=2, queries=1)[:2]
++    first_facts = prototype.depth_facts(first)
++    second_facts = prototype.depth_facts(second)
++
++    assert generator.self_check(first) == []
++    assert generator.self_check(second) == []
++    assert first_facts["source_side"] == "left"
++    assert second_facts["source_side"] == "right"
++    assert len(first[0]) % 2 == 1
++    assert len(second[0]) % 2 == 0
++    assert first_facts["divider_color"] != second_facts["divider_color"]
++    assert min(first_facts["depths"]) == 1
++    assert min(second_facts["depths"]) == 2
++    assert first_facts["max_depth"] != second_facts["max_depth"]
++    assert prototype.apply_policy(first, "same_depth") != prototype.apply_policy(
++        first, "reverse_depth"
++    )
++    assert prototype.apply_policy(second, "same_depth") != prototype.apply_policy(
++        second, "reverse_depth"
++    )
++
++
++def test_two_demos_identify_each_policy_and_inputs_are_setting_matched():
++    prototype = _prototype()
++    episodes = {
++        policy: prototype.generate_episode(29, policy, demos=2, queries=4)
++        for policy in POLICIES
++    }
++
++    inputs = [
++        [pair["input"] for pair in episode["train"] + episode["test"]]
++        for episode in episodes.values()
++    ]
++    assert inputs[0] == inputs[1]
++
++    for selected, episode in episodes.items():
++        assert set(episode) == {"train", "test", "program_solution"}
++        assert len(episode["train"]) == 2
++        assert len(episode["test"]) == 4
++        assert episode["program_solution"] == prototype.program_for(selected)
++        survivors = [
++            candidate
++            for candidate in POLICIES
++            if all(
++                prototype.apply_policy(pair["input"], candidate) == pair["output"]
++                for pair in episode["train"]
++            )
++        ]
++        assert survivors == [selected]
++        assert all(
++            pair["output"] == prototype.apply_policy(pair["input"], selected)
++            for pair in episode["train"] + episode["test"]
++        )
++
++
++def test_seed_policy_and_pair_count_validation_is_strict():
++    prototype = _prototype()
++
++    for bad_seed in (True, -1, 2**63, 1.0, "17"):
++        with pytest.raises((TypeError, ValueError)):
++            prototype.episode_inputs(bad_seed, demos=2, queries=4)
++        with pytest.raises((TypeError, ValueError)):
++            prototype.generate_episode(bad_seed, "same_depth", demos=2, queries=4)
++
++    for bad_demos in (True, 1, 7, 2.0, "2"):
++        with pytest.raises((TypeError, ValueError)):
++            prototype.episode_inputs(0, demos=bad_demos, queries=4)
++
++    for bad_queries in (False, 0, 5, 4.0, "4"):
++        with pytest.raises((TypeError, ValueError)):
++            prototype.episode_inputs(0, demos=2, queries=bad_queries)
++
++    for bad_policy in (None, True, "", "reflect_nearest", 0):
++        with pytest.raises((TypeError, ValueError)):
++            prototype.generate_episode(0, bad_policy, demos=2, queries=4)
++
++
++def test_protected_racket_matches_python_on_small_gap_case_and_30x30():
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    prototype = _prototype()
++    inputs = prototype.episode_inputs(41, demos=2, queries=4)
++    witnesses = (inputs[1], inputs[-1])
++    assert [(len(grid), len(grid[0])) for grid in witnesses] == [(9, 14), (30, 30)]
++
++    with RacketBridge(timeout=30, max_calls_before_restart=16) as bridge:
++        for index, grid in enumerate(witnesses):
++            name = f"g{index}"
++            bridge.define_grid(name, grid)
++            for policy in POLICIES:
++                actual = bridge.eval_text(
++                    f"({wrap_rule(prototype.program_for(policy))} {name})"
++                )
++                assert actual == prototype.apply_policy(grid, policy)
++        assert bridge.runtime_identity["backend"] == "racket"
++        assert bridge.runtime_identity["protected"] is True
++
++
++def test_native_adapter_and_contract_have_exact_bounded_surface():
++    prototype = _prototype()
++    adapter = _load(ADAPTER_PATH, "parametric_depth_policy_adapter")
++    contract = json.loads(PROMOTION_PATH.read_text(encoding="utf-8"))
++
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": "generators/4e16917b1bde/workspace/parametric/adapter.py",
++        "parameters": {"depth_policy": list(POLICIES)},
++        "default": {"depth_policy": "same_depth"},
++        "limits": {"demos": [2, 6], "queries": [1, 4]},
++        "qualification_demos": 3,
++    }
++    for policy in POLICIES:
++        settings = {"depth_policy": policy}
++        assert adapter.program(settings) == prototype.program_for(policy)
++        assert adapter.generate(53, settings, 2, 4) == prototype.generate_episode(
++            53, policy, 2, 4
++        )
++
++
++def test_adapter_rejects_wrong_setting_shapes_and_values():
++    adapter = _load(ADAPTER_PATH, "parametric_depth_policy_adapter_validation")
++
++    for bad in (
++        None,
++        [],
++        {},
++        {"depth_policy": "same_depth", "extra": 1},
++        {"policy": "same_depth"},
++    ):
++        with pytest.raises((TypeError, ValueError)):
++            adapter.program(bad)
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(0, bad, 2, 4)
++
++    for bad_value in (None, True, "", "reflect_nearest", 0):
++        settings = {"depth_policy": bad_value}
++        with pytest.raises((TypeError, ValueError)):
++            adapter.program(settings)
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(0, settings, 2, 4)
++
++
++def test_sequential_public_turn_reveals_exactly_one_query_without_private_hints():
++    prototype = _prototype()
++    full = prototype.generate_episode(83, "reverse_depth", 3, 4)
++    single = prototype.generate_episode(83, "reverse_depth", 3, 1)
++
++    first = prototype.public_turn(full, 0)
++    assert first == prototype.public_turn(single, 0)
++    assert set(first) == {"train", "test"}
++    assert len(first["train"]) == 3
++    assert len(first["test"]) == 1
++    assert set(first["test"][0]) == {"input"}
++    assert all(set(pair) == {"input", "output"} for pair in first["train"])
++    serialized = json.dumps(first, sort_keys=True)
++    assert "reverse_depth" not in serialized
++    assert "depth_policy" not in serialized
++    assert "program_solution" not in serialized
++    assert "query_count" not in serialized
++    assert "remaining" not in serialized
++
++    for index in range(4):
++        turn = prototype.public_turn(full, index)
++        assert turn["test"] == [{"input": full["test"][index]["input"]}]
++    for bad_index in (True, -1, 4, 0.0, "0"):
++        with pytest.raises((TypeError, ValueError, IndexError)):
++            prototype.public_turn(full, bad_index)
++
++
++def test_finite_rival_audit_has_no_harmful_survivor_across_settings_and_counts():
++    audit = _load(AUDIT_PATH, "parametric_depth_policy_audit")
++
++    report = audit.run_audit(seeds=(0, 17), demo_counts=(2, 3, 6), queries=4)
++    assert report["schema"] == "arcpuzzles-parametric-depth-policy-audit-v1"
++    assert report["episodes"] == 12
++    assert report["queries_checked"] == 48
++    assert report["harmful_survivors"] == []
++    assert report["input_failures"] == []
++    assert set(report["settings_checked"]) == set(POLICIES)
++    assert len(report["rival_names"]) >= 8
+diff --git a/repo/generators/4e16917b1bde/workspace/parametric/README.md b/repo/generators/4e16917b1bde/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e16917b1bde/workspace/parametric/README.md
+@@ -0,0 +1,43 @@
++# Depth-policy parametric family
++
++This family keeps the selected divider-mirror grammar and changes only the
++placement depth of the copied cells:
++
++- `same_depth` is the exact canonical Racket program: a source cell at divider
++  distance `d` is copied to distance `d` on the opposite side.
++- `reverse_depth` first finds the divider and measures the input-dependent
++  maximum source distance `M`; a source at distance `d` is then copied to
++  distance `M + 1 - d` on the opposite side.
++
++The alternate rule has a real sequential dependency: **A** locates the divider
++and measures `M`; **B** cannot choose the target column until it receives `M`.
++The first two demonstrations use opposite source sides, odd/even widths,
++different divider colors, single/multicolor sources, and one near-divider gap.
++They identify either setting without relying on those incidental features.
++
++The adapter supports 2–6 demonstrations and 1–4 queries independently. The
++four-query profile is 14×17, 18×21, 24×27, and a substantive 30×30 case.
++`public_turn()` projects exactly one query input per turn, with no setting,
++program, answer, future query, or total-count field.
++
++Focused tests:
++
++```bash
++python3 review.py run python3 -m pytest \
++  generators/4e16917b1bde/tests/test_parametric_depth_policy.py -q
++```
++
++Finite rival audit:
++
++```bash
++python3 review.py run python3 \
++  generators/4e16917b1bde/workspace/parametric/audit.py \
++  --out generators/4e16917b1bde/workspace/parametric/evidence/current/self-audit.json
++```
++
++Native qualification:
++
++```bash
++python3 review.py run python3 -m arcpuzzles parametric qualify 4e16917b1bde \
++  --out ../checks/4e16917b1bde/qualification --summary
++```
+diff --git a/repo/generators/4e16917b1bde/workspace/parametric/adapter.py b/repo/generators/4e16917b1bde/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e16917b1bde/workspace/parametric/adapter.py
+@@ -0,0 +1,43 @@
++"""Native promotion adapter for the 4e16917b1bde depth-policy family."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++from typing import Any
++
++_HERE = Path(__file__).resolve().parent
++_SPEC = importlib.util.spec_from_file_location(
++    "depth_policy_parametric_prototype_4e16917b1bde",
++    _HERE / "prototype.py",
++)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError("cannot load sibling depth-policy prototype")
++_PROTOTYPE = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(_PROTOTYPE)
++
++
++def _settings(settings: Any) -> dict[str, Any]:
++    if type(settings) is not dict or set(settings) != {"depth_policy"}:
++        raise ValueError("settings must contain exactly depth_policy")
++    _PROTOTYPE.program_for(settings["depth_policy"])
++    return settings
++
++
++def program(settings: dict[str, Any]) -> str:
++    settings = _settings(settings)
++    return _PROTOTYPE.program_for(settings["depth_policy"])
++
++
++def generate(
++    seed: int,
++    settings: dict[str, Any],
++    demos: int = 3,
++    queries: int = 4,
++) -> dict[str, Any]:
++    settings = _settings(settings)
++    return _PROTOTYPE.generate_episode(
++        seed,
++        depth_policy=settings["depth_policy"],
++        demos=demos,
++        queries=queries,
++    )
+diff --git a/repo/generators/4e16917b1bde/workspace/parametric/audit.py b/repo/generators/4e16917b1bde/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e16917b1bde/workspace/parametric/audit.py
+@@ -0,0 +1,151 @@
++"""Finite learnability audit for the 4e16917b1bde depth-policy family."""
++from __future__ import annotations
++
++import argparse
++import importlib.util
++import json
++from pathlib import Path
++from typing import Any, Callable
++
++_HERE = Path(__file__).resolve().parent
++_SPEC = importlib.util.spec_from_file_location(
++    "depth_policy_audit_prototype", _HERE / "prototype.py"
++)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError("cannot load sibling depth-policy prototype")
++P = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(P)
++
++Grid = list[list[int]]
++Rule = Callable[[Grid], Grid]
++
++
++def _conditional(grid: Grid, condition: bool) -> Grid:
++    return P.apply_policy(grid, "reverse_depth" if condition else "same_depth")
++
++
++def _reverse_within_source_bbox(grid: Grid) -> Grid:
++    """Plausible shortcut: reverse only between occupied min/max depths."""
++    facts = P.depth_facts(grid)
++    divider = facts["divider_col"]
++    result = [list(row) for row in grid]
++    for row, col, value in facts["sources"]:
++        depth = abs(col - divider)
++        target_depth = facts["min_depth"] + facts["max_depth"] - depth
++        direction = 1 if col < divider else -1
++        target_col = divider + direction * target_depth
++        result[row][target_col] = value
++    return result
++
++
++def _fixed_span(grid: Grid, span: int) -> Grid:
++    facts = P.depth_facts(grid)
++    safe = min(span, min(facts["divider_col"], len(grid[0]) - 1 - facts["divider_col"]))
++    try:
++        return P.apply_reverse_with_span(grid, safe)
++    except ValueError:
++        return P.apply_policy(grid, "same_depth")
++
++
++def rivals() -> dict[str, Rule]:
++    return {
++        "always same depth": lambda grid: P.apply_policy(grid, "same_depth"),
++        "always reverse depth": lambda grid: P.apply_policy(grid, "reverse_depth"),
++        "reverse only left sources": lambda grid: _conditional(grid, P.depth_facts(grid)["source_side"] == "left"),
++        "reverse only right sources": lambda grid: _conditional(grid, P.depth_facts(grid)["source_side"] == "right"),
++        "reverse only even widths": lambda grid: _conditional(grid, len(grid[0]) % 2 == 0),
++        "reverse only divider color five": lambda grid: _conditional(grid, P.depth_facts(grid)["divider_color"] == 5),
++        "reverse only multicolor sources": lambda grid: _conditional(grid, len(P.depth_facts(grid)["source_colors"]) > 1),
++        "reverse only when nearest depth is one": lambda grid: _conditional(grid, P.depth_facts(grid)["min_depth"] == 1),
++        "reverse with fixed span four": lambda grid: _fixed_span(grid, 4),
++        "reverse within occupied depth bounds": _reverse_within_source_bbox,
++    }
++
++
++def run_audit(*, seeds=(0, 17), demo_counts=(2, 3, 6), queries=4) -> dict[str, Any]:
++    named = rivals()
++    harmful: list[dict[str, Any]] = []
++    failures: list[dict[str, Any]] = []
++    survivor_counts = {name: 0 for name in named}
++    episodes = 0
++    queries_checked = 0
++
++    for selected in P.POLICIES:
++        for seed in seeds:
++            for demos in demo_counts:
++                episode = P.generate_episode(seed, selected, demos, queries)
++                episodes += 1
++                queries_checked += len(episode["test"])
++                for split in ("train", "test"):
++                    for index, pair in enumerate(episode[split]):
++                        errors = P._generator().self_check(pair["input"])
++                        if errors:
++                            failures.append({
++                                "setting": selected,
++                                "seed": seed,
++                                "demos": demos,
++                                "split": split,
++                                "index": index,
++                                "errors": errors,
++                            })
++                for name, rule in named.items():
++                    try:
++                        survives = all(rule(pair["input"]) == pair["output"] for pair in episode["train"])
++                    except Exception as exc:  # A rival error is a failed rival, but retain it.
++                        survives = False
++                        failures.append({
++                            "setting": selected,
++                            "seed": seed,
++                            "demos": demos,
++                            "rival": name,
++                            "error": f"{type(exc).__name__}: {exc}",
++                        })
++                    if not survives:
++                        continue
++                    survivor_counts[name] += 1
++                    for query_index, pair in enumerate(episode["test"]):
++                        if rule(pair["input"]) != pair["output"]:
++                            harmful.append({
++                                "setting": selected,
++                                "seed": seed,
++                                "demos": demos,
++                                "query_index": query_index,
++                                "rival": name,
++                                "input": pair["input"],
++                                "intended_output": pair["output"],
++                                "rival_output": rule(pair["input"]),
++                            })
++                            break
++
++    return {
++        "schema": "arcpuzzles-parametric-depth-policy-audit-v1",
++        "task_id": P.TASK_ID,
++        "settings_checked": list(P.POLICIES),
++        "seeds": list(seeds),
++        "demo_counts": list(demo_counts),
++        "queries_per_episode": queries,
++        "episodes": episodes,
++        "queries_checked": queries_checked,
++        "rival_names": list(named),
++        "survivor_counts": survivor_counts,
++        "harmful_survivors": harmful,
++        "input_failures": failures,
++        "scope": "Finite source-bound audit against named executable Python rivals; intended labels are separately protected-Racket qualified.",
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path)
++    args = parser.parse_args()
++    report = run_audit()
++    rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
++    if args.out:
++        args.out.parent.mkdir(parents=True, exist_ok=True)
++        args.out.write_text(rendered, encoding="utf-8")
++    print(rendered, end="")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/4e16917b1bde/workspace/parametric/evidence/current/focused-tests.log b/repo/generators/4e16917b1bde/workspace/parametric/evidence/current/focused-tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e16917b1bde/workspace/parametric/evidence/current/focused-tests.log
+@@ -0,0 +1,2 @@
++...........                                                              [100%]
++11 passed in 3.52s
+diff --git a/repo/generators/4e16917b1bde/workspace/parametric/evidence/current/self-audit.json b/repo/generators/4e16917b1bde/workspace/parametric/evidence/current/self-audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e16917b1bde/workspace/parametric/evidence/current/self-audit.json
+@@ -0,0 +1,47 @@
++{
++  "demo_counts": [
++    2,
++    3,
++    6
++  ],
++  "episodes": 12,
++  "harmful_survivors": [],
++  "input_failures": [],
++  "queries_checked": 48,
++  "queries_per_episode": 4,
++  "rival_names": [
++    "always same depth",
++    "always reverse depth",
++    "reverse only left sources",
++    "reverse only right sources",
++    "reverse only even widths",
++    "reverse only divider color five",
++    "reverse only multicolor sources",
++    "reverse only when nearest depth is one",
++    "reverse with fixed span four",
++    "reverse within occupied depth bounds"
++  ],
++  "schema": "arcpuzzles-parametric-depth-policy-audit-v1",
++  "scope": "Finite source-bound audit against named executable Python rivals; intended labels are separately protected-Racket qualified.",
++  "seeds": [
++    0,
++    17
++  ],
++  "settings_checked": [
++    "same_depth",
++    "reverse_depth"
++  ],
++  "survivor_counts": {
++    "always reverse depth": 6,
++    "always same depth": 6,
++    "reverse only divider color five": 0,
++    "reverse only even widths": 0,
++    "reverse only left sources": 0,
++    "reverse only multicolor sources": 0,
++    "reverse only right sources": 0,
++    "reverse only when nearest depth is one": 0,
++    "reverse with fixed span four": 0,
++    "reverse within occupied depth bounds": 0
++  },
++  "task_id": "4e16917b1bde"
++}
+diff --git a/repo/generators/4e16917b1bde/workspace/parametric/evidence/manifest.json b/repo/generators/4e16917b1bde/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e16917b1bde/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,77 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "de4ea202a0201ae26247a1c2bbe39dcf62be5ccc14146aea49e4875ad7f0212b",
++  "canonical_rule_hash": "de4ea202a020",
++  "default": {
++    "depth_policy": "same_depth"
++  },
++  "evidence_root": "generators/4e16917b1bde/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 22430,
++      "path": "generators/4e16917b1bde/generator.py",
++      "sha256": "19182d57656a74f19761ca43b549f3da03a8b46d3bde5cff91d68dc810ee91a2"
++    },
++    {
++      "bytes": 11197,
++      "path": "generators/4e16917b1bde/tests/test_parametric_depth_policy.py",
++      "sha256": "e04441480f29e834b8b69dd5490d84359f3f9fbdc5c89492b56d60324403a227"
++    },
++    {
++      "bytes": 1272,
++      "path": "generators/4e16917b1bde/workspace/parametric/adapter.py",
++      "sha256": "f67b405f420930f61dbc49c1935766c66fb915993c65df2379590b16af333120"
++    },
++    {
++      "bytes": 6356,
++      "path": "generators/4e16917b1bde/workspace/parametric/audit.py",
++      "sha256": "0ef852da0dc8a2bf0c4327f758a6c3b2e26f256923aba47e3fa97bbe99f91334"
++    },
++    {
++      "bytes": 99,
++      "path": "generators/4e16917b1bde/workspace/parametric/evidence/current/focused-tests.log",
++      "sha256": "b83fd6f8f191913fca8be63c128c98640bfc70821e87d7bc81dfeb613187fcb1"
++    },
++    {
++      "bytes": 1287,
++      "path": "generators/4e16917b1bde/workspace/parametric/evidence/current/self-audit.json",
++      "sha256": "2e4e54f519da1fdb12bc595ab0f777a818aa1c08f76cfa5ee707a17d111df023"
++    },
++    {
++      "bytes": 395,
++      "path": "generators/4e16917b1bde/workspace/parametric/promotion.json",
++      "sha256": "5e7283e89a80f688b9a31204c665b466aff48a7c01480e1adf34d6b05863e0e7"
++    },
++    {
++      "bytes": 12618,
++      "path": "generators/4e16917b1bde/workspace/parametric/prototype.py",
++      "sha256": "3e5f19f1861da021cdfd84c836b5b79ae9f23c414ff58055c155691b4ac25c43"
++    }
++  ],
++  "generator_sha256": "19182d57656a74f19761ca43b549f3da03a8b46d3bde5cff91d68dc810ee91a2",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "depth_policy": [
++      "same_depth",
++      "reverse_depth"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "11 focused tests passed, including protected-Racket parity for a near-gap case and a substantive 30x30 case; 12-episode finite audit across both settings, seeds 0/17, demo counts 2/3/6, four queries each, and ten executable rivals found zero harmful survivors and zero input failures; sequential public projection reveals one query and hides settings, program, labels, future inputs, and count hints.",
++  "rule_task_id": "4e16917b1bde",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "4e16917b1bde",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/4e16917b1bde/workspace/parametric/promotion.json b/repo/generators/4e16917b1bde/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e16917b1bde/workspace/parametric/promotion.json
+@@ -0,0 +1,24 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/4e16917b1bde/workspace/parametric/adapter.py",
++  "parameters": {
++    "depth_policy": [
++      "same_depth",
++      "reverse_depth"
++    ]
++  },
++  "default": {
++    "depth_policy": "same_depth"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "qualification_demos": 3
++}
+diff --git a/repo/generators/4e16917b1bde/workspace/parametric/prototype.py b/repo/generators/4e16917b1bde/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e16917b1bde/workspace/parametric/prototype.py
+@@ -0,0 +1,315 @@
++"""Native parametric depth-placement family for ARC task 4e16917b1bde.
++
++The source grammar is shared across settings: a full-height colored divider and
++colored source cells on one side.  ``same_depth`` is the exact canonical rule.
++``reverse_depth`` first measures the furthest source distance from the divider,
++then copies every source cell to the opposite side with its depth order reversed
++inside that input-derived span.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++from functools import cache
++import hashlib
++import json
++import random
++from pathlib import Path
++from typing import Any
++
++from reviewer_support import canonical_path, find_root, load_selected_generator
++
++TASK_ID = "4e16917b1bde"
++HERE = Path(__file__).resolve().parent
++ROOT = find_root(__file__)
++
++Grid = list[list[int]]
++POLICIES = ("same_depth", "reverse_depth")
++DEFAULT_POLICY = "same_depth"
++MIN_DEMOS = 2
++MAX_DEMOS = 6
++MIN_QUERIES = 1
++MAX_QUERIES = 4
++
++# Profiles deliberately make the first two demonstrations disagree with
++# side-, parity-, palette-, and gap-conditioned shortcuts while keeping the
++# rule action fixed within an episode.  Query 4 is a substantive 30x30 case.
++_DEMO_PROFILES = (
++    {"h": 8, "w": 13, "divider": 6, "side": "left", "depths": (1, 4, 5), "count": 10, "colors": 1, "divider_color": 5},
++    {"h": 9, "w": 14, "divider": 4, "side": "right", "depths": (2, 4), "count": 11, "colors": 3, "divider_color": 8},
++    {"h": 10, "w": 17, "divider": 11, "side": "left", "depths": (1, 2, 5), "count": 15, "colors": 2},
++    {"h": 12, "w": 19, "divider": 6, "side": "right", "depths": (1, 3, 6), "count": 18, "colors": 4},
++    {"h": 16, "w": 23, "divider": 11, "side": "left", "depths": (2, 4, 7, 10), "count": 24, "colors": 3},
++    {"h": 20, "w": 29, "divider": 14, "side": "right", "depths": (1, 5, 9, 13), "count": 30, "colors": 4},
++)
++_QUERY_PROFILES = (
++    {"h": 14, "w": 17, "divider": 8, "side": "left", "depths": (1, 3, 7), "count": 20, "colors": 2},
++    {"h": 18, "w": 21, "divider": 7, "side": "right", "depths": (2, 4, 7), "count": 24, "colors": 3},
++    {"h": 24, "w": 27, "divider": 16, "side": "left", "depths": (1, 4, 7, 10), "count": 32, "colors": 4},
++    {"h": 30, "w": 30, "divider": 14, "side": "left", "depths": (1, 3, 6, 10, 14), "count": 42, "colors": 4},
++)
++
++_REVERSE_DEPTH_PROGRAM = """(rule! (lambda (g)
++  (let* ((dividers
++          (filter
++           (lambda (c)
++             (let ((v (at g 0 c)))
++               (and (not (= v 0))
++                    (all? (lambda (r) (= (at g r c) v))
++                          (range (rows g))))))
++           (range (cols g))))
++         (divider (first dividers))
++         (dcolor (at g 0 divider))
++         (sources
++          (filter
++           (lambda (p)
++             (let ((r (first p)) (c (second p)))
++               (and (not (= c divider))
++                    (not (= (at g r c) 0))
++                    (not (= (at g r c) dcolor)))))
++           (grid-positions g)))
++         (max-depth
++          (apply max
++                 (map (lambda (p) (abs (- (second p) divider))) sources))))
++    (for/fold ([out g]) ([p (in-list sources)])
++      (let* ((r (first p))
++             (c (second p))
++             (v (at g r c))
++             (depth (abs (- c divider)))
++             (target-depth (+ 1 (- max-depth depth)))
++             (direction (if (< c divider) 1 -1))
++             (target-col (+ divider (* direction target-depth))))
++        (if (and (in-bounds? r target-col (rows g) (cols g))
++                 (= (at out r target-col) 0))
++            (set-cell out r target-col v)
++            out))))))"""
++
++
++@cache
++def _generator():
++    return load_selected_generator(TASK_ID, root=ROOT)[0]
++
++
++def _validate_policy(policy: Any) -> str:
++    if type(policy) is not str:
++        raise TypeError("depth policy must be an exact string")
++    if policy not in POLICIES:
++        raise ValueError(f"unknown depth policy: {policy!r}")
++    return policy
++
++
++@cache
++def canonical_program() -> str:
++    matches: list[dict[str, Any]] = []
++    for line in canonical_path(ROOT).read_text(encoding="utf-8").splitlines():
++        if not line.strip():
++            continue
++        row = json.loads(line)
++        if row.get("task_id") == TASK_ID:
++            matches.append(row)
++    if len(matches) != 1:
++        raise ValueError(f"expected one canonical row for {TASK_ID}, found {len(matches)}")
++    source = matches[0].get("program_solution")
++    if type(source) is not str or not source:
++        raise ValueError(f"canonical row for {TASK_ID} has no program_solution")
++    return source
++
++
++def program_for(policy: str) -> str:
++    policy = _validate_policy(policy)
++    return canonical_program() if policy == "same_depth" else _REVERSE_DEPTH_PROGRAM
++
++
++def _validate_seed(seed: Any) -> int:
++    if type(seed) is not int:
++        raise TypeError("seed must be an exact integer")
++    if not 0 <= seed < 2**63:
++        raise ValueError("seed must be in 0..2**63-1")
++    return seed
++
++
++def _validate_count(value: Any, name: str, minimum: int, maximum: int) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be an exact integer")
++    if not minimum <= value <= maximum:
++        raise ValueError(f"{name} must be in {minimum}..{maximum}")
++    return value
++
++
++def depth_facts(grid: Grid) -> dict[str, Any]:
++    errors, facts = _generator()._analyze(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    divider = facts["divider_col"]
++    depths = sorted({abs(col - divider) for _, col, _ in facts["sources"]})
++    return {
++        "divider_col": divider,
++        "divider_color": facts["divider_color"],
++        "source_side": facts["source_side"],
++        "depths": depths,
++        "max_depth": max(depths),
++        "min_depth": min(depths),
++        "source_count": len(facts["sources"]),
++        "source_colors": sorted({value for _, _, value in facts["sources"]}),
++        "sources": [list(item) for item in facts["sources"]],
++    }
++
++
++def _apply_with_span(grid: Grid, span: int, *, reverse: bool) -> Grid:
++    errors, facts = _generator()._analyze(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    if type(span) is not int or span < 1:
++        raise ValueError("span must be a positive integer")
++    divider = facts["divider_col"]
++    result = [list(row) for row in grid]
++    for row, col, value in facts["sources"]:
++        depth = abs(col - divider)
++        target_depth = span + 1 - depth if reverse else depth
++        direction = 1 if col < divider else -1
++        target_col = divider + direction * target_depth
++        if not 0 <= target_col < len(grid[0]):
++            raise ValueError(f"target column {target_col} is out of bounds")
++        if result[row][target_col] != 0:
++            raise ValueError(f"target {(row, target_col)} is not background")
++        result[row][target_col] = value
++    return result
++
++
++def apply_policy(grid: Grid, policy: str) -> Grid:
++    policy = _validate_policy(policy)
++    facts = depth_facts(grid)
++    return _apply_with_span(
++        grid,
++        facts["max_depth"],
++        reverse=policy == "reverse_depth",
++    )
++
++
++def apply_reverse_with_span(grid: Grid, span: int) -> Grid:
++    """Audit helper for a wrong input-derived intermediate."""
++    return _apply_with_span(grid, span, reverse=True)
++
++
++def _profile_rng(seed: int, split: str, slot: int, attempt: int) -> random.Random:
++    material = f"{TASK_ID}|depth-policy-v1|{seed}|{split}|{slot}|{attempt}".encode()
++    return random.Random(int.from_bytes(hashlib.sha256(material).digest(), "big"))
++
++
++def _palette(seed: int, split: str, slot: int, divider_color: int, count: int) -> tuple[int, ...]:
++    colors = [value for value in range(1, 10) if value != divider_color]
++    material = f"{TASK_ID}|palette|{seed}|{split}|{slot}".encode()
++    rng = random.Random(int.from_bytes(hashlib.sha256(material).digest(), "big"))
++    rng.shuffle(colors)
++    return tuple(colors[:count])
++
++
++def _make_input(seed: int, split: str, slot: int, profile: dict[str, Any]) -> Grid:
++    h = profile["h"]
++    w = profile["w"]
++    divider = profile["divider"]
++    side = profile["side"]
++    depths = tuple(profile["depths"])
++    count = profile["count"]
++    color_count = profile["colors"]
++    if max(depths) > min(divider, w - 1 - divider):
++        raise AssertionError("profile depth exceeds symmetric divider span")
++    if count > h * len(depths):
++        raise AssertionError("profile source count exceeds available cells")
++
++    fixed_divider = profile.get("divider_color")
++    divider_color = fixed_divider or (((seed + slot * 3 + (0 if split == "demo" else 5)) % 9) + 1)
++    palette = _palette(seed, split, slot, divider_color, color_count)
++
++    for attempt in range(256):
++        rng = _profile_rng(seed, split, slot, attempt)
++        candidates = [(row, depth) for depth in depths for row in range(h)]
++        forced: list[tuple[int, int]] = [(0, max(depths)), (h - 1, min(depths))]
++        for index, depth in enumerate(depths):
++            forced.append(((2 * index + 1 + slot) % h, depth))
++        positions: list[tuple[int, int]] = []
++        for item in forced:
++            if item not in positions:
++                positions.append(item)
++        remainder = [item for item in candidates if item not in positions]
++        rng.shuffle(remainder)
++        positions.extend(remainder[: count - len(positions)])
++        rng.shuffle(positions)
++
++        if color_count == 1:
++            source_colors = [palette[0]] * count
++        else:
++            source_colors = list(palette)
++            source_colors.extend([palette[0]] * (count - len(source_colors)))
++            rng.shuffle(source_colors)
++
++        grid = [[0 for _ in range(w)] for _ in range(h)]
++        for row in range(h):
++            grid[row][divider] = divider_color
++        for (row, depth), color in zip(positions, source_colors):
++            col = divider - depth if side == "left" else divider + depth
++            grid[row][col] = color
++
++        if _generator().self_check(grid):
++            continue
++        if apply_policy(grid, "same_depth") == apply_policy(grid, "reverse_depth"):
++            continue
++        return grid
++    raise RuntimeError(f"could not construct distinguishing {split} profile {slot}")
++
++
++def episode_inputs(seed: int, demos: int, queries: int) -> list[Grid]:
++    seed = _validate_seed(seed)
++    demos = _validate_count(demos, "demos", MIN_DEMOS, MAX_DEMOS)
++    queries = _validate_count(queries, "queries", MIN_QUERIES, MAX_QUERIES)
++    demo_inputs = [
++        _make_input(seed, "demo", slot, _DEMO_PROFILES[slot])
++        for slot in range(demos)
++    ]
++    query_inputs = [
++        _make_input(seed, "query", slot, _QUERY_PROFILES[slot])
++        for slot in range(queries)
++    ]
++    inputs = demo_inputs + query_inputs
++    frozen = {tuple(tuple(row) for row in grid) for grid in inputs}
++    if len(frozen) != len(inputs):
++        raise AssertionError("episode inputs must be distinct")
++    return inputs
++
++
++def generate_episode(seed: int, depth_policy: str, demos: int, queries: int) -> dict[str, Any]:
++    depth_policy = _validate_policy(depth_policy)
++    inputs = episode_inputs(seed, demos, queries)
++    return {
++        "train": [
++            {"input": grid, "output": apply_policy(grid, depth_policy)}
++            for grid in inputs[:demos]
++        ],
++        "test": [
++            {"input": grid, "output": apply_policy(grid, depth_policy)}
++            for grid in inputs[demos:]
++        ],
++        "program_solution": program_for(depth_policy),
++    }
++
++
++def public_turn(episode: dict[str, Any], query_index: int) -> dict[str, Any]:
++    """Project one model-visible turn without settings, code, labels, or count hints."""
++    if type(query_index) is not int:
++        raise TypeError("query_index must be an exact integer")
++    if not isinstance(episode, dict):
++        raise TypeError("episode must be a dictionary")
++    train = episode.get("train")
++    test = episode.get("test")
++    if not isinstance(train, list) or not isinstance(test, list):
++        raise ValueError("episode needs train and test lists")
++    if not 0 <= query_index < len(test):
++        raise IndexError("query_index is outside the private query list")
++    visible_train = []
++    for pair in train:
++        if not isinstance(pair, dict) or not {"input", "output"} <= set(pair):
++            raise ValueError("every demonstration needs input and output")
++        visible_train.append({"input": deepcopy(pair["input"]), "output": deepcopy(pair["output"])})
++    query = test[query_index]
++    if not isinstance(query, dict) or "input" not in query:
++        raise ValueError("query needs an input")
++    return {"train": visible_train, "test": [{"input": deepcopy(query["input"])}]}

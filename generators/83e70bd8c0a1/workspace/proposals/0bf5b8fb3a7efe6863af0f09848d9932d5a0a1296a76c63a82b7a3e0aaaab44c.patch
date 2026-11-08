@@ -1,0 +1,2102 @@
+diff --git a/repo/generators/78eb45ff43c2/notes.md b/repo/generators/78eb45ff43c2/notes.md
+--- a/repo/generators/78eb45ff43c2/notes.md
++++ b/repo/generators/78eb45ff43c2/notes.md
+@@ -2,3 +2,19 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 optional control/domain probe
++
++Added `workspace/control_contract_probe.py` and a focused regression without
++changing production semantics. At selected source SHA-256
++`fdd6dac0f31b6a5bc2ec2514027eeb6402a33ae27b72ecf719229f56df61dde1`,
++`anchor_corner`, `asymmetry_force`, `palette_kind`, and `palette_size` are
++accepted but produce the same seed-17/sample-3 grid as the base request.
++An unknown override is also accepted and ignored.
++
++The current `self_check` accepts a lone gray cell, two adjacent gray cells, and
++an all-gray 10×10 grid, although the declared grammar requires exactly one
++rectangular frame with exactly one perimeter gap. The retained probe is
++source-pinned and its 1/1 task test passes. Production was left unchanged because
++the owner must choose whether to implement or remove/narrow each axis and define
++the exact frame/gap validator invariant.
+diff --git a/repo/generators/78eb45ff43c2/tests/test_control_contract_probe.py b/repo/generators/78eb45ff43c2/tests/test_control_contract_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/78eb45ff43c2/tests/test_control_contract_probe.py
+@@ -0,0 +1,38 @@
++"""Regression for the retained source-bound control/domain probe."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++
++PROBE = Path(__file__).resolve().parents[1] / "workspace/control_contract_probe.py"
++EXPECTED_SOURCE = "fdd6dac0f31b6a5bc2ec2514027eeb6402a33ae27b72ecf719229f56df61dde1"
++
++
++def _module():
++    assert PROBE.is_file(), "control-contract probe is missing"
++    spec = importlib.util.spec_from_file_location("frame_gap_control_probe", PROBE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_probe_reproduces_inert_controls_and_weak_domain_checks():
++    report = _module().build_report(seed=17, sample_index=3)
++    assert report["status"] == "finding"
++    assert report["generator_sha256"] == EXPECTED_SOURCE
++    assert report["base_self_check"] == []
++    assert report["inert_controls"] == [
++        "anchor_corner",
++        "asymmetry_force",
++        "palette_kind",
++        "palette_size",
++    ]
++    assert report["malformed_acceptance"] == {
++        "all_gray": [],
++        "lone_gray_cell": [],
++        "two_gray_cells": [],
++    }
++    assert report["unknown_control"]["accepted"] is True
++    assert report["unknown_control"]["same_as_base"] is True
+diff --git a/repo/generators/78eb45ff43c2/workspace/control_contract_probe.py b/repo/generators/78eb45ff43c2/workspace/control_contract_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/78eb45ff43c2/workspace/control_contract_probe.py
+@@ -0,0 +1,137 @@
++#!/usr/bin/env python3
++"""Source-pinned probe for advertised controls and self-check coverage.
++
++This is reviewer evidence, not a production repair. The owner must decide
++whether to implement the inert axes or narrow the public contract, and what
++frame/gap invariant the validator should enforce.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++
++from reviewer_support import find_root, load_selected_generator
++
++
++TASK_ID = "78eb45ff43c2"
++EXPECTED_SOURCE_SHA256 = "fdd6dac0f31b6a5bc2ec2514027eeb6402a33ae27b72ecf719229f56df61dde1"
++
++
++def _bytes(grid: list[list[int]]) -> bytes:
++    return (json.dumps(grid, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
++
++
++def _sha_grid(grid: list[list[int]]) -> str:
++    return hashlib.sha256(_bytes(grid)).hexdigest()
++
++
++def build_report(*, seed: int = 17, sample_index: int = 3) -> dict:
++    root = find_root(__file__)
++    generator, source, digest = load_selected_generator(TASK_ID, root=root)
++    if digest != EXPECTED_SOURCE_SHA256:
++        raise ValueError(f"source drift: expected {EXPECTED_SOURCE_SHA256}, got {digest}")
++
++    base = generator.generate(seed, sample_index)
++    controls = {
++        "palette_kind": {"palette_kind": "fixed"},
++        "anchor_corner": {"anchor_corner": True},
++        "asymmetry_force": {"asymmetry_force": True},
++        "palette_size": {"palette_size": 1},
++    }
++    control_cases = {}
++    for name, override in controls.items():
++        grid = generator.generate(seed, sample_index, **override)
++        control_cases[name] = {
++            "override": override,
++            "same_as_base": grid == base,
++            "grid_sha256": _sha_grid(grid),
++        }
++
++    unknown = {"definitely_unknown": 123}
++    try:
++        unknown_grid = generator.generate(seed, sample_index, **unknown)
++        unknown_result = {
++            "accepted": True,
++            "same_as_base": unknown_grid == base,
++            "grid_sha256": _sha_grid(unknown_grid),
++        }
++    except Exception as exc:  # pragma: no cover - retained if owner tightens controls
++        unknown_result = {"accepted": False, "error": f"{type(exc).__name__}: {exc}"}
++
++    h = w = 10
++    malformed = {
++        "lone_gray_cell": [[5] + [0] * (w - 1)] + [[0] * w for _ in range(h - 1)],
++        "two_gray_cells": [[5, 5] + [0] * (w - 2)] + [[0] * w for _ in range(h - 1)],
++        "all_gray": [[5] * w for _ in range(h)],
++    }
++    malformed_acceptance = {
++        name: generator.self_check(grid) for name, grid in malformed.items()
++    }
++
++    inert = sorted(name for name, row in control_cases.items() if row["same_as_base"])
++    findings = []
++    if inert:
++        findings.append(
++            "Advertised controls are accepted but do not change the generated grid at the retained source."
++        )
++    if any(not errors for errors in malformed_acceptance.values()):
++        findings.append(
++            "self_check accepts grids that do not contain one rectangular frame with exactly one perimeter gap."
++        )
++    if unknown_result.get("accepted"):
++        findings.append("Unknown override names are accepted and ignored.")
++
++    return {
++        "schema": "arcpuzzles-frame-gap-control-probe-v1",
++        "task_id": TASK_ID,
++        "status": "finding" if findings else "no_finding",
++        "generator_path": source.relative_to(root).as_posix(),
++        "generator_sha256": digest,
++        "seed": seed,
++        "sample_index": sample_index,
++        "base_grid_sha256": _sha_grid(base),
++        "base_shape": [len(base), len(base[0])],
++        "base_self_check": generator.self_check(base),
++        "control_cases": control_cases,
++        "inert_controls": inert,
++        "unknown_control": unknown_result,
++        "malformed_acceptance": malformed_acceptance,
++        "malformed_grid_sha256": {
++            name: _sha_grid(grid) for name, grid in malformed.items()
++        },
++        "findings": findings,
++        "owner_decision": (
++            "Choose whether to implement or remove/narrow each advertised axis, reject unknown controls, "
++            "and define the exact rectangular-frame/one-gap validator before changing production semantics."
++        ),
++        "limits": (
++            "One source-pinned matched draw and three minimal validator counterexamples; "
++            "this does not audit canonical Racket labels or every generation seed."
++        ),
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seed", type=int, default=17)
++    parser.add_argument("--sample-index", type=int, default=3)
++    args = parser.parse_args()
++    if args.out.exists():
++        parser.error(f"output already exists: {args.out}")
++    report = build_report(seed=args.seed, sample_index=args.sample_index)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(json.dumps({
++        "status": report["status"],
++        "inert_controls": report["inert_controls"],
++        "malformed_acceptance": report["malformed_acceptance"],
++        "unknown_control": report["unknown_control"],
++    }, indent=2, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/832404dc8a5c/notes.md b/repo/generators/832404dc8a5c/notes.md
+--- a/repo/generators/832404dc8a5c/notes.md
++++ b/repo/generators/832404dc8a5c/notes.md
+@@ -222,3 +222,21 @@
+ The original packet's first full extraction actually failed with ENOSPC. A manifest-verified subset allowed review work to proceed; the optional helper later restored all missing originals using read-only hardlinks only among fresh identical reference files. This preserves the official packager's full-inventory gate and existing edited bytes. The helper's first integration serialization failure and its successful regression test remain in evidence. Large reports are losslessly compressed with exact original path/size/hash mappings, and no failure was discarded to meet the return budget. Fresh replay uses the original packet's declared runtime closure, not a claim of another full extraction.
+ 
+ Final replay verified all eight changed paths from a 333-file declared dependency closure and reran all 121 focused tests successfully in a fresh Python environment and offline Racket installation. The exact tested source patch hash is `f132220d94bd3800cc4476005326ace202a1459cca32eb9a5b2e72c531bceba3`. Final handoff additions contain only evidence and review documents. Supported authority-sync commands also created transient repository metadata rejected by the first package attempt; those bytes were preserved under checks rather than weakening the source gate. The expanded-size failure and successful compression preparation are retained as separate package attempts.
++
++## 2026-10-24 optional row-count learnability probe
++
++Added `workspace/row_cap_learnability_probe.py` and a protected-Racket
++regression against the retained `direction_scope=union` lesson. The three visible
++demonstrations contain 1, 0, and 1 anchored rows, while the query contains two.
++A plausible rival that transforms only the first selected row but all selected
++columns matches all three demonstrations and differs from the intended query at
++six cells.
++
++The probe is bound to generator SHA-256
++`d1b17ce79331a3490635b917a3c3d1d349d0865e9f7f1657ef84897de48d8634`
++and prototype SHA-256
++`7c8e7fc57246a3ea8d3e3ceb2adbc73fd80ed789165ec84c8960af602a915f84`;
++it performs eight Racket evaluations. The complete task suite passes 122/122.
++The prototype was not changed: a likely repair is to replace one visible union
++demonstration with a lawful two-row case and add this rival to its teaching
++audit, preserving the three-demo cost.
+diff --git a/repo/generators/832404dc8a5c/tests/test_row_cap_learnability_probe.py b/repo/generators/832404dc8a5c/tests/test_row_cap_learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/832404dc8a5c/tests/test_row_cap_learnability_probe.py
+@@ -0,0 +1,32 @@
++"""Regression for a plausible row-count-cap shortcut in the retained lesson."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++
++PROBE = Path(__file__).resolve().parents[1] / "workspace/row_cap_learnability_probe.py"
++EXPECTED_GENERATOR = "d1b17ce79331a3490635b917a3c3d1d349d0865e9f7f1657ef84897de48d8634"
++EXPECTED_PROTOTYPE = "7c8e7fc57246a3ea8d3e3ceb2adbc73fd80ed789165ec84c8960af602a915f84"
++
++
++def _module():
++    assert PROBE.is_file(), "row-cap learnability probe is missing"
++    spec = importlib.util.spec_from_file_location("row_cap_probe", PROBE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_first_row_only_rival_fits_all_demos_but_fails_query():
++    report = _module().build_report(seed=17)
++    assert report["status"] == "finding"
++    assert report["generator_sha256"] == EXPECTED_GENERATOR
++    assert report["prototype_sha256"] == EXPECTED_PROTOTYPE
++    assert report["setting"] == "union"
++    assert report["demonstration_row_counts"] == [1, 0, 1]
++    assert report["query_row_count"] == 2
++    assert report["rival_matches_all_demonstrations"] is True
++    assert report["query_difference_cells"] > 0
++    assert report["racket_evaluations"] == 8
+diff --git a/repo/generators/832404dc8a5c/workspace/row_cap_learnability_probe.py b/repo/generators/832404dc8a5c/workspace/row_cap_learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/832404dc8a5c/workspace/row_cap_learnability_probe.py
+@@ -0,0 +1,193 @@
++#!/usr/bin/env python3
++"""Protected-Racket probe for a first-selected-row shortcut.
++
++The retained direction-scope prototype teaches union mode with anchored-row
++counts 1, 0, and 1, then asks a query with two anchored rows. A plausible rule
++that transforms only the first selected row but all selected columns therefore
++fits every visible demonstration and disagrees on the query.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import random
++
++from arc_repl.racket_bridge import RacketBridge
++from reviewer_support import find_root, load_selected_generator
++
++
++TASK_ID = "832404dc8a5c"
++HERE = Path(__file__).resolve().parent
++PROTOTYPE_PATH = HERE / "parametric/prototype.py"
++EXPECTED_GENERATOR_SHA256 = "d1b17ce79331a3490635b917a3c3d1d349d0865e9f7f1657ef84897de48d8634"
++EXPECTED_PROTOTYPE_SHA256 = "7c8e7fc57246a3ea8d3e3ceb2adbc73fd80ed789165ec84c8960af602a915f84"
++
++RIVAL_PROGRAM = r"""(rule! (lambda (g)
++  (let ((h (rows g)) (w (cols g)))
++    (let ((first-selected-row
++           (find-first
++             (lambda (rr)
++               (and (= 4 (at g rr 0)) (= 4 (at g rr (- w 1)))))
++             (range 0 h))))
++      (grid-from-fn h w
++        (lambda (r c)
++          (let ((v (at g r c))
++                (row-selected? (and first-selected-row (= r first-selected-row)))
++                (column-selected? (and (= 4 (at g 0 c)) (= 4 (at g (- h 1) c)))))
++            (if (or row-selected? column-selected?)
++                (cond ((zero? v) 8)
++                      ((= v 8) 0)
++                      ((= v 6) 7)
++                      ((= v 7) 6)
++                      (else v))
++                v))))))))
++"""
++
++
++def _sha(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def _load_prototype():
++    if _sha(PROTOTYPE_PATH) != EXPECTED_PROTOTYPE_SHA256:
++        raise ValueError("prototype source drifted; review the shortcut against the new lesson")
++    spec = importlib.util.spec_from_file_location("direction_scope_probe_source", PROTOTYPE_PATH)
++    if spec is None or spec.loader is None:
++        raise RuntimeError("could not load direction-scope prototype")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _selected_row_count(grid: list[list[int]]) -> int:
++    return sum(row[0] == row[-1] == 4 for row in grid)
++
++
++def _difference_cells(left: list[list[int]], right: list[list[int]]) -> list[list[int]]:
++    return [
++        [r, c]
++        for r, row in enumerate(left)
++        for c, value in enumerate(row)
++        if value != right[r][c]
++    ]
++
++
++def build_report(*, seed: int = 17) -> dict:
++    if type(seed) is not int or seed < 0:
++        raise ValueError("seed must be a nonnegative integer")
++    root = find_root(__file__)
++    selected, source, generator_sha = load_selected_generator(TASK_ID, root=root)
++    if generator_sha != EXPECTED_GENERATOR_SHA256:
++        raise ValueError("selected generator source drifted")
++    prototype = _load_prototype()
++
++    input_rng = random.Random(f"{TASK_ID}:inputs:{seed}")
++    schedule = ((1, 0, "swapped"), (0, 2, "base"), (1, 1, "swapped"), (2, 1, "base"))
++    inputs = []
++    draws = []
++    for index, (row_count, column_count, palette) in enumerate(schedule):
++        overrides = {
++            "grid_h": input_rng.randint(6, 13),
++            "grid_w": input_rng.randint(8, 12),
++            "n_anchored_rows": row_count,
++            "n_anchored_cols": column_count,
++            "lane_palette": palette,
++        }
++        grid = selected.generate(seed, index, difficulty="hard", **overrides)
++        errors = selected.self_check(grid)
++        if errors:
++            raise ValueError(f"selected generator rejected retained lesson input {index}: {errors}")
++        inputs.append(grid)
++        draws.append({"sample_index": index, "overrides": overrides})
++
++    canonical_program = prototype.materialize_program("union")
++    with RacketBridge() as bridge:
++        canonical_outputs = [
++            prototype.execute_program(canonical_program, grid, bridge) for grid in inputs
++        ]
++        rival_outputs = [
++            prototype.execute_program(RIVAL_PROGRAM, grid, bridge) for grid in inputs
++        ]
++        runtime = bridge.runtime_identity
++
++    demo_matches = [
++        rival_outputs[index] == canonical_outputs[index] for index in range(3)
++    ]
++    query_differences = _difference_cells(canonical_outputs[3], rival_outputs[3])
++    if not all(demo_matches) or not query_differences:
++        raise AssertionError("retained lesson no longer exhibits the row-cap shortcut")
++
++    return {
++        "schema": "arcpuzzles-direction-scope-row-cap-probe-v1",
++        "task_id": TASK_ID,
++        "status": "finding",
++        "setting": "union",
++        "seed": seed,
++        "generator_path": source.relative_to(root).as_posix(),
++        "generator_sha256": generator_sha,
++        "prototype_path": PROTOTYPE_PATH.relative_to(root).as_posix(),
++        "prototype_sha256": _sha(PROTOTYPE_PATH),
++        "canonical_program": canonical_program,
++        "canonical_program_sha256": hashlib.sha256(canonical_program.encode()).hexdigest(),
++        "rival_name": "first_selected_row_plus_all_columns",
++        "rival_program": RIVAL_PROGRAM,
++        "rival_program_sha256": hashlib.sha256(RIVAL_PROGRAM.encode()).hexdigest(),
++        "demonstration_row_counts": [_selected_row_count(grid) for grid in inputs[:3]],
++        "query_row_count": _selected_row_count(inputs[3]),
++        "rival_matches_demonstrations": demo_matches,
++        "rival_matches_all_demonstrations": all(demo_matches),
++        "query_difference_cells": len(query_differences),
++        "query_first_differences": query_differences[:16],
++        "racket_evaluations": 8,
++        "racket": runtime,
++        "draws": draws,
++        "demonstrations": [
++            {
++                "input": inputs[index],
++                "output": canonical_outputs[index],
++                "rival_output": rival_outputs[index],
++            }
++            for index in range(3)
++        ],
++        "query": {
++            "input": inputs[3],
++            "output": canonical_outputs[3],
++            "rival_output": rival_outputs[3],
++        },
++        "repair_option": (
++            "Replace one visible union demonstration with a lawful case containing at least two anchored rows, "
++            "or add this rival to the lesson audit and constructively reject it without increasing the demo count."
++        ),
++        "limits": (
++            "One exact source-pinned seed and one plausible shortcut; this does not prove broader ambiguity "
++            "or prescribe a production repair."
++        ),
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seed", type=int, default=17)
++    args = parser.parse_args()
++    if args.out.exists():
++        parser.error(f"output already exists: {args.out}")
++    report = build_report(seed=args.seed)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(json.dumps({
++        "status": report["status"],
++        "demonstration_row_counts": report["demonstration_row_counts"],
++        "query_row_count": report["query_row_count"],
++        "rival_matches_all_demonstrations": report["rival_matches_all_demonstrations"],
++        "query_difference_cells": report["query_difference_cells"],
++        "racket_evaluations": report["racket_evaluations"],
++    }, indent=2, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/83e70bd8c0a1/notes.md b/repo/generators/83e70bd8c0a1/notes.md
+--- a/repo/generators/83e70bd8c0a1/notes.md
++++ b/repo/generators/83e70bd8c0a1/notes.md
+@@ -209,3 +209,34 @@
+ **Limitation.** Maintainers must read the resumed summary rather than interpreting
+ the interrupted wrapper record as the final aggregate. `RESULTS.json` states this
+ explicitly.
++
++## 2026-10-24 native parametric review — anti-diagonal probe relay
++
++Retained a two-setting, matched-input family under
++`workspace/parametric/`. `full_reflection` is the byte-exact selected canonical
++Racket program. `probe_relay` moves the unique blue probe by that same
++anti-diagonal coordinate map, reads the unique landing cue, and transposes only
++that input-selected cue color's remote payload. The production generator and
++canonical authority remain unchanged.
++
++The alternative's real dependency is: **A** move the probe; **intermediate**
++read the landing-cue color; **B** transpose that color's payload. The protected
++wrong-intermediate witness uses qualified seed 0, query 0: the landing cue is
++color 2 while the source cue is color 3. Reading before A transforms the wrong
++payload and changes 10 final cells. Evidence is retained in
++`checks/83e70bd8c0a1/causal/`.
++
++The adapter supports 2–6 demonstrations and 1–4 prefix-stable queries with
++matched inputs. Query sizes are 10, 15, 22, and 30; the 30×30 case has boundary
++anchors, all-quadrant content, and at least 90 occupied cells. The first two
++constructive demonstrations reject the two admitted rules and declared
++identity/transform/probe/fixed-color/source-cue/recolor shortcuts.
++
++Fresh checks: 31 focused tests, 50 complete task tests, a 64-seed finite audit
++covering 384 episodes / 2,944 labeled pairs / 640 unique inputs, 48 protected-
++Racket audit evaluations, and eight one-query public projections. Native
++qualification passed 2 settings × 2 seeds with 40 protected-Racket evaluations.
++Manifest SHA-256 is
++`046b3cd7614ae3481f2b99e8add6ab202c1ee4a62e17c2bbcddf6914131bab89`.
++This is reviewer-ready and owner-pending, not accepted or training-admitted;
++finite rivals do not prove universal identifiability.
+diff --git a/repo/generators/83e70bd8c0a1/tests/test_parametric.py b/repo/generators/83e70bd8c0a1/tests/test_parametric.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/tests/test_parametric.py
+@@ -0,0 +1,353 @@
++"""Native parametric contract for anti-diagonal reflection plus cue relay."""
++from __future__ import annotations
++
++import copy
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from arcpuzzles.parametric_worker import _local_imports, _real_evaluator, evaluate_contract
++from reviewer_support import canonical_path, find_root, public_challenge_bytes
++
++TASK_ID = "83e70bd8c0a1"
++HOME = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
++PROTO = HOME / "workspace" / "parametric"
++SETTINGS = (
++    {"rule": "full_reflection"},
++    {"rule": "probe_relay"},
++)
++
++
++def load_adapter():
++    path = PROTO / "adapter.py"
++    assert path.is_file(), "the requested parametric adapter has not been built"
++    spec = importlib.util.spec_from_file_location(
++        "tested_83e70bd8c0a1_parametric_adapter", path
++    )
++    module = importlib.util.module_from_spec(spec)
++    assert spec is not None and spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def canonical_program() -> str:
++    programs = {
++        row["program_solution"]
++        for line in canonical_path(ROOT).read_text(encoding="utf-8").splitlines()
++        if (row := json.loads(line)).get("task_id") == TASK_ID
++    }
++    assert len(programs) == 1
++    return programs.pop()
++
++
++def anti(cell: tuple[int, int], n: int) -> tuple[int, int]:
++    r, c = cell
++    return n - 1 - c, n - 1 - r
++
++
++def probe_position(grid: list[list[int]]) -> tuple[int, int]:
++    positions = [
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == 1
++    ]
++    assert len(positions) == 1
++    return positions[0]
++
++
++def cue_color(grid: list[list[int]], position: tuple[int, int]) -> int:
++    h, w = len(grid), len(grid[0])
++    r, c = position
++    values = [
++        grid[rr][cc]
++        for rr, cc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1))
++        if 0 <= rr < h and 0 <= cc < w and grid[rr][cc] not in (0, 1)
++    ]
++    assert len(values) == 1
++    return values[0]
++
++
++def move_probe(grid: list[list[int]], *, keep_source: bool = False) -> list[list[int]]:
++    output = copy.deepcopy(grid)
++    n = len(grid)
++    source = probe_position(grid)
++    destination = anti(source, n)
++    if not keep_source:
++        output[source[0]][source[1]] = 0
++    output[destination[0]][destination[1]] = 1
++    return output
++
++
++def transpose_color(grid: list[list[int]], color: int) -> list[list[int]]:
++    output = copy.deepcopy(grid)
++    cells = [
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == color
++    ]
++    for r, c in cells:
++        output[r][c] = 0
++    for r, c in cells:
++        output[c][r] = color
++    return output
++
++
++def relay_oracle(grid: list[list[int]]) -> list[list[int]]:
++    moved = move_probe(grid)
++    destination = probe_position(moved)
++    return transpose_color(moved, cue_color(moved, destination))
++
++
++def full_reflection(grid: list[list[int]]) -> list[list[int]]:
++    n = len(grid)
++    return [
++        [grid[n - 1 - c][n - 1 - r] for c in range(n)]
++        for r in range(n)
++    ]
++
++
++def all_inputs(episode: dict) -> list[list[list[int]]]:
++    return [
++        pair["input"]
++        for split in ("train", "test")
++        for pair in episode[split]
++    ]
++
++
++def test_default_program_is_exact_canonical_and_alternative_executes_differently():
++    adapter = load_adapter()
++    authority = canonical_program()
++    assert adapter.program(SETTINGS[0]) == authority
++    assert adapter.program(SETTINGS[1]) != authority
++
++    canonical = adapter.generate(0, SETTINGS[0], demos=2, queries=1)
++    relay = adapter.generate(0, SETTINGS[1], demos=2, queries=1)
++    assert all_inputs(canonical) == all_inputs(relay)
++
++    grid = canonical["train"][0]["input"]
++    runtime = ROOT / "shared/runtime"
++    with _local_imports(runtime, PROTO):
++        apply, identity, bridge = _real_evaluator(runtime)
++        try:
++            assert identity["backend"] == "racket"
++            assert identity["protected"] is True
++            canonical_output = apply(adapter.program(SETTINGS[0]), grid)
++            relay_output = apply(adapter.program(SETTINGS[1]), grid)
++        finally:
++            bridge.close()
++    assert canonical_output == full_reflection(grid)
++    assert relay_output == relay_oracle(grid)
++    assert canonical_output != relay_output
++
++
++@pytest.mark.parametrize("demos", range(2, 7))
++def test_counts_matched_inputs_prefix_stability_and_substantive_30x30(demos):
++    adapter = load_adapter()
++    canonical = adapter.generate(17, SETTINGS[0], demos=demos, queries=4)
++    relay = adapter.generate(17, SETTINGS[1], demos=demos, queries=4)
++    one_query = adapter.generate(17, SETTINGS[1], demos=demos, queries=1)
++
++    assert len(canonical["train"]) == len(relay["train"]) == demos
++    assert len(canonical["test"]) == len(relay["test"]) == 4
++    assert relay["train"] == one_query["train"]
++    assert relay["test"][:1] == one_query["test"]
++    assert all_inputs(canonical) == all_inputs(relay)
++    encoded = [json.dumps(grid, separators=(",", ":")) for grid in all_inputs(relay)]
++    assert len(encoded) == len(set(encoded)) == demos + 4
++    assert all(
++        left["output"] != right["output"]
++        for split in ("train", "test")
++        for left, right in zip(canonical[split], relay[split], strict=True)
++    )
++    public_challenge_bytes(relay)
++
++    large = relay["test"][-1]["input"]
++    assert len(large) == len(large[0]) == 30
++    nonzero = {(r, c) for r, row in enumerate(large) for c, value in enumerate(row) if value}
++    assert len(nonzero) >= 90
++    assert {0, 29} <= {r for r, _ in nonzero}
++    assert {0, 29} <= {c for _, c in nonzero}
++    quadrants = [
++        any(large[r][c] for r in rs for c in cs)
++        for rs, cs in (
++            (range(0, 15), range(0, 15)),
++            (range(0, 15), range(15, 30)),
++            (range(15, 30), range(0, 15)),
++            (range(15, 30), range(15, 30)),
++        )
++    ]
++    assert all(quadrants)
++
++
++@pytest.mark.parametrize("seed", (0, 1, 17, 63))
++def test_claim_labels_match_independent_geometry_and_landing_cue_varies(seed):
++    adapter = load_adapter()
++    episode = adapter.generate(seed, SETTINGS[1], demos=6, queries=4)
++    targets = []
++    sources = []
++    for pair in episode["train"] + episode["test"]:
++        grid = pair["input"]
++        source = probe_position(grid)
++        moved = move_probe(grid)
++        destination = probe_position(moved)
++        original = cue_color(grid, source)
++        landing = cue_color(moved, destination)
++        assert original != landing
++        assert pair["output"] == relay_oracle(grid)
++        assert sum(value == landing for row in grid for value in row) >= 3
++        targets.append(landing)
++        sources.append(source)
++    assert len(set(targets[:3])) >= 2
++    assert len(set(targets)) == 3
++    assert len(set(sources)) >= 3
++
++
++def test_first_two_demos_reject_plausible_relay_shortcuts():
++    adapter = load_adapter()
++    episode = adapter.generate(0, SETTINGS[1], demos=2, queries=1)
++    demos = episode["train"]
++
++    def probe_only(grid):
++        return move_probe(grid)
++
++    def skip_a_uses_original_cue(grid):
++        original = cue_color(grid, probe_position(grid))
++        return transpose_color(move_probe(grid), original)
++
++    def copy_probe_then_relay(grid):
++        copied = move_probe(grid, keep_source=True)
++        return transpose_color(copied, cue_color(copied, anti(probe_position(grid), len(grid))))
++
++    def fixed_color(color):
++        return lambda grid: transpose_color(move_probe(grid), color)
++
++    def recolor_selected(grid):
++        moved = move_probe(grid)
++        selected = cue_color(moved, probe_position(moved))
++        return [[9 if value == selected else value for value in row] for row in moved]
++
++    rivals = {
++        "identity": lambda grid: copy.deepcopy(grid),
++        "probe_only": probe_only,
++        "skip_a_original_cue": skip_a_uses_original_cue,
++        "copy_probe": copy_probe_then_relay,
++        "fixed_color_2": fixed_color(2),
++        "fixed_color_3": fixed_color(3),
++        "fixed_color_4": fixed_color(4),
++        "recolor_selected": recolor_selected,
++        "transpose_everything": lambda grid: [list(row) for row in zip(*grid)],
++        "full_reflection": full_reflection,
++    }
++    for name, rival in rivals.items():
++        assert any(rival(pair["input"]) != pair["output"] for pair in demos), name
++
++
++def test_first_two_demos_reject_plausible_canonical_shortcuts():
++    adapter = load_adapter()
++    episode = adapter.generate(0, SETTINGS[0], demos=2, queries=1)
++    demos = episode["train"]
++    rivals = {
++        "identity": lambda grid: copy.deepcopy(grid),
++        "transpose": lambda grid: [list(row) for row in zip(*grid)],
++        "rotate_180": lambda grid: [row[::-1] for row in grid[::-1]],
++        "flip_lr": lambda grid: [row[::-1] for row in grid],
++        "probe_relay": relay_oracle,
++    }
++    for name, rival in rivals.items():
++        assert any(rival(pair["input"]) != pair["output"] for pair in demos), name
++
++
++def test_public_view_reveals_one_query_without_private_or_future_fields():
++    adapter = load_adapter()
++    many = adapter.generate(9, SETTINGS[1], demos=3, queries=4)
++    one = adapter.generate(9, SETTINGS[1], demos=3, queries=1)
++    first_many = adapter.public_view(many, 0)
++    first_one = adapter.public_view(one, 0)
++    assert public_challenge_bytes(first_many) == public_challenge_bytes(first_one)
++    assert len(first_many["test"]) == 1
++    assert first_many["test"][0] == {"input": many["test"][0]["input"]}
++    serialized = json.dumps(first_many, sort_keys=True)
++    for forbidden in ("settings", "program_solution", "seed", "query_index", "query_count"):
++        assert forbidden not in serialized
++    with pytest.raises(ValueError):
++        adapter.public_view(many, True)
++    with pytest.raises(ValueError):
++        adapter.public_view(many, 4)
++
++
++def test_protected_racket_labels_and_demo_only_setting_identification():
++    load_adapter()
++    contract = json.loads((PROTO / "promotion.json").read_text(encoding="utf-8"))
++    jobs = [
++        {"seed": seed, "settings": settings, "demos": demos, "queries": 4}
++        for seed, demos in ((0, 2), (17, 6))
++        for settings in SETTINGS
++    ]
++    result = evaluate_contract(ROOT, TASK_ID, contract, jobs)
++    assert result["racket"]["backend"] == "racket"
++    assert result["racket"]["protected"] is True
++    assert [check["survivors"] for check in result["checks"]] == [
++        [job["settings"]] for job in jobs
++    ]
++    assert [check["label_count"] for check in result["checks"]] == [
++        job["demos"] + 4 for job in jobs
++    ]
++
++
++@pytest.mark.parametrize(
++    "patch",
++    [
++        {"seed": True},
++        {"seed": -1},
++        {"seed": 2**63},
++        {"seed": 1.0},
++        {"settings": {}},
++        {"settings": {"rule": True}},
++        {"settings": {"rule": "unknown"}},
++        {"settings": {"rule": "full_reflection", "extra": 1}},
++        {"demos": 1},
++        {"demos": 7},
++        {"demos": True},
++        {"demos": 3.0},
++        {"queries": 0},
++        {"queries": 5},
++        {"queries": True},
++        {"queries": 4.0},
++    ],
++)
++def test_invalid_controls_fail_before_generation(patch):
++    request = {"seed": 17, "settings": SETTINGS[0], "demos": 3, "queries": 4}
++    request.update(patch)
++    with pytest.raises(ValueError):
++        load_adapter().generate(**request)
++
++
++def load_audit():
++    path = PROTO / "audit.py"
++    assert path.is_file(), "the reusable bounded audit has not been built"
++    spec = importlib.util.spec_from_file_location(
++        "tested_83e70bd8c0a1_parametric_audit", path
++    )
++    module = importlib.util.module_from_spec(spec)
++    assert spec is not None and spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_bounded_audit_covers_counts_settings_rivals_and_projection():
++    report = load_audit().build_report(seed_count=8, execute_racket=False)
++    assert report["schema"] == "arcpuzzles-probe-relay-audit-v1"
++    assert report["status"] == "PASS"
++    assert report["episodes"] == 8 * 3 * 2
++    assert report["labeled_pairs"] == 8 * (2 + 4 + 3 + 4 + 6 + 4) * 2
++    assert report["demo_counts"] == [2, 3, 6]
++    assert report["query_count"] == 4
++    assert report["target_colors"] == [2, 3, 4]
++    assert report["rival_failures"] == []
++    assert report["projection_failures"] == []
++    assert report["racket"] == {"executed": False}
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/README.md b/repo/generators/83e70bd8c0a1/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/README.md
+@@ -0,0 +1,83 @@
++# Native anti-diagonal probe-relay family for `83e70bd8c0a1`
++
++This task-local family preserves the selected anti-diagonal-reflection puzzle
++and adds one matched-input alternative with a real sequential dependency.
++Neither the production generator nor the selected canonical rule is changed.
++
++| `rule` | Transformation |
++|---|---|
++| `full_reflection` | Reflect the entire grid across the anti-diagonal. This is the byte-exact selected canonical Racket program. |
++| `probe_relay` | Reflect the unique blue probe across the anti-diagonal, read the landing cue, then transpose only that cue color's remote payload across the main diagonal. |
++
++## Sequential dependency
++
++**A — probe motion.** Locate the unique blue probe and reflect its coordinate
++across the anti-diagonal while leaving the rest of the scene fixed.
++
++**Intermediate.** Read the unique nonblack, non-blue cardinal neighbor at the
++probe's new coordinate. Its color is input-dependent and selects one of three
++remote payloads.
++
++**B — selected payload transform.** Transpose every cell of the selected color
++across the main diagonal, preserving all other cells and the moved probe.
++
++B cannot be chosen before A. Every generated input deliberately places a
++different cue beside the probe's source coordinate. The retained protected-
++Racket skip-A witness reads that source cue instead of the landing cue and
++therefore transforms the wrong payload, changing the final grid.
++
++## Episode grammar
++
++`adapter.generate(seed, settings, demos, queries)` accepts exact integer seeds in
++`0..2**63-1`, 2–6 demonstrations, and 1–4 queries. The same deterministic inputs
++are used for both settings. Adding demonstrations or queries never changes any
++earlier pair. The ordinary native qualification request uses three
++demonstrations and four queries.
++
++Demonstration sizes are 7, 8, 9, 11, 13, and 16. Query sizes are 10, 15, 22,
++and 30. Each input contains:
++
++- exactly one blue probe;
++- a source cue and a different anti-diagonal landing cue;
++- a third cue as a distractor;
++- three separated, nontrivial remote payloads in colors 2, 3, and 4;
++- lower-triangle texture and boundary anchors outside the causal carrier.
++
++The 30×30 query is substantive rather than padded: it has at least 90 occupied
++cells, uses all four quadrants, and touches all four canvas boundaries.
++
++## Teaching and public projection
++
++The first two demonstrations distinguish both admitted settings and the finite
++shortcut registry. The registry includes identity, single transforms,
++probe-only motion, source-cue selection, copied-probe motion, fixed payload
++colors, recoloring, transposing everything, and the canonical full reflection.
++This is bounded evidence, not a proof against every possible program.
++
++`public_view(episode, query_index)` emits all labeled demonstrations and exactly
++one unlabeled query. It omits settings, seeds, programs, query answers, future
++queries, and total-query hints. Exact first-turn bytes are identical whether the
++controller generated one query or four.
++
++## Reproduce
++
++From the packet outer directory after `python3 review.py setup`:
++
++```bash
++python3 review.py run python3 -m pytest -q \
++  generators/83e70bd8c0a1/tests/test_parametric.py
++
++python3 review.py run python3 \
++  generators/83e70bd8c0a1/workspace/parametric/audit.py \
++  --out ../checks/83e70bd8c0a1/self-audit
++
++python3 review.py run python3 -m arcpuzzles parametric qualify 83e70bd8c0a1 \
++  --seed 0 --seed 17 --demos 3 --queries 4 \
++  --out ../checks/83e70bd8c0a1/qualification --summary
++```
++
++The audit sweeps 64 seeds at 2, 3, and 6 demonstrations for both settings and
++writes hash-named one-query public examples. Native qualification independently
++executes every claimed label through the protected Racket runtime. These
++artifacts prepare an owner review; they do not establish owner acceptance,
++training admission, or measured training benefit.
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/adapter.py b/repo/generators/83e70bd8c0a1/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/adapter.py
+@@ -0,0 +1,13 @@
++"""Native promotion entry point bound to this task's adjacent implementation."""
++from importlib.util import module_from_spec, spec_from_file_location
++from pathlib import Path
++
++_path = Path(__file__).resolve().with_name("prototype.py")
++_spec = spec_from_file_location("anti_relay_83e70bd8c0a1_parametric", _path)
++assert _spec is not None and _spec.loader is not None
++_module = module_from_spec(_spec)
++_spec.loader.exec_module(_module)
++
++program = _module.program
++generate = _module.generate
++public_view = _module.public_view
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/audit.py b/repo/generators/83e70bd8c0a1/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/audit.py
+@@ -0,0 +1,302 @@
++#!/usr/bin/env python3
++"""Bounded learnability, projection, size, and protected-Racket audit."""
++from __future__ import annotations
++
++import argparse
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++TASK_ID = "83e70bd8c0a1"
++HERE = Path(__file__).resolve()
++ROOT = HERE.parents[4]
++SETTINGS = (
++    {"rule": "full_reflection"},
++    {"rule": "probe_relay"},
++)
++DEMO_COUNTS = (2, 3, 6)
++QUERY_COUNT = 4
++
++
++def _load_adjacent(filename: str, name: str):
++    path = HERE.with_name(filename)
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++PROTO = _load_adjacent("prototype.py", "audit_83e70bd8c0a1_prototype")
++
++
++def _stable_bytes(value: object) -> bytes:
++    return (
++        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
++        + "\n"
++    ).encode("utf-8")
++
++
++def _identity(grid):
++    return copy.deepcopy(grid)
++
++
++def _transpose(grid):
++    return [list(row) for row in zip(*grid)]
++
++
++def _rotate_180(grid):
++    return [row[::-1] for row in grid[::-1]]
++
++
++def _flip_lr(grid):
++    return [row[::-1] for row in grid]
++
++
++def _probe_only(grid):
++    return PROTO._move_probe(grid)
++
++
++def _skip_a_original_cue(grid):
++    selected = PROTO._cue_color(grid, PROTO._probe_position(grid))
++    return PROTO._transpose_color(PROTO._move_probe(grid), selected)
++
++
++def _copy_probe(grid):
++    copied = PROTO._move_probe(grid, keep_source=True)
++    destination = PROTO._anti(PROTO._probe_position(grid), len(grid))
++    selected = PROTO._cue_color(copied, destination)
++    return PROTO._transpose_color(copied, selected)
++
++
++def _fixed_color(color):
++    return lambda grid: PROTO._transpose_color(PROTO._move_probe(grid), color)
++
++
++def _recolor_selected(grid):
++    moved = PROTO._move_probe(grid)
++    selected = PROTO._cue_color(moved, PROTO._probe_position(moved))
++    return [[9 if value == selected else value for value in row] for row in moved]
++
++
++RIVALS = {
++    "full_reflection": {
++        "identity": _identity,
++        "transpose": _transpose,
++        "rotate_180": _rotate_180,
++        "flip_lr": _flip_lr,
++        "probe_relay": PROTO.relay_output,
++    },
++    "probe_relay": {
++        "identity": _identity,
++        "probe_only": _probe_only,
++        "skip_a_original_cue": _skip_a_original_cue,
++        "copy_probe": _copy_probe,
++        "fixed_color_2": _fixed_color(2),
++        "fixed_color_3": _fixed_color(3),
++        "fixed_color_4": _fixed_color(4),
++        "recolor_selected": _recolor_selected,
++        "transpose_everything": _transpose,
++        "full_reflection": PROTO.full_reflection,
++    },
++}
++
++
++def _target_color(grid):
++    moved = PROTO._move_probe(grid)
++    return PROTO._cue_color(moved, PROTO._probe_position(moved))
++
++
++def _write_public_examples(output: Path) -> list[dict]:
++    from reviewer_support import public_challenge_bytes, public_challenge_id
++
++    rows = []
++    public = output / "public"
++    public.mkdir(parents=True, exist_ok=True)
++    for settings in SETTINGS:
++        episode = PROTO.generate(0, settings, demos=3, queries=4)
++        for query_index in range(4):
++            view = PROTO.public_view(episode, query_index)
++            payload = public_challenge_bytes(view)
++            identifier = public_challenge_id(view)
++            path = public / f"{identifier}.json"
++            if path.exists() and path.read_bytes() != payload:
++                raise ValueError("public content hash collision")
++            path.write_bytes(payload)
++            rows.append(
++                {
++                    "settings": settings,
++                    "query_index": query_index,
++                    "public_id": identifier,
++                    "path": path.relative_to(output).as_posix(),
++                    "bytes_sha256": hashlib.sha256(payload).hexdigest(),
++                }
++            )
++    if len({row["public_id"] for row in rows}) != len(rows):
++        raise ValueError("duplicate visible public examples")
++    return rows
++
++
++def build_report(seed_count: int = 64, execute_racket: bool = True) -> dict:
++    if type(seed_count) is not int or not 1 <= seed_count <= 512:
++        raise ValueError("seed_count must be an exact integer in 1..512")
++
++    rival_failures = []
++    projection_failures = []
++    construction_failures = []
++    targets = set()
++    sizes = set()
++    inputs = set()
++    episodes = 0
++    labeled_pairs = 0
++
++    from reviewer_support import public_challenge_bytes
++
++    for seed in range(seed_count):
++        for demos in DEMO_COUNTS:
++            by_setting = {
++                setting["rule"]: PROTO.generate(
++                    seed, setting, demos=demos, queries=QUERY_COUNT
++                )
++                for setting in SETTINGS
++            }
++            episodes += len(SETTINGS)
++            labeled_pairs += len(SETTINGS) * (demos + QUERY_COUNT)
++
++            left_inputs = [
++                pair["input"]
++                for split in ("train", "test")
++                for pair in by_setting["full_reflection"][split]
++            ]
++            right_inputs = [
++                pair["input"]
++                for split in ("train", "test")
++                for pair in by_setting["probe_relay"][split]
++            ]
++            if left_inputs != right_inputs:
++                construction_failures.append(
++                    {"seed": seed, "demos": demos, "kind": "settings_changed_inputs"}
++                )
++            if len({_stable_bytes(grid) for grid in left_inputs}) != demos + QUERY_COUNT:
++                construction_failures.append(
++                    {"seed": seed, "demos": demos, "kind": "duplicate_inputs"}
++                )
++
++            for grid in left_inputs:
++                inputs.add(hashlib.sha256(_stable_bytes(grid)).hexdigest())
++                sizes.add(len(grid))
++                targets.add(_target_color(grid))
++
++            for rule, episode in by_setting.items():
++                demos_only = episode["train"]
++                for rival_name, rival in RIVALS[rule].items():
++                    if all(
++                        rival(pair["input"]) == pair["output"]
++                        for pair in demos_only
++                    ):
++                        rival_failures.append(
++                            {
++                                "seed": seed,
++                                "demos": demos,
++                                "rule": rule,
++                                "rival": rival_name,
++                            }
++                        )
++
++                one = PROTO.generate(seed, {"rule": rule}, demos=demos, queries=1)
++                try:
++                    first_many = public_challenge_bytes(PROTO.public_view(episode, 0))
++                    first_one = public_challenge_bytes(PROTO.public_view(one, 0))
++                    if first_many != first_one:
++                        raise ValueError("first query changed with future query count")
++                    query_payloads = [
++                        public_challenge_bytes(PROTO.public_view(episode, index))
++                        for index in range(QUERY_COUNT)
++                    ]
++                    if len(set(query_payloads)) != QUERY_COUNT:
++                        raise ValueError("query projections are not distinct")
++                    altered = copy.deepcopy(episode)
++                    altered["settings"] = {"rule": "private-metadata-change"}
++                    altered["program_solution"] = "private-metadata-change"
++                    if public_challenge_bytes(PROTO.public_view(altered, 0)) != first_many:
++                        raise ValueError("private metadata changed visible bytes")
++                except Exception as exc:
++                    projection_failures.append(
++                        {
++                            "seed": seed,
++                            "demos": demos,
++                            "rule": rule,
++                            "error": f"{type(exc).__name__}: {exc}",
++                        }
++                    )
++
++    racket = {"executed": False}
++    if execute_racket:
++        from arcpuzzles.parametric_worker import evaluate_contract
++
++        contract = json.loads(HERE.with_name("promotion.json").read_text(encoding="utf-8"))
++        jobs = [
++            {"seed": seed, "settings": settings, "demos": demos, "queries": 4}
++            for seed, demos in ((0, 2), (17, 6))
++            for settings in SETTINGS
++        ]
++        result = evaluate_contract(ROOT, TASK_ID, contract, jobs)
++        racket = {
++            "executed": True,
++            "identity": result["racket"],
++            "evaluations": result["racket_evaluations"],
++            "checks": result["checks"],
++        }
++
++    failures = construction_failures + rival_failures + projection_failures
++    return {
++        "schema": "arcpuzzles-probe-relay-audit-v1",
++        "task_id": TASK_ID,
++        "status": "PASS" if not failures else "FAIL",
++        "seed_count": seed_count,
++        "demo_counts": list(DEMO_COUNTS),
++        "query_count": QUERY_COUNT,
++        "episodes": episodes,
++        "labeled_pairs": labeled_pairs,
++        "unique_inputs": len(inputs),
++        "sizes": sorted(sizes),
++        "target_colors": sorted(targets),
++        "construction_failures": construction_failures,
++        "rival_failures": rival_failures,
++        "projection_failures": projection_failures,
++        "racket": racket,
++        "limits": [
++            "Finite declared-rival audit; it does not prove universal identifiability.",
++            "The broad sweep uses Python claims; the recorded protected-Racket jobs check exact programs and labels.",
++            "Owner acceptance and training admission remain separate downstream decisions.",
++        ],
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", type=int, default=64)
++    parser.add_argument("--no-racket", action="store_true")
++    args = parser.parse_args()
++    if args.out.exists():
++        parser.error(f"output already exists: {args.out}")
++
++    report = build_report(seed_count=args.seeds, execute_racket=not args.no_racket)
++    args.out.mkdir(parents=True)
++    report["public_examples"] = _write_public_examples(args.out)
++    (args.out / "report.json").write_text(
++        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
++    )
++    print(
++        f"{TASK_ID}: {report['status']} — {report['episodes']} episodes, "
++        f"{report['labeled_pairs']} labeled pairs, {report['unique_inputs']} unique inputs"
++    )
++    return 0 if report["status"] == "PASS" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/canonical.rkt b/repo/generators/83e70bd8c0a1/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/canonical.rkt
+@@ -0,0 +1,3 @@
++(rule!
++ ;; Reflect across the ANTI-diagonal (= rotate-180 of the transpose).
++ (rotate-180 (transpose g)))
+\ No newline at end of file
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/focused-tests.txt b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/focused-tests.txt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/focused-tests.txt
+@@ -0,0 +1,4 @@
++effective cwd: /mnt/data/arcp_review_202559/input/WORK/repo
++Payload paths are relative to repo; use generators/TASK/..., not repo/generators/TASK/...
++...............................                                          [100%]
++31 passed in 5.76s
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/public-projections.json b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/public-projections.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/public-projections.json
+@@ -0,0 +1,75 @@
++{
++  "examples": [
++    {
++      "bytes_sha256": "a9537ad9aa2dd92bbe794974b8ac3e0e29295bbabde035ce00a40a1d01b9a83e",
++      "public_id": "a9537ad9aa2dd92bbe794974b8ac3e0e29295bbabde035ce00a40a1d01b9a83e",
++      "query_index": 0,
++      "settings": {
++        "rule": "full_reflection"
++      }
++    },
++    {
++      "bytes_sha256": "5de02b4bbdacff9e9a02199a4cc3a91c4c5b30d15159d9f5745de5d18ac22a67",
++      "public_id": "5de02b4bbdacff9e9a02199a4cc3a91c4c5b30d15159d9f5745de5d18ac22a67",
++      "query_index": 1,
++      "settings": {
++        "rule": "full_reflection"
++      }
++    },
++    {
++      "bytes_sha256": "6841d30be44a0a2327e6f67051d3a8839ce2c2d6c54ba9c902f58d031c096924",
++      "public_id": "6841d30be44a0a2327e6f67051d3a8839ce2c2d6c54ba9c902f58d031c096924",
++      "query_index": 2,
++      "settings": {
++        "rule": "full_reflection"
++      }
++    },
++    {
++      "bytes_sha256": "f089e6590f356c166d5c72778959bc4bedeacb1e0f7d109b89e39fa0922fc64d",
++      "public_id": "f089e6590f356c166d5c72778959bc4bedeacb1e0f7d109b89e39fa0922fc64d",
++      "query_index": 3,
++      "settings": {
++        "rule": "full_reflection"
++      }
++    },
++    {
++      "bytes_sha256": "dedbed580a1f0af5f7211fe4696e8032fb6764285decb7bbafb158121dbb07a5",
++      "public_id": "dedbed580a1f0af5f7211fe4696e8032fb6764285decb7bbafb158121dbb07a5",
++      "query_index": 0,
++      "settings": {
++        "rule": "probe_relay"
++      }
++    },
++    {
++      "bytes_sha256": "1698eeec041a2ad1f4a68ec310e88cae13b56a4992022e07d5eb2cdab6100ff6",
++      "public_id": "1698eeec041a2ad1f4a68ec310e88cae13b56a4992022e07d5eb2cdab6100ff6",
++      "query_index": 1,
++      "settings": {
++        "rule": "probe_relay"
++      }
++    },
++    {
++      "bytes_sha256": "70226c36597fcb2632a040cd2bd3c5664a880693cc4fdc60bcc62b08089358bc",
++      "public_id": "70226c36597fcb2632a040cd2bd3c5664a880693cc4fdc60bcc62b08089358bc",
++      "query_index": 2,
++      "settings": {
++        "rule": "probe_relay"
++      }
++    },
++    {
++      "bytes_sha256": "30a1689ade09074dddeae94cf000760a29aefd10b50c15bb3e7cebe1eeac5cf7",
++      "public_id": "30a1689ade09074dddeae94cf000760a29aefd10b50c15bb3e7cebe1eeac5cf7",
++      "query_index": 3,
++      "settings": {
++        "rule": "probe_relay"
++      }
++    }
++  ],
++  "files_checked": 8,
++  "findings": [],
++  "limits": "Exact saved-byte identity and one-query structure; protected labels and metadata invariance are covered separately by focused tests and the bounded audit.",
++  "queries_per_file": 1,
++  "schema": "arcpuzzles-public-projection-summary-v1",
++  "status": "passed",
++  "task_id": "83e70bd8c0a1"
++}
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/self-audit.json b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/self-audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/self-audit.json
+@@ -0,0 +1,194 @@
++{
++  "construction_failures": [],
++  "demo_counts": [
++    2,
++    3,
++    6
++  ],
++  "episodes": 384,
++  "labeled_pairs": 2944,
++  "limits": [
++    "Finite declared-rival audit; it does not prove universal identifiability.",
++    "The broad sweep uses Python claims; the recorded protected-Racket jobs check exact programs and labels.",
++    "Owner acceptance and training admission remain separate downstream decisions."
++  ],
++  "projection_failures": [],
++  "public_examples": [
++    {
++      "bytes_sha256": "a9537ad9aa2dd92bbe794974b8ac3e0e29295bbabde035ce00a40a1d01b9a83e",
++      "path": "public/a9537ad9aa2dd92bbe794974b8ac3e0e29295bbabde035ce00a40a1d01b9a83e.json",
++      "public_id": "a9537ad9aa2dd92bbe794974b8ac3e0e29295bbabde035ce00a40a1d01b9a83e",
++      "query_index": 0,
++      "settings": {
++        "rule": "full_reflection"
++      }
++    },
++    {
++      "bytes_sha256": "5de02b4bbdacff9e9a02199a4cc3a91c4c5b30d15159d9f5745de5d18ac22a67",
++      "path": "public/5de02b4bbdacff9e9a02199a4cc3a91c4c5b30d15159d9f5745de5d18ac22a67.json",
++      "public_id": "5de02b4bbdacff9e9a02199a4cc3a91c4c5b30d15159d9f5745de5d18ac22a67",
++      "query_index": 1,
++      "settings": {
++        "rule": "full_reflection"
++      }
++    },
++    {
++      "bytes_sha256": "6841d30be44a0a2327e6f67051d3a8839ce2c2d6c54ba9c902f58d031c096924",
++      "path": "public/6841d30be44a0a2327e6f67051d3a8839ce2c2d6c54ba9c902f58d031c096924.json",
++      "public_id": "6841d30be44a0a2327e6f67051d3a8839ce2c2d6c54ba9c902f58d031c096924",
++      "query_index": 2,
++      "settings": {
++        "rule": "full_reflection"
++      }
++    },
++    {
++      "bytes_sha256": "f089e6590f356c166d5c72778959bc4bedeacb1e0f7d109b89e39fa0922fc64d",
++      "path": "public/f089e6590f356c166d5c72778959bc4bedeacb1e0f7d109b89e39fa0922fc64d.json",
++      "public_id": "f089e6590f356c166d5c72778959bc4bedeacb1e0f7d109b89e39fa0922fc64d",
++      "query_index": 3,
++      "settings": {
++        "rule": "full_reflection"
++      }
++    },
++    {
++      "bytes_sha256": "dedbed580a1f0af5f7211fe4696e8032fb6764285decb7bbafb158121dbb07a5",
++      "path": "public/dedbed580a1f0af5f7211fe4696e8032fb6764285decb7bbafb158121dbb07a5.json",
++      "public_id": "dedbed580a1f0af5f7211fe4696e8032fb6764285decb7bbafb158121dbb07a5",
++      "query_index": 0,
++      "settings": {
++        "rule": "probe_relay"
++      }
++    },
++    {
++      "bytes_sha256": "1698eeec041a2ad1f4a68ec310e88cae13b56a4992022e07d5eb2cdab6100ff6",
++      "path": "public/1698eeec041a2ad1f4a68ec310e88cae13b56a4992022e07d5eb2cdab6100ff6.json",
++      "public_id": "1698eeec041a2ad1f4a68ec310e88cae13b56a4992022e07d5eb2cdab6100ff6",
++      "query_index": 1,
++      "settings": {
++        "rule": "probe_relay"
++      }
++    },
++    {
++      "bytes_sha256": "70226c36597fcb2632a040cd2bd3c5664a880693cc4fdc60bcc62b08089358bc",
++      "path": "public/70226c36597fcb2632a040cd2bd3c5664a880693cc4fdc60bcc62b08089358bc.json",
++      "public_id": "70226c36597fcb2632a040cd2bd3c5664a880693cc4fdc60bcc62b08089358bc",
++      "query_index": 2,
++      "settings": {
++        "rule": "probe_relay"
++      }
++    },
++    {
++      "bytes_sha256": "30a1689ade09074dddeae94cf000760a29aefd10b50c15bb3e7cebe1eeac5cf7",
++      "path": "public/30a1689ade09074dddeae94cf000760a29aefd10b50c15bb3e7cebe1eeac5cf7.json",
++      "public_id": "30a1689ade09074dddeae94cf000760a29aefd10b50c15bb3e7cebe1eeac5cf7",
++      "query_index": 3,
++      "settings": {
++        "rule": "probe_relay"
++      }
++    }
++  ],
++  "query_count": 4,
++  "racket": {
++    "checks": [
++      {
++        "counts": {
++          "demos": 2,
++          "queries": 4
++        },
++        "label_count": 6,
++        "seed": 0,
++        "settings": {
++          "rule": "full_reflection"
++        },
++        "survivors": [
++          {
++            "rule": "full_reflection"
++          }
++        ]
++      },
++      {
++        "counts": {
++          "demos": 2,
++          "queries": 4
++        },
++        "label_count": 6,
++        "seed": 0,
++        "settings": {
++          "rule": "probe_relay"
++        },
++        "survivors": [
++          {
++            "rule": "probe_relay"
++          }
++        ]
++      },
++      {
++        "counts": {
++          "demos": 6,
++          "queries": 4
++        },
++        "label_count": 10,
++        "seed": 17,
++        "settings": {
++          "rule": "full_reflection"
++        },
++        "survivors": [
++          {
++            "rule": "full_reflection"
++          }
++        ]
++      },
++      {
++        "counts": {
++          "demos": 6,
++          "queries": 4
++        },
++        "label_count": 10,
++        "seed": 17,
++        "settings": {
++          "rule": "probe_relay"
++        },
++        "survivors": [
++          {
++            "rule": "probe_relay"
++          }
++        ]
++      }
++    ],
++    "evaluations": 48,
++    "executed": true,
++    "identity": {
++      "backend": "racket",
++      "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++      "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++      "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++      "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++      "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++      "protected": true,
++      "schema": "arc-protected-racket-runtime-v1"
++    }
++  },
++  "rival_failures": [],
++  "schema": "arcpuzzles-probe-relay-audit-v1",
++  "seed_count": 64,
++  "sizes": [
++    7,
++    8,
++    9,
++    10,
++    11,
++    13,
++    15,
++    16,
++    22,
++    30
++  ],
++  "status": "PASS",
++  "target_colors": [
++    2,
++    3,
++    4
++  ],
++  "task_id": "83e70bd8c0a1",
++  "unique_inputs": 640
++}
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/source-summary.json b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/source-summary.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/source-summary.json
+@@ -0,0 +1,41 @@
++{
++  "files": [
++    {
++      "bytes": 523,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/adapter.py",
++      "sha256": "0336a036b063f0e117b2d5a6c1d46228e93b1a70228af190eedd722793509ab3"
++    },
++    {
++      "bytes": 10762,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/audit.py",
++      "sha256": "ce4b98059569d3e30d12c5ef9bfb64cde90f9affdb48fcefc5b8d3b3785fde93"
++    },
++    {
++      "bytes": 105,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/canonical.rkt",
++      "sha256": "1b89b215ca68ca600e79209822e028167cc2db5cb037d9cefb39768e301ed8a0"
++    },
++    {
++      "bytes": 474,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/promotion.json",
++      "sha256": "15828eb27573bca274511a222fd6c40a00540b0c2efeec8f5adf2dc61df6ecb3"
++    },
++    {
++      "bytes": 11460,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/prototype.py",
++      "sha256": "aa8bf639f68251f198adee0c18b8f10507d327a96a44b150cf55e8389dc8f28e"
++    },
++    {
++      "bytes": 3869,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/README.md",
++      "sha256": "0fd79fd54fb3640aca4a6e92911064fe19391513f43767ed2c152c2b2a97c997"
++    },
++    {
++      "bytes": 12378,
++      "path": "generators/83e70bd8c0a1/tests/test_parametric.py",
++      "sha256": "cb4860d00b2c24204c77bf07a7970ae932f2f28dc770d0169a582b89bae5daa9"
++    }
++  ],
++  "schema": "arcpuzzles-review-source-summary-v1",
++  "task_id": "83e70bd8c0a1"
++}
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/task-tests.json b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/task-tests.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/current/task-tests.json
+@@ -0,0 +1,18 @@
++{
++  "exit_code": 0,
++  "passed": true,
++  "phase": "after",
++  "schema": "arcpuzzles-task-test-summary-v1",
++  "task_id": "83e70bd8c0a1",
++  "test_counts": {
++    "errors": 0,
++    "failed": 0,
++    "passed": 50,
++    "skipped": 0,
++    "tests": 50
++  },
++  "test_paths": [
++    "generators/83e70bd8c0a1/tests"
++  ],
++  "timed_out": false
++}
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/manifest.json b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,97 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "1b89b215ca68ca600e79209822e028167cc2db5cb037d9cefb39768e301ed8a0",
++  "canonical_rule_hash": "ea62a41435bf",
++  "default": {
++    "rule": "full_reflection"
++  },
++  "evidence_root": "generators/83e70bd8c0a1/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 15614,
++      "path": "generators/83e70bd8c0a1/generator.py",
++      "sha256": "271ba6e1f2d47e5f992b277033d290de1bcff93d506bf82b1373b3945e3d64f7"
++    },
++    {
++      "bytes": 12378,
++      "path": "generators/83e70bd8c0a1/tests/test_parametric.py",
++      "sha256": "cb4860d00b2c24204c77bf07a7970ae932f2f28dc770d0169a582b89bae5daa9"
++    },
++    {
++      "bytes": 523,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/adapter.py",
++      "sha256": "0336a036b063f0e117b2d5a6c1d46228e93b1a70228af190eedd722793509ab3"
++    },
++    {
++      "bytes": 10762,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/audit.py",
++      "sha256": "ce4b98059569d3e30d12c5ef9bfb64cde90f9affdb48fcefc5b8d3b3785fde93"
++    },
++    {
++      "bytes": 105,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/canonical.rkt",
++      "sha256": "1b89b215ca68ca600e79209822e028167cc2db5cb037d9cefb39768e301ed8a0"
++    },
++    {
++      "bytes": 249,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/evidence/current/focused-tests.txt",
++      "sha256": "ad08c06cb478e1bd54ecb5c89c1799272167f36b7fcfe2de0a71fd4a22dde7c1"
++    },
++    {
++      "bytes": 2556,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/evidence/current/public-projections.json",
++      "sha256": "f8b9c3a63e11d5f911933656569c308ca6d235a7f02647d99383503c8cd10a94"
++    },
++    {
++      "bytes": 5627,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/evidence/current/self-audit.json",
++      "sha256": "15aee720cfe998349338db2d0a6012b162d9c7f577249c7356d457425ca5dbde"
++    },
++    {
++      "bytes": 1429,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/evidence/current/source-summary.json",
++      "sha256": "6160555660d829aa0b5b8a16a36b094af29bfbab90229807c28b3fd47d18866c"
++    },
++    {
++      "bytes": 326,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/evidence/current/task-tests.json",
++      "sha256": "f368358d72732c713c3711c32a731da46ddd6154bae69e0b87e3fe3daa6e115c"
++    },
++    {
++      "bytes": 474,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/promotion.json",
++      "sha256": "15828eb27573bca274511a222fd6c40a00540b0c2efeec8f5adf2dc61df6ecb3"
++    },
++    {
++      "bytes": 11460,
++      "path": "generators/83e70bd8c0a1/workspace/parametric/prototype.py",
++      "sha256": "aa8bf639f68251f198adee0c18b8f10507d327a96a44b150cf55e8389dc8f28e"
++    }
++  ],
++  "generator_sha256": "271ba6e1f2d47e5f992b277033d290de1bcff93d506bf82b1373b3945e3d64f7",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "rule": [
++      "full_reflection",
++      "probe_relay"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "31 focused parametric tests and 50 complete task tests passed; a 64-seed finite-rival audit covered 384 episodes, 2,944 labeled pairs, 640 unique inputs, demonstration counts 2/3/6, four queries, all three landing colors and sizes through 30x30; 48 labels were independently executed through protected Racket. Eight one-query public projections passed saved-byte identity, privacy, prefix-stability and structure checks. Finite rivals do not prove universal identifiability; owner acceptance and training admission remain separate.",
++  "rule_task_id": "83e70bd8c0a1",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "83e70bd8c0a1",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/promotion.json b/repo/generators/83e70bd8c0a1/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/promotion.json
+@@ -0,0 +1,27 @@
++{
++  "adapter": "generators/83e70bd8c0a1/workspace/parametric/adapter.py",
++  "default": {
++    "rule": "full_reflection"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "rule": [
++      "full_reflection",
++      "probe_relay"
++    ]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/83e70bd8c0a1/workspace/parametric/canonical.rkt"
++  ],
++  "schema": "arcpuzzles-parametric-adapter-v1"
++}
+diff --git a/repo/generators/83e70bd8c0a1/workspace/parametric/prototype.py b/repo/generators/83e70bd8c0a1/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/83e70bd8c0a1/workspace/parametric/prototype.py
+@@ -0,0 +1,320 @@
++"""Matched-input anti-diagonal reflection and landing-cue relay episodes.
++
++Python outputs are deterministic claims. Native qualification independently
++executes every claimed label through the protected Racket runtime.
++"""
++from __future__ import annotations
++
++import copy
++import hashlib
++from pathlib import Path
++import random
++
++TASK_ID = "83e70bd8c0a1"
++VERSION = "probe-relay-v1"
++HOME = Path(__file__).resolve().parent
++RULES = ("full_reflection", "probe_relay")
++CUE_COLORS = (2, 3, 4)
++DEMO_SIZES = (7, 8, 9, 11, 13, 16)
++QUERY_SIZES = (10, 15, 22, 30)
++
++_PROBE_RELAY_PROGRAM = r"""(rule!
++ ;; Move the unique blue probe by anti-diagonal reflection. Read the unique
++ ;; nonblack landing cue, then transpose only that cue color's whole payload.
++ (lambda (g)
++   (define h (rows g))
++   (define w (cols g))
++   (define probe (first (find-color g 1)))
++   (define sr (first probe))
++   (define sc (second probe))
++   (define dr (- h 1 sc))
++   (define dc (- w 1 sr))
++   (define moved
++     (grid-from-fn h w
++       (lambda (r c)
++         (cond
++           ((and (= r sr) (= c sc)) 0)
++           ((and (= r dr) (= c dc)) 1)
++           (else (at g r c))))))
++   (define selected
++     (find-first
++       (lambda (v) (and (not (= v 0)) (not (= v 1))))
++       (neighbors-4 moved dr dc 0)))
++   (grid-from-fn h w
++     (lambda (r c)
++       (cond
++         ((= (at moved c r) selected) selected)
++         ((= (at moved r c) selected) 0)
++         (else (at moved r c)))))))"""
++
++
++def _integer(value: object, low: int, high: int, name: str) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++    return value
++
++
++def _rule(settings: object) -> str:
++    if type(settings) is not dict or set(settings) != {"rule"}:
++        raise ValueError("settings must contain exactly 'rule'")
++    value = settings["rule"]
++    if type(value) is not str or value not in RULES:
++        raise ValueError(f"rule must be one of {RULES}")
++    return value
++
++
++def program(settings: object) -> str:
++    rule = _rule(settings)
++    if rule == "full_reflection":
++        return (HOME / "canonical.rkt").read_bytes().decode("utf-8")
++    return _PROBE_RELAY_PROGRAM
++
++
++def _anti(cell: tuple[int, int], n: int) -> tuple[int, int]:
++    r, c = cell
++    return n - 1 - c, n - 1 - r
++
++
++def _cardinal(cell: tuple[int, int], n: int) -> set[tuple[int, int]]:
++    r, c = cell
++    return {
++        (rr, cc)
++        for rr, cc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1))
++        if 0 <= rr < n and 0 <= cc < n
++    }
++
++
++def _rng(seed: int, split: str, index: int) -> random.Random:
++    payload = f"{TASK_ID}/{VERSION}/{seed}/{split}/{index}".encode("utf-8")
++    return random.Random(int.from_bytes(hashlib.sha256(payload).digest(), "big"))
++
++
++def _payload_shapes(n: int, variant: int) -> list[set[tuple[int, int]]]:
++    """Three separated ribbons in the upper triangle; all transpose nontrivially."""
++    height = max(1, min(4, (n + 3) // 8))
++    length = max(2, min(8, n // 3))
++    max_start = max(0, n - height - length - 2)
++    starts = [0, max_start // 2, max_start]
++    shapes: list[set[tuple[int, int]]] = []
++    for shape_index, start_row in enumerate(starts):
++        cells: set[tuple[int, int]] = set()
++        for dr in range(height):
++            row = start_row + dr
++            start_col = row + 3
++            width = max(2, length - ((variant + shape_index + dr) % 2))
++            if start_col + width > n:
++                start_col = row + 3
++                width = min(width, n - start_col)
++            for column in range(start_col, start_col + width):
++                if column - row >= 3:
++                    cells.add((row, column))
++        if len(cells) < 2:
++            raise AssertionError("payload construction lost its nontrivial shape")
++        shapes.append(cells)
++    if any(a & b for i, a in enumerate(shapes) for b in shapes[i + 1 :]):
++        raise AssertionError("payload shapes overlap")
++    return shapes
++
++
++def _scene(seed: int, split: str, index: int) -> list[list[int]]:
++    sizes = DEMO_SIZES if split == "train" else QUERY_SIZES
++    n = sizes[index]
++    ordinal = index if split == "train" else len(DEMO_SIZES) + index
++    rng = _rng(seed, split, index)
++
++    candidates = [k for k in range(1, n - 2) if n - 2 - k >= k + 2]
++    if not candidates:
++        raise AssertionError("scene too small for separated source and landing cues")
++    k = candidates[(seed + ordinal) % len(candidates)]
++    j = n - 2 - k
++    above = (seed + ordinal) % 2 == 0
++    source = (k, k + 1) if above else (k + 1, k)
++    destination = _anti(source, n)
++    expected_destination = (j, j + 1) if above else (j + 1, j)
++    if destination != expected_destination:
++        raise AssertionError("anti-diagonal source geometry drifted")
++
++    excluded_diagonal = {k - 1, k, k + 1, j - 1, j, j + 1}
++    decoy_candidates = [d for d in range(n) if d not in excluded_diagonal]
++    if not decoy_candidates:
++        raise AssertionError("no room for a third cue")
++    t = decoy_candidates[(seed + 2 * ordinal) % len(decoy_candidates)]
++
++    landing_color = CUE_COLORS[(seed + ordinal) % len(CUE_COLORS)]
++    original_color = CUE_COLORS[(seed + ordinal + 1) % len(CUE_COLORS)]
++    decoy_color = next(
++        color for color in CUE_COLORS if color not in (landing_color, original_color)
++    )
++
++    grid = [[0 for _ in range(n)] for _ in range(n)]
++    grid[k][k] = original_color
++    grid[j][j] = landing_color
++    grid[t][t] = decoy_color
++    grid[source[0]][source[1]] = 1
++
++    protected = (
++        {source, destination, (k, k), (j, j), (t, t)}
++        | _cardinal(source, n)
++        | _cardinal(destination, n)
++    )
++    shapes = _payload_shapes(n, variant=(seed + ordinal) % 7)
++    shape_colors = list(CUE_COLORS)
++    rng.shuffle(shape_colors)
++    payload_cells: dict[int, set[tuple[int, int]]] = {color: set() for color in CUE_COLORS}
++    occupied = set(protected)
++    for color, shape in zip(shape_colors, shapes, strict=True):
++        for cell in sorted(shape):
++            if cell in occupied:
++                continue
++            r, c = cell
++            if c - r < 2:
++                continue
++            grid[r][c] = color
++            payload_cells[color].add(cell)
++            occupied.add(cell)
++    if any(len(payload_cells[color]) < 2 for color in CUE_COLORS):
++        raise AssertionError("each cue color needs a nontrivial remote payload")
++
++    transpose_targets = {(c, r) for cells in payload_cells.values() for r, c in cells}
++    blocked = occupied | transpose_targets | _cardinal(source, n) | _cardinal(destination, n)
++
++    # Edge anchors and lower-triangle texture make the 30x30 case real rather
++    # than a small puzzle centered on a padded canvas. They never use cue colors.
++    edge_cells = ((0, n - 1), (n - 1, 0), (0, 0), (n - 1, n - 1))
++    for color, cell in zip((5, 6, 7, 8), edge_cells, strict=True):
++        if cell not in blocked and grid[cell[0]][cell[1]] == 0:
++            grid[cell[0]][cell[1]] = color
++            occupied.add(cell)
++
++    lower = [
++        (r, c)
++        for r in range(n)
++        for c in range(n)
++        if r - c >= 2 and (r, c) not in blocked and grid[r][c] == 0
++    ]
++    rng.shuffle(lower)
++    texture_count = min(len(lower), max(6, 2 * n))
++    for position_index, (r, c) in enumerate(lower[:texture_count]):
++        grid[r][c] = 5 + ((position_index + seed + ordinal) % 5)
++
++    # Validate the causal carrier before emitting the scene.
++    if sum(value == 1 for row in grid for value in row) != 1:
++        raise AssertionError("scene must have exactly one probe")
++    if grid[destination[0]][destination[1]] != 0:
++        raise AssertionError("probe destination must start empty")
++    if _cue_color(grid, source) != original_color:
++        raise AssertionError("source cue is not unique")
++    moved = _move_probe(grid)
++    if _cue_color(moved, destination) != landing_color:
++        raise AssertionError("landing cue is not unique")
++    return grid
++
++
++def _probe_position(grid: list[list[int]]) -> tuple[int, int]:
++    positions = [
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == 1
++    ]
++    if len(positions) != 1:
++        raise ValueError("input must contain exactly one blue probe")
++    return positions[0]
++
++
++def _cue_color(grid: list[list[int]], position: tuple[int, int]) -> int:
++    n = len(grid)
++    values = [
++        grid[r][c]
++        for r, c in _cardinal(position, n)
++        if grid[r][c] not in (0, 1)
++    ]
++    if len(values) != 1:
++        raise ValueError("probe position must have exactly one nonblack nonprobe cue")
++    return values[0]
++
++
++def _move_probe(grid: list[list[int]], *, keep_source: bool = False) -> list[list[int]]:
++    n = len(grid)
++    source = _probe_position(grid)
++    destination = _anti(source, n)
++    output = copy.deepcopy(grid)
++    if not keep_source:
++        output[source[0]][source[1]] = 0
++    output[destination[0]][destination[1]] = 1
++    return output
++
++
++def _transpose_color(grid: list[list[int]], color: int) -> list[list[int]]:
++    output = copy.deepcopy(grid)
++    cells = [
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == color
++    ]
++    for r, c in cells:
++        output[r][c] = 0
++    for r, c in cells:
++        output[c][r] = color
++    return output
++
++
++def full_reflection(grid: list[list[int]]) -> list[list[int]]:
++    n = len(grid)
++    return [
++        [grid[n - 1 - c][n - 1 - r] for c in range(n)]
++        for r in range(n)
++    ]
++
++
++def relay_output(grid: list[list[int]]) -> list[list[int]]:
++    moved = _move_probe(grid)
++    selected = _cue_color(moved, _probe_position(moved))
++    return _transpose_color(moved, selected)
++
++
++def _label(grid: list[list[int]], rule: str) -> list[list[int]]:
++    return full_reflection(grid) if rule == "full_reflection" else relay_output(grid)
++
++
++def generate(seed: object, settings: object, demos: object, queries: object) -> dict:
++    seed = _integer(seed, 0, 2**63 - 1, "seed")
++    demos = _integer(demos, 2, 6, "demos")
++    queries = _integer(queries, 1, 4, "queries")
++    rule = _rule(settings)
++
++    train_inputs = [_scene(seed, "train", index) for index in range(demos)]
++    test_inputs = [_scene(seed, "test", index) for index in range(queries)]
++    return {
++        "schema": "anti-diagonal-probe-relay-episode-v1",
++        "task_id": TASK_ID,
++        "seed": seed,
++        "settings": {"rule": rule},
++        "train": [
++            {"input": copy.deepcopy(grid), "output": _label(grid, rule)}
++            for grid in train_inputs
++        ],
++        "test": [
++            {"input": copy.deepcopy(grid), "output": _label(grid, rule)}
++            for grid in test_inputs
++        ],
++        "program_solution": program({"rule": rule}),
++    }
++
++
++def public_view(episode: object, query_index: object) -> dict:
++    if type(episode) is not dict:
++        raise ValueError("episode must be a generated episode dictionary")
++    tests = episode.get("test")
++    trains = episode.get("train")
++    if type(trains) is not list or type(tests) is not list or not trains or not tests:
++        raise ValueError("episode must contain nonempty train and test lists")
++    query_index = _integer(query_index, 0, len(tests) - 1, "query_index")
++    return {
++        "train": [
++            {"input": copy.deepcopy(pair["input"]), "output": copy.deepcopy(pair["output"])}
++            for pair in trains
++        ],
++        "test": [{"input": copy.deepcopy(tests[query_index]["input"])}],
++    }

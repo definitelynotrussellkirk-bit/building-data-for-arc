@@ -1,0 +1,1659 @@
+diff --git a/repo/generators/0a6303ab93b7/notes.md b/repo/generators/0a6303ab93b7/notes.md
+--- a/repo/generators/0a6303ab93b7/notes.md
++++ b/repo/generators/0a6303ab93b7/notes.md
+@@ -1,4 +1,11 @@
+ # Working notes: 0a6303ab93b7
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Review review-b67a291c5b50b08a: corner-marker shortcut finding
++
++A bounded source-pinned probe found a plausible wrong rule: treat both top-row corner cells as metadata, so when `code == selector` exclude the top-right singleton instead of letting canonical top-left ordering select it.
++
++Across 128 seeds and four consecutive 4-demo/query windows per seed, this rival fit every visible demonstration yet changed the query in 35 of 512 lessons. The retained seed-0/start-3 window has demo textures `plain`, `multi_candidate`, `weird_code`, `plain` and a `corner_wins` query. Canonical and rival programs were both executed under protected Racket on all five pairs; they agree on all four demonstrations and disagree on the query.
++
++Evidence is in `checks/0a6303ab93b7/learnability.json`; the reusable source-bound probe is `workspace/learnability_probe.py`.
++
++Recommended repair: reject lessons while this rival survives, or require a visible `code == selector` demonstration so the top-right singleton selection is explicit. Production was intentionally left unchanged in this optional peer pass.
+diff --git a/repo/generators/0a6303ab93b7/tests/test_learnability_probe.py b/repo/generators/0a6303ab93b7/tests/test_learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0a6303ab93b7/tests/test_learnability_probe.py
+@@ -0,0 +1,46 @@
++"""Regression for the code-marker exclusion shortcut found during review."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++from reviewer_support import load_selected_generator
++
++HOME = Path(__file__).resolve().parents[1]
++PROBE = HOME / "workspace" / "learnability_probe.py"
++
++
++def _load_probe():
++    spec = importlib.util.spec_from_file_location("probe_0a6303ab93b7", PROBE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_retained_window_exposes_code_marker_exclusion_shortcut():
++    probe = _load_probe()
++    generator, _path, source_sha256 = load_selected_generator("0a6303ab93b7")
++    assert source_sha256 == probe.EXPECTED_GENERATOR_SHA256
++
++    case = probe.lesson_window(generator, seed=0, start=3)
++    assert [row["texture"] for row in case["demos"]] == [
++        "plain",
++        "multi_candidate",
++        "weird_code",
++        "plain",
++    ]
++    assert case["query"]["texture"] == "corner_wins"
++    assert all(row["canonical"] == row["rival"] for row in case["demos"])
++    assert case["query"]["canonical"] != case["query"]["rival"]
++
++
++def test_bounded_scan_counts_only_survive_demos_then_disagree_query():
++    probe = _load_probe()
++    generator, _path, _source_sha256 = load_selected_generator("0a6303ab93b7")
++    report = probe.scan(generator, seeds=1, starts=4)
++    assert report == {
++        "lessons_checked": 4,
++        "surviving_disagreements": 1,
++        "first": {"seed": 0, "start": 3},
++    }
+diff --git a/repo/generators/0a6303ab93b7/workspace/learnability_probe.py b/repo/generators/0a6303ab93b7/workspace/learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0a6303ab93b7/workspace/learnability_probe.py
+@@ -0,0 +1,248 @@
++"""Bounded learnability probe for the code-marker exclusion shortcut.
++
++The rival agrees with the canonical rule except when selector color equals the
++transform-code color: it treats both corner cells as metadata and therefore
++skips the top-right singleton that the canonical object ordering selects.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++from typing import Any
++
++TASK_ID = "0a6303ab93b7"
++EXPECTED_GENERATOR_SHA256 = "abc3d7381b002856257445f83acc09f242ff3a3c7b71964f98cf18777c17a82a"
++RIVAL_NAME = "exclude_both_corner_markers"
++_CARDINAL = ((-1, 0), (1, 0), (0, -1), (0, 1))
++
++
++def _components(grid: list[list[int]], color: int) -> list[list[tuple[int, int]]]:
++    height, width = len(grid), len(grid[0])
++    seen: set[tuple[int, int]] = set()
++    result: list[list[tuple[int, int]]] = []
++    for row in range(height):
++        for col in range(width):
++            if grid[row][col] != color or (row, col) in seen:
++                continue
++            stack = [(row, col)]
++            seen.add((row, col))
++            cells: list[tuple[int, int]] = []
++            while stack:
++                current = stack.pop()
++                cells.append(current)
++                r, c = current
++                for dr, dc in _CARDINAL:
++                    neighbor = (r + dr, c + dc)
++                    if (0 <= neighbor[0] < height and 0 <= neighbor[1] < width
++                            and neighbor not in seen
++                            and grid[neighbor[0]][neighbor[1]] == color):
++                        seen.add(neighbor)
++                        stack.append(neighbor)
++            result.append(cells)
++    return result
++
++
++def _object_grid(cells: list[tuple[int, int]], color: int) -> list[list[int]]:
++    top = min(row for row, _ in cells)
++    left = min(col for _, col in cells)
++    normalized = [(row - top, col - left) for row, col in cells]
++    height = max(row for row, _ in normalized) + 1
++    width = max(col for _, col in normalized) + 1
++    output = [[0] * width for _ in range(height)]
++    for row, col in normalized:
++        output[row][col] = color
++    return output
++
++
++def _transform(grid: list[list[int]], code: int) -> list[list[int]]:
++    if code == 2:
++        return [list(row) for row in zip(*grid[::-1])]
++    if code == 3:
++        return [row[::-1] for row in grid[::-1]]
++    if code == 4:
++        return [row[::-1] for row in grid]
++    return [list(row) for row in grid]
++
++
++def rival_output(grid: list[list[int]]) -> list[list[int]] | None:
++    """Execute the plausible wrong rule that excludes both corner markers."""
++    height, width = len(grid), len(grid[0])
++    selector = grid[0][0]
++    code = grid[0][width - 1]
++    candidates = [
++        cells for cells in _components(grid, selector)
++        if (0, 0) not in cells and (0, width - 1) not in cells
++    ]
++    if not candidates:
++        return None
++    candidates.sort(key=lambda cells: (
++        min(row for row, _ in cells),
++        min(col for _, col in cells),
++    ))
++    return _transform(_object_grid(candidates[0], selector), code)
++
++
++def _texture(grid: list[list[int]]) -> str:
++    selector, code = grid[0][0], grid[0][-1]
++    all_candidates = [cells for cells in _components(grid, selector) if (0, 0) not in cells]
++    if code == selector:
++        return "corner_wins"
++    if code >= 5:
++        return "weird_code"
++    body = [cells for cells in all_candidates if not any(row == 0 for row, _ in cells)]
++    if len(body) >= 2:
++        return "multi_candidate"
++    subgrid = _object_grid(body[0], selector)
++    if len({json.dumps(_transform(subgrid, candidate)) for candidate in (1, 2, 3, 4)}) < 4:
++        return "symmetric"
++    return "plain"
++
++
++def _row(generator: Any, seed: int, sample_index: int) -> dict[str, Any]:
++    grid = generator.generate(seed, sample_index)
++    canonical = generator._mirror(grid)
++    if canonical is None:
++        raise ValueError("selected generator produced no canonical object")
++    return {
++        "sample_index": sample_index,
++        "texture": _texture(grid),
++        "input": grid,
++        "canonical": canonical,
++        "rival": rival_output(grid),
++    }
++
++
++def lesson_window(generator: Any, *, seed: int, start: int) -> dict[str, Any]:
++    rows = [_row(generator, seed, start + offset) for offset in range(5)]
++    return {"seed": seed, "start": start, "demos": rows[:4], "query": rows[4]}
++
++
++def scan(generator: Any, *, seeds: int = 128, starts: int = 4) -> dict[str, Any]:
++    checked = 0
++    findings = 0
++    first: dict[str, int] | None = None
++    for seed in range(seeds):
++        for start in range(starts):
++            case = lesson_window(generator, seed=seed, start=start)
++            checked += 1
++            if (all(row["canonical"] == row["rival"] for row in case["demos"])
++                    and case["query"]["canonical"] != case["query"]["rival"]):
++                findings += 1
++                if first is None:
++                    first = {"seed": seed, "start": start}
++    return {
++        "lessons_checked": checked,
++        "surviving_disagreements": findings,
++        "first": first,
++    }
++
++
++def _canonical_program(root: Path) -> str:
++    from reviewer_support import canonical_path
++
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                return row["program_solution"]
++    raise KeyError(TASK_ID)
++
++
++def _rival_program(canonical: str) -> str:
++    needle = "(and (= (obj-color o) sel) (not (member (list 0 0) (obj-cells o))))"
++    replacement = (
++        "(and (= (obj-color o) sel) "
++        "(not (member (list 0 0) (obj-cells o))) "
++        "(not (member (list 0 (- (cols g) 1)) (obj-cells o))))"
++    )
++    if canonical.count(needle) != 1:
++        raise ValueError("canonical selector filter changed; rival patch is no longer source-bound")
++    return canonical.replace(needle, replacement)
++
++
++def _protected_replay(root: Path, canonical: str, rival: str, case: dict[str, Any]) -> dict[str, Any]:
++    from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++
++    runtime = root / "shared/runtime"
++    rows = [*case["demos"], case["query"]]
++    with _local_imports(runtime, runtime):
++        apply, identity, bridge = _real_evaluator(runtime)
++        try:
++            for row in rows:
++                actual = _grid(apply(canonical, _grid(row["input"])))
++                alternate = _grid(apply(rival, _grid(row["input"])))
++                if actual != _grid(row["canonical"]):
++                    raise ValueError("canonical Python mirror differs from protected Racket")
++                if alternate != _grid(row["rival"]):
++                    raise ValueError("rival Python mirror differs from protected Racket")
++        finally:
++            bridge.close()
++    if not all(row["canonical"] == row["rival"] for row in case["demos"]):
++        raise ValueError("retained rival does not fit every demonstration")
++    if case["query"]["canonical"] == case["query"]["rival"]:
++        raise ValueError("retained rival does not change the query")
++    return {"racket": identity, "evaluations": 2 * len(rows)}
++
++
++def build_report(*, seeds: int = 128, starts: int = 4) -> dict[str, Any]:
++    from reviewer_support import find_root, load_selected_generator
++
++    root = find_root(__file__)
++    generator, source_path, source_sha256 = load_selected_generator(TASK_ID, root=root)
++    if source_sha256 != EXPECTED_GENERATOR_SHA256:
++        raise ValueError(
++            f"generator source changed: expected {EXPECTED_GENERATOR_SHA256}, got {source_sha256}"
++        )
++    canonical = _canonical_program(root)
++    rival = _rival_program(canonical)
++    retained = lesson_window(generator, seed=0, start=3)
++    replay = _protected_replay(root, canonical, rival, retained)
++    summary = scan(generator, seeds=seeds, starts=starts)
++    return {
++        "schema": "arcpuzzles-peer-learnability-probe-v1",
++        "status": "finding",
++        "task_id": TASK_ID,
++        "rival": RIVAL_NAME,
++        "source_binding": {
++            "generator_path": source_path.relative_to(root).as_posix(),
++            "generator_sha256": source_sha256,
++            "canonical_program_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
++            "rival_program_sha256": hashlib.sha256(rival.encode()).hexdigest(),
++        },
++        "scan": summary,
++        "witness": {
++            "seed": retained["seed"],
++            "start": retained["start"],
++            "demos": retained["demos"],
++            "query": retained["query"],
++            **replay,
++        },
++        "repair": (
++            "Reject lessons while this rival survives, or ensure a visible demonstration has "
++            "code==selector so the canonical top-right singleton choice is observed."
++        ),
++        "limits": "Finite consecutive-window scan; no claim of universal ambiguity coverage.",
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", type=int, default=128)
++    parser.add_argument("--starts", type=int, default=4)
++    args = parser.parse_args(argv)
++    if args.seeds < 1 or args.starts < 1:
++        parser.error("--seeds and --starts must be positive")
++    report = build_report(seeds=args.seeds, starts=args.starts)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    with args.out.open("x", encoding="utf-8") as handle:
++        json.dump(report, handle, indent=2, sort_keys=True)
++        handle.write("\n")
++    print(json.dumps({"status": report["status"], **report["scan"], "out": str(args.out)}))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/ea763f9c5b1d/notes.md b/repo/generators/ea763f9c5b1d/notes.md
+--- a/repo/generators/ea763f9c5b1d/notes.md
++++ b/repo/generators/ea763f9c5b1d/notes.md
+@@ -1,4 +1,25 @@
+ # Working notes: ea763f9c5b1d
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Current review decision
++
++Built a native, task-local two-setting parametric family without changing the selected production generator or canonical ledger.
++
++- `area_parity` is the byte-exact canonical default: odd-area nonzero components become 3 and even-area components become 4.
++- `anchor_threshold` is the alternative: find the unique red component, bind its input-dependent area `k`, then paint every component 3 when its area is below `k` and 4 otherwise.
++- The alternative has a real A→intermediate→B dependency. A protected-Racket counterfactual changes only `k` to `k+1`; on the retained qualified query this changes 10 final cells.
++- Episodes support 2–6 demonstrations and 1–4 queries. Inputs are setting-matched, deterministic, prefix-stable, query-count independent, and expose only visible demonstrations plus one query input at a time.
++- The fourth query is a substantive 30×30 scene with 12 components of sizes 2–12, 24 occupied rows, 24 occupied columns, and boundary contact.
++
++## Evidence retained
++
++- `workspace/parametric/evidence/current/summary.json`: 640 lessons, 6,720 finite-rival checks, 640 public-projection checks, and 68 protected-Racket evaluations; no failures in the declared bounded audit.
++- `workspace/parametric/evidence/manifest.json`: source-bound native inventory.
++- `checks/ea763f9c5b1d/qualification/qualification.json`: native qualification for both settings at seeds 0 and 17, three demonstrations and four queries.
++- `checks/ea763f9c5b1d/sequential-witness/witness.json`: source-bound protected-Racket causal witness.
++- `checks/ea763f9c5b1d-tests/result.json`: copied-runtime result, 24 tests and 26 subtests passing.
++
++The existing generator test had a copied-runtime portability defect: it derived the canonical path from a fixed parent depth and imported the unstaged package namespace directly. The test now uses `reviewer_support.find_root`, `canonical_path`, and `load_selected_generator`.
++
++## Limits / next action
++
++The rival inventory and sampled seeds are finite; this is not a proof against arbitrary programs or a measured learning result. Exact-source owner acceptance and training admission remain pending. The next action is owner-side admission of this exact qualification/witness bundle, not another reviewer-side redesign.
+diff --git a/repo/generators/ea763f9c5b1d/tests/test_generator_ea763f9c5b1d.py b/repo/generators/ea763f9c5b1d/tests/test_generator_ea763f9c5b1d.py
+--- a/repo/generators/ea763f9c5b1d/tests/test_generator_ea763f9c5b1d.py
++++ b/repo/generators/ea763f9c5b1d/tests/test_generator_ea763f9c5b1d.py
+@@ -3,22 +3,19 @@
+ 
+ import copy
+ import hashlib
+-import importlib
+ import json
+ import random
+ import unittest
+-from pathlib import Path
++from reviewer_support import canonical_path, find_root, load_selected_generator
+ 
+ 
+-ROOT = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
+ TASK_ID = "ea763f9c5b1d"
+-GENERATOR = importlib.import_module(
+-    "puzzle_generators.per_puzzle.ea763f9c5b1d.generator"
+-)
++GENERATOR, _, _ = load_selected_generator(TASK_ID, root=ROOT)
+ 
+ 
+ def canonical_row() -> dict:
+-    for line in (ROOT / "data" / "canonical" / "puzzles.jsonl").read_text().splitlines():
++    for line in canonical_path(ROOT).read_text().splitlines():
+         row = json.loads(line)
+         if row.get("task_id") == TASK_ID:
+             return row
+diff --git a/repo/generators/ea763f9c5b1d/tests/test_parametric_anchor_threshold.py b/repo/generators/ea763f9c5b1d/tests/test_parametric_anchor_threshold.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/tests/test_parametric_anchor_threshold.py
+@@ -0,0 +1,166 @@
++"""Behavioral contract for the native area-parity / anchor-threshold family."""
++from __future__ import annotations
++
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from reviewer_support import canonical_path, find_root, public_challenge_bytes
++
++
++TASK_ID = "ea763f9c5b1d"
++ROOT = find_root(__file__)
++HOME = ROOT / "generators" / TASK_ID / "workspace" / "parametric"
++
++
++def _load(name: str, path: Path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++proto = _load("_test_ea763f9c5b1d_parametric", HOME / "prototype.py")
++adapter = _load("_test_ea763f9c5b1d_adapter", HOME / "adapter.py")
++
++
++def _canonical_row() -> dict:
++    for line in canonical_path(ROOT).read_text(encoding="utf-8").splitlines():
++        row = json.loads(line)
++        if row.get("task_id") == TASK_ID:
++            return row
++    raise AssertionError(TASK_ID)
++
++
++def _component_cells(grid, color):
++    return {(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == color}
++
++
++def test_default_program_is_the_exact_selected_canonical_source():
++    expected = _canonical_row()["program_solution"]
++    observed = adapter.program({"rule_mode": "area_parity"})
++    assert observed == expected
++    assert (HOME / "canonical.rkt").read_bytes() == expected.encode("utf-8")
++    assert hashlib.sha256(observed.encode()).hexdigest() == hashlib.sha256(expected.encode()).hexdigest()
++
++
++def test_literal_scene_has_independently_derived_outputs_for_both_rules():
++    grid = [
++        [0, 0, 0, 0, 0, 0, 0, 0, 0],
++        [0, 1, 1, 0, 0, 0, 6, 0, 0],
++        [0, 1, 1, 0, 0, 0, 6, 0, 0],
++        [0, 0, 0, 0, 0, 0, 0, 0, 0],
++        [0, 6, 6, 0, 0, 6, 6, 0, 0],
++        [0, 6, 0, 0, 0, 6, 6, 0, 0],
++        [0, 0, 0, 0, 0, 6, 0, 0, 0],
++    ]
++    expected_parity = [
++        [0, 0, 0, 0, 0, 0, 0, 0, 0],
++        [0, 4, 4, 0, 0, 0, 4, 0, 0],
++        [0, 4, 4, 0, 0, 0, 4, 0, 0],
++        [0, 0, 0, 0, 0, 0, 0, 0, 0],
++        [0, 3, 3, 0, 0, 3, 3, 0, 0],
++        [0, 3, 0, 0, 0, 3, 3, 0, 0],
++        [0, 0, 0, 0, 0, 3, 0, 0, 0],
++    ]
++    expected_threshold = [
++        [0, 0, 0, 0, 0, 0, 0, 0, 0],
++        [0, 4, 4, 0, 0, 0, 3, 0, 0],
++        [0, 4, 4, 0, 0, 0, 3, 0, 0],
++        [0, 0, 0, 0, 0, 0, 0, 0, 0],
++        [0, 3, 3, 0, 0, 4, 4, 0, 0],
++        [0, 3, 0, 0, 0, 4, 4, 0, 0],
++        [0, 0, 0, 0, 0, 4, 0, 0, 0],
++    ]
++    assert proto.solve_python(grid, "area_parity") == expected_parity
++    assert proto.solve_python(grid, "anchor_threshold") == expected_threshold
++    facts = proto.analyze_scene(grid)
++    assert facts["anchor_size"] == 4
++    assert sorted(facts["component_sizes"]) == [2, 3, 4, 5]
++
++
++def test_generation_is_deterministic_prefix_stable_and_setting_matched():
++    for seed in (0, 17, 999):
++        two = adapter.generate(seed, {"rule_mode": "anchor_threshold"}, 2, 4)
++        six = adapter.generate(seed, {"rule_mode": "anchor_threshold"}, 6, 4)
++        one_query = adapter.generate(seed, {"rule_mode": "anchor_threshold"}, 2, 1)
++        parity = adapter.generate(seed, {"rule_mode": "area_parity"}, 6, 4)
++        assert two == adapter.generate(seed, {"rule_mode": "anchor_threshold"}, 2, 4)
++        assert two["train"] == six["train"][:2]
++        assert two["test"] == six["test"]
++        assert one_query["test"] == two["test"][:1]
++        assert [p["input"] for p in parity["train"] + parity["test"]] == [
++            p["input"] for p in six["train"] + six["test"]
++        ]
++
++
++def test_inputs_are_distinct_valid_and_queries_cover_large_and_boundary_cases():
++    episode = adapter.generate(17, {"rule_mode": "anchor_threshold"}, 6, 4)
++    all_pairs = episode["train"] + episode["test"]
++    keys = [json.dumps(pair["input"], separators=(",", ":")) for pair in all_pairs]
++    assert len(keys) == len(set(keys)) == 10
++    for pair in all_pairs:
++        facts = proto.analyze_scene(pair["input"])
++        assert facts["anchor_count"] == 1
++        assert 3 <= facts["anchor_size"] <= 7
++        assert min(facts["component_sizes"]) < facts["anchor_size"]
++        assert max(facts["component_sizes"]) > facts["anchor_size"]
++        assert facts["component_sizes"].count(facts["anchor_size"]) >= 2
++        assert pair["output"] == proto.solve_python(pair["input"], "anchor_threshold")
++    sizes = [(len(p["input"]), len(p["input"][0])) for p in episode["test"]]
++    assert sizes[-1] == (30, 30)
++    large = proto.analyze_scene(episode["test"][-1]["input"])
++    assert len(large["component_sizes"]) >= 12
++    assert large["occupied_rows"] >= 24
++    assert large["occupied_cols"] >= 24
++    assert any(
++        r in (0, 29) or c in (0, 29)
++        for r, c in large["all_cells"]
++    )
++
++
++def test_minimum_two_demos_reject_every_declared_shortcut_for_both_settings():
++    for seed in range(20):
++        for mode in proto.RULE_MODES:
++            episode = adapter.generate(seed, {"rule_mode": mode}, 2, 4)
++            intended = [pair["output"] for pair in episode["train"]]
++            for name, solver in proto.declared_rivals(mode).items():
++                rival = [solver(pair["input"]) for pair in episode["train"]]
++                assert rival != intended, (seed, mode, name)
++
++
++def test_public_first_turn_is_query_count_neutral_and_private_fields_are_ignored():
++    setting = {"rule_mode": "anchor_threshold"}
++    one = adapter.generate(17, setting, 3, 1)
++    four = adapter.generate(17, setting, 3, 4)
++    first_from_four = {"train": four["train"], "test": [four["test"][0]]}
++    assert public_challenge_bytes(one) == public_challenge_bytes(first_from_four)
++    changed = copy.deepcopy(first_from_four)
++    changed["settings"] = {"rule_mode": "area_parity"}
++    changed["program_solution"] = "private mutation"
++    changed["test"][0]["output"] = [[9]]
++    changed["future_queries"] = four["test"][1:]
++    assert public_challenge_bytes(changed) == public_challenge_bytes(first_from_four)
++
++
++@pytest.mark.parametrize(
++    "bad_settings",
++    [None, {}, {"rule_mode": "bad"}, {"rule_mode": "area_parity", "extra": 1}],
++)
++def test_invalid_settings_are_rejected(bad_settings):
++    with pytest.raises(ValueError):
++        adapter.program(bad_settings)
++
++
++@pytest.mark.parametrize(
++    "seed,demos,queries",
++    [(-1, 2, 1), (2**63, 2, 1), (0, 1, 1), (0, 7, 1), (0, 2, 0), (0, 2, 5), (True, 2, 1)],
++)
++def test_invalid_request_bounds_are_rejected(seed, demos, queries):
++    with pytest.raises(ValueError):
++        adapter.generate(seed, {"rule_mode": "area_parity"}, demos, queries)
+diff --git a/repo/generators/ea763f9c5b1d/workspace/parametric/README.md b/repo/generators/ea763f9c5b1d/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/workspace/parametric/README.md
+@@ -0,0 +1,33 @@
++# Area parity / anchor threshold parametric family
++
++This task-local native family keeps the source puzzle’s connected-component and
++area-counting work while adding one episode-fixed rule choice.
++
++| `rule_mode` | Behavior |
++| --- | --- |
++| `area_parity` (default) | Exact canonical program: odd-area components become 3 and even-area components become 4. |
++| `anchor_threshold` | Find the unique red component, bind its area `k`, then recolor every component 3 when its area is below `k` and 4 otherwise. |
++
++The alternative has a real causal dependency. **A** finds the unique red
++four-connected component and counts it. The input-dependent intermediate is its
++area `k`. **B** cannot choose any component’s comparison color until `k` is
++known. A wrong `k+1` moves every equality-size component from 4 to 3; the retained
++protected-Racket witness records that changed final output.
++
++The adapter supports exact integer seeds in `0..2**63-1`, 2–6 demonstrations,
++and 1–4 queries independently. Inputs are matched across settings. Separate
++per-index RNG streams make demonstration and query prefixes stable when counts
++change. Every scene has one red anchor and components below, equal to, and above
++its size. The first two demonstrations use different anchor thresholds and
++reject the declared parity, fixed-threshold, non-strict-boundary, bbox-area,
++smallest/largest, and constant-color shortcuts.
++
++The four queries cover ordinary transfer, a different threshold and geometry,
++boundary-touching components, and a substantive 30×30 scene spread across the
++canvas. Query labels, settings, and programs remain private. A controller exposes
++only demonstrations and one current query input; the first visible turn is byte-
++identical whether one or four queries were generated.
++
++From the packet root, focused tests and native qualification are run through
++`review.py`; owner acceptance and training admission remain separate downstream
++gates.
+diff --git a/repo/generators/ea763f9c5b1d/workspace/parametric/adapter.py b/repo/generators/ea763f9c5b1d/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/workspace/parametric/adapter.py
+@@ -0,0 +1,21 @@
++"""Thin native adapter for the ea763f9c5b1d rule-mode family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_NAME = "_arc_ea763f9c5b1d_anchor_threshold_" + hashlib.sha256(str(_PATH).encode()).hexdigest()[:16]
++_SPEC = importlib.util.spec_from_file_location(_NAME, _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(f"cannot load parametric prototype at {_PATH}")
++_MODULE = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(_MODULE)
++
++program = _MODULE.program
++generate = _MODULE.generate
++solve_python = _MODULE.solve_python
++analyze_scene = _MODULE.analyze_scene
++declared_rivals = _MODULE.declared_rivals
+diff --git a/repo/generators/ea763f9c5b1d/workspace/parametric/anchor_threshold.rkt b/repo/generators/ea763f9c5b1d/workspace/parametric/anchor_threshold.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/workspace/parametric/anchor_threshold.rkt
+@@ -0,0 +1,45 @@
++(rule!
++ (let ((dummy 0))
++   (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))
++   (define (paint grid cells color)
++     (for/fold ((out grid)) ((p (in-list cells)))
++       (if (in-bounds? (first p) (second p) (rows out) (cols out))
++           (set-cell out (first p) (second p) color)
++           out)))
++   (define (components-any-nonzero grid)
++     (let loop-pos ((positions (grid-positions grid)) (seen (list)) (acc (list)))
++       (cond
++         ((empty? positions) (reverse acc))
++         ((or (member? (first positions) seen)
++              (= (at grid (first (first positions)) (second (first positions))) 0))
++          (loop-pos (rest positions) seen acc))
++         (else
++          (let bfs ((queue (list (first positions)))
++                    (seen2 (cons (first positions) seen))
++                    (cells (list)))
++            (if (empty? queue)
++                (loop-pos (rest positions) seen2 (cons (sort cells cell<) acc))
++                (let* ((cur (first queue))
++                       (nbrs
++                        (filter
++                         (lambda (p)
++                           (and (in-bounds? (first p) (second p) (rows grid) (cols grid))
++                                (not (member? p seen2))
++                                (not (= (at grid (first p) (second p)) 0))))
++                         (map (lambda (d)
++                                (list (+ (first cur) (first d))
++                                      (+ (second cur) (second d))))
++                              dirs4))))
++                  (bfs (append (rest queue) nbrs)
++                       (append seen2 nbrs)
++                       (cons cur cells)))))))))
++   (let* ((components (components-any-nonzero g))
++          (anchors
++           (filter
++            (lambda (cells)
++              (= (at g (first (first cells)) (second (first cells))) 1))
++            components))
++          (threshold (length (first anchors))))
++     (for/fold ((out (empty-grid (rows g) (cols g) 0)))
++               ((cells (in-list components)))
++       (paint out cells (if (< (length cells) threshold) 3 4))))))
+diff --git a/repo/generators/ea763f9c5b1d/workspace/parametric/audit.py b/repo/generators/ea763f9c5b1d/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/workspace/parametric/audit.py
+@@ -0,0 +1,173 @@
++"""Bounded authoring audit for the ea763f9c5b1d native parametric family."""
++from __future__ import annotations
++
++import argparse
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++from arcpuzzles.parametric_worker import evaluate_contract
++from reviewer_support import find_root, public_challenge_bytes, public_challenge_id
++
++
++TASK_ID = "ea763f9c5b1d"
++HERE = Path(__file__).resolve().parent
++ROOT = find_root(__file__)
++
++
++def _load(name, path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++P = _load("_ea763f9c5b1d_audit_prototype", HERE / "prototype.py")
++A = _load("_ea763f9c5b1d_audit_adapter", HERE / "adapter.py")
++
++
++def _raw(value):
++    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
++
++
++def run(out: Path, seeds: int = 64):
++    if out.exists() or out.is_symlink():
++        raise FileExistsError(out)
++    out.mkdir(parents=True)
++    contract = json.loads((HERE / "promotion.json").read_text())
++    jobs = [
++        {"seed": seed, "settings": {"rule_mode": mode}, "demos": demos, "queries": 4}
++        for mode in P.RULE_MODES
++        for seed, demos in ((0, 2), (17, 3), (29, 6))
++    ]
++    worker = evaluate_contract(ROOT, TASK_ID, contract, jobs)
++    (out / "worker.json").write_bytes(_raw(worker))
++
++    failures = []
++    lessons = 0
++    rivals_checked = 0
++    query_disagreements = 0
++    public_checks = 0
++    dimensions = set()
++    anchor_sizes = set()
++    public_ids = set()
++    for seed in range(seeds):
++        for demos in range(2, 7):
++            by_mode = {
++                mode: A.generate(seed, {"rule_mode": mode}, demos, 4)
++                for mode in P.RULE_MODES
++            }
++            lessons += len(by_mode)
++            parity_inputs = [p["input"] for p in by_mode["area_parity"]["train"] + by_mode["area_parity"]["test"]]
++            threshold_inputs = [p["input"] for p in by_mode["anchor_threshold"]["train"] + by_mode["anchor_threshold"]["test"]]
++            if parity_inputs != threshold_inputs:
++                failures.append({"seed": seed, "demos": demos, "kind": "setting_input_mismatch"})
++            for mode, episode in by_mode.items():
++                intended_demo = [pair["output"] for pair in episode["train"]]
++                intended_query = [pair["output"] for pair in episode["test"]]
++                for name, solver in P.declared_rivals(mode).items():
++                    rivals_checked += 1
++                    demo_claim = [solver(pair["input"]) for pair in episode["train"]]
++                    query_claim = [solver(pair["input"]) for pair in episode["test"]]
++                    if demo_claim == intended_demo:
++                        failures.append({
++                            "seed": seed,
++                            "demos": demos,
++                            "mode": mode,
++                            "kind": "surviving_rival",
++                            "rival": name,
++                            "query_disagrees": query_claim != intended_query,
++                        })
++                    if query_claim != intended_query:
++                        query_disagreements += 1
++                keys = [json.dumps(p["input"], separators=(",", ":")) for p in episode["train"] + episode["test"]]
++                if len(keys) != len(set(keys)):
++                    failures.append({"seed": seed, "demos": demos, "mode": mode, "kind": "duplicate_input"})
++                one = A.generate(seed, {"rule_mode": mode}, demos, 1)
++                first = {"train": episode["train"], "test": [episode["test"][0]]}
++                if public_challenge_bytes(one) != public_challenge_bytes(first):
++                    failures.append({"seed": seed, "demos": demos, "mode": mode, "kind": "first_turn_drift"})
++                public_checks += 1
++                public_ids.add(public_challenge_id(first))
++                changed = copy.deepcopy(first)
++                changed.update(settings={"rule_mode": "private"}, program_solution="private")
++                changed["test"][0]["output"] = [[9]]
++                if public_challenge_bytes(changed) != public_challenge_bytes(first):
++                    failures.append({"seed": seed, "demos": demos, "mode": mode, "kind": "private_projection_leak"})
++                for pair in episode["train"] + episode["test"]:
++                    facts = P.analyze_scene(pair["input"])
++                    dimensions.add((len(pair["input"]), len(pair["input"][0])))
++                    anchor_sizes.add(facts["anchor_size"])
++                    if pair["output"] != P.solve_python(pair["input"], mode):
++                        failures.append({"seed": seed, "demos": demos, "mode": mode, "kind": "python_label_mismatch"})
++
++    large = A.generate(17, {"rule_mode": "anchor_threshold"}, 3, 4)["test"][3]
++    large_facts = P.analyze_scene(large["input"])
++    summary = {
++        "schema": "ea763f9c5b1d-parametric-audit-v1",
++        "task_id": TASK_ID,
++        "status": "passed" if not failures else "failed",
++        "limits": "Finite declared rivals, seeds and count bounds only; not a universal uniqueness or learning proof.",
++        "python": {
++            "seed_count": seeds,
++            "demo_counts": [2, 3, 4, 5, 6],
++            "lessons": lessons,
++            "rival_checks": rivals_checked,
++            "rival_query_disagreements": query_disagreements,
++            "public_projection_checks": public_checks,
++            "unique_first_turn_ids": len(public_ids),
++            "dimensions": sorted([list(x) for x in dimensions]),
++            "anchor_sizes": sorted(anchor_sizes),
++            "failures": failures,
++        },
++        "racket": {
++            "identity": worker["racket"],
++            "evaluations": worker["racket_evaluations"],
++            "jobs": jobs,
++            "checks": worker["checks"],
++            "worker_sha256": hashlib.sha256((out / "worker.json").read_bytes()).hexdigest(),
++        },
++        "large_query": {
++            "shape": [len(large["input"]), len(large["input"][0])],
++            "component_count": len(large_facts["component_sizes"]),
++            "component_sizes": sorted(large_facts["component_sizes"]),
++            "occupied_rows": large_facts["occupied_rows"],
++            "occupied_cols": large_facts["occupied_cols"],
++            "boundary_contact": any(r in (0, 29) or c in (0, 29) for r, c in large_facts["all_cells"]),
++            "input_sha256": hashlib.sha256(_raw(large["input"])).hexdigest(),
++            "output_sha256": hashlib.sha256(_raw(large["output"])).hexdigest(),
++        },
++        "programs": {
++            mode: hashlib.sha256(A.program({"rule_mode": mode}).encode()).hexdigest()
++            for mode in P.RULE_MODES
++        },
++        "training_admitted": False,
++        "owner_acceptance": "not_performed",
++    }
++    (out / "summary.json").write_bytes(_raw(summary))
++    if failures:
++        raise AssertionError(f"audit found {len(failures)} failure(s)")
++    return summary
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", type=int, default=64)
++    args = parser.parse_args()
++    summary = run(args.out, args.seeds)
++    print(json.dumps({
++        "status": summary["status"],
++        "lessons": summary["python"]["lessons"],
++        "rival_checks": summary["python"]["rival_checks"],
++        "racket_evaluations": summary["racket"]["evaluations"],
++        "large_query": summary["large_query"],
++    }, sort_keys=True))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/repo/generators/ea763f9c5b1d/workspace/parametric/canonical.rkt b/repo/generators/ea763f9c5b1d/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1))) (define (paint grid cells color) (for/fold ((out grid)) ((p (in-list cells))) (if (in-bounds? (first p) (second p) (rows out) (cols out)) (set-cell out (first p) (second p) color) out))) (define (components-any-nonzero grid) (let loop-pos ((positions (grid-positions grid)) (seen (list)) (acc (list))) (cond ((empty? positions) (reverse acc)) ((or (member? (first positions) seen) (= (at grid (first (first positions)) (second (first positions))) 0)) (loop-pos (rest positions) seen acc)) (else (let bfs ((queue (list (first positions))) (seen2 (cons (first positions) seen)) (cells (list))) (if (empty? queue) (loop-pos (rest positions) seen2 (cons (sort cells cell<) acc)) (let* ((cur (first queue)) (nbrs (filter (lambda (p) (and (in-bounds? (first p) (second p) (rows grid) (cols grid)) (not (member? p seen2)) (not (= (at grid (first p) (second p)) 0)))) (map (lambda (d) (list (+ (first cur) (first d)) (+ (second cur) (second d)))) dirs4)))) (bfs (append (rest queue) nbrs) (append seen2 nbrs) (cons cur cells))))))))) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((cells (in-list (components-any-nonzero g)))) (paint out cells (if (= (modulo (length cells) 2) 1) 3 4)))))
+\ No newline at end of file
+diff --git a/repo/generators/ea763f9c5b1d/workspace/parametric/evidence/current/summary.json b/repo/generators/ea763f9c5b1d/workspace/parametric/evidence/current/summary.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/workspace/parametric/evidence/current/summary.json
+@@ -0,0 +1 @@
++{"large_query":{"boundary_contact":true,"component_count":12,"component_sizes":[2,3,4,5,6,7,7,8,9,10,11,12],"input_sha256":"a25c57736279d900e2244d43042675871dfde60621671ffb76c64840561c0143","occupied_cols":24,"occupied_rows":24,"output_sha256":"3834f67db64d7abbec4dcfc8ac55c5960f554be16623e65189a6eb911fa3e593","shape":[30,30]},"limits":"Finite declared rivals, seeds and count bounds only; not a universal uniqueness or learning proof.","owner_acceptance":"not_performed","programs":{"anchor_threshold":"83ede9ff6815d53c7ed57fad8f465f03406fee92eb570f2368e49214ed8a43df","area_parity":"17fac2286cd5b3007cabcf2d1719c55396c766bf643bd951df452ae6751525b2"},"python":{"anchor_sizes":[3,4,5,6,7],"demo_counts":[2,3,4,5,6],"dimensions":[[10,13],[11,14],[12,15],[13,15],[14,16],[15,18],[16,20],[17,19],[20,22],[30,30]],"failures":[],"lessons":640,"public_projection_checks":640,"rival_checks":6720,"rival_query_disagreements":6720,"seed_count":64,"unique_first_turn_ids":640},"racket":{"checks":[{"counts":{"demos":2,"queries":4},"label_count":6,"seed":0,"settings":{"rule_mode":"area_parity"},"survivors":[{"rule_mode":"area_parity"}]},{"counts":{"demos":3,"queries":4},"label_count":7,"seed":17,"settings":{"rule_mode":"area_parity"},"survivors":[{"rule_mode":"area_parity"}]},{"counts":{"demos":6,"queries":4},"label_count":10,"seed":29,"settings":{"rule_mode":"area_parity"},"survivors":[{"rule_mode":"area_parity"}]},{"counts":{"demos":2,"queries":4},"label_count":6,"seed":0,"settings":{"rule_mode":"anchor_threshold"},"survivors":[{"rule_mode":"anchor_threshold"}]},{"counts":{"demos":3,"queries":4},"label_count":7,"seed":17,"settings":{"rule_mode":"anchor_threshold"},"survivors":[{"rule_mode":"anchor_threshold"}]},{"counts":{"demos":6,"queries":4},"label_count":10,"seed":29,"settings":{"rule_mode":"anchor_threshold"},"survivors":[{"rule_mode":"anchor_threshold"}]}],"evaluations":68,"identity":{"backend":"racket","binary_sha256":"bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9","boot_script_sha256":"67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3","bridge_sha256":"4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323","candidate_symbol_policy_sha256":"509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8","prelude_sha256":"953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0","protected":true,"schema":"arc-protected-racket-runtime-v1"},"jobs":[{"demos":2,"queries":4,"seed":0,"settings":{"rule_mode":"area_parity"}},{"demos":3,"queries":4,"seed":17,"settings":{"rule_mode":"area_parity"}},{"demos":6,"queries":4,"seed":29,"settings":{"rule_mode":"area_parity"}},{"demos":2,"queries":4,"seed":0,"settings":{"rule_mode":"anchor_threshold"}},{"demos":3,"queries":4,"seed":17,"settings":{"rule_mode":"anchor_threshold"}},{"demos":6,"queries":4,"seed":29,"settings":{"rule_mode":"anchor_threshold"}}],"worker_sha256":"9ac86c19d82098338438225684335ea6dfe4217cafb36c30681da201fcd40a32"},"schema":"ea763f9c5b1d-parametric-audit-v1","status":"passed","task_id":"ea763f9c5b1d","training_admitted":false}
+diff --git a/repo/generators/ea763f9c5b1d/workspace/parametric/evidence/current/worker.json b/repo/generators/ea763f9c5b1d/workspace/parametric/evidence/current/worker.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/workspace/parametric/evidence/current/worker.json
+@@ -0,0 +1 @@
++{"checks":[{"counts":{"demos":2,"queries":4},"label_count":6,"seed":0,"settings":{"rule_mode":"area_parity"},"survivors":[{"rule_mode":"area_parity"}]},{"counts":{"demos":3,"queries":4},"label_count":7,"seed":17,"settings":{"rule_mode":"area_parity"},"survivors":[{"rule_mode":"area_parity"}]},{"counts":{"demos":6,"queries":4},"label_count":10,"seed":29,"settings":{"rule_mode":"area_parity"},"survivors":[{"rule_mode":"area_parity"}]},{"counts":{"demos":2,"queries":4},"label_count":6,"seed":0,"settings":{"rule_mode":"anchor_threshold"},"survivors":[{"rule_mode":"anchor_threshold"}]},{"counts":{"demos":3,"queries":4},"label_count":7,"seed":17,"settings":{"rule_mode":"anchor_threshold"},"survivors":[{"rule_mode":"anchor_threshold"}]},{"counts":{"demos":6,"queries":4},"label_count":10,"seed":29,"settings":{"rule_mode":"anchor_threshold"},"survivors":[{"rule_mode":"anchor_threshold"}]}],"episodes":[{"program":"(rule! (let ((dummy 0)) (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1))) (define (paint grid cells color) (for/fold ((out grid)) ((p (in-list cells))) (if (in-bounds? (first p) (second p) (rows out) (cols out)) (set-cell out (first p) (second p) color) out))) (define (components-any-nonzero grid) (let loop-pos ((positions (grid-positions grid)) (seen (list)) (acc (list))) (cond ((empty? positions) (reverse acc)) ((or (member? (first positions) seen) (= (at grid (first (first positions)) (second (first positions))) 0)) (loop-pos (rest positions) seen acc)) (else (let bfs ((queue (list (first positions))) (seen2 (cons (first positions) seen)) (cells (list))) (if (empty? queue) (loop-pos (rest positions) seen2 (cons (sort cells cell<) acc)) (let* ((cur (first queue)) (nbrs (filter (lambda (p) (and (in-bounds? (first p) (second p) (rows grid) (cols grid)) (not (member? p seen2)) (not (= (at grid (first p) (second p)) 0)))) (map (lambda (d) (list (+ (first cur) (first d)) (+ (second cur) (second d)))) dirs4)))) (bfs (append (rest queue) nbrs) (append seen2 nbrs) (cons cur cells))))))))) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((cells (in-list (components-any-nonzero g)))) (paint out cells (if (= (modulo (length cells) 2) 1) 3 4)))))","program_sha256":"17fac2286cd5b3007cabcf2d1719c55396c766bf643bd951df452ae6751525b2","reference":"accepted_parametric","seed":0,"settings":{"rule_mode":"area_parity"},"task_id":"ea763f9c5b1d","test":[{"input":[[7,7,7,0,0,0,0,6,6,6,0,0,8,8,0],[0,0,7,0,0,0,0,0,6,6,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,5,5,5,0],[0,0,0,0,0,0,0,0,0,0,0,5,5,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,5,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,5,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,1,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,1,1],[0,0,0,0,0,0,0,0,2,2,0,0,0,1,0],[0,9,9,9,0,0,2,2,2,2,0,0,0,0,0]],"output":[[4,4,4,0,0,0,0,3,3,3,0,0,4,4,0],[0,0,4,0,0,0,0,0,3,3,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,3,3,3,0],[0,0,0,0,0,0,0,0,0,0,0,3,3,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,3,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,3,3],[0,0,0,0,0,0,0,0,4,4,0,0,0,3,0],[0,3,3,3,0,0,4,4,4,4,0,0,0,0,0]]},{"input":[[8,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2],[8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,5,0,0],[1,1,1,0,0,0,0,0,0,0,0,0,0,0,5,5,5,0,0],[1,0,1,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0],[0,0,1,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,9,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,9,9,9,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,0,0,9,0,0,0,0,0,0,0,7,7],[6,0,0,0,0,0,0,0,0,9,0,0,0,0,0,0,0,7,7],[6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7]],"output":[[4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,3,0,0],[4,4,4,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0],[4,0,4,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0],[0,0,4,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,3,3],[4,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,3,3],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3]]},{"input":[[2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5],[2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,7,7,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,7,7,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,6,0,0,0,0,0,0,0,9,0,0,0,0],[0,0,0,0,0,0,0,0,6,6,0,0,0,0,0,0,0,9,9,0,0,0],[0,0,0,0,0,0,0,0,6,6,0,0,0,0,0,0,9,9,9,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,5,5,5,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0],[8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0]],"output":[[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,4,0,0,0,0],[0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,4,4,0,0,0],[0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,4,4,4,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0],[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0]]},{"input":[[9,9,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7],[0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7],[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,6,6,0,0,0,0,0,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0,0,0,0,0,0],[0,6,6,0,0,0,0,0,0,0,0,0,0,0,2,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,6,0,0,0,0,0,0,0,0,0,0,0,2,2,0,5,5,5,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,7,7,7,7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,7,7,7,7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,2,0],[0,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0,0,0,0,0,0,0,2,2],[8,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0,0,0,2,2,2,2],[8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,0,0,0,0,0,2,2,2,2]],"output":[[4,4,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4],[0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,3,0,0,0,0,0,0,0,0,0,0,0,4,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,0,0,0,0,0,0,0,0,0,0,0,4,4,0,3,3,3,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0],[0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,4,0],[0,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,0,0,0,0,0,0,0,4,4],[3,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,0,0,0,4,4,4,4],[3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,4,4,4,4]]}],"train":[{"input":[[0,0,8,8,0,0,0,7,7,0,0,0,0],[0,8,8,0,0,0,0,0,0,0,0,0,0],[0,8,0,0,0,0,0,0,0,0,0,0,5],[0,0,0,0,0,0,0,0,0,0,0,5,5],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[9,9,9,9,0,0,0,1,0,0,0,2,2],[0,0,0,0,0,0,0,1,1,0,0,2,2],[0,0,0,0,0,0,0,1,0,0,2,2,0]],"output":[[0,0,3,3,0,0,0,4,4,0,0,0,0],[0,3,3,0,0,0,0,0,0,0,0,0,0],[0,3,0,0,0,0,0,0,0,0,0,0,3],[0,0,0,0,0,0,0,0,0,0,0,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,4,4,0,0,0,4,0,0,0,4,4],[0,0,0,0,0,0,0,4,4,0,0,4,4],[0,0,0,0,0,0,0,4,0,0,4,4,0]]},{"input":[[0,0,2,0,0,0,0,0,0,0,0,0,0,0],[0,2,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,2,0,9,9,0,0,0,0,0,8,0],[0,0,0,0,0,0,0,0,0,0,0,0,8,0],[0,0,0,0,0,0,0,0,0,0,0,0,8,8],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,1,0,0,0,0,0,0,0,0,0,6,0,0],[1,1,1,0,0,0,0,0,0,0,6,6,0,0],[0,1,0,0,0,0,7,0,0,0,6,6,6,6],[0,0,0,0,0,7,7,7,0,0,0,0,0,0],[0,0,0,0,0,0,7,7,0,0,0,0,0,0]],"output":[[0,0,3,0,0,0,0,0,0,0,0,0,0,0],[0,3,3,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,3,0,4,4,0,0,0,0,0,4,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,0,0,0,0,0,0,0,0,0,3,0,0],[3,3,3,0,0,0,0,0,0,0,3,3,0,0],[0,3,0,0,0,0,4,0,0,0,3,3,3,3],[0,0,0,0,0,4,4,4,0,0,0,0,0,0],[0,0,0,0,0,0,4,4,0,0,0,0,0,0]]}]},{"program":"(rule! (let ((dummy 0)) (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1))) (define (paint grid cells color) (for/fold ((out grid)) ((p (in-list cells))) (if (in-bounds? (first p) (second p) (rows out) (cols out)) (set-cell out (first p) (second p) color) out))) (define (components-any-nonzero grid) (let loop-pos ((positions (grid-positions grid)) (seen (list)) (acc (list))) (cond ((empty? positions) (reverse acc)) ((or (member? (first positions) seen) (= (at grid (first (first positions)) (second (first positions))) 0)) (loop-pos (rest positions) seen acc)) (else (let bfs ((queue (list (first positions))) (seen2 (cons (first positions) seen)) (cells (list))) (if (empty? queue) (loop-pos (rest positions) seen2 (cons (sort cells cell<) acc)) (let* ((cur (first queue)) (nbrs (filter (lambda (p) (and (in-bounds? (first p) (second p) (rows grid) (cols grid)) (not (member? p seen2)) (not (= (at grid (first p) (second p)) 0)))) (map (lambda (d) (list (+ (first cur) (first d)) (+ (second cur) (second d)))) dirs4)))) (bfs (append (rest queue) nbrs) (append seen2 nbrs) (cons cur cells))))))))) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((cells (in-list (components-any-nonzero g)))) (paint out cells (if (= (modulo (length cells) 2) 1) 3 4)))))","program_sha256":"17fac2286cd5b3007cabcf2d1719c55396c766bf643bd951df452ae6751525b2","reference":"accepted_parametric","seed":17,"settings":{"rule_mode":"area_parity"},"task_id":"ea763f9c5b1d","test":[{"input":[[7,7,7,0,0,0,0,0,0,0,0,0,0,0,0],[7,7,0,0,0,0,0,0,0,0,0,0,0,0,0],[7,0,0,0,0,0,0,0,0,0,0,0,6,6,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0],[0,0,9,9,0,0,0,0,0,0,0,1,1,1,0],[0,9,9,9,0,0,0,0,0,0,0,0,1,0,0],[0,9,9,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,0,0,0,0,0],[8,8,0,0,0,0,0,0,2,2,0,0,0,0,0],[8,0,0,0,0,0,0,0,0,2,0,0,0,5,5],[0,0,0,0,0,0,0,0,0,0,0,0,0,5,5]],"output":[[4,4,4,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,0,0,0,0,4,4,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,0,0],[0,0,3,3,0,0,0,0,0,0,0,3,3,3,0],[0,3,3,3,0,0,0,0,0,0,0,0,3,0,0],[0,3,3,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,3,3,0,0,0,0,0],[3,3,0,0,0,0,0,0,3,3,0,0,0,0,0],[3,0,0,0,0,0,0,0,0,3,0,0,0,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,4,4]]},{"input":[[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,7],[8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,9,9],[6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,0],[6,6,6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0],[2,0,0,0,0,0,0,0,5,5,5,0,0,0,0,1,0,1,0],[2,2,0,0,0,0,0,0,0,0,5,0,0,0,0,1,1,1,0],[2,0,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,0,0]],"output":[[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3],[3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0],[4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0],[4,0,0,0,0,0,0,0,3,3,3,0,0,0,0,4,0,4,0],[4,4,0,0,0,0,0,0,0,0,3,0,0,0,0,4,4,4,0],[4,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0]]},{"input":[[6,0,0,0,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,0,0,5],[6,6,0,0,0,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0,5],[0,0,0,0,0,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,8,8,8,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,7,7,7,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,1,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0,0],[1,1,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,1,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9]],"output":[[3,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,4],[3,3,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,4],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,3,3,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,4,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0],[0,4,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4]]},{"input":[[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0],[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0],[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0],[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,2,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,0,0,0,0,0,0,8,8,8,0,0,0,0,0,2,0,0,0],[0,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,2,2,2,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0],[0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0],[0,0,0,7,7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,7,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,9,0,0,0,0,0,7,7,7,7,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,7,0,7,7,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,7,0,7,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,6,0,0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0],[6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,5,0,0],[6,6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,5,5,5,5],[6,6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,5]],"output":[[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,4,0,0,0],[0,0,0,0,0,0,0,0,4,4,4,4,0,0,0,0,0,0,3,3,3,0,0,0,0,0,4,0,0,0],[0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,4,4,4,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0],[0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0],[0,0,0,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,3,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,3,3,3,3,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,3,0,3,3,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,3,0,3,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0],[3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4],[3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,4]]}],"train":[{"input":[[0,9,9,9,0,0,0,0,0,0,0,0,0],[9,9,0,9,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,8,0,0,7,7,0],[0,0,0,0,0,0,0,8,0,0,7,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,6,6,0,0,0,0,1,0],[0,0,0,0,0,0,6,0,0,0,1,1,1],[0,0,0,5,0,0,6,6,0,0,0,0,0],[0,0,0,5,0,0,0,0,0,0,0,0,0],[0,0,5,5,0,0,0,0,0,0,0,0,0]],"output":[[0,4,4,4,0,0,0,0,0,0,0,0,0],[4,4,0,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,4,0,0,3,3,0],[0,0,0,0,0,0,0,4,0,0,3,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,3,3,0,0,0,0,4,0],[0,0,0,0,0,0,3,0,0,0,4,4,4],[0,0,0,4,0,0,3,3,0,0,0,0,0],[0,0,0,4,0,0,0,0,0,0,0,0,0],[0,0,4,4,0,0,0,0,0,0,0,0,0]]},{"input":[[2,2,0,0,0,0,0,0,0,0,0,7,0,0],[2,2,0,0,0,0,0,0,0,0,7,7,7,0],[2,0,0,0,0,0,0,5,5,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,8,8,0,0,0,0,0,6,6],[0,0,0,0,0,8,8,8,8,0,0,6,6,6],[0,0,1,0,0,0,0,0,0,0,0,6,6,0],[0,1,1,1,0,0,0,0,0,0,0,0,0,0],[0,0,1,0,0,0,0,0,0,0,0,0,0,0]],"output":[[3,3,0,0,0,0,0,0,0,0,0,4,0,0],[3,3,0,0,0,0,0,0,0,0,4,4,4,0],[3,0,0,0,0,0,0,4,4,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,4,4,0,0,0,0,0,3,3],[0,0,0,0,0,4,4,4,4,0,0,3,3,3],[0,0,3,0,0,0,0,0,0,0,0,3,3,0],[0,3,3,3,0,0,0,0,0,0,0,0,0,0],[0,0,3,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,8,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,8,0,0,0,5,5],[0,0,1,1,0,0,0,0,0,0,0,0,0,5,0],[0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,2,0,9,9,0,0],[0,0,0,0,0,0,2,2,0,0,0,9,9,9,9],[7,7,0,0,0,0,0,0,0,0,0,0,0,0,0],[7,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[7,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,0,0,0,3,3],[0,0,3,3,0,0,0,0,0,0,0,0,0,3,0],[0,0,0,3,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,0,4,4,0,0],[0,0,0,0,0,0,3,3,0,0,0,4,4,4,4],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}]},{"program":"(rule! (let ((dummy 0)) (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1))) (define (paint grid cells color) (for/fold ((out grid)) ((p (in-list cells))) (if (in-bounds? (first p) (second p) (rows out) (cols out)) (set-cell out (first p) (second p) color) out))) (define (components-any-nonzero grid) (let loop-pos ((positions (grid-positions grid)) (seen (list)) (acc (list))) (cond ((empty? positions) (reverse acc)) ((or (member? (first positions) seen) (= (at grid (first (first positions)) (second (first positions))) 0)) (loop-pos (rest positions) seen acc)) (else (let bfs ((queue (list (first positions))) (seen2 (cons (first positions) seen)) (cells (list))) (if (empty? queue) (loop-pos (rest positions) seen2 (cons (sort cells cell<) acc)) (let* ((cur (first queue)) (nbrs (filter (lambda (p) (and (in-bounds? (first p) (second p) (rows grid) (cols grid)) (not (member? p seen2)) (not (= (at grid (first p) (second p)) 0)))) (map (lambda (d) (list (+ (first cur) (first d)) (+ (second cur) (second d)))) dirs4)))) (bfs (append (rest queue) nbrs) (append seen2 nbrs) (cons cur cells))))))))) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((cells (in-list (components-any-nonzero g)))) (paint out cells (if (= (modulo (length cells) 2) 1) 3 4)))))","program_sha256":"17fac2286cd5b3007cabcf2d1719c55396c766bf643bd951df452ae6751525b2","reference":"accepted_parametric","seed":29,"settings":{"rule_mode":"area_parity"},"task_id":"ea763f9c5b1d","test":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,9,9],[0,0,0,0,6,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,6,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,6,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,5,0,0,0,0,0,7,7,7],[0,0,0,0,0,0,5,0,0,0,0,0,0,7,7],[0,0,0,0,0,0,5,0,0,0,0,0,0,0,7],[0,0,0,0,0,0,5,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,1,0,0,8,8,0,0,0,0,0,0,0],[0,0,1,1,1,0,0,8,0,0,0,0,0,0,0],[0,0,0,1,0,0,8,8,8,8,0,2,2,2,2]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,4,4],[0,0,0,0,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,0,0,0,0,4,4,4],[0,0,0,0,0,0,3,0,0,0,0,0,0,4,4],[0,0,0,0,0,0,3,0,0,0,0,0,0,0,4],[0,0,0,0,0,0,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,3,0,0,3,3,0,0,0,0,0,0,0],[0,0,3,3,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,3,0,0,3,3,3,3,0,4,4,4,4]]},{"input":[[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6],[9,9,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,0,6],[0,9,0,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,6],[0,9,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1],[0,0,0,0,0,0,0,0,0,8,8,8,0,0,0,0,0,0,1],[0,0,0,0,0,0,0,0,0,0,8,8,8,0,0,0,0,1,1],[7,0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,0,0],[7,7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],[3,3,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,3],[0,3,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,3],[0,3,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4],[0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,4],[0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,4,4],[4,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0],[4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[5,0,0,0,0,0,0,0,7,7,7,0,0,0,0,0,0,0,0,0,0,7],[5,5,5,0,0,0,0,0,7,7,0,0,0,0,0,0,0,0,0,0,0,7],[0,5,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,7,7,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,8,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,8,8,8,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0],[9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6],[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6]],"output":[[3,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,4],[3,3,3,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,4],[0,3,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0],[0,0,3,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,3,3,3,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4],[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4]]},{"input":[[9,9,0,0,0,0,0,0,7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0],[9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0],[0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,8,8,8,0,0,0,0,0,0,0,0,0,0,7,7,7,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,7,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,0,0,0,9,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,0,0,0,0],[6,6,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,0,0,0,5,0,0,0,0,0,8,8,0,8],[6,6,6,6,0,0,0,0,0,9,9,0,0,0,0,0,0,0,0,0,5,5,0,0,0,8,8,8,0,8],[6,6,0,0,0,0,0,0,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8]],"output":[[4,4,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0],[0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0,0],[3,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0,0],[3,3,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,3,0,0,0,0,0,4,4,0,4],[3,3,3,3,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,3,3,0,0,0,4,4,4,0,4],[3,3,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4]]}],"train":[{"input":[[1,0,0,0,0,0,5,0,0,0,0,0,8],[1,1,0,0,0,0,5,0,0,0,0,0,8],[1,0,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[9,9,0,0,0,0,0,0,0,0,0,0,0],[9,9,0,0,0,2,0,0,0,0,0,6,0],[0,0,0,0,2,2,2,0,0,0,6,6,6],[0,0,0,0,2,0,0,0,0,0,0,6,6]],"output":[[4,0,0,0,0,0,4,0,0,0,0,0,3],[4,4,0,0,0,0,4,0,0,0,0,0,3],[4,0,0,0,0,0,0,0,0,0,0,0,3],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,3,0,0,0,0,0,4,0],[0,0,0,0,3,3,3,0,0,0,4,4,4],[0,0,0,0,3,0,0,0,0,0,0,4,4]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,7,7],[0,0,0,0,0,0,0,0,0,0,0,7,7,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0],[0,0,0,6,0,0,1,1,1,0,0,0,0,0],[0,0,0,6,0,0,0,1,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[5,5,5,5,0,0,0,0,0,0,0,0,0,0],[0,0,0,5,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,2,0,0,0,0,0,0,0,0],[0,0,0,0,0,2,0,0,0,0,0,9,9,9],[0,0,0,0,0,2,2,2,2,0,9,9,9,9]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,4,4],[0,0,0,0,0,0,0,0,0,0,0,4,4,0],[0,0,0,0,0,0,0,3,0,0,0,0,0,0],[0,0,0,4,0,0,3,3,3,0,0,0,0,0],[0,0,0,4,0,0,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[3,3,3,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,4,0,0,0,0,0,3,3,3],[0,0,0,0,0,4,4,4,4,0,3,3,3,3]]},{"input":[[0,0,0,0,0,0,0,5,5,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,8,8,0],[0,0,0,0,0,0,0,0,0,0,0,0,8,0,0],[7,7,7,0,0,0,0,0,0,0,0,0,0,0,0],[7,7,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,1,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,2,0,0,0,0,0,0,0,0,0,0,0],[0,2,2,2,0,0,0,0,0,0,0,6,6,6,6],[0,0,0,0,0,0,0,0,0,0,0,0,6,6,0]],"output":[[0,0,0,0,0,0,0,4,4,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,3,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,0,0],[3,3,3,0,0,0,0,0,0,0,0,0,0,0,0],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,4,0,0,0,0,0,0,0,0,0,0,0],[0,4,4,4,0,0,0,0,0,0,0,4,4,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,0]]},{"input":[[8,8,8,0,0,0,0,0,0,0,1,0,0,0,5,5],[0,0,0,0,0,0,0,0,1,0,1,0,0,0,5,5],[0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,5],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,7,7,7,7,0,0,0,0,0,0],[0,0,0,0,0,0,7,0,7,0,0,0,0,0,0,0],[2,2,0,0,0,0,7,0,0,0,0,0,0,0,6,0],[2,0,0,0,0,0,0,0,0,0,0,0,6,0,6,0],[2,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],[2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,6]],"output":[[3,3,3,0,0,0,0,0,0,0,4,0,0,0,3,3],[0,0,0,0,0,0,0,0,4,0,4,0,0,0,3,3],[0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,3,3,3,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,0,0,0,0,0],[4,4,0,0,0,0,3,0,0,0,0,0,0,0,4,0],[4,0,0,0,0,0,0,0,0,0,0,0,4,0,4,0],[4,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,4]]},{"input":[[9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2],[9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0],[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,5,5,0,0,0,0,0,0,0,8,8,8,0,0],[0,0,0,5,5,5,0,0,6,0,6,0,0,8,8,8,0,0],[0,0,0,5,5,0,0,6,6,6,6,0,0,0,8,0,0,0],[0,0,0,0,5,0,0,0,0,0,6,0,0,8,8,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,7,7,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0],[7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0],[7,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0]],"output":[[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3],[4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,4,4,0,0,0,0,0,0,0,3,3,3,0,0],[0,0,0,4,4,4,0,0,3,0,3,0,0,3,3,3,0,0],[0,0,0,4,4,0,0,3,3,3,3,0,0,0,3,0,0,0],[0,0,0,0,4,0,0,0,0,0,3,0,0,3,3,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,3,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0],[3,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0]]},{"input":[[8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7],[0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0],[1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,9,9,9,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,9,9,9,0,0,0,0,0,0,0,0,0,5],[0,6,0,0,0,0,0,0,0,9,0,0,0,0,0,0,0,0,0,5],[6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5]],"output":[[4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4],[0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4],[0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0,0,4],[0,3,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,4],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4]]}]},{"program":"(rule!\n (let ((dummy 0))\n   (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))\n   (define (paint grid cells color)\n     (for/fold ((out grid)) ((p (in-list cells)))\n       (if (in-bounds? (first p) (second p) (rows out) (cols out))\n           (set-cell out (first p) (second p) color)\n           out)))\n   (define (components-any-nonzero grid)\n     (let loop-pos ((positions (grid-positions grid)) (seen (list)) (acc (list)))\n       (cond\n         ((empty? positions) (reverse acc))\n         ((or (member? (first positions) seen)\n              (= (at grid (first (first positions)) (second (first positions))) 0))\n          (loop-pos (rest positions) seen acc))\n         (else\n          (let bfs ((queue (list (first positions)))\n                    (seen2 (cons (first positions) seen))\n                    (cells (list)))\n            (if (empty? queue)\n                (loop-pos (rest positions) seen2 (cons (sort cells cell<) acc))\n                (let* ((cur (first queue))\n                       (nbrs\n                        (filter\n                         (lambda (p)\n                           (and (in-bounds? (first p) (second p) (rows grid) (cols grid))\n                                (not (member? p seen2))\n                                (not (= (at grid (first p) (second p)) 0))))\n                         (map (lambda (d)\n                                (list (+ (first cur) (first d))\n                                      (+ (second cur) (second d))))\n                              dirs4))))\n                  (bfs (append (rest queue) nbrs)\n                       (append seen2 nbrs)\n                       (cons cur cells)))))))))\n   (let* ((components (components-any-nonzero g))\n          (anchors\n           (filter\n            (lambda (cells)\n              (= (at g (first (first cells)) (second (first cells))) 1))\n            components))\n          (threshold (length (first anchors))))\n     (for/fold ((out (empty-grid (rows g) (cols g) 0)))\n               ((cells (in-list components)))\n       (paint out cells (if (< (length cells) threshold) 3 4))))))\n","program_sha256":"83ede9ff6815d53c7ed57fad8f465f03406fee92eb570f2368e49214ed8a43df","reference":"accepted_parametric","seed":0,"settings":{"rule_mode":"anchor_threshold"},"task_id":"ea763f9c5b1d","test":[{"input":[[7,7,7,0,0,0,0,6,6,6,0,0,8,8,0],[0,0,7,0,0,0,0,0,6,6,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,5,5,5,0],[0,0,0,0,0,0,0,0,0,0,0,5,5,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,5,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,5,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,1,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,1,1],[0,0,0,0,0,0,0,0,2,2,0,0,0,1,0],[0,9,9,9,0,0,2,2,2,2,0,0,0,0,0]],"output":[[3,3,3,0,0,0,0,4,4,4,0,0,3,3,0],[0,0,3,0,0,0,0,0,4,4,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,4,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,4,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,4],[0,0,0,0,0,0,0,0,4,4,0,0,0,4,0],[0,3,3,3,0,0,4,4,4,4,0,0,0,0,0]]},{"input":[[8,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2],[8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,5,0,0],[1,1,1,0,0,0,0,0,0,0,0,0,0,0,5,5,5,0,0],[1,0,1,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0],[0,0,1,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,9,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,9,9,9,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,0,0,9,0,0,0,0,0,0,0,7,7],[6,0,0,0,0,0,0,0,0,9,0,0,0,0,0,0,0,7,7],[6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7]],"output":[[4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,4,0,0],[4,4,4,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0],[4,0,4,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0],[0,0,4,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0],[3,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,3,3],[3,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,3,3],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3]]},{"input":[[2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5],[2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,7,7,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,7,7,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,6,0,0,0,0,0,0,0,9,0,0,0,0],[0,0,0,0,0,0,0,0,6,6,0,0,0,0,0,0,0,9,9,0,0,0],[0,0,0,0,0,0,0,0,6,6,0,0,0,0,0,0,9,9,9,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,5,5,5,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0],[8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0]],"output":[[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,4,0,0,0,0],[0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,4,4,0,0,0],[0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,4,4,4,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0],[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0]]},{"input":[[9,9,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7],[0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7],[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,6,6,0,0,0,0,0,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0,0,0,0,0,0],[0,6,6,0,0,0,0,0,0,0,0,0,0,0,2,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,6,0,0,0,0,0,0,0,0,0,0,0,2,2,0,5,5,5,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,7,7,7,7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,7,7,7,7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,2,0],[0,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0,0,0,0,0,0,0,2,2],[8,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0,0,0,2,2,2,2],[8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,0,0,0,0,0,2,2,2,2]],"output":[[3,3,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3],[0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,3,0,0,0,0,0,0,0,0,0,0,0,3,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,0,0,0,0,0,0,0,0,0,0,0,3,3,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0],[0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,4,0],[0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,0,0,0,0,0,0,0,4,4],[4,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,0,0,0,4,4,4,4],[4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,4,4,4,4]]}],"train":[{"input":[[0,0,8,8,0,0,0,7,7,0,0,0,0],[0,8,8,0,0,0,0,0,0,0,0,0,0],[0,8,0,0,0,0,0,0,0,0,0,0,5],[0,0,0,0,0,0,0,0,0,0,0,5,5],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[9,9,9,9,0,0,0,1,0,0,0,2,2],[0,0,0,0,0,0,0,1,1,0,0,2,2],[0,0,0,0,0,0,0,1,0,0,2,2,0]],"output":[[0,0,4,4,0,0,0,3,3,0,0,0,0],[0,4,4,0,0,0,0,0,0,0,0,0,0],[0,4,0,0,0,0,0,0,0,0,0,0,3],[0,0,0,0,0,0,0,0,0,0,0,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,4,4,0,0,0,4,0,0,0,4,4],[0,0,0,0,0,0,0,4,4,0,0,4,4],[0,0,0,0,0,0,0,4,0,0,4,4,0]]},{"input":[[0,0,2,0,0,0,0,0,0,0,0,0,0,0],[0,2,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,2,0,9,9,0,0,0,0,0,8,0],[0,0,0,0,0,0,0,0,0,0,0,0,8,0],[0,0,0,0,0,0,0,0,0,0,0,0,8,8],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,1,0,0,0,0,0,0,0,0,0,6,0,0],[1,1,1,0,0,0,0,0,0,0,6,6,0,0],[0,1,0,0,0,0,7,0,0,0,6,6,6,6],[0,0,0,0,0,7,7,7,0,0,0,0,0,0],[0,0,0,0,0,0,7,7,0,0,0,0,0,0]],"output":[[0,0,4,0,0,0,0,0,0,0,0,0,0,0],[0,4,4,4,0,0,0,0,0,0,0,0,0,0],[0,0,0,4,0,3,3,0,0,0,0,0,3,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,0],[0,0,0,0,0,0,0,0,0,0,0,0,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,4,0,0,0,0,0,0,0,0,0,4,0,0],[4,4,4,0,0,0,0,0,0,0,4,4,0,0],[0,4,0,0,0,0,4,0,0,0,4,4,4,4],[0,0,0,0,0,4,4,4,0,0,0,0,0,0],[0,0,0,0,0,0,4,4,0,0,0,0,0,0]]}]},{"program":"(rule!\n (let ((dummy 0))\n   (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))\n   (define (paint grid cells color)\n     (for/fold ((out grid)) ((p (in-list cells)))\n       (if (in-bounds? (first p) (second p) (rows out) (cols out))\n           (set-cell out (first p) (second p) color)\n           out)))\n   (define (components-any-nonzero grid)\n     (let loop-pos ((positions (grid-positions grid)) (seen (list)) (acc (list)))\n       (cond\n         ((empty? positions) (reverse acc))\n         ((or (member? (first positions) seen)\n              (= (at grid (first (first positions)) (second (first positions))) 0))\n          (loop-pos (rest positions) seen acc))\n         (else\n          (let bfs ((queue (list (first positions)))\n                    (seen2 (cons (first positions) seen))\n                    (cells (list)))\n            (if (empty? queue)\n                (loop-pos (rest positions) seen2 (cons (sort cells cell<) acc))\n                (let* ((cur (first queue))\n                       (nbrs\n                        (filter\n                         (lambda (p)\n                           (and (in-bounds? (first p) (second p) (rows grid) (cols grid))\n                                (not (member? p seen2))\n                                (not (= (at grid (first p) (second p)) 0))))\n                         (map (lambda (d)\n                                (list (+ (first cur) (first d))\n                                      (+ (second cur) (second d))))\n                              dirs4))))\n                  (bfs (append (rest queue) nbrs)\n                       (append seen2 nbrs)\n                       (cons cur cells)))))))))\n   (let* ((components (components-any-nonzero g))\n          (anchors\n           (filter\n            (lambda (cells)\n              (= (at g (first (first cells)) (second (first cells))) 1))\n            components))\n          (threshold (length (first anchors))))\n     (for/fold ((out (empty-grid (rows g) (cols g) 0)))\n               ((cells (in-list components)))\n       (paint out cells (if (< (length cells) threshold) 3 4))))))\n","program_sha256":"83ede9ff6815d53c7ed57fad8f465f03406fee92eb570f2368e49214ed8a43df","reference":"accepted_parametric","seed":17,"settings":{"rule_mode":"anchor_threshold"},"task_id":"ea763f9c5b1d","test":[{"input":[[7,7,7,0,0,0,0,0,0,0,0,0,0,0,0],[7,7,0,0,0,0,0,0,0,0,0,0,0,0,0],[7,0,0,0,0,0,0,0,0,0,0,0,6,6,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0],[0,0,9,9,0,0,0,0,0,0,0,1,1,1,0],[0,9,9,9,0,0,0,0,0,0,0,0,1,0,0],[0,9,9,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,0,0,0,0,0],[8,8,0,0,0,0,0,0,2,2,0,0,0,0,0],[8,0,0,0,0,0,0,0,0,2,0,0,0,5,5],[0,0,0,0,0,0,0,0,0,0,0,0,0,5,5]],"output":[[4,4,4,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,0,0,0,0,3,3,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,0,0],[0,0,4,4,0,0,0,0,0,0,0,4,4,4,0],[0,4,4,4,0,0,0,0,0,0,0,0,4,0,0],[0,4,4,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,4,4,0,0,0,0,0],[3,3,0,0,0,0,0,0,4,4,0,0,0,0,0],[3,0,0,0,0,0,0,0,0,4,0,0,0,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,3,3]]},{"input":[[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,7],[8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,9,9],[6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,0],[6,6,6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0],[2,0,0,0,0,0,0,0,5,5,5,0,0,0,0,1,0,1,0],[2,2,0,0,0,0,0,0,0,0,5,0,0,0,0,1,1,1,0],[2,0,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,0,0]],"output":[[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3],[3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0],[4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0],[3,0,0,0,0,0,0,0,4,4,4,0,0,0,0,4,0,4,0],[3,3,0,0,0,0,0,0,0,0,4,0,0,0,0,4,4,4,0],[3,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0]]},{"input":[[6,0,0,0,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,0,0,5],[6,6,0,0,0,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0,5],[0,0,0,0,0,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,8,8,8,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,7,7,7,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,1,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0,0],[1,1,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,1,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9]],"output":[[3,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,3],[3,3,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,3],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,4,4,4,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,4,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0],[0,4,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4]]},{"input":[[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0],[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0],[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0],[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,2,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,0,0,0,0,0,0,8,8,8,0,0,0,0,0,2,0,0,0],[0,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,2,2,2,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0],[0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0],[0,0,0,7,7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,7,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,9,0,0,0,0,0,7,7,7,7,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,7,0,7,7,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,7,0,7,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,6,0,0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0],[6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,5,0,0],[6,6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,5,5,5,5],[6,6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,5]],"output":[[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0],[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0],[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0],[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,4,0,0,0],[0,0,0,0,0,0,0,0,3,3,3,3,0,0,0,0,0,0,4,4,4,0,0,0,0,0,4,0,0,0],[0,0,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,4,4,4,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0],[0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0],[0,0,0,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,4,4,4,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,4,0,4,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,4,0,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,4,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0],[4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4],[4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,4]]}],"train":[{"input":[[0,9,9,9,0,0,0,0,0,0,0,0,0],[9,9,0,9,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,8,0,0,7,7,0],[0,0,0,0,0,0,0,8,0,0,7,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,6,6,0,0,0,0,1,0],[0,0,0,0,0,0,6,0,0,0,1,1,1],[0,0,0,5,0,0,6,6,0,0,0,0,0],[0,0,0,5,0,0,0,0,0,0,0,0,0],[0,0,5,5,0,0,0,0,0,0,0,0,0]],"output":[[0,4,4,4,0,0,0,0,0,0,0,0,0],[4,4,0,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,3,3,0],[0,0,0,0,0,0,0,3,0,0,3,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,4,4,0,0,0,0,4,0],[0,0,0,0,0,0,4,0,0,0,4,4,4],[0,0,0,4,0,0,4,4,0,0,0,0,0],[0,0,0,4,0,0,0,0,0,0,0,0,0],[0,0,4,4,0,0,0,0,0,0,0,0,0]]},{"input":[[2,2,0,0,0,0,0,0,0,0,0,7,0,0],[2,2,0,0,0,0,0,0,0,0,7,7,7,0],[2,0,0,0,0,0,0,5,5,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,8,8,0,0,0,0,0,6,6],[0,0,0,0,0,8,8,8,8,0,0,6,6,6],[0,0,1,0,0,0,0,0,0,0,0,6,6,0],[0,1,1,1,0,0,0,0,0,0,0,0,0,0],[0,0,1,0,0,0,0,0,0,0,0,0,0,0]],"output":[[4,4,0,0,0,0,0,0,0,0,0,3,0,0],[4,4,0,0,0,0,0,0,0,0,3,3,3,0],[4,0,0,0,0,0,0,3,3,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,4,4,0,0,0,0,0,4,4],[0,0,0,0,0,4,4,4,4,0,0,4,4,4],[0,0,4,0,0,0,0,0,0,0,0,4,4,0],[0,4,4,4,0,0,0,0,0,0,0,0,0,0],[0,0,4,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,8,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,8,0,0,0,5,5],[0,0,1,1,0,0,0,0,0,0,0,0,0,5,0],[0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,2,0,9,9,0,0],[0,0,0,0,0,0,2,2,0,0,0,9,9,9,9],[7,7,0,0,0,0,0,0,0,0,0,0,0,0,0],[7,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[7,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,3,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,3,0,0,0,4,4],[0,0,4,4,0,0,0,0,0,0,0,0,0,4,0],[0,0,0,4,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,4,4,4,0,4,4,0,0],[0,0,0,0,0,0,4,4,0,0,0,4,4,4,4],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}]},{"program":"(rule!\n (let ((dummy 0))\n   (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))\n   (define (paint grid cells color)\n     (for/fold ((out grid)) ((p (in-list cells)))\n       (if (in-bounds? (first p) (second p) (rows out) (cols out))\n           (set-cell out (first p) (second p) color)\n           out)))\n   (define (components-any-nonzero grid)\n     (let loop-pos ((positions (grid-positions grid)) (seen (list)) (acc (list)))\n       (cond\n         ((empty? positions) (reverse acc))\n         ((or (member? (first positions) seen)\n              (= (at grid (first (first positions)) (second (first positions))) 0))\n          (loop-pos (rest positions) seen acc))\n         (else\n          (let bfs ((queue (list (first positions)))\n                    (seen2 (cons (first positions) seen))\n                    (cells (list)))\n            (if (empty? queue)\n                (loop-pos (rest positions) seen2 (cons (sort cells cell<) acc))\n                (let* ((cur (first queue))\n                       (nbrs\n                        (filter\n                         (lambda (p)\n                           (and (in-bounds? (first p) (second p) (rows grid) (cols grid))\n                                (not (member? p seen2))\n                                (not (= (at grid (first p) (second p)) 0))))\n                         (map (lambda (d)\n                                (list (+ (first cur) (first d))\n                                      (+ (second cur) (second d))))\n                              dirs4))))\n                  (bfs (append (rest queue) nbrs)\n                       (append seen2 nbrs)\n                       (cons cur cells)))))))))\n   (let* ((components (components-any-nonzero g))\n          (anchors\n           (filter\n            (lambda (cells)\n              (= (at g (first (first cells)) (second (first cells))) 1))\n            components))\n          (threshold (length (first anchors))))\n     (for/fold ((out (empty-grid (rows g) (cols g) 0)))\n               ((cells (in-list components)))\n       (paint out cells (if (< (length cells) threshold) 3 4))))))\n","program_sha256":"83ede9ff6815d53c7ed57fad8f465f03406fee92eb570f2368e49214ed8a43df","reference":"accepted_parametric","seed":29,"settings":{"rule_mode":"anchor_threshold"},"task_id":"ea763f9c5b1d","test":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,9,9],[0,0,0,0,6,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,6,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,6,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,5,0,0,0,0,0,7,7,7],[0,0,0,0,0,0,5,0,0,0,0,0,0,7,7],[0,0,0,0,0,0,5,0,0,0,0,0,0,0,7],[0,0,0,0,0,0,5,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,1,0,0,8,8,0,0,0,0,0,0,0],[0,0,1,1,1,0,0,8,0,0,0,0,0,0,0],[0,0,0,1,0,0,8,8,8,8,0,2,2,2,2]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,3,3],[0,0,0,0,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,3,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,4,0,0,0,0,0,4,4,4],[0,0,0,0,0,0,4,0,0,0,0,0,0,4,4],[0,0,0,0,0,0,4,0,0,0,0,0,0,0,4],[0,0,0,0,0,0,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,4,0,0,4,4,0,0,0,0,0,0,0],[0,0,4,4,4,0,0,4,0,0,0,0,0,0,0],[0,0,0,4,0,0,4,4,4,4,0,3,3,3,3]]},{"input":[[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6],[9,9,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,0,6],[0,9,0,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,6],[0,9,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1],[0,0,0,0,0,0,0,0,0,8,8,8,0,0,0,0,0,0,1],[0,0,0,0,0,0,0,0,0,0,8,8,8,0,0,0,0,1,1],[7,0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,0,0],[7,7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],[3,3,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,3],[0,3,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,3],[0,3,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4],[0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,4],[0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,4,4],[3,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0],[3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[5,0,0,0,0,0,0,0,7,7,7,0,0,0,0,0,0,0,0,0,0,7],[5,5,5,0,0,0,0,0,7,7,0,0,0,0,0,0,0,0,0,0,0,7],[0,5,0,0,0,0,0,0,0,7,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,7,7,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,8,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,8,8,8,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0],[9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6],[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6]],"output":[[4,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,3],[4,4,4,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,3],[0,4,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0],[0,0,4,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,4,4,4,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4],[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4]]},{"input":[[9,9,0,0,0,0,0,0,7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0],[9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0],[0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,7,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,8,8,8,0,0,0,0,0,0,0,0,0,0,7,7,7,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,7,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,0,0,5,5,0,0,0,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,0,0,0,9,0,0,0,0,0,0,0,5,5,5,0,0,0,0,0,0,0,0,0],[6,6,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,0,0,0,5,0,0,0,0,0,8,8,0,8],[6,6,6,6,0,0,0,0,0,9,9,0,0,0,0,0,0,0,0,0,5,5,0,0,0,8,8,8,0,8],[6,6,0,0,0,0,0,0,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8]],"output":[[3,3,0,0,0,0,0,0,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0],[0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,4,0,0,0,0,0,4,4,0,4],[4,4,4,4,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0,4,4,0,0,0,4,4,4,0,4],[4,4,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4]]}],"train":[{"input":[[1,0,0,0,0,0,5,0,0,0,0,0,8],[1,1,0,0,0,0,5,0,0,0,0,0,8],[1,0,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[9,9,0,0,0,0,0,0,0,0,0,0,0],[9,9,0,0,0,2,0,0,0,0,0,6,0],[0,0,0,0,2,2,2,0,0,0,6,6,6],[0,0,0,0,2,0,0,0,0,0,0,6,6]],"output":[[4,0,0,0,0,0,3,0,0,0,0,0,3],[4,4,0,0,0,0,3,0,0,0,0,0,3],[4,0,0,0,0,0,0,0,0,0,0,0,3],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,4,0,0,0,0,0,4,0],[0,0,0,0,4,4,4,0,0,0,4,4,4],[0,0,0,0,4,0,0,0,0,0,0,4,4]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,7,7],[0,0,0,0,0,0,0,0,0,0,0,7,7,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0],[0,0,0,6,0,0,1,1,1,0,0,0,0,0],[0,0,0,6,0,0,0,1,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[5,5,5,5,0,0,0,0,0,0,0,0,0,0],[0,0,0,5,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,2,0,0,0,0,0,0,0,0],[0,0,0,0,0,2,0,0,0,0,0,9,9,9],[0,0,0,0,0,2,2,2,2,0,9,9,9,9]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,3,3],[0,0,0,0,0,0,0,0,0,0,0,3,3,0],[0,0,0,0,0,0,0,4,0,0,0,0,0,0],[0,0,0,3,0,0,4,4,4,0,0,0,0,0],[0,0,0,3,0,0,0,4,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,4,4,0,0,0,0,0,0,0,0,0,0],[0,0,0,4,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,4,0,0,0,0,0,0,0,0],[0,0,0,0,0,4,0,0,0,0,0,4,4,4],[0,0,0,0,0,4,4,4,4,0,4,4,4,4]]},{"input":[[0,0,0,0,0,0,0,5,5,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,8,8,0],[0,0,0,0,0,0,0,0,0,0,0,0,8,0,0],[7,7,7,0,0,0,0,0,0,0,0,0,0,0,0],[7,7,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,1,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,2,0,0,0,0,0,0,0,0,0,0,0],[0,2,2,2,0,0,0,0,0,0,0,6,6,6,6],[0,0,0,0,0,0,0,0,0,0,0,0,6,6,0]],"output":[[0,0,0,0,0,0,0,3,3,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,0],[0,0,0,0,0,0,0,0,0,0,0,0,4,0,0],[4,4,4,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,4,4,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,4,0,0,0,0,0,0,0,0,0,0,0],[0,4,4,4,0,0,0,0,0,0,0,4,4,4,4],[0,0,0,0,0,0,0,0,0,0,0,0,4,4,0]]},{"input":[[8,8,8,0,0,0,0,0,0,0,1,0,0,0,5,5],[0,0,0,0,0,0,0,0,1,0,1,0,0,0,5,5],[0,0,0,0,0,0,0,0,1,1,1,0,0,0,0,5],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,7,7,7,7,0,0,0,0,0,0],[0,0,0,0,0,0,7,0,7,0,0,0,0,0,0,0],[2,2,0,0,0,0,7,0,0,0,0,0,0,0,6,0],[2,0,0,0,0,0,0,0,0,0,0,0,6,0,6,0],[2,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6],[2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,6]],"output":[[3,3,3,0,0,0,0,0,0,0,4,0,0,0,3,3],[0,0,0,0,0,0,0,0,4,0,4,0,0,0,3,3],[0,0,0,0,0,0,0,0,4,4,4,0,0,0,0,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,4,4,4,4,0,0,0,0,0,0],[0,0,0,0,0,0,4,0,4,0,0,0,0,0,0,0],[4,4,0,0,0,0,4,0,0,0,0,0,0,0,4,0],[4,0,0,0,0,0,0,0,0,0,0,0,4,0,4,0],[4,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,4]]},{"input":[[9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2],[9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0],[9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,5,5,0,0,0,0,0,0,0,8,8,8,0,0],[0,0,0,5,5,5,0,0,6,0,6,0,0,8,8,8,0,0],[0,0,0,5,5,0,0,6,6,6,6,0,0,0,8,0,0,0],[0,0,0,0,5,0,0,0,0,0,6,0,0,8,8,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,7,7,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0],[7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0],[7,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0]],"output":[[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3],[3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0],[3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,4,4,0,0,0,0,0,0,0,4,4,4,0,0],[0,0,0,4,4,4,0,0,4,0,4,0,0,4,4,4,0,0],[0,0,0,4,4,0,0,4,4,4,4,0,0,0,4,0,0,0],[0,0,0,0,4,0,0,0,0,0,4,0,0,4,4,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,3,3,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,0],[3,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,0]]},{"input":[[8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7],[0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0],[1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,9,9,9,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,9,9,9,0,0,0,0,0,0,0,0,0,5],[0,6,0,0,0,0,0,0,0,9,0,0,0,0,0,0,0,0,0,5],[6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5]],"output":[[4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],[0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],[0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,4,4,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0],[4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,4,4,4,0,0,0,0,0,0,0,0,0,4],[0,3,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,4],[3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,4]]}]}],"racket":{"backend":"racket","binary_sha256":"bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9","boot_script_sha256":"67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3","bridge_sha256":"4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323","candidate_symbol_policy_sha256":"509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8","prelude_sha256":"953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0","protected":true,"schema":"arc-protected-racket-runtime-v1"},"racket_evaluations":68}
+diff --git a/repo/generators/ea763f9c5b1d/workspace/parametric/evidence/manifest.json b/repo/generators/ea763f9c5b1d/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,92 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "17fac2286cd5b3007cabcf2d1719c55396c766bf643bd951df452ae6751525b2",
++  "canonical_rule_hash": "17fac2286cd5",
++  "default": {
++    "rule_mode": "area_parity"
++  },
++  "evidence_root": "generators/ea763f9c5b1d/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 18479,
++      "path": "generators/ea763f9c5b1d/generator.py",
++      "sha256": "0b5648e0842458360821bac99ee4c5d732696d1b27aa547a956f191064f95959"
++    },
++    {
++      "bytes": 6433,
++      "path": "generators/ea763f9c5b1d/tests/test_generator_ea763f9c5b1d.py",
++      "sha256": "7f678cec31068c470a0e0dc83251e6d2e5aaff4b0ca8a328733a7b523e438a82"
++    },
++    {
++      "bytes": 6592,
++      "path": "generators/ea763f9c5b1d/tests/test_parametric_anchor_threshold.py",
++      "sha256": "ac31aa0e9c53d95e135bc546986ba7e31fb1ad26977002298761cd8cb0b738a4"
++    },
++    {
++      "bytes": 752,
++      "path": "generators/ea763f9c5b1d/workspace/parametric/adapter.py",
++      "sha256": "6969dd0f8f0138c8babd251ff27b36e04826d8bf747d363b5f0cfb6f0f8f550b"
++    },
++    {
++      "bytes": 2102,
++      "path": "generators/ea763f9c5b1d/workspace/parametric/anchor_threshold.rkt",
++      "sha256": "83ede9ff6815d53c7ed57fad8f465f03406fee92eb570f2368e49214ed8a43df"
++    },
++    {
++      "bytes": 7716,
++      "path": "generators/ea763f9c5b1d/workspace/parametric/audit.py",
++      "sha256": "9a3939005890a1e9d0db247cb7acefa1f4a7b4e9701dd4b46a612b2c8bd286b3"
++    },
++    {
++      "bytes": 1277,
++      "path": "generators/ea763f9c5b1d/workspace/parametric/canonical.rkt",
++      "sha256": "17fac2286cd5b3007cabcf2d1719c55396c766bf643bd951df452ae6751525b2"
++    },
++    {
++      "bytes": 3076,
++      "path": "generators/ea763f9c5b1d/workspace/parametric/evidence/current/summary.json",
++      "sha256": "45a2768b55592df90dea6171234d80ffb27d18329a936da7e264483c9ef16e92"
++    },
++    {
++      "bytes": 77935,
++      "path": "generators/ea763f9c5b1d/workspace/parametric/evidence/current/worker.json",
++      "sha256": "9ac86c19d82098338438225684335ea6dfe4217cafb36c30681da201fcd40a32"
++    },
++    {
++      "bytes": 518,
++      "path": "generators/ea763f9c5b1d/workspace/parametric/promotion.json",
++      "sha256": "ba7296d7c81e6cce1ec1e601e91af3d117881bde79876b3cb10bd40ba34c1084"
++    },
++    {
++      "bytes": 15757,
++      "path": "generators/ea763f9c5b1d/workspace/parametric/prototype.py",
++      "sha256": "ee25c8877b7b38d0cad23ce22e74ab477584e2cd23c0957a09936ba4862df9fe"
++    }
++  ],
++  "generator_sha256": "0b5648e0842458360821bac99ee4c5d732696d1b27aa547a956f191064f95959",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "rule_mode": [
++      "area_parity",
++      "anchor_threshold"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "24 focused tests passed (26 unittest subtests); bounded self-audit covered 640 lessons, 6,720 declared-rival checks, count bounds 2..6, matched inputs and public first-turn projection; protected Racket evaluated 68 labels/counter-settings across both rules and demo counts 2,3,6; exact 30x30 query had 12 components spanning 24 rows and 24 columns. Finite evidence only; owner acceptance and training admission not performed.",
++  "rule_task_id": "ea763f9c5b1d",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "ea763f9c5b1d",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/ea763f9c5b1d/workspace/parametric/promotion.json b/repo/generators/ea763f9c5b1d/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/workspace/parametric/promotion.json
+@@ -0,0 +1,22 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/ea763f9c5b1d/workspace/parametric/adapter.py",
++  "parameters": {
++    "rule_mode": [
++      "area_parity",
++      "anchor_threshold"
++    ]
++  },
++  "default": {
++    "rule_mode": "area_parity"
++  },
++  "qualification_demos": 3,
++  "limits": {
++    "demos": [2, 6],
++    "queries": [1, 4]
++  },
++  "resources": [
++    "generators/ea763f9c5b1d/workspace/parametric/canonical.rkt",
++    "generators/ea763f9c5b1d/workspace/parametric/anchor_threshold.rkt"
++  ]
++}
+diff --git a/repo/generators/ea763f9c5b1d/workspace/parametric/prototype.py b/repo/generators/ea763f9c5b1d/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ea763f9c5b1d/workspace/parametric/prototype.py
+@@ -0,0 +1,412 @@
++"""Native episode generator for area parity and an input-derived anchor threshold.
++
++The default setting returns the canonical Racket source byte-for-byte.  The
++alternative first finds the unique red component, binds its area as a threshold,
++then classifies every component relative to that input-derived value.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Callable
++
++
++RULE_MODES = ("area_parity", "anchor_threshold")
++_HOME = Path(__file__).resolve().parent
++_DIR4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
++_OTHER_COLORS = (2, 5, 6, 7, 8, 9)
++
++# Each profile deliberately contains a component below, equal to, and above the
++# red anchor's area.  Repeating the equality case teaches the strict boundary.
++_DEMO_PROFILES = (
++    (10, 13, (4, 2, 3, 4, 5, 6), False),
++    (11, 14, (5, 2, 4, 5, 6, 7), False),
++    (12, 15, (3, 2, 3, 4, 5, 6), False),
++    (14, 16, (6, 3, 5, 6, 7, 8), True),
++    (15, 18, (7, 3, 5, 6, 7, 8, 9), True),
++    (16, 20, (4, 2, 3, 4, 5, 7, 8), True),
++)
++_QUERY_PROFILES = (
++    (13, 15, (5, 2, 3, 4, 5, 6, 7), False),
++    (17, 19, (6, 3, 4, 5, 6, 7, 8), True),
++    (20, 22, (4, 2, 3, 4, 5, 6, 7, 8), True),
++    (30, 30, (7, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12), True),
++)
++
++_ANCHOR_SHAPES = {
++    3: ((0, 0), (1, 0), (1, 1)),
++    4: ((0, 0), (0, 1), (0, 2), (1, 1)),
++    5: ((0, 1), (1, 0), (1, 1), (1, 2), (2, 1)),
++    6: ((0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (1, 2)),
++    7: ((0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (1, 2), (1, 1)),
++}
++
++
++def _mode(settings) -> str:
++    if type(settings) is not dict or set(settings) != {"rule_mode"}:
++        raise ValueError("settings must contain exactly rule_mode")
++    value = settings["rule_mode"]
++    if value not in RULE_MODES:
++        raise ValueError("rule_mode must be area_parity or anchor_threshold")
++    return value
++
++
++def program(settings) -> str:
++    mode = _mode(settings)
++    name = "canonical.rkt" if mode == "area_parity" else "anchor_threshold.rkt"
++    return (_HOME / name).read_text(encoding="utf-8")
++
++
++def _validate_grid(grid) -> tuple[int, int]:
++    if (type(grid) is not list or not 1 <= len(grid) <= 30
++            or type(grid[0]) is not list or not 1 <= len(grid[0]) <= 30):
++        raise ValueError("grid must have 1..30 rows and columns")
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width
++           or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++           for row in grid):
++        raise ValueError("grid must be rectangular with exact ARC integer colors")
++    return len(grid), width
++
++
++def _components(grid) -> list[tuple[tuple[int, int], ...]]:
++    h, w = _validate_grid(grid)
++    seen: set[tuple[int, int]] = set()
++    result: list[tuple[tuple[int, int], ...]] = []
++    for row in range(h):
++        for col in range(w):
++            if grid[row][col] == 0 or (row, col) in seen:
++                continue
++            pending = [(row, col)]
++            seen.add((row, col))
++            cells: list[tuple[int, int]] = []
++            while pending:
++                current = pending.pop()
++                cells.append(current)
++                for dr, dc in _DIR4:
++                    nxt = current[0] + dr, current[1] + dc
++                    if (0 <= nxt[0] < h and 0 <= nxt[1] < w
++                            and grid[nxt[0]][nxt[1]] != 0 and nxt not in seen):
++                        seen.add(nxt)
++                        pending.append(nxt)
++            result.append(tuple(sorted(cells)))
++    return result
++
++
++def analyze_scene(grid) -> dict:
++    components = _components(grid)
++    if not components:
++        raise ValueError("scene requires nonzero components")
++    colors = []
++    anchors = []
++    for component in components:
++        palette = {grid[row][col] for row, col in component}
++        if len(palette) != 1:
++            raise ValueError("each four-connected component must be one input color")
++        color = next(iter(palette))
++        colors.append(color)
++        if color == 1:
++            anchors.append(component)
++    if len(anchors) != 1:
++        raise ValueError("scene requires exactly one red anchor component")
++    all_cells = tuple(cell for component in components for cell in component)
++    return {
++        "components": tuple(components),
++        "component_colors": tuple(colors),
++        "component_sizes": [len(component) for component in components],
++        "anchor_count": len(anchors),
++        "anchor": anchors[0],
++        "anchor_size": len(anchors[0]),
++        "all_cells": all_cells,
++        "occupied_rows": len({row for row, _ in all_cells}),
++        "occupied_cols": len({col for _, col in all_cells}),
++    }
++
++
++def _paint_by(grid, chooser: Callable[[tuple[tuple[int, int], ...]], int]) -> list[list[int]]:
++    facts = analyze_scene(grid)
++    output = [[0 for _ in row] for row in grid]
++    for component in facts["components"]:
++        color = chooser(component)
++        for row, col in component:
++            output[row][col] = color
++    return output
++
++
++def solve_python(grid, mode: str) -> list[list[int]]:
++    if mode not in RULE_MODES:
++        raise ValueError("invalid rule_mode")
++    facts = analyze_scene(grid)
++    if mode == "area_parity":
++        return _paint_by(grid, lambda component: 3 if len(component) % 2 else 4)
++    threshold = facts["anchor_size"]
++    return _paint_by(grid, lambda component: 3 if len(component) < threshold else 4)
++
++
++def _threshold_solver(threshold_of, *, equal_is_low: bool = False):
++    def solve(grid):
++        facts = analyze_scene(grid)
++        threshold = threshold_of(grid, facts)
++        return _paint_by(
++            grid,
++            lambda component: 3 if (
++                len(component) <= threshold if equal_is_low else len(component) < threshold
++            ) else 4,
++        )
++    return solve
++
++
++def _anchor_bbox_area(_grid, facts):
++    rows = [row for row, _ in facts["anchor"]]
++    cols = [col for _, col in facts["anchor"]]
++    return (max(rows) - min(rows) + 1) * (max(cols) - min(cols) + 1)
++
++
++def declared_rivals(mode: str):
++    """Finite plausible shortcuts used by the teaching audit, not a uniqueness proof."""
++    if mode not in RULE_MODES:
++        raise ValueError("invalid rule_mode")
++    fixed = {
++        f"fixed_threshold_{value}": _threshold_solver(lambda _g, _f, value=value: value)
++        for value in range(3, 8)
++    }
++    common = {
++        **fixed,
++        "all_green": lambda grid: _paint_by(grid, lambda _component: 3),
++        "all_yellow": lambda grid: _paint_by(grid, lambda _component: 4),
++    }
++    if mode == "area_parity":
++        return {
++            "anchor_threshold": lambda grid: solve_python(grid, "anchor_threshold"),
++            "swapped_parity": lambda grid: _paint_by(
++                grid, lambda component: 4 if len(component) % 2 else 3
++            ),
++            **common,
++        }
++    return {
++        "area_parity": lambda grid: solve_python(grid, "area_parity"),
++        "non_strict_threshold": _threshold_solver(
++            lambda _grid, facts: facts["anchor_size"], equal_is_low=True
++        ),
++        "anchor_bbox_area": _threshold_solver(_anchor_bbox_area),
++        "smallest_component_threshold": _threshold_solver(
++            lambda _grid, facts: min(facts["component_sizes"])
++        ),
++        "largest_component_threshold": _threshold_solver(
++            lambda _grid, facts: max(facts["component_sizes"])
++        ),
++        **common,
++    }
++
++
++def _rng(seed: int, split: str, index: int) -> random.Random:
++    digest = hashlib.sha256(
++        f"ea763f9c5b1d:parametric-anchor-threshold:v1:{seed}:{split}:{index}".encode()
++    ).digest()
++    return random.Random(int.from_bytes(digest, "big"))
++
++
++def _balanced_spans(length: int, parts: int, rng: random.Random):
++    usable = length - (parts - 1)
++    if usable < parts:
++        raise ValueError("canvas too small for separated slots")
++    base, remainder = divmod(usable, parts)
++    sizes = [base] * parts
++    order = list(range(parts))
++    rng.shuffle(order)
++    for index in order[:remainder]:
++        sizes[index] += 1
++    spans = []
++    start = 0
++    for size in sizes:
++        spans.append((start, start + size))
++        start += size + 1
++    return spans
++
++
++def _slot_grid(h: int, w: int, count: int, rng: random.Random):
++    if count <= 4:
++        rows, cols = 2, 2
++    elif count <= 6:
++        rows, cols = (2, 3) if w >= h else (3, 2)
++    elif count <= 9:
++        rows, cols = 3, 3
++    elif count <= 12:
++        rows, cols = (3, 4) if w >= h else (4, 3)
++    else:
++        raise ValueError("unsupported component count")
++    row_spans = _balanced_spans(h, rows, rng)
++    col_spans = _balanced_spans(w, cols, rng)
++    slots = [
++        (r0, r1, c0, c1)
++        for r0, r1 in row_spans
++        for c0, c1 in col_spans
++    ]
++    if count < len(slots):
++        # Keep broad coverage: select the four corners first when available,
++        # then a deterministic shuffled subset of the remaining slots.
++        corner_indexes = [0, cols - 1, (rows - 1) * cols, rows * cols - 1]
++        selected = []
++        for index in corner_indexes:
++            if index not in selected and len(selected) < count:
++                selected.append(index)
++        remaining = [index for index in range(len(slots)) if index not in selected]
++        rng.shuffle(remaining)
++        selected.extend(remaining[:count - len(selected)])
++        slots = [slots[index] for index in selected]
++    return slots
++
++
++def _variants(shape):
++    variants = set()
++    for swap in (False, True):
++        for sr in (-1, 1):
++            for sc in (-1, 1):
++                transformed = []
++                for row, col in shape:
++                    first, second = (col, row) if swap else (row, col)
++                    transformed.append((sr * first, sc * second))
++                top = min(row for row, _ in transformed)
++                left = min(col for _, col in transformed)
++                variants.add(tuple(sorted((row - top, col - left) for row, col in transformed)))
++    return sorted(variants)
++
++
++def _offset_shape(shape, slot, rng, *, spread_edges: bool):
++    r0, r1, c0, c1 = slot
++    height = max(row for row, _ in shape) + 1
++    width = max(col for _, col in shape) + 1
++    if height > r1 - r0 or width > c1 - c0:
++        raise ValueError("shape does not fit slot")
++    row_choices = list(range(r0, r1 - height + 1))
++    col_choices = list(range(c0, c1 - width + 1))
++    if spread_edges and r0 == 0:
++        top = r0
++    elif spread_edges and r1 == max(r1, 30) and r1 == 30:
++        top = r1 - height
++    else:
++        top = rng.choice(row_choices)
++    if spread_edges and c0 == 0:
++        left = c0
++    elif spread_edges and c1 == max(c1, 30) and c1 == 30:
++        left = c1 - width
++    else:
++        left = rng.choice(col_choices)
++    return tuple(sorted((row + top, col + left) for row, col in shape))
++
++
++def _grow_component(slot, size: int, rng: random.Random, *, corner: str | None = None):
++    r0, r1, c0, c1 = slot
++    if size > (r1 - r0) * (c1 - c0):
++        raise ValueError("component does not fit slot")
++    if corner == "tl":
++        start = (r0, c0)
++    elif corner == "tr":
++        start = (r0, c1 - 1)
++    elif corner == "bl":
++        start = (r1 - 1, c0)
++    elif corner == "br":
++        start = (r1 - 1, c1 - 1)
++    else:
++        start = (rng.randrange(r0, r1), rng.randrange(c0, c1))
++    cells = {start}
++    while len(cells) < size:
++        frontier = sorted({
++            (row + dr, col + dc)
++            for row, col in cells
++            for dr, dc in _DIR4
++            if r0 <= row + dr < r1 and c0 <= col + dc < c1
++            and (row + dr, col + dc) not in cells
++        })
++        if not frontier:
++            raise RuntimeError("slot growth exhausted")
++        cells.add(rng.choice(frontier))
++    return tuple(sorted(cells))
++
++
++def _anchor_component(slot, size: int, rng: random.Random, *, spread_edges: bool):
++    candidates = []
++    r0, r1, c0, c1 = slot
++    for shape in _variants(_ANCHOR_SHAPES[size]):
++        if max(row for row, _ in shape) < r1 - r0 and max(col for _, col in shape) < c1 - c0:
++            candidates.append(shape)
++    if not candidates:
++        raise ValueError("anchor shape does not fit slot")
++    shape = rng.choice(candidates)
++    height = max(row for row, _ in shape) + 1
++    width = max(col for _, col in shape) + 1
++    top = r0 if spread_edges and r0 == 0 else rng.randrange(r0, r1 - height + 1)
++    left = c0 if spread_edges and c0 == 0 else rng.randrange(c0, c1 - width + 1)
++    return tuple(sorted((row + top, col + left) for row, col in shape))
++
++
++def _scene(profile, rng: random.Random):
++    h, w, sizes, spread_edges = profile
++    slots = _slot_grid(h, w, len(sizes), rng)
++    # Keep the anchor's slot seed-dependent while preserving broad placement.
++    anchor_index = rng.randrange(len(slots))
++    slots[0], slots[anchor_index] = slots[anchor_index], slots[0]
++    components = []
++    components.append(_anchor_component(slots[0], sizes[0], rng, spread_edges=spread_edges))
++    corner_by_slot = {}
++    if spread_edges:
++        for index, (r0, r1, c0, c1) in enumerate(slots[1:], start=1):
++            corner = None
++            if r0 == 0 and c0 == 0: corner = "tl"
++            elif r0 == 0 and c1 == w: corner = "tr"
++            elif r1 == h and c0 == 0: corner = "bl"
++            elif r1 == h and c1 == w: corner = "br"
++            corner_by_slot[index] = corner
++    for index, (slot, size) in enumerate(zip(slots[1:], sizes[1:]), start=1):
++        components.append(_grow_component(slot, size, rng, corner=corner_by_slot.get(index)))
++    grid = [[0] * w for _ in range(h)]
++    for row, col in components[0]:
++        grid[row][col] = 1
++    palette = list(_OTHER_COLORS)
++    rng.shuffle(palette)
++    for index, component in enumerate(components[1:]):
++        color = palette[index % len(palette)]
++        for row, col in component:
++            grid[row][col] = color
++    facts = analyze_scene(grid)
++    if facts["component_sizes"].count(facts["anchor_size"]) < 2:
++        raise AssertionError("profile lost its equality witness")
++    return grid
++
++
++def _input(seed: int, split: str, index: int):
++    profiles = _DEMO_PROFILES if split == "demonstrations" else _QUERY_PROFILES
++    return _scene(profiles[index], _rng(seed, split, index))
++
++
++def generate(seed, settings, demos=3, queries=4):
++    mode = _mode(settings)
++    if type(seed) is not int or isinstance(seed, bool) or not 0 <= seed < 2**63:
++        raise ValueError("seed must be an exact integer in [0, 2**63-1]")
++    if type(demos) is not int or isinstance(demos, bool) or not 2 <= demos <= 6:
++        raise ValueError("demos must be an exact integer in [2, 6]")
++    if type(queries) is not int or isinstance(queries, bool) or not 1 <= queries <= 4:
++        raise ValueError("queries must be an exact integer in [1, 4]")
++
++    def pair(grid):
++        return {"input": grid, "output": solve_python(grid, mode)}
++
++    train = [pair(_input(seed, "demonstrations", index)) for index in range(demos)]
++    test = [pair(_input(seed, "queries", index)) for index in range(queries)]
++    keys = [json.dumps(pair["input"], separators=(",", ":")) for pair in train + test]
++    if len(keys) != len(set(keys)):
++        raise AssertionError("episode inputs must be distinct")
++    return {"train": train, "test": test, "program_solution": program(settings)}
++
++
++if __name__ == "__main__":
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seed", type=int, default=17)
++    parser.add_argument("--rule-mode", choices=RULE_MODES, default="anchor_threshold")
++    parser.add_argument("--demos", type=int, default=3)
++    parser.add_argument("--queries", type=int, default=4)
++    args = parser.parse_args()
++    print(json.dumps(generate(args.seed, {"rule_mode": args.rule_mode}, args.demos, args.queries), separators=(",", ":")))
+diff --git a/repo/generators/f7a512650552/notes.md b/repo/generators/f7a512650552/notes.md
+--- a/repo/generators/f7a512650552/notes.md
++++ b/repo/generators/f7a512650552/notes.md
+@@ -129,3 +129,11 @@
+ **Probe/evidence.** Rule smoke has 120/120 mirror parity; authority-sync reports selected sources synchronized and execution parity `PASS`.
+ 
+ **Failure mode/limit.** One archival base-bank `raw_code` copy is divergent but unselected. It remains documented rather than rewritten outside assignment scope.
++
++## Review review-b67a291c5b50b08a: query-intrinsic shortcut finding
++
++A bounded source-pinned probe found a plausible wrong rule omitted by the declared lesson rivals: ignore the worked SOURCE→RESULT example and choose whichever closure makes the QUERY object larger. Across 128 seeds and nine consecutive 3-demo/query windows per seed, this rival fit every visible demonstration yet changed the query in 31 of 1,152 lessons.
++
++The retained seed-0/start-0 window has demonstration modes `[0, 1, 0]` and a column-mode query. Both the canonical program and the alternative program were executed under protected Racket for all four pairs; they agree on the three demonstrations and disagree on the query. Evidence is in `checks/f7a512650552/query-intrinsic-shortcut.json`; the reusable source-bound probe is `workspace/query_intrinsic_shortcut_probe.py`.
++
++Recommended repair: add `query_choose_larger_closure` to `LESSON_COMPETITORS`, then construct or select demonstrations where the worked-example-selected mode opposes this query-only heuristic. Production was intentionally left unchanged in this optional peer pass.
+diff --git a/repo/generators/f7a512650552/tests/test_query_intrinsic_shortcut_probe.py b/repo/generators/f7a512650552/tests/test_query_intrinsic_shortcut_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f7a512650552/tests/test_query_intrinsic_shortcut_probe.py
+@@ -0,0 +1,41 @@
++"""Regression for a query-only closure heuristic omitted by the declared rivals."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++from reviewer_support import load_selected_generator
++
++HOME = Path(__file__).resolve().parents[1]
++PROBE = HOME / "workspace" / "query_intrinsic_shortcut_probe.py"
++
++
++def _load_probe():
++    spec = importlib.util.spec_from_file_location("probe_f7a512650552", PROBE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_retained_window_exposes_query_larger_closure_shortcut():
++    probe = _load_probe()
++    generator, _path, source_sha256 = load_selected_generator("f7a512650552")
++    assert source_sha256 == probe.EXPECTED_GENERATOR_SHA256
++
++    case = probe.lesson_window(generator, seed=0, start=0)
++    assert [row["mode"] for row in case["demos"]] == [0, 1, 0]
++    assert case["query"]["mode"] == 1
++    assert all(row["canonical"] == row["rival"] for row in case["demos"])
++    assert case["query"]["canonical"] != case["query"]["rival"]
++
++
++def test_bounded_scan_counts_only_survive_demos_then_disagree_query():
++    probe = _load_probe()
++    generator, _path, _source_sha256 = load_selected_generator("f7a512650552")
++    report = probe.scan(generator, seeds=1, starts=9)
++    assert report == {
++        "lessons_checked": 9,
++        "surviving_disagreements": 1,
++        "first": {"seed": 0, "start": 0},
++    }
+diff --git a/repo/generators/f7a512650552/workspace/query_intrinsic_shortcut_probe.py b/repo/generators/f7a512650552/workspace/query_intrinsic_shortcut_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f7a512650552/workspace/query_intrinsic_shortcut_probe.py
+@@ -0,0 +1,188 @@
++"""Bounded probe for a query-only closure heuristic in f7a512650552.
++
++The rival ignores the worked SOURCE->RESULT example and applies whichever
++closure (row or column) yields the larger transformed QUERY object.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++from typing import Any
++
++TASK_ID = "f7a512650552"
++EXPECTED_GENERATOR_SHA256 = "321f6c97ac908411af57a794f5c0e336ee5a79858e5191ebf646aab37e0a0205"
++RIVAL_NAME = "query_choose_larger_closure"
++
++
++def _reference():
++    path = Path(__file__).with_name("reference_probe.py")
++    spec = importlib.util.spec_from_file_location("reference_probe_f7a512650552", path)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def rival_output(grid: list[list[int]]) -> list[list[int]]:
++    reference = _reference()
++    scene = reference.parse(grid)
++    row = reference._row_close(scene["query"])
++    column = reference._col_close(scene["query"])
++    selected = row if len(row) >= len(column) else column
++    return reference._crop(selected, 8)
++
++
++def _row(generator: Any, seed: int, sample_index: int) -> dict[str, Any]:
++    reference = _reference()
++    grid = generator.generate(seed, sample_index)
++    scene = reference.parse(grid)
++    return {
++        "sample_index": sample_index,
++        "mode": scene["mode"],
++        "input": grid,
++        "canonical": reference.rule_output(grid),
++        "rival": rival_output(grid),
++    }
++
++
++def lesson_window(generator: Any, *, seed: int, start: int) -> dict[str, Any]:
++    rows = [_row(generator, seed, start + offset) for offset in range(4)]
++    return {"seed": seed, "start": start, "demos": rows[:3], "query": rows[3]}
++
++
++def scan(generator: Any, *, seeds: int = 128, starts: int = 9) -> dict[str, Any]:
++    checked = 0
++    findings = 0
++    first: dict[str, int] | None = None
++    for seed in range(seeds):
++        for start in range(starts):
++            case = lesson_window(generator, seed=seed, start=start)
++            checked += 1
++            if (all(row["canonical"] == row["rival"] for row in case["demos"])
++                    and case["query"]["canonical"] != case["query"]["rival"]):
++                findings += 1
++                if first is None:
++                    first = {"seed": seed, "start": start}
++    return {
++        "lessons_checked": checked,
++        "surviving_disagreements": findings,
++        "first": first,
++    }
++
++
++def _canonical_program(root: Path) -> str:
++    from reviewer_support import canonical_path
++
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                return row["program_solution"]
++    raise KeyError(TASK_ID)
++
++
++def _rival_program(canonical: str) -> str:
++    needle = (
++        "(define transformed (if (equal? (row-fill (first panels) (list)) "
++        "(second panels)) (row-fill (third panels) (list)) "
++        "(col-fill (third panels) (list))))"
++    )
++    replacement = (
++        "(define qrow (row-fill (third panels) (list))) "
++        "(define qcol (col-fill (third panels) (list))) "
++        "(define transformed (if (>= (obj-size (single-largest qrow)) "
++        "(obj-size (single-largest qcol))) qrow qcol))"
++    )
++    if canonical.count(needle) != 1:
++        raise ValueError("canonical transformed branch changed; rival patch is no longer source-bound")
++    return canonical.replace(needle, replacement)
++
++
++def _protected_replay(root: Path, canonical: str, rival: str, case: dict[str, Any]) -> dict[str, Any]:
++    from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++
++    runtime = root / "shared/runtime"
++    rows = [*case["demos"], case["query"]]
++    with _local_imports(runtime, runtime):
++        apply, identity, bridge = _real_evaluator(runtime)
++        try:
++            for row in rows:
++                actual = _grid(apply(canonical, _grid(row["input"])))
++                alternate = _grid(apply(rival, _grid(row["input"])))
++                if actual != _grid(row["canonical"]):
++                    raise ValueError("independent canonical mirror differs from protected Racket")
++                if alternate != _grid(row["rival"]):
++                    raise ValueError("query-only rival mirror differs from protected Racket")
++        finally:
++            bridge.close()
++    if not all(row["canonical"] == row["rival"] for row in case["demos"]):
++        raise ValueError("retained rival does not fit every demonstration")
++    if case["query"]["canonical"] == case["query"]["rival"]:
++        raise ValueError("retained rival does not change the query")
++    return {"racket": identity, "evaluations": 2 * len(rows)}
++
++
++def build_report(*, seeds: int = 128, starts: int = 9) -> dict[str, Any]:
++    from reviewer_support import find_root, load_selected_generator
++
++    root = find_root(__file__)
++    generator, source_path, source_sha256 = load_selected_generator(TASK_ID, root=root)
++    if source_sha256 != EXPECTED_GENERATOR_SHA256:
++        raise ValueError(
++            f"generator source changed: expected {EXPECTED_GENERATOR_SHA256}, got {source_sha256}"
++        )
++    canonical = _canonical_program(root)
++    rival = _rival_program(canonical)
++    retained = lesson_window(generator, seed=0, start=0)
++    replay = _protected_replay(root, canonical, rival, retained)
++    summary = scan(generator, seeds=seeds, starts=starts)
++    return {
++        "schema": "arcpuzzles-peer-learnability-probe-v1",
++        "status": "finding",
++        "task_id": TASK_ID,
++        "rival": RIVAL_NAME,
++        "source_binding": {
++            "generator_path": source_path.relative_to(root).as_posix(),
++            "generator_sha256": source_sha256,
++            "canonical_program_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
++            "rival_program_sha256": hashlib.sha256(rival.encode()).hexdigest(),
++        },
++        "scan": summary,
++        "witness": {
++            "seed": retained["seed"],
++            "start": retained["start"],
++            "demos": retained["demos"],
++            "query": retained["query"],
++            **replay,
++        },
++        "repair": (
++            "Add this rival to lesson_identifiable and construct demonstrations where the "
++            "worked-example-selected mode opposes the query-larger-closure heuristic."
++        ),
++        "limits": "Finite consecutive-window scan; no claim of universal ambiguity coverage.",
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", type=int, default=128)
++    parser.add_argument("--starts", type=int, default=9)
++    args = parser.parse_args(argv)
++    if args.seeds < 1 or args.starts < 1:
++        parser.error("--seeds and --starts must be positive")
++    report = build_report(seeds=args.seeds, starts=args.starts)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    with args.out.open("x", encoding="utf-8") as handle:
++        json.dump(report, handle, indent=2, sort_keys=True)
++        handle.write("\n")
++    print(json.dumps({"status": report["status"], **report["scan"], "out": str(args.out)}))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

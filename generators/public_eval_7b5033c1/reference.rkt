@@ -1,0 +1,47 @@
+(rule!
+ ;; Remove the modal background. Trace the induced four-neighbor path from
+ ;; the reading-order-first endpoint, preserving every cell and repeated run.
+ ;; Canonical output is a vertical column in path order, not spatial order.
+ (lambda (g)
+  (let ()
+   (define mode 0)
+   (define rival 0)
+   (define bg (pick-max (grid-colors g) (lambda (v) (count-color g v))))
+   (define fg (filter (lambda (p) (not (= (at g (first p) (second p)) bg))) (grid-positions g)))
+   (define (neighbors p)
+    (filter (lambda (q) (and (in-bounds? (first q) (second q) h w)
+                             (not (= (at g (first q) (second q)) bg))))
+            (map (lambda (d) (list (+ (first p) (first d)) (+ (second p) (second d)))) cardinal-deltas)))
+   (define ends (filter (lambda (p) (= (length (neighbors p)) 1)) fg))
+   (define (walk p previous remaining)
+    (if (= remaining 0) '()
+        (let ((next (filter (lambda (q) (not (equal? q previous))) (neighbors p))))
+         (cons (at g (first p) (second p))
+               (if (null? next) '() (walk (first next) p (- remaining 1)))))))
+   (define traced (walk (first ends) #f (length fg)))
+   (define colors
+    (cond ((= rival 2) (map (lambda (p) (at g (first p) (second p))) fg))
+          ((= rival 3) (apply append (map (lambda (o) (make-list (obj-size o) (obj-color o))) (objects g bg))))
+          ((= rival 4) (reverse traced))
+          ((= rival 5) (sort traced <))
+          ((= rival 6) (apply append (map (lambda (v) (make-list (count-if (lambda (x) (= x v)) traced) v)) (remove-duplicates traced))))
+          (else traced)))
+   (define runs
+    (reverse
+     (for/fold ((acc '())) ((v colors))
+      (if (and (pair? acc) (= v (first (first acc))))
+          (cons (cons v (first acc)) (rest acc))
+          (cons (list v) acc)))))
+   (define k (length (first runs)))
+   (define candidates (rest runs))
+   (define selected-index (modulo (- k 1) (length candidates)))
+   (define answer
+    (cond ((= rival 7) (first candidates))
+          ((= rival 8) (last candidates))
+          ((= rival 9) (pick-max candidates length))
+          ((= rival 10) (pick-min candidates length))
+          ((= rival 11) (list-ref candidates (modulo k (length candidates))))
+          ((= rival 12) (first runs))
+          ((= mode 0) colors)
+          (else (list-ref candidates selected-index))))
+   (map (lambda (v) (list v)) answer))))

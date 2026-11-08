@@ -1,0 +1,17 @@
+(rule! (lambda (g)
+  ;; alt: paint two diagonal rays: blue up-left from the blue bbox, red down-right from the red bbox.
+  (let* ((h (rows g))
+         (w (cols g))
+         (blue (find-color g 1))
+         (red (find-color g 2))
+         (blue-r0 (min-of fst blue))
+         (blue-c0 (min-of snd blue))
+         (red-r1 (max-of fst red))
+         (red-c1 (max-of snd red)))
+    (define (paint-ray out r c dr dc color)
+      (if (in-bounds? r c h w)
+          (paint-ray (set-cell out r c color) (+ r dr) (+ c dc) dr dc color)
+          out))
+    (paint-ray
+      (paint-ray g (- blue-r0 1) (- blue-c0 1) -1 -1 1)
+      (+ red-r1 1) (+ red-c1 1) 1 1 2))))

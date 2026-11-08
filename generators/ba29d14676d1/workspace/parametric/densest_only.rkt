@@ -1,0 +1,55 @@
+(rule!
+ (let ((dummy 0))
+   (define (full-row? grid r color)
+     (all? (lambda (c) (= (at grid r c) color)) (range 0 (cols grid))))
+   (define (full-col? grid c color)
+     (all? (lambda (r) (= (at grid r c) color)) (range 0 (rows grid))))
+   (define (segments-from-dividers n dividers)
+     (let loop ((ds (append dividers (list n))) (prev -1) (acc (list)))
+       (if (empty? ds)
+           (reverse acc)
+           (let ((x (first ds)))
+             (loop (rest ds) x
+                   (if (> (- x prev 1) 0)
+                       (cons (list (+ prev 1) x) acc)
+                       acc))))))
+   (define row-bounds
+     (segments-from-dividers
+      (rows g)
+      (filter (lambda (r) (full-row? g r 9)) (range 0 (rows g)))))
+   (define col-bounds
+     (segments-from-dividers
+      (cols g)
+      (filter (lambda (c) (full-col? g c 9)) (range 0 (cols g)))))
+   (define records
+     (for*/list ((tr (in-range (length row-bounds)))
+                 (tc (in-range (length col-bounds))))
+       (let* ((rb (list-ref row-bounds tr))
+              (cb (list-ref col-bounds tc))
+              (tile (subgrid g (first rb) (first cb)
+                             (- (second rb) 1) (- (second cb) 1)))
+              (marks (count-if (lambda (v) (!= v 0)) (apply append tile)))
+              (index (+ (* tr (length col-bounds)) tc)))
+         (list tr tc tile marks index))))
+   (define selected
+     (first
+      (sort records
+            (lambda (a b)
+              (or (> (list-ref a 3) (list-ref b 3))
+                  (and (= (list-ref a 3) (list-ref b 3))
+                       (< (list-ref a 4) (list-ref b 4))))))))
+   (for*/fold ((out g))
+              ((tr (in-range (length row-bounds)))
+               (tc (in-range (length col-bounds)))
+               (r (in-range (- (second (list-ref row-bounds tr))
+                               (first (list-ref row-bounds tr)))))
+               (c (in-range (- (second (list-ref col-bounds tc))
+                               (first (list-ref col-bounds tc))))))
+     (let* ((rb (list-ref row-bounds tr))
+            (cb (list-ref col-bounds tc))
+            (tile (subgrid g (first rb) (first cb)
+                           (- (second rb) 1) (- (second cb) 1)))
+            (source (if (and (= tr (first selected)) (= tc (second selected)))
+                        (flip-lr tile)
+                        tile)))
+       (set-cell out (+ (first rb) r) (+ (first cb) c) (at source r c))))))

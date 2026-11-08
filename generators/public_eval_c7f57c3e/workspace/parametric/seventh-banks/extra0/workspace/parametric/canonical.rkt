@@ -1,0 +1,68 @@
+(rule!
+ ;; Identify the two colored motifs after factoring out their integer scale.
+ ;; The common blue skeleton fixes scale and alignment; other colors and their
+ ;; positions belong to the motif. Exchange the two normalized motifs at every
+ ;; occurrence, preserving each occurrence's blue origin and scale.
+ ;; The input grammar requires separated eight-connected block-scaled motifs,
+ ;; a common primitive blue skeleton, and a unique modal nonblue background.
+ (lambda (g)
+  (let ()
+   (define freq (color-frequency g))
+   (define maxfreq (apply max (hash-values freq)))
+   (define backgrounds (filter (lambda (v) (= (hash-ref freq v) maxfreq)) (hash-keys freq)))
+   (unless (= (length backgrounds) 1) (error "unique background required"))
+   (define bg (first backgrounds))
+   (when (= bg 1) (error "background cannot be blue"))
+   (define parts (objects-multicolor g bg))
+   (define (gcd-pair a b) (if (= b 0) a (gcd-pair b (modulo a b))))
+   (define (floor-div a b) (quotient (- a (modulo a b)) b))
+   (define (triple< a b)
+    (or (< (first a) (first b))
+        (and (= (first a) (first b)) (< (second a) (second b)))
+        (and (= (first a) (first b)) (= (second a) (second b)) (< (third a) (third b)))))
+   (define records
+    (for/list ([o (in-list parts)])
+     (define blue (filter (lambda (p) (= (cell-at g (first p) (second p)) 1)) (obj-cells o)))
+     (when (empty? blue) (error "all motifs need blue skeleton"))
+     (define runs
+      (for*/list ([p (in-list blue)] [d (in-list (list (list 0 1) (list 1 0)))]
+                  #:when (not (member (list (- (first p) (first d)) (- (second p) (second d))) blue)))
+       (let walk ([n 1])
+        (if (member (list (+ (first p) (* n (first d))) (+ (second p) (* n (second d)))) blue)
+            (walk (add1 n)) n))))
+     (define scale (for/fold ([n 0]) ([run (in-list runs)]) (gcd-pair n run)))
+     (define ar (apply min (map first blue)))
+     (define ac (apply min (map second blue)))
+     (define template
+      (sort (remove-duplicates
+       (for/list ([p (in-list (obj-cells o))])
+        (list (floor-div (- (first p) ar) scale)
+              (floor-div (- (second p) ac) scale)
+              (cell-at g (first p) (second p))))) triple<))
+     (unless (= (obj-size o) (* scale scale (length template))) (error "nonblock motif"))
+     (for* ([p (in-list template)] [dr (in-range scale)] [dc (in-range scale)])
+      (unless (= (cell-at g (+ ar (* (first p) scale) dr) (+ ac (* (second p) scale) dc)) (third p))
+       (error "nonuniform motif block")))
+     (list ar ac scale template)))
+   (define templates (remove-duplicates (map fourth records)))
+   (unless (= (length templates) 2) (error "two normalized motifs required"))
+   (define (blue-mask t) (filter (lambda (p) (= (third p) 1)) t))
+   (unless (equal? (blue-mask (first templates)) (blue-mask (second templates))) (error "blue skeleton mismatch"))
+   (define count-a (count (lambda (rec) (equal? (fourth rec) (first templates))) records))
+   (define count-b (- (length records) count-a))
+   (define minority-index (if (<= count-a count-b) 0 1))
+   (define use-minority #f)
+   (define painted (make-hash))
+   (for ([rec (in-list records)])
+    (define ar (first rec))
+    (define ac (second rec))
+    (define scale (third rec))
+    (define own-index (if (equal? (fourth rec) (first templates)) 0 1))
+    (define target-index (if use-minority minority-index (- 1 own-index)))
+    (for* ([p (in-list (list-ref templates target-index))] [dr (in-range scale)] [dc (in-range scale)])
+     (define rr (+ ar (* (first p) scale) dr))
+     (define cc (+ ac (* (second p) scale) dc))
+     (unless (and (<= 0 rr) (< rr (rows g)) (<= 0 cc) (< cc (cols g))) (error "output leaves canvas"))
+     (when (hash-has-key? painted (list rr cc)) (error "overlapping output motifs"))
+     (hash-set! painted (list rr cc) (third p))))
+   (grid-from-fn (rows g) (cols g) (lambda (r c) (hash-ref painted (list r c) bg))))))

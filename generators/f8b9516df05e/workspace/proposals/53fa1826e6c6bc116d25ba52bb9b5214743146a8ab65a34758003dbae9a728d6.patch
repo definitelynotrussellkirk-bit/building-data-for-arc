@@ -1,0 +1,748 @@
+diff --git a/repo/generators/f8b9516df05e/SUMMARY.md b/repo/generators/f8b9516df05e/SUMMARY.md
+--- a/repo/generators/f8b9516df05e/SUMMARY.md
++++ b/repo/generators/f8b9516df05e/SUMMARY.md
+@@ -1,6 +1,8 @@
+ # f8b9516df05e
+ 
+-0-bg grid (h~7-10, w~9-13) with 3-5 ACTIVE ROWS, each containing exactly two marker cells: (a) a single EMITTER cell in some non-{0, 8} color at column c0; (b) a single COLOR-8 (gray) BLOCKER cell at column c1 > c0 with c1 - c0 ≥ 2 (so there's a gap between emitter and blocker). Cells between emitter and blocker, and cells outside the (c0, c1) span are initially 0; cells beyond the first blocker may contain decoys that must stay unchanged. Other rows entirely 0. Rule: for each ACTIVE ROW, FIND the emitter and blocker. CAST a RAY from the emitter to the RIGHT in the emitter's color: fill every cell from c0+1 through c1-1 (inclusive) with the emitter's color. The emitter cell stays; the blocker (color 8) stays; cells beyond the blocker stay as they were. Net: each active row gets a colored ray from emitter rightward until it hits the gray blocker.
++A 0-background grid has 3–6 active rows. In each active row, the leftmost nonzero/non-gray cell is a colored emitter and the first gray `8` to its right is a blocker, with at least one empty cell between them. The rule fills exactly that gap with the emitter color and preserves the blocker and all cells after it.
+ 
+-Kind: `per_puzzle`. Imported version: `3.1.0`.
++Generated lessons stay close to canonical dimensions and palette sizes while every scene includes one post-blocker control row with a later gray blocker. That row refutes the canonical-fitting shortcut “continue to the last blocker.” Public axes are the observable exact controls `grid_h`, `grid_w`, and `rays`.
++
++Kind: `per_puzzle`. Reviewed version: `4.0.0`. Rule hash: `d469cd5280c8`.
+ Approval is derived by the catalog from current code and retained evidence.
+diff --git a/repo/generators/f8b9516df05e/generator.py b/repo/generators/f8b9516df05e/generator.py
+--- a/repo/generators/f8b9516df05e/generator.py
++++ b/repo/generators/f8b9516df05e/generator.py
+@@ -1,155 +1,313 @@
+-"""Generator for arc_puzzle_bank_sixteenth_21_bundle:easy_112_cast_rightward_rays_until_blockers.
+-
+-Rule: each row has a colored emitter; rays extend right in emitter color
+-until they hit a gray (8) blocker.
+-
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, rays,
+-palette_size, position_bias, n_distinct_colors, density, texture.
+-Degenerates: no_blocker, blocker_left_of_emitter, no_emitter.
++"""Generator for f8b9516df05e: cast rightward rays until the first gray blocker.
++
++Each active row starts with one colored emitter followed by an empty gap and at
++least one gray (8) blocker.  The selected rule paints the gap in the emitter's
++color and stops at the *first* rightward blocker.  Generated teaching scenes
++always include a later gray blocker so that the canonical-fitting "stop at the
++last blocker" shortcut is visibly wrong.
+ """
+ from __future__ import annotations
+ 
++from copy import deepcopy
++from typing import Iterable
++
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "f8b9516df05e"
+-VERSION = "3.1.0"  # bigger grids + more rays + post-blocker decoy cells (rule preserves beyond the first blocker)
+-TASK_ID = "f8b9516df05e"
++TASK_ID = GENERATOR_ID
++VERSION = "4.0.0"
++RULE_HASH = "d469cd5280c8"
++
+ SUMMARY = (
+-    "0-bg grid (h~7-10, w~9-13) with 3-5 "
+-    "ACTIVE ROWS, each containing exactly two "
+-    "marker cells: (a) a single EMITTER cell "
+-    "in some non-{0, 8} color at column c0; "
+-    "(b) a single COLOR-8 (gray) BLOCKER cell "
+-    "at column c1 > c0 with c1 - c0 ≥ 2 (so "
+-    "there's a gap between emitter and "
+-    "blocker). Cells between emitter and "
+-    "blocker, and cells outside the (c0, c1) "
+-    "span are initially 0; cells beyond "
+-    "the first blocker may contain decoys "
+-    "that must stay unchanged. Other rows "
+-    "entirely 0. Rule: for each ACTIVE ROW, "
+-    "FIND the emitter and blocker. CAST a RAY "
+-    "from the emitter to the RIGHT in the "
+-    "emitter's color: fill every cell from "
+-    "c0+1 through c1-1 (inclusive) with the "
+-    "emitter's color. The emitter cell stays; "
+-    "the blocker (color 8) stays; cells "
+-    "beyond the blocker stay as they were. Net: each "
+-    "active row gets a colored ray from "
+-    "emitter rightward until it hits the gray "
+-    "blocker."
++    "A 0-background grid has 3..6 active rows.  In each active row, the "
++    "leftmost nonzero/non-gray cell is a colored emitter and the first gray "
++    "cell to its right is a blocker, with at least one empty cell between "
++    "them.  Fill exactly those cells between emitter and first blocker with "
++    "the emitter color.  Preserve the blocker and everything after it."
+ )
+ 
+ INVARIANTS = [
+     "background is 0",
+-    "blocker color is 8",
+-    "active rows have one non-8 emitter left of one blocker",
+-    "cells between emitter and first blocker are initially empty",
+-    "at least one active row has post-blocker decoy cells preserved by the rule",
++    "gray 8 is the blocker color",
++    "the first nonzero cell of every active row is a non-gray emitter",
++    "every active row has a visible empty gap before its first rightward blocker",
++    "the selected rule preserves every cell after the first rightward blocker",
+ ]
+ 
+-PALETTE_KINDS = ("default", "warm", "cool", "varied")
+-DEGENERATE_TEXTURES = ("no_blocker", "blocker_left_of_emitter", "no_emitter")
+-HELPFUL_TEXTURES = PALETTE_KINDS
+-
++EMITTER_COLORS = (1, 2, 3, 4, 5, 6, 7, 9)
++
++# Only independently controllable, pixel-observable axes are public.
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "7-10 easy / 10-14 med / 13-20 hard", "valid": "3..22"},
+-    "grid_w":         {"type": "int", "default": "9-13 easy / 12-17 med / 15-24 hard", "valid": "5..26"},
+-    "palette_kind":   {"type": "str", "default": "rng helpful",
+-                       "valid": "default|warm|cool|varied"},
+-    "rays":           {"type": "int", "default": "3-4 easy / 4-7 med / 6-12 hard", "valid": "1..18"},
+-    "palette_size":   {"type": "int", "default": "rng 2..5", "valid": "1..8"},
+-    "position_bias":  {"type": "str", "default": "emitter_then_blocker",
+-                       "valid": "emitter_then_blocker"},
+-    "n_distinct_colors": {"type": "int", "default": "rng 2..5", "valid": "1..8"},
+-    "density":        {"type": "str", "default": "row_pairs", "valid": "row_pairs"},
+-    "texture":        {"type": "str", "default": "alias for palette_kind",
+-                       "valid": "default|warm|cool|varied|no_blocker|blocker_left_of_emitter|no_emitter"},
++    "grid_h": {
++        "type": "int",
++        "default": "canonical-profile weighted, with full 8..14 support",
++        "valid": "8..14",
++    },
++    "grid_w": {
++        "type": "int",
++        "default": "canonical-profile weighted, with full 9..17 support",
++        "valid": "9..17",
++    },
++    "rays": {
++        "type": "int",
++        "default": "canonical-profile weighted, with full 3..6 support",
++        "valid": "3..6",
++    },
+ }
+ 
++# Every advertised exact combination is constructive in every difficulty band.
++INCOMPATIBLE_OVERRIDE_COMBINATIONS: list[dict[str, int]] = []
++
++_CANONICAL_PROFILES = (
++    (8, 10, 3),
++    (9, 11, 4),
++    (8, 9, 3),
++    (10, 10, 3),
++    (9, 10, 3),
++)
++_BAND_OFFSET = {None: 0, "easy": 0, "medium": 2, "hard": 4}
++
++
++def _validate_request(difficulty, overrides: dict) -> None:
++    if difficulty not in _BAND_OFFSET:
++        raise ValueError(
++            "difficulty must be one of None, 'easy', 'medium', or 'hard'"
++        )
++    unknown = sorted(set(overrides) - set(AXES))
++    if unknown:
++        raise ValueError(f"unknown override axis: {', '.join(unknown)}")
++    bounds = {"grid_h": (8, 14), "grid_w": (9, 17), "rays": (3, 6)}
++    for name, value in overrides.items():
++        if value is None:
++            continue
++        if type(value) is not int:
++            raise TypeError(f"override {name!r} must be an integer (not bool)")
++        lo, hi = bounds[name]
++        if not lo <= value <= hi:
++            raise ValueError(
++                f"override {name!r}={value} outside advertised range [{lo}, {hi}]"
++            )
++
++
++def _weighted_options(lo: int, hi: int, preferred: int) -> tuple[int, ...]:
++    """Keep the complete public domain while strongly anchoring real profiles."""
++    return (preferred,) * 128 + tuple(range(lo, hi + 1))
++
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION,
+-                  task_id=TASK_ID, difficulty=difficulty, overrides=overrides)
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], None)
+-    if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 7, 10); w = ctx.draw_int("grid_w", 9, 13)
+-        target = min(ctx.draw_int("rays", 3, 4), h)
+-    elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 13, 20); w = ctx.draw_int("grid_w", 15, 24)
+-        target = min(ctx.draw_int("rays", 6, 12), h)
+-    else:
+-        h = ctx.draw_int("grid_h", 10, 14); w = ctx.draw_int("grid_w", 12, 17)
+-        target = min(ctx.draw_int("rays", 4, 7), h)
+-    rng = ctx.draw_rng("layout")
+-    g = full_grid(h, w, 0)
+-    rows = rng.sample(range(h), target)
+-    for i, r in enumerate(rows):
+-        c0 = rng.randint(0, w - 4)
+-        c1_hi = w - 2 if i == 0 else w - 1
+-        c1 = rng.randint(c0 + 2, c1_hi)
+-        g[r][c0] = rng.choice([1, 2, 3, 4, 5, 6, 7, 9])
+-        g[r][c1] = 8
+-        # decoy cells BEYOND the first blocker (any non-0 color incl 8); the rule
+-        # fills only up to the first blocker, so these are preserved untouched.
+-        if i == 0:
+-            g[r][c1 + 1] = rng.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
+-        for c in range(c1 + 1, w):
+-            if g[r][c] == 0 and rng.random() < 0.25:
+-                g[r][c] = rng.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
+-    return g
++    _validate_request(difficulty, overrides)
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++
++    offset = _BAND_OFFSET[difficulty]
++    preferred_h, preferred_w, preferred_rays = _CANONICAL_PROFILES[
++        (sample_index + offset) % len(_CANONICAL_PROFILES)
++    ]
++    h = ctx.draw_choice("grid_h", _weighted_options(8, 14, preferred_h))
++    w = ctx.draw_choice("grid_w", _weighted_options(9, 17, preferred_w))
++    rays = ctx.draw_choice("rays", _weighted_options(3, 6, preferred_rays))
++
++    layout_rng = ctx.draw_rng("layout")
++    color_rng = ctx.draw_rng("emitter-colors")
++    rows = layout_rng.sample(range(h), rays)
++    colors = color_rng.sample(list(EMITTER_COLORS), rays)
++    grid = full_grid(h, w, 0)
++
++    # A decisive teaching row.  The later blocker and the preserved colored
++    # decoy make "fill until the last blocker" disagree with the selected rule.
++    witness_row = rows[0]
++    witness_color = colors[0]
++    emitter_column = layout_rng.randint(0, w - 6)
++    first_blocker = layout_rng.randint(emitter_column + 2, w - 4)
++    second_blocker = layout_rng.randint(first_blocker + 3, w - 1)
++    grid[witness_row][emitter_column] = witness_color
++    grid[witness_row][first_blocker] = 8
++    grid[witness_row][first_blocker + 1] = colors[1]
++    grid[witness_row][second_blocker] = 8
++
++    # Remaining rows stay close to the canonical grammar: one emitter, one
++    # rightward blocker, and an empty visible ray path.
++    for row, color in zip(rows[1:], colors[1:]):
++        emitter_column = layout_rng.randint(0, w - 3)
++        blocker_column = layout_rng.randint(emitter_column + 2, w - 1)
++        grid[row][emitter_column] = color
++        grid[row][blocker_column] = 8
++
++    return grid
++
++
++def _first_emitter(row: Iterable[int]):
++    for column, value in enumerate(row):
++        if value not in (0, 8):
++            return column, value
++    return None
++
++
++def _rightward_blockers(row: Iterable[int], emitter_column: int) -> list[int]:
++    values = list(row)
++    return [
++        column
++        for column in range(emitter_column + 1, len(values))
++        if values[column] == 8
++    ]
++
++
++def rule_mirror(grid: list[list[int]]) -> list[list[int]]:
++    """Pure-Python mirror of the selected Racket first-blocker rule."""
++    output = deepcopy(grid)
++    for row_index, row in enumerate(grid):
++        emitter = _first_emitter(row)
++        if emitter is None:
++            continue
++        emitter_column, color = emitter
++        blockers = _rightward_blockers(row, emitter_column)
++        if not blockers:
++            continue
++        for column in range(emitter_column + 1, blockers[0]):
++            output[row_index][column] = color
++    return output
++
++
++def observe_overrides(grid) -> dict[str, int]:
++    """Recover all public exact axes from the returned pixels."""
++    active = 0
++    for row in grid:
++        emitter = _first_emitter(row)
++        if emitter is None:
++            continue
++        if _rightward_blockers(row, emitter[0]):
++            active += 1
++    return {"grid_h": len(grid), "grid_w": len(grid[0]), "rays": active}
+ 
+ 
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    errs: list[str] = []
+-    if not grid or not grid[0] or any(len(row) != len(grid[0]) for row in grid):
+-        return ["grid must be nonempty and rectangular"]
+-    w = len(grid[0])
++    """Validate the lawful task grammar, including all canonical inputs."""
++    del difficulty, meta
++    if (
++        not isinstance(grid, (list, tuple))
++        or not grid
++        or not isinstance(grid[0], (list, tuple))
++        or not grid[0]
++    ):
++        return ["grid must be a nonempty rectangular sequence"]
++    width = len(grid[0])
++    if any(
++        not isinstance(row, (list, tuple)) or len(row) != width for row in grid
++    ):
++        return ["grid must be rectangular"]
++    height = len(grid)
++    errors: list[str] = []
++    if not 8 <= height <= 14 or not 9 <= width <= 17:
++        errors.append(f"grid dimensions {height}x{width} outside 8..14 by 9..17")
++    if any(
++        type(value) is not int or not 0 <= value <= 9
++        for row in grid
++        for value in row
++    ):
++        errors.append("cells must be integer ARC colors 0..9")
++        return errors
++
+     active = 0
+-    decoy_after = 0
++    for row_index, row in enumerate(grid):
++        nonzero = [column for column, value in enumerate(row) if value != 0]
++        if not nonzero:
++            continue
++        first = nonzero[0]
++        if row[first] == 8:
++            errors.append(f"row {row_index}: first nonzero cell must be an emitter")
++            continue
++        active += 1
++        blockers = _rightward_blockers(row, first)
++        if not blockers:
++            errors.append(f"row {row_index}: emitter has no rightward gray blocker")
++            continue
++        blocker = blockers[0]
++        if blocker - first < 2:
++            errors.append(f"row {row_index}: emitter and blocker need a visible gap")
++            continue
++        if any(row[column] != 0 for column in range(first + 1, blocker)):
++            errors.append(f"row {row_index}: cells before first blocker must be empty")
++
++    if not 3 <= active <= 6:
++        errors.append(f"expected 3..6 active ray rows, found {active}")
++    return errors
++
++
++def strict_canonical_like(grid) -> list[str]:
++    """Lawful first-blocker scenes in the declared generator manifold."""
++    return self_check(grid)
++
++
++def _last_blocker_rival(grid: list[list[int]]) -> list[list[int]]:
++    """Plausible shortcut: continue through gaps until the last gray blocker."""
++    output = deepcopy(grid)
++    for row_index, row in enumerate(grid):
++        emitter = _first_emitter(row)
++        if emitter is None:
++            continue
++        emitter_column, color = emitter
++        blockers = _rightward_blockers(row, emitter_column)
++        if not blockers:
++            continue
++        for column in range(emitter_column + 1, blockers[-1]):
++            if output[row_index][column] == 0:
++                output[row_index][column] = color
++    return output
++
++
++def _has_multiple_right_blockers(grid) -> bool:
++    if self_check(grid):
++        return False
+     for row in grid:
+-        emitters = [c for c, v in enumerate(row) if v not in (0, 8)]
+-        blockers = [c for c, v in enumerate(row) if v == 8]
+-        if not emitters or not blockers:
+-            continue
+-        emit = emitters[0]
+-        right_blockers = [c for c in blockers if c > emit]
+-        if not right_blockers:
+-            continue
+-        active += 1
+-        blocker = min(right_blockers)
+-        if blocker - emit < 2:
+-            errs.append("emitter and blocker should leave a visible gap")
+-        if any(row[c] != 0 for c in range(emit + 1, blocker)):
+-            errs.append("ray path before first blocker should be empty")
+-        if any(row[c] != 0 for c in range(blocker + 1, w)):
+-            decoy_after += 1
+-    if active < 3:
+-        errs.append("expected at least three active ray rows")
+-    if decoy_after == 0:
+-        errs.append("expected at least one post-blocker decoy")
+-    return errs
+-
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    h, w = 8, 10
+-    g = full_grid(h, w, 0)
+-    if name == "no_blocker":
+-        # emitter without rightward 8-blocker → ray would extend off the grid
+-        g[2][1] = 3
+-        g[5][2] = 6
+-        return g
+-    if name == "blocker_left_of_emitter":
+-        # 8-blocker left of emitter → ray fired right has no blocker to stop at
+-        g[2][1] = 8; g[2][5] = 4
+-        g[5][2] = 8; g[5][6] = 6
+-        return g
+-    if name == "no_emitter":
+-        # blockers but no emitters → no rays to cast
+-        g[2][5] = 8
+-        g[5][6] = 8
+-        return g
+-    return g
++        emitter = _first_emitter(row)
++        if emitter is not None and len(_rightward_blockers(row, emitter[0])) >= 2:
++            if _last_blocker_rival(grid) != rule_mirror(grid):
++                return True
++    return False
++
++
++def lesson_identifiable(demos, query) -> list[str]:
++    """Require lawful labels and a demonstration that refutes every rival."""
++    if not isinstance(demos, (list, tuple)) or len(demos) < EXAMPLES_NEEDED:
++        return [f"at least {EXAMPLES_NEEDED} demonstrations are required"]
++    if not isinstance(query, dict) or "input" not in query or "output" not in query:
++        return ["query must contain input and output grids"]
++
++    errors: list[str] = []
++    for index, pair in enumerate(demos):
++        if not isinstance(pair, dict) or "input" not in pair or "output" not in pair:
++            errors.append(f"demo {index} must contain input and output grids")
++            continue
++        structural = strict_canonical_like(pair["input"])
++        if structural:
++            errors.append(f"demo {index} is not lawful: {structural[0]}")
++        elif rule_mirror(pair["input"]) != pair["output"]:
++            errors.append(f"demo {index} output disagrees with the selected rule")
++
++    query_errors = strict_canonical_like(query["input"])
++    if query_errors:
++        errors.append(f"query is not lawful: {query_errors[0]}")
++    elif rule_mirror(query["input"]) != query["output"]:
++        errors.append("query output disagrees with the selected rule")
++    if errors:
++        return errors
++
++    for name, rival in LESSON_COMPETITORS.items():
++        if all(rival(pair["input"]) == pair["output"] for pair in demos):
++            errors.append(f"competitor {name!r} still fits every demonstration")
++    return errors
++
++
++EXAMPLES_NEEDED = 3
++SEMANTIC_WITNESSES = {"first_blocker_stop": _has_multiple_right_blockers}
++SEMANTIC_RIVALS = {"last_blocker_stop": _last_blocker_rival}
++WITNESS_RIVALS = {"first_blocker_stop": ["last_blocker_stop"]}
++CANONICAL_SHORTCUTS = {"last_blocker_stop": _last_blocker_rival}
++LESSON_COMPETITORS = {"last_blocker_stop": _last_blocker_rival}
+diff --git a/repo/generators/f8b9516df05e/tests/test_generator.py b/repo/generators/f8b9516df05e/tests/test_generator.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f8b9516df05e/tests/test_generator.py
+@@ -0,0 +1,215 @@
++from __future__ import annotations
++
++import copy
++import hashlib
++import importlib.util
++import os
++from pathlib import Path
++import random
++import sys
++
++import pytest
++
++TASK_ID = "f8b9516df05e"
++HERE = Path(__file__).resolve()
++LIBRARY = next(path for path in HERE.parents if (path / "shared/runtime").is_dir())
++sys.path.insert(0, str(LIBRARY / "shared/runtime"))
++sys.path.insert(0, str(LIBRARY / "generators" / TASK_ID / "workspace"))
++
++from reviewer_support import canonical_pairs  # noqa: E402
++from probe import active_rows, has_multiple_right_blockers, profile, reference_output  # noqa: E402
++
++
++def _load(path: Path, name: str):
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++GENERATOR_PATH = Path(
++    os.environ.get(
++        "GENERATOR_UNDER_TEST",
++        LIBRARY / "generators" / TASK_ID / "generator.py",
++    )
++).resolve()
++gen = _load(GENERATOR_PATH, "review_generator_f8b9516df05e")
++
++
++def _canonical_pairs():
++    return canonical_pairs(TASK_ID, root=LIBRARY)
++
++
++def _pair(grid):
++    return {"input": copy.deepcopy(grid), "output": reference_output(grid)}
++
++
++def _pinned_seed(band: str, index: int) -> int:
++    digest = hashlib.sha256(
++        f"profile-floor:v1:{TASK_ID}:{band}:{index}".encode()
++    ).hexdigest()
++    return int(digest[:12], 16)
++
++
++def test_rule_pin_and_truthful_override_surface():
++    assert gen.RULE_HASH == "d469cd5280c8"
++    assert set(gen.AXES) == {"grid_h", "grid_w", "rays"}
++    assert gen.INCOMPATIBLE_OVERRIDE_COMBINATIONS == []
++
++
++def test_all_canonical_pairs_are_owned_and_match_independent_oracle():
++    pairs = _canonical_pairs()
++    assert len(pairs) == 5
++    for pair in pairs:
++        source = copy.deepcopy(pair["input"])
++        assert gen.self_check(source) == []
++        assert gen.strict_canonical_like(source) == []
++        assert reference_output(source) == pair["output"]
++        assert gen.rule_mirror(source) == pair["output"]
++
++
++@pytest.mark.parametrize("band", ["easy", "medium", "hard"])
++@pytest.mark.parametrize(
++    "values",
++    [
++        (8, 9, 3),
++        (8, 17, 6),
++        (14, 9, 3),
++        (14, 17, 6),
++        (9, 11, 4),
++    ],
++)
++def test_exact_overrides_are_constructive_and_observable_in_every_band(band, values):
++    h, w, rays = values
++    grid = gen.generate(
++        9301,
++        17,
++        difficulty=band,
++        grid_h=h,
++        grid_w=w,
++        rays=rays,
++    )
++    assert gen.self_check(grid) == []
++    assert gen.observe_overrides(grid) == {
++        "grid_h": h,
++        "grid_w": w,
++        "rays": rays,
++    }
++    assert len(active_rows(grid)) == rays
++    assert has_multiple_right_blockers(grid)
++    assert gen.rule_mirror(grid) == reference_output(grid)
++
++
++@pytest.mark.parametrize(
++    "kwargs",
++    [
++        {"imaginary_axis": 1},
++        {"grid_h": 7},
++        {"grid_h": 15},
++        {"grid_w": 8},
++        {"grid_w": 18},
++        {"rays": 2},
++        {"rays": 7},
++        {"rays": True},
++        {"grid_w": 10.0},
++        {"rays": "3"},
++    ],
++)
++def test_invalid_or_unknown_overrides_are_rejected(kwargs):
++    with pytest.raises((TypeError, ValueError), match="override|integer|unknown|outside"):
++        gen.generate(1, 0, **kwargs)
++
++
++def test_default_draws_are_lawful_nonidentity_and_always_teach_first_blocker():
++    for band in ("easy", "medium", "hard"):
++        for index in range(48):
++            grid = gen.generate(1200 + index, index * 11 + 3, difficulty=band)
++            assert gen.self_check(grid) == []
++            assert has_multiple_right_blockers(grid)
++            assert reference_output(grid) != grid
++            assert gen.SEMANTIC_WITNESSES["first_blocker_stop"](grid)
++            assert (
++                gen.SEMANTIC_RIVALS["last_blocker_stop"](grid)
++                != reference_output(grid)
++            )
++
++
++def test_canonical_shortcut_is_real_and_each_generated_lesson_refutes_it():
++    shortcut = gen.CANONICAL_SHORTCUTS["last_blocker_stop"]
++    for pair in _canonical_pairs():
++        assert shortcut(copy.deepcopy(pair["input"])) == pair["output"]
++
++    for band in ("easy", "medium", "hard"):
++        for start in range(12):
++            demos = [
++                _pair(gen.generate(2400 + start, start + offset, difficulty=band))
++                for offset in range(gen.EXAMPLES_NEEDED)
++            ]
++            query = _pair(
++                gen.generate(
++                    2400 + start,
++                    start + gen.EXAMPLES_NEEDED,
++                    difficulty=band,
++                )
++            )
++            assert gen.lesson_identifiable(demos, query) == []
++            assert any(
++                shortcut(pair["input"]) != pair["output"] for pair in demos
++            )
++
++
++def test_pinned_profile_floor_has_exact_support_in_every_band():
++    canonical_profiles = {profile(pair["input"]) for pair in _canonical_pairs()}
++    for band in ("easy", "medium", "hard"):
++        hits = 0
++        for index in range(20):
++            seed = _pinned_seed(band, index)
++            grid = gen.generate(seed, seed % 7919 + index, difficulty=band)
++            hits += profile(grid) in canonical_profiles
++        assert hits >= 1, f"no exact canonical profile in {band}"
++
++
++def test_deterministic_fresh_and_global_random_pure():
++    random.seed(7182818)
++    before = random.getstate()
++    first = gen.generate(3021, 19, difficulty="hard")
++    after_first = random.getstate()
++    second = gen.generate(3021, 19, difficulty="hard")
++    after_second = random.getstate()
++    assert before == after_first == after_second
++    assert first == second
++    assert first is not second
++    assert all(left is not right for left, right in zip(first, second))
++    first[0][0] = 9 if first[0][0] != 9 else 1
++    assert gen.generate(3021, 19, difficulty="hard") == second
++
++
++def test_self_check_rejects_structural_impostors():
++    good = gen.generate(8119, 5, grid_h=9, grid_w=11, rays=4)
++    assert gen.self_check(good) == []
++
++    ragged = copy.deepcopy(good)
++    ragged[0].pop()
++    assert gen.self_check(ragged)
++
++    bad_color = copy.deepcopy(good)
++    bad_color[0][0] = 10
++    assert gen.self_check(bad_color)
++
++    blocked_gap = copy.deepcopy(good)
++    row_index = active_rows(blocked_gap)[0]
++    row = blocked_gap[row_index]
++    emitter = next(i for i, value in enumerate(row) if value not in (0, 8))
++    blocker = next(i for i in range(emitter + 1, len(row)) if row[i] == 8)
++    row[emitter + 1] = row[emitter]
++    assert gen.self_check(blocked_gap)
++
++    no_blocker = copy.deepcopy(good)
++    row_index = active_rows(no_blocker)[0]
++    row = no_blocker[row_index]
++    emitter = next(i for i, value in enumerate(row) if value not in (0, 8))
++    for column in range(emitter + 1, len(row)):
++        if row[column] == 8:
++            row[column] = 0
++    assert gen.self_check(no_blocker)
+diff --git a/repo/generators/f8b9516df05e/workspace/probe.py b/repo/generators/f8b9516df05e/workspace/probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f8b9516df05e/workspace/probe.py
+@@ -0,0 +1,61 @@
++"""Independent probes for task f8b9516df05e.
++
++This module deliberately does not import the production generator.  It gives
++reviewers a small Python oracle for the preserved Racket behavior and structural
++measurements used by the task-local regression suite.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++from typing import Iterable
++
++EMITTER_COLORS = frozenset({1, 2, 3, 4, 5, 6, 7, 9})
++
++
++def first_emitter_and_blockers(row: Iterable[int]):
++    values = list(row)
++    emitter = next(
++        ((index, value) for index, value in enumerate(values) if value in EMITTER_COLORS),
++        None,
++    )
++    if emitter is None:
++        return None, []
++    blocker_columns = [
++        index for index in range(emitter[0] + 1, len(values)) if values[index] == 8
++    ]
++    return emitter, blocker_columns
++
++
++def reference_output(grid: list[list[int]]) -> list[list[int]]:
++    """Mirror the selected rule: fill to the first rightward color-8 blocker."""
++    output = deepcopy(grid)
++    for row_index, row in enumerate(grid):
++        emitter, blockers = first_emitter_and_blockers(row)
++        if emitter is None or not blockers:
++            continue
++        emitter_column, color = emitter
++        first_blocker = blockers[0]
++        for column in range(emitter_column + 1, first_blocker):
++            output[row_index][column] = color
++    return output
++
++
++def active_rows(grid: list[list[int]]) -> list[int]:
++    rows = []
++    for row_index, row in enumerate(grid):
++        emitter, blockers = first_emitter_and_blockers(row)
++        if emitter is not None and blockers:
++            rows.append(row_index)
++    return rows
++
++
++def has_multiple_right_blockers(grid: list[list[int]]) -> bool:
++    return any(
++        emitter is not None and len(blockers) >= 2
++        for row in grid
++        for emitter, blockers in [first_emitter_and_blockers(row)]
++    )
++
++
++def profile(grid: list[list[int]]) -> tuple[int, int, int]:
++    return len(grid), len(grid[0]), len({value for row in grid for value in row})

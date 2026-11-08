@@ -1,0 +1,7 @@
+# 8a2e39528187 — recolor monochromatic objects by area rank
+
+A 0-background grid of 9–10 rows by 10–12 columns contains exactly four distinct-colored monochromatic 4-connected objects. Sort the objects by `(cell count, lexicographic bounding box)` ascending, then repaint the unchanged object cells with rank colors `2, 4, 6, 8` on a blank grid. Different-colored objects may touch and remain distinct. Input color, scan order, and numeric palette order are distractors.
+
+Generator version `3.0.0` uses a four-example cyclic curriculum: canonical distinct-area cases, an equal-area bounding-box tie, touching different-colored objects, and a rank-palette distractor. Every four consecutive examples cover all four profiles and refute the declared color-blind, reverse-tie, scan-order, numeric-color, and descending-area rivals. Advertised dimensions and lesson profile are exact observable overrides.
+
+The canonical Racket rule hash is pinned to `76fcc8e7f591` and was not changed. The revised monochromatic validator accepts all five canonical inputs. A retained source-bound census checked 300 lessons / 1,500 rows: all inputs were unique, all lessons refuted every declared rival, and the independent Python oracle matched the selected Racket rule on all 1,500 rows. See `workspace/lesson_probe.py`, `tests/`, and the returned check evidence. Approval remains catalog-derived; this summary is not an admission decision.

@@ -1,0 +1,12 @@
+# Working notes: 4de2bae05c7d
+
+## 2026-10-26 reviewer build
+
+- **Base repair (`2.0.0` → `2.1.0`):** the retained audit showed that an ordinary five-example lesson could fit an eight-neighbor yellow-component rule. Profile 0 now forces two target L-triominoes to touch only diagonally, every five-profile window exposes that distinction, and the lesson certificate includes the explicit rival.
+- **Native family:** `postprocess=canonical|largest|smallest`. The canonical setting preserves the selected program byte-for-byte. The ranked settings first perform the canonical recolor, then recompute four-connected blue components on that intermediate and recolor the unique largest or smallest whole component red.
+- **Sequential dependency:** generated scenes force both the largest and smallest component identities to change after Step A. They also separate occupied area from bounding-box area, four- from eight-connectivity, and whole-component painting from painting only newly blue cells.
+- **Sampler:** 3–6 demonstrations and 1–4 independently requested queries; qualification uses 3 demos and 4 queries. Setting-matched inputs include minimum, boundary, standard-interior, wide, tall, and substantive 30×30 dense scenes. Semantic motifs rotate and move through corner/center anchors so fixed-position selection is not viable.
+- **Adversarial repairs retained as regressions:** guaranteed a straight yellow triomino after seed 12 exposed a size-only shortcut; added four positional component rivals after the first family pinned largest top-right and smallest top-left; made `standard` scenes observably interior; rejected duplicate/mislabeled/malformed certificate inputs; and fixed the audit to count setting-matched inputs once rather than three times.
+- **Final bounded evidence:** staged tests 37/37; 96-seed probe covered 288 episodes, 2,016 labeled pairs, 2,208 declared-rival checks, 1,152 query-identifiability checks, 216 count-boundary episodes, and malformed-grid/certificate rejection. Protected authoring preflight executed 78 Racket evaluations over 42 parametric pairs plus 3 canonical pairs.
+- **Causal witness:** a protected wrong-order program ranks blue components before Step A; on the selected qualified case it paints a different final component.
+- **Limits:** finite rivals/seeds do not prove universal uniqueness or learning benefit. Owner source review, native qualification/acceptance after integration, and training admission remain separate.

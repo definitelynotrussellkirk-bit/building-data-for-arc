@@ -1,0 +1,42 @@
+(rule!
+ (let ((dummy 0))
+  (define (nonzero-cells grid)
+   (filter (lambda (p) (not (= (at grid (first p) (second p)) 0)))
+           (grid-positions grid)))
+  (define (crop-nonzero grid)
+   (let ((cells (nonzero-cells grid)))
+    (if (empty? cells)
+        (list (list 0))
+        (let* ((bb (bbox-of-cells cells)))
+         (subgrid grid (first bb) (second bb) (third bb) (fourth bb))))))
+  (define (binary-grid grid)
+   (grid-from-fn (rows grid) (cols grid)
+    (lambda (r c) (if (= (at grid r c) 0) 0 1))))
+  (define (normalize-binary grid) (binary-grid (crop-nonzero grid)))
+  (define (split-fixed-panels-row grid panel-h panel-w)
+   (let loop ((c 0) (acc (list)))
+    (if (> (+ c panel-w) (cols grid))
+        (reverse acc)
+        (loop (+ c panel-w 1)
+              (cons (subgrid grid 0 c (- panel-h 1) (+ c panel-w -1)) acc)))))
+  ;; Step A: discard every component except the unique largest 4-connected one.
+  (define (largest-normalized panel)
+   (let* ((objs (objects panel 0))
+          (largest (pick-max objs obj-size))
+          (cells (obj-cells largest)))
+    (normalize-binary
+     (grid-from-fn (rows panel) (cols panel)
+      (lambda (r c) (if (member (list r c) cells) 1 0))))))
+  ;; Step B: compare those input-dependent intermediates under quarter turns.
+  (let* ((panels (split-fixed-panels-row g (rows g) 5))
+         (norms (map largest-normalized panels))
+         (n (length panels)))
+   (grid-from-fn n n
+    (lambda (i j)
+     (if (= i j)
+         8
+         (let ((target (list-ref norms j)) (cur (list-ref norms i)))
+          (if (any? (lambda (x) (equal? (normalize-binary x) target))
+                    (list cur (rotate-cw cur) (rotate-180 cur) (rotate-ccw cur)))
+              2
+              0))))))))

@@ -1,0 +1,6 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (for/fold ((out g))
+             ((color (filter (lambda (v) (!= v 0)) (grid-colors g))))
+             (layer-flip out color 'ud)))))

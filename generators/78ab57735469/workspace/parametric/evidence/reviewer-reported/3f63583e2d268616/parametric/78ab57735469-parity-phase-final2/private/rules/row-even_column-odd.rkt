@@ -1,0 +1,12 @@
+(rule! (lambda (g)
+         (let ((n (rows g)))
+           (build-grid (* 3 n)
+                       (* 3 n)
+                       (r c)
+                       (let ((br (quotient r n))
+                             (bc (quotient c n))
+                             (lr (mod r n))
+                             (lc (mod c n)))
+                         (at g
+                             (if (even? br) (- n 1 lr) lr)
+                             (if (odd? bc) (- n 1 lc) lc)))))))

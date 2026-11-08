@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (define (object-color-cells grid color) (filter (lambda (obj) (= (obj-color obj) color)) (objects grid 0))) (let* ((obj (first (object-color-cells g 6))) (bb (obj-bbox obj))) (grid-from-fn (rows g) (cols g) (lambda (r c) (if (and (>= r (first bb)) (<= r (third bb)) (>= c (second bb)) (<= c (fourth bb))) 6 0))))))

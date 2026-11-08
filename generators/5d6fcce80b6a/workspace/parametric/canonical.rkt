@@ -1,0 +1,18 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((oh (* h 2))
+                  (ow (* w 2))
+                  (has-color? (lambda (r)
+                                (find (lambda (c) (!= (at g r c) 0)) (range 0 w))))
+                  (colored-rows (filter has-color? (range 0 h)))
+                  (max-colored (if (empty? colored-rows) 0 (max-list colored-rows)))
+                  (is-sep? (lambda (r) (and (not (has-color? r)) (<= r max-colored)))))
+             (build-grid oh
+                         ow
+                         (r c)
+                         (let ((tr (remainder r h))
+                               (br (quotient r h))
+                               (tc (remainder c w))
+                               (bc (quotient c w)))
+                           (cond ((is-sep? tr) 3) ((= br bc) (at g tr tc)) (else 0))))))))

@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (for/fold ((out g)) ((r (in-range (rows g)))) (let ((cols (filter (lambda (c) (= (at g r c) 1)) (range 0 (cols g))))) (if (= (length cols) 2) (for/fold ((acc out)) ((c (in-range (first cols) (+ (second cols) 1)))) (set-cell acc r c 1)) out)))))

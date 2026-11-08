@@ -1,0 +1,22 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((sep-rows (filter (lambda (r)
+                                      (for/and ((c (range 0 w))) (= (at g r c) 8)))
+                                    (range 0 h)))
+                  (sep-cols (filter (lambda (c)
+                                      (for/and ((r (range 0 h))) (= (at g r c) 8)))
+                                    (range 0 w)))
+                  (rb (list 0 (+ (first sep-rows) 1) (+ (second sep-rows) 1)))
+                  (re (list (first sep-rows) (second sep-rows) h))
+                  (cb (list 0 (+ (first sep-cols) 1) (+ (second sep-cols) 1)))
+                  (ce (list (first sep-cols) (second sep-cols) w)))
+             (build-grid 3
+                         3
+                         (br bc)
+                         (if (>= (for/sum ((r (range (nth rb br) (nth re br))))
+                                   (for/sum ((c (range (nth cb bc) (nth ce bc))))
+                                     (if (= (at g r c) 6) 1 0)))
+                                 2)
+                             1
+                             0))))))

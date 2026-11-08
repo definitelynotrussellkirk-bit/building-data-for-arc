@@ -1,0 +1,6 @@
+# da9e4535a458
+
+0-bg grid (h ∈ 11-13, w ∈ 14-18) with: (a) ONE ISOLATED MARKER CELL — random position, value ∈ {4, 5, 6} (op_marker, with 4=OR, 5=AND, 6=XOR), placed with 1-cell padding from all other non-bg cells; (b) TWO HOLLOW COLOR-9 FRAMES — each is a rectangular ring of color 9 with the same interior dimensions (ih × iw, ih ∈ 3-4, iw ∈ 3-4), placed at non-overlapping positions with 1-cell padding; each frame's INTERIOR is sprinkled with 3 to (interior_size - 1) cells of one non-9 color (the two frames use DIFFERENT interior colors drawn from {1,2,3,7,8}). Generation retries until the op result has ≥1 hit cell. Rule (READ THE MARKER, COMPUTE THE BOOLEAN COMBINATION OF THE TWO FRAMES' INTERIOR MASKS, OUTPUT AS COLOR 8): READ the marker value (4/5/6) → choose op ∈ {OR, AND, XOR}. BUILD binary mask A from frame 1's interior (1 where non-bg, 0 else) and binary mask B from frame 2's interior. COMPUTE the elementwise boolean combination A op B. OUTPUT an ih × iw GRID: PAINT COLOR 8 where the result is true, COLOR 0 elsewhere. Net: marker selects an operator; two frame interiors are unioned/intersected/xored into a small cyan-8 mask.
+
+Kind: `per_puzzle`. Imported version: `2.1.0`.
+Approval is derived by the catalog from current code and retained evidence.

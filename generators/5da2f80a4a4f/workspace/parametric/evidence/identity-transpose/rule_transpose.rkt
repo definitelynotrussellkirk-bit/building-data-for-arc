@@ -1,0 +1,33 @@
+(rule! (lambda (g)
+  (define bb (bbox-of-cells (find-color g 2)))
+  (define r0 (first bb))
+  (define c0 (second bb))
+  (define r1 (third bb))
+  (define c1 (fourth bb))
+  (define oh (+ 1 (- r1 r0)))
+  (define ow (+ 1 (- c1 c0)))
+  (define interior
+    (for*/list ([r (in-range (+ r0 1) r1)]
+                [c (in-range (+ c0 1) c1)])
+      (list r c)))
+  (define key-cells
+    (filter (lambda (p)
+      (let ((v (at g (first p) (second p))))
+        (and (not (= v 0)) (not (= v 2)))))
+      interior))
+  (define kbb (bbox-of-cells key-cells))
+  (define kr0 (first kbb))
+  (define kc0 (second kbb))
+  (define kr1 (third kbb))
+  (define kc1 (fourth kbb))
+  (define kh (+ 1 (- kr1 kr0)))
+  (define kw (+ 1 (- kc1 kc0)))
+  (define out-kh kw)
+  (define out-kw kh)
+  (define rscale (quotient (- oh 2) out-kh))
+  (define cscale (quotient (- ow 2) out-kw))
+  (grid-from-fn oh ow
+    (lambda (r c)
+      (if (or (= r 0) (= c 0) (= r (- oh 1)) (= c (- ow 1)))
+          2
+          (at g (+ kr0 (quotient (- c 1) cscale)) (+ kc0 (quotient (- r 1) rscale))))))))

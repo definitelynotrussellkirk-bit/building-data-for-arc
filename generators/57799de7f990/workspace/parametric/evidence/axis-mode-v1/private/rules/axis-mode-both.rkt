@@ -1,0 +1,62 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((centers (filter (lambda (p) p)
+                                   (for*/list ((r (range 1 (- h 1))) (c (range 1 (- w 1))))
+                                     (and
+                                       (and
+                                         (= (at g (- r 1) c) 2)
+                                         (= (at g (+ r 1) c) 2)
+                                         (= (at g r (- c 1)) 2)
+                                         (= (at g r (+ c 1)) 2))
+                                       (list r c)))))
+                  (n (length centers))
+                  (adj? (lambda (i j)
+                          (let* ((r1 (first (nth centers i)))
+                                 (c1 (second (nth centers i)))
+                                 (r2 (first (nth centers j)))
+                                 (c2 (second (nth centers j))))
+                            (cond
+                              ((= r1 r2) (not (find (lambda (k)
+                                             (and
+                                               (!= k i)
+                                               (!= k j)
+                                               (= (first (nth centers k)) r1)
+                                               (> (second (nth centers k)) (min c1 c2))
+                                               (< (second (nth centers k)) (max c1 c2))))
+                                           (range 0 n))))
+                              ((= c1 c2) (not (find (lambda (k)
+                                             (and
+                                               (!= k i)
+                                               (!= k j)
+                                               (= (second (nth centers k)) c1)
+                                               (> (first (nth centers k)) (min r1 r2))
+                                               (< (first (nth centers k)) (max r1 r2))))
+                                           (range 0 n))))
+                              (else #f))))))
+             (reduce (lambda (acc i)
+                       (reduce (lambda (acc2 j)
+                                 (if (or (<= j i) (not (adj? i j)))
+                                     acc2
+                                     (let* ((r1 (first (nth centers i)))
+                                            (c1 (second (nth centers i)))
+                                            (r2 (first (nth centers j)))
+                                            (c2 (second (nth centers j))))
+                                       (cond
+                                         ((= r1 r2) (reduce (lambda (g3 c)
+                                                     (if (zero? (at g3 r1 c))
+                                                         (set-cell g3 r1 c 1)
+                                                         g3))
+                                                   acc2
+                                                   (range (+ (min c1 c2) 1) (max c1 c2))))
+                                         ((= c1 c2) (reduce (lambda (g3 r)
+                                                     (if (zero? (at g3 r c1))
+                                                         (set-cell g3 r c1 1)
+                                                         g3))
+                                                   acc2
+                                                   (range (+ (min r1 r2) 1) (max r1 r2))))
+                                         (else acc2)))))
+                               acc
+                               (range 0 n)))
+                     g
+                     (range 0 n))))))

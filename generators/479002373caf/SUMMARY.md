@@ -1,0 +1,6 @@
+# 479002373caf
+
+FIXED 11×11 0-bg grid with 1-5 SCATTERED COLOR-5 ANCHORS placed by one of 5 ANCHOR LAYOUTS (random with ≥3-cell margin, row at fixed cols [2,5,8], column at fixed rows [2,5,8], corners [(2,2),(2,8),(8,2),(8,8)], center_plus [(5,5),(2,5),(5,2),(5,8),(8,5)]). EACH ANCHOR carries a LOCAL FRAGMENT — a subset of the 8 cells immediately surrounding it (offsets ring_only / full_3x3 / partial), where each fragment cell is painted with a color from a small non-{0, 5} palette (2-4 distinct colors), with fragment_density controlling how many of the 8 ring cells are filled. Anchors are spatially separated so fragments don't overlap. Rule (assemble-at + set-cell): GATHER each anchor's local 3×3 fragment (the anchor + its 8 neighbors) and MERGE these fragments cell-by-cell into ONE OUTPUT 3×3 TILE — overlaying each fragment around its anchor center, with later anchors overwriting earlier where they collide (or non-bg wins). After assembly, WRITE COLOR 5 at cell (1, 1) of the output tile (the center). OUTPUT is the 3×3 tile (much smaller than the 11×11 input). Net: scattered anchor fragments are gathered into a single small composite tile with a central 5 marker.
+
+Kind: `per_puzzle`. Imported version: `3.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

@@ -1,0 +1,18 @@
+(rule!
+  (let ((dummy 0))
+    (define (rect-frame? obj)
+      (and (= (obj-color obj) 1)
+           (>= (obj-h obj) 3)
+           (>= (obj-w obj) 3)
+           (= (obj-size obj) (- (* 2 (+ (obj-h obj) (obj-w obj))) 4))))
+    (define frames (filter rect-frame? (objects g 0)))
+    (define max-depth (length frames))
+    (define (inside? r c frame)
+      (and (> r (obj-r1 frame)) (< r (obj-r2 frame))
+           (> c (obj-c1 frame)) (< c (obj-c2 frame))))
+    (grid-from-fn (rows g) (cols g)
+      (lambda (r c)
+        (if (= (at g r c) 1)
+            1
+            (let ((n (count-where (lambda (frame) (inside? r c frame)) frames)))
+              (if (> n 0) (+ 2 (- max-depth n)) 0)))))))

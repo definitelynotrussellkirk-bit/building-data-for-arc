@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let* ((colors (grid-colors g 0)) (keep (filter (lambda (color) (= (length (remove-duplicates (map first (find-color g color)))) 1)) colors))) (grid-from-fn (rows g) (cols g) (lambda (r c) (let ((v (at g r c))) (if (member? v keep) v 0)))))))

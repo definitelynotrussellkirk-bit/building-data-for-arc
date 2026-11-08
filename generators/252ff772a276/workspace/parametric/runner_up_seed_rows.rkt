@@ -1,0 +1,31 @@
+(rule!
+  (let ((dummy 0))
+    (define (rect-frame? obj)
+      (and (= (obj-color obj) 1)
+           (>= (obj-h obj) 3)
+           (>= (obj-w obj) 3)
+           (= (obj-size obj) (- (* 2 (+ (obj-h obj) (obj-w obj))) 4))))
+    (define (seed-count obj)
+      (count-where (lambda (p) (= (at g (first p) (second p)) 2))
+                   (positions-in-rect (+ (obj-r1 obj) 1) (+ (obj-c1 obj) 1)
+                                      (- (obj-r2 obj) 1) (- (obj-c2 obj) 1))))
+    (define ranked
+      (sort (filter rect-frame? (objects g 0))
+            (lambda (a b)
+              (let ((sa (seed-count a)) (sb (seed-count b)))
+                (cond [(not (= sa sb)) (> sa sb)]
+                      [(not (= (obj-r1 a) (obj-r1 b))) (< (obj-r1 a) (obj-r1 b))]
+                      [else (< (obj-c1 a) (obj-c1 b))])))))
+    (define chosen (first ranked))
+    (define wrong (second ranked))
+    (let ((crop (subgrid g (obj-r1 chosen) (obj-c1 chosen) (obj-r2 chosen) (obj-c2 chosen)))
+          (wrong-crop (subgrid g (obj-r1 wrong) (obj-c1 wrong) (obj-r2 wrong) (obj-c2 wrong))))
+      (for*/fold ([out crop])
+                 ([r (in-range 1 (- (rows crop) 1))]
+                  [c (in-range 1 (- (cols crop) 1))])
+        (if (and (= (at out r c) 0)
+                 (< r (- (rows wrong-crop) 1))
+                 (for/or ([cc (in-range 1 (- (cols wrong-crop) 1))])
+                   (= (at wrong-crop r cc) 2)))
+            (set-cell out r c 3)
+            out)))))

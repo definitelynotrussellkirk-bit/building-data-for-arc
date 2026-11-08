@@ -1,0 +1,17 @@
+(rule!
+ (let ()
+  (define bg 7)
+  (define frame (bbox-of-cells (find-color g 3)))
+  (define (inside? p) (and (<= (first frame) (first p) (third frame)) (<= (second frame) (second p) (fourth frame))))
+  (define keys (filter (lambda (v) (and (not (= v bg)) (not (= v 3)) (not (= v 0))))
+     (grid-colors (subgrid g (first frame) (second frame) (third frame) (fourth frame)))))
+  (define mask (for/list ((r (range h))) (for/list ((c (range w)))
+     (if (and (not (inside? (list r c))) (not (= (at g r c) bg))) 1 0))))
+  (define panels (filter (lambda (o) (for/or ((p (obj-cells o))) (= (at g (first p) (second p)) 0))) (objects mask 0)))
+  (define (matches? o) (for/and ((v keys)) (for/or ((p (obj-cells o))) (= v (at g (first p) (second p))))))
+  (define survivors (filter (lambda (o) (not (matches? o))) panels))
+  (define erased (for/fold ((a g)) ((o panels) #:when (matches? o))
+      (for/fold ((b a)) ((p (obj-cells o))) (set-cell b (first p) (second p) bg))))
+  (if (null? survivors) erased
+      (for/fold ((a erased)) ((p (obj-cells (pick-max survivors obj-size))))
+        (if (= (at a (first p) (second p)) 0) (set-cell a (first p) (second p) 3) a)))))

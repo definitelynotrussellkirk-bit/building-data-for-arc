@@ -1,0 +1,1 @@
+F1: The shared public-preflight witness mode and unregistered task-test runner worked without catalog bypasses. The generic preview exporter still requires native qualification, so add explicit public-preflight support with full-manifest tamper tests to avoid duplicating the now-tested task-local export utility.

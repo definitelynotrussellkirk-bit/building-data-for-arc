@@ -1,0 +1,6 @@
+# ca86ad084977
+
+WALL-BG (color 5) grid (h~7-12, w~13-18) with: (a) a HORIZONTAL OPEN CORRIDOR — a single row r ∈ [1, h-2] is carved as 0-cells spanning columns [c0, c0+9] (10 cells wide), with c0 ∈ [1, w-11] chosen so the corridor stays interior; (b) FOUR CHECKPOINTS along the corridor in fixed offsets and colors: at (r, c0) color 2 (start); (r, c0+3) color 3 (first stop); (r, c0+6) color 4 (second stop); (r, c0+9) color 7 (end). All other cells stay wall-5. The corridor is the only walkable (non-5) path between checkpoints. Rule (PAINT THE ORDERED PATH 2→3→4→7 — EACH SEGMENT IN ITS ENDPOINT COLOR): find the corridor's checkpoints in order by color value: 2, 3, 4, 7. For EACH CONSECUTIVE SEGMENT (between two adjacent checkpoints): COMPUTE the SHORTEST 4-CONNECTED PATH through walkable (non-5) cells. PAINT the intermediate corridor 0-cells of that segment with a designated SEGMENT COLOR (e.g., the downstream checkpoint's color per demos). Checkpoints, walls, and other cells stay unchanged. Net: the open corridor becomes a color-banded ribbon transitioning 2 → 3 → 4 → 7 in 3 segments.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

@@ -1,0 +1,1214 @@
+--- /dev/null
++++ b/generators/c1fd38e5812b/counterexamples/independent_axis_uniformity.json
+@@ -0,0 +1,10 @@
++{
++  "generator_id": "c1fd38e5812b",
++  "failure_mode": "row and column repetition regularity are incorrectly coupled",
++  "logical_grid": [[0, 1], [2, 2], [3, 3], [0, 1], [2, 2], [3, 3]],
++  "row_spans": [2, 2, 2, 2, 2, 2],
++  "col_spans": [4, 8],
++  "expected_output": [[0, 1], [2, 2], [3, 3], [0, 1], [2, 2], [3, 3]],
++  "coupled_chunking_rival_output": [[0, 1, 1], [2, 2, 2], [3, 3, 3], [0, 1, 1], [2, 2, 2], [3, 3, 3]],
++  "why_it_matters": "Rows have one uniform run length while columns have independent unequal run lengths. A learner that assumes one shared chunk size produces an extra logical column."
++}
+--- a/generators/c1fd38e5812b/generator.py
++++ b/generators/c1fd38e5812b/generator.py
+@@ -1,4 +1,4 @@
+-"""Generate nonuniform run grids that compress to one cell per run block."""
++"""Generate run grids whose independently repeated axes compress to a logical grid."""
+ 
+ from __future__ import annotations
+ 
+@@ -7,8 +7,8 @@
+ 
+ GENERATOR_ID = "c1fd38e5812b"
+ TASK_ID = "c1fd38e5812b"
+-VERSION = "3.0.0"
+-RULE_HASH = "dc8aa1222f34"
++VERSION = "3.1.0"
++RULE_HASH = "0805714fcf25"
+ SUMMARY = (
+     "The input expands a small color grid by independently repeating each "
+     "logical row and column; the output samples the first cell of every "
+@@ -26,6 +26,8 @@
+     "nonuniform_runs",
+     "interior_merges",
+     "uniform_runs",
++    "uniform_rows",
++    "uniform_cols",
+ )
+ SCENE_PROFILES = PUBLIC_PROFILES + EXTRAPOLATION_PROFILES
+ 
+@@ -57,12 +59,16 @@
+     "anti_diagonal",
+ )
+ 
++# Keep the prior 25% public-profile share and 10% both-axes-uniform share while
++# adding explicit 10% support for each independently mixed uniformity direction.
+ _WEIGHTED_PROFILES = {
+     band: (
+         *PUBLIC_PROFILES,
+-        *(("nonuniform_runs",) * 8),
+-        *(("interior_merges",) * 5),
++        *(("nonuniform_runs",) * 6),
++        *(("interior_merges",) * 3),
+         *(("uniform_runs",) * 2),
++        *(("uniform_rows",) * 2),
++        *(("uniform_cols",) * 2),
+     )
+     for band in ("easy", "medium", "hard")
+ }
+@@ -346,15 +352,19 @@
+ 
+     canonical_profile = _canonical_answer_profile(grid)
+     interior_merge = _interior_merge(output)
+-    uniform_runs = (
+-        len(set(row_spans)) == 1 and len(set(col_spans)) == 1
+-    )
++    uniform_rows = len(set(row_spans)) == 1
++    uniform_cols = len(set(col_spans)) == 1
++    uniform_runs = uniform_rows and uniform_cols
+     if canonical_profile is not None:
+         scene_profile = canonical_profile
++    elif uniform_runs:
++        scene_profile = "uniform_runs"
++    elif uniform_rows:
++        scene_profile = "uniform_rows"
++    elif uniform_cols:
++        scene_profile = "uniform_cols"
+     elif interior_merge:
+         scene_profile = "interior_merges"
+-    elif uniform_runs:
+-        scene_profile = "uniform_runs"
+     else:
+         scene_profile = "nonuniform_runs"
+ 
+@@ -370,6 +380,8 @@
+         "row_spans": row_spans,
+         "col_spans": col_spans,
+         "output": output,
++        "uniform_rows": uniform_rows,
++        "uniform_cols": uniform_cols,
+         "uniform_runs": uniform_runs,
+         "interior_merge": interior_merge,
+         "canonical_answer_profile": canonical_profile,
+@@ -511,6 +523,12 @@
+         if profile == "uniform_runs":
+             row_spans = _uniform_spans(rows, band, rng)
+             col_spans = _uniform_spans(cols, band, rng)
++        elif profile == "uniform_rows":
++            row_spans = _uniform_spans(rows, band, rng)
++            col_spans = _nonuniform_spans(cols, band, rng)
++        elif profile == "uniform_cols":
++            row_spans = _nonuniform_spans(rows, band, rng)
++            col_spans = _uniform_spans(cols, band, rng)
+         else:
+             row_spans = _nonuniform_spans(rows, band, rng)
+             col_spans = _nonuniform_spans(cols, band, rng)
+--- a/generators/c1fd38e5812b/tests/test_generator_c1fd38e5812b.py
++++ b/generators/c1fd38e5812b/tests/test_generator_c1fd38e5812b.py
+@@ -1,35 +1,57 @@
+ from __future__ import annotations
+ 
+-import copy
+-from importlib import import_module
++import hashlib
++import importlib
+ import json
++from collections import Counter
+ from pathlib import Path
+-import random
+-import unittest
+-
+-
+-ROOT = Path(__file__).resolve().parents[1]
+-generator = import_module(
++
++import pytest
++
++from reviewer_support import canonical_pairs as load_canonical_pairs
++from reviewer_support import find_root
++
++
++TASK_ID = "c1fd38e5812b"
++ROOT = find_root(__file__)
++GEN = importlib.import_module(
+     "puzzle_generators.per_puzzle.c1fd38e5812b.generator"
+ )
+ 
+ 
+-def canonical_row():
+-    for line in (
+-        ROOT / "data/canonical/puzzles.jsonl"
+-    ).read_text(encoding="utf-8").splitlines():
+-        row = json.loads(line)
+-        if (
+-            row.get("task_id") == generator.TASK_ID
+-            and row.get("source") == "training"
+-        ):
+-            return row
+-    raise RuntimeError("canonical row not found")
+-
+-
+ def canonical_pairs():
+-    row = canonical_row()
+-    return row["train"] + row["test"]
++    pairs = load_canonical_pairs(TASK_ID, root=ROOT, labeled_only=True)
++    normalized = []
++    for pair in pairs:
++        if isinstance(pair, dict):
++            normalized.append((pair["input"], pair["output"]))
++        else:
++            grid, output = pair
++            normalized.append((grid, output))
++    return normalized
++
++
++def canonical_program():
++    candidates = (
++        ROOT / "data" / "canonical" / "puzzles.jsonl",
++        ROOT / "shared" / "data" / "canonical" / "puzzles.jsonl",
++    )
++    for path in candidates:
++        if not path.exists():
++            continue
++        with path.open(encoding="utf-8") as handle:
++            for line in handle:
++                row = json.loads(line)
++                if row.get("task_id") != TASK_ID:
++                    continue
++                program = (
++                    row.get("program_solution")
++                    or row.get("selected_program")
++                    or row.get("program")
++                )
++                if isinstance(program, str) and program.strip():
++                    return program
++    raise AssertionError(f"canonical program not found for {TASK_ID}")
+ 
+ 
+ def grid_key(grid):
+@@ -38,284 +60,213 @@
+ 
+ def reference_solve(grid):
+     row_starts = [0] + [
+-        row
+-        for row in range(1, len(grid))
+-        if grid[row][0] != grid[row - 1][0]
++        r for r in range(1, len(grid)) if grid[r][0] != grid[r - 1][0]
+     ]
+     col_starts = [0] + [
+-        col
+-        for col in range(1, len(grid[0]))
+-        if grid[0][col] != grid[0][col - 1]
++        c
++        for c in range(1, len(grid[0]))
++        if grid[0][c] != grid[0][c - 1]
+     ]
+-    return [
+-        [grid[row][col] for col in col_starts]
+-        for row in row_starts
+-    ]
+-
+-
+-class GeneratorC1fd38e5812bTests(unittest.TestCase):
+-    def test_all_public_pairs_are_strict_and_exact(self):
+-        for pair in canonical_pairs():
+-            grid = copy.deepcopy(pair["input"])
+-            self.assertEqual(generator.self_check(grid), [])
+-            self.assertEqual(generator.solve_python(grid), pair["output"])
+-            self.assertEqual(reference_solve(grid), pair["output"])
+-
+-    def test_every_profile_and_band_is_exactly_observable(self):
+-        for profile_index, profile in enumerate(generator.SCENE_PROFILES):
+-            for band_index, band in enumerate(("easy", "medium", "hard")):
+-                for index in range(30):
+-                    grid = generator.generate(
+-                        10_000 * profile_index
+-                        + 1_000 * band_index
+-                        + index,
+-                        index,
+-                        difficulty=band,
+-                        scene_profile=profile,
+-                    )
+-                    self.assertEqual(generator.self_check(grid), [])
+-                    self.assertEqual(
+-                        generator.observe_overrides(grid),
+-                        {"scene_profile": profile},
+-                    )
+-                    self.assertEqual(
+-                        generator.solve_python(grid),
+-                        reference_solve(grid),
+-                    )
+-                    self.assertNotEqual(generator.solve_python(grid), grid)
+-
+-    def test_default_profile_prior_and_band_coverage(self):
+-        public = 0
+-        uniform = 0
+-        total = 0
+-        for band_index, band in enumerate(("easy", "medium", "hard")):
+-            seen = set()
+-            for index in range(2_000):
+-                grid = generator.generate(
+-                    500_000 + 10_000 * band_index + index,
+-                    index,
+-                    difficulty=band,
+-                )
+-                observed = generator.observe_overrides(grid)["scene_profile"]
+-                seen.add(observed)
+-                public += observed in generator.PUBLIC_PROFILES
+-                uniform += observed == "uniform_runs"
+-                total += 1
+-            self.assertEqual(seen, set(generator.SCENE_PROFILES))
+-        self.assertGreater(public / total, 0.22)
+-        self.assertLess(public / total, 0.28)
+-        self.assertGreater(uniform / total, 0.07)
+-        self.assertLess(uniform / total, 0.13)
+-
+-    def test_public_profiles_preserve_roles_without_literal_replay(self):
+-        literals = {grid_key(pair["input"]) for pair in canonical_pairs()}
+-        for profile_index, profile in enumerate(generator.PUBLIC_PROFILES):
+-            observed_shapes = set()
+-            for index in range(1_000):
+-                grid = generator.generate(
+-                    600_000 + 10_000 * profile_index + index,
+-                    index,
++    return [[grid[r][c] for c in col_starts] for r in row_starts]
++
++
++def test_all_public_pairs_match_independent_reference():
++    pairs = canonical_pairs()
++    assert len(pairs) >= 5
++    for grid, expected in pairs:
++        assert reference_solve(grid) == expected
++        assert GEN.solve_python(grid) == expected
++
++
++def test_every_declared_profile_is_strict_observable_and_solved():
++    for difficulty in ("easy", "medium", "hard"):
++        for profile in GEN.SCENE_PROFILES:
++            for sample_index in range(12):
++                grid = GEN.generate(
++                    81731,
++                    sample_index,
++                    difficulty=difficulty,
+                     scene_profile=profile,
+                 )
+-                analysis = generator._analyze(grid)
+-                self.assertEqual(
+-                    analysis["canonical_answer_profile"],
+-                    profile,
+-                )
+-                self.assertNotIn(grid_key(grid), literals)
+-                observed_shapes.add((len(grid), len(grid[0])))
+-            expected_shapes = {
+-                (
+-                    len(generator._transform(
+-                        generator._PUBLIC_INPUTS[profile],
+-                        transform,
+-                    )),
+-                    len(generator._transform(
+-                        generator._PUBLIC_INPUTS[profile],
+-                        transform,
+-                    )[0]),
+-                )
+-                for transform in generator._PUBLIC_SAFE_TRANSFORMS[profile]
+-            }
+-            self.assertEqual(observed_shapes, expected_shapes)
+-
+-    def test_default_generation_never_replays_a_public_literal(self):
+-        literals = {grid_key(pair["input"]) for pair in canonical_pairs()}
+-        for index in range(5_000):
+-            grid = generator.generate(700_000 + index, index)
+-            self.assertNotIn(grid_key(grid), literals)
+-
+-    def test_nonuniform_and_interior_profiles_cover_hard_cases(self):
+-        row_spans = set()
+-        col_spans = set()
+-        logical_shapes = set()
+-        for profile_index, profile in enumerate(
+-            ("nonuniform_runs", "interior_merges")
+-        ):
+-            for index in range(2_000):
+-                grid = generator.generate(
+-                    800_000 + 10_000 * profile_index + index,
+-                    index,
+-                    difficulty="hard",
+-                    scene_profile=profile,
+-                )
+-                analysis = generator._analyze(grid)
+-                self.assertGreater(len(set(analysis["row_spans"])), 1)
+-                self.assertGreater(len(set(analysis["col_spans"])), 1)
+-                self.assertEqual(
+-                    analysis["interior_merge"],
+-                    profile == "interior_merges",
+-                )
+-                row_spans.update(analysis["row_spans"])
+-                col_spans.update(analysis["col_spans"])
+-                logical_shapes.add(
+-                    (
+-                        analysis["logical_rows"],
+-                        analysis["logical_cols"],
+-                    )
+-                )
+-        self.assertEqual(row_spans, set(range(2, 13)))
+-        self.assertEqual(col_spans, set(range(2, 13)))
+-        self.assertTrue(
+-            {
+-                (rows, cols)
+-                for rows in range(3, 7)
+-                for cols in range(3, 7)
+-            }.issubset(logical_shapes)
++                assert GEN.self_check(grid, difficulty=difficulty) == []
++                assert GEN.observe_overrides(grid) == {
++                    "scene_profile": profile
++                }
++                assert GEN.solve_python(grid) == reference_solve(grid)
++
++
++def test_weighted_distribution_includes_every_profile_and_keeps_contract():
++    for difficulty, weights in GEN._WEIGHTED_PROFILES.items():
++        assert len(weights) == 20
++        assert sum(profile in GEN.PUBLIC_PROFILES for profile in weights) == 5
++        assert weights.count("uniform_runs") == 2
++        assert weights.count("uniform_rows") == 2
++        assert weights.count("uniform_cols") == 2
++        assert weights.count("nonuniform_runs") == 6
++        assert weights.count("interior_merges") == 3
++
++        counts = Counter()
++        for sample_index in range(2000):
++            grid = GEN.generate(48179, sample_index, difficulty=difficulty)
++            profile = GEN.observe_overrides(grid)["scene_profile"]
++            counts[profile] += 1
++        assert set(counts) == set(GEN.SCENE_PROFILES)
++        public_share = sum(counts[p] for p in GEN.PUBLIC_PROFILES) / 2000
++        assert 0.20 <= public_share <= 0.30
++        assert 0.05 <= counts["uniform_runs"] / 2000 <= 0.15
++        assert 0.05 <= counts["uniform_rows"] / 2000 <= 0.15
++        assert 0.05 <= counts["uniform_cols"] / 2000 <= 0.15
++
++
++def test_public_profiles_do_not_replay_public_input_literals():
++    public_literals = {grid_key(grid) for grid, _ in canonical_pairs()}
++    for profile in GEN.PUBLIC_PROFILES:
++        for sample_index in range(40):
++            grid = GEN.generate(
++                60427,
++                sample_index,
++                difficulty="medium",
++                scene_profile=profile,
++            )
++            assert grid_key(grid) not in public_literals
++
++
++def test_nonuniform_profiles_cover_run_spans_two_through_twelve():
++    seen = set()
++    for profile in ("nonuniform_runs", "interior_merges"):
++        for sample_index in range(1400):
++            grid = GEN.generate(
++                99173,
++                sample_index,
++                difficulty="hard",
++                scene_profile=profile,
++            )
++            analysis = GEN._analyze(grid)
++            seen.update(analysis["row_spans"])
++            seen.update(analysis["col_spans"])
++            assert not analysis["uniform_rows"]
++            assert not analysis["uniform_cols"]
++            assert analysis["scene_profile"] == profile
++    assert seen == set(range(2, 13))
++
++
++def test_uniform_runs_profile_is_uniform_on_both_axes():
++    for difficulty in ("easy", "medium", "hard"):
++        for sample_index in range(50):
++            grid = GEN.generate(
++                17111,
++                sample_index,
++                difficulty=difficulty,
++                scene_profile="uniform_runs",
++            )
++            analysis = GEN._analyze(grid)
++            assert analysis["uniform_rows"]
++            assert analysis["uniform_cols"]
++            assert analysis["scene_profile"] == "uniform_runs"
++
++
++@pytest.mark.parametrize(
++    "profile, rows_uniform, cols_uniform",
++    [
++        ("uniform_rows", True, False),
++        ("uniform_cols", False, True),
++    ],
++)
++def test_mixed_axis_uniformity_is_generated_independently(
++    profile, rows_uniform, cols_uniform
++):
++    for difficulty in ("easy", "medium", "hard"):
++        for sample_index in range(60):
++            grid = GEN.generate(
++                21977,
++                sample_index,
++                difficulty=difficulty,
++                scene_profile=profile,
++            )
++            analysis = GEN._analyze(grid)
++            assert analysis["uniform_rows"] is rows_uniform
++            assert analysis["uniform_cols"] is cols_uniform
++            assert analysis["scene_profile"] == profile
++            assert GEN.solve_python(grid) == reference_solve(grid)
++
++
++def test_independent_axis_counterexample_rejects_coupled_chunking():
++    logical = [[0, 1], [2, 2], [3, 3], [0, 1], [2, 2], [3, 3]]
++    grid = GEN._expand(logical, [2, 2, 2, 2, 2, 2], [4, 8])
++    analysis = GEN._analyze(grid)
++    assert analysis["scene_profile"] == "uniform_rows"
++    assert GEN.solve_python(grid) == logical
++    coupled = [
++        [grid[row][col] for col in (0, 4, 8)]
++        for row in (0, 2, 4, 6, 8, 10)
++    ]
++    assert coupled != logical
++
++
++def test_interior_merge_profile_contains_a_real_merge():
++    for sample_index in range(80):
++        grid = GEN.generate(
++            88721,
++            sample_index,
++            difficulty="hard",
++            scene_profile="interior_merges",
+         )
+-
+-    def test_uniform_profile_is_lawful_but_explicit(self):
+-        for index in range(500):
+-            grid = generator.generate(
+-                900_000 + index,
+-                index,
+-                difficulty="hard",
+-                scene_profile="uniform_runs",
+-            )
+-            analysis = generator._analyze(grid)
+-            self.assertTrue(analysis["uniform_runs"])
+-            self.assertFalse(analysis["interior_merge"])
+-            self.assertEqual(analysis["scene_profile"], "uniform_runs")
+-
+-    def test_mutations_are_rejected_from_final_grid(self):
+-        grid = generator.generate(
+-            1_000_000,
+-            0,
+-            difficulty="hard",
+-            scene_profile="nonuniform_runs",
+-        )
+-        analysis = generator._analyze(grid)
+-
+-        broken_block = copy.deepcopy(grid)
+-        row1 = analysis["row_starts"][0]
+-        row2 = analysis["row_starts"][1]
+-        col1 = analysis["col_starts"][0]
+-        col2 = analysis["col_starts"][1]
+-        row = row1 if row2 - row1 == 1 else row1 + 1
+-        col = col1 if col2 - col1 == 1 else col1 + 1
+-        broken_block[row][col] = (
+-            broken_block[row][col] + 1
+-        ) % 10
+-        self.assertIn(
+-            "non_solid_logical_block",
+-            generator.self_check(broken_block),
+-        )
+-
+-        collapsed_row_axis = copy.deepcopy(grid)
+-        boundary_row = analysis["row_starts"][1]
+-        collapsed_row_axis[boundary_row][0] = grid[boundary_row - 1][0]
+-        self.assertTrue(generator.self_check(collapsed_row_axis))
+-
+-        collapsed_col_axis = copy.deepcopy(grid)
+-        boundary_col = analysis["col_starts"][1]
+-        collapsed_col_axis[0][boundary_col] = grid[0][boundary_col - 1]
+-        self.assertTrue(generator.self_check(collapsed_col_axis))
+-
+-        ragged = copy.deepcopy(grid)
+-        ragged[0].pop()
+-        self.assertEqual(generator.self_check(ragged), ["ragged"])
+-
+-        invalid = copy.deepcopy(grid)
+-        invalid[0][0] = True
+-        self.assertEqual(
+-            generator.self_check(invalid),
+-            ["invalid_arc_value"],
+-        )
+-
+-        too_small = generator._expand(
+-            [[1, 2], [3, 4]],
+-            [2, 2],
+-            [2, 2],
+-        )
+-        self.assertIn("dimension_range", generator.self_check(too_small))
+-
+-        monochrome = [[3 for _ in range(12)] for _ in range(12)]
+-        self.assertIn("output_palette", generator.self_check(monochrome))
+-
+-        identity = [[1, 2], [3, 4]]
+-        self.assertIn("identity", generator.self_check(identity))
+-
+-    def test_broad_oracle_outside_strict_training_grammar(self):
+-        grid = generator._expand(
+-            [[1, 2, 3], [4, 5, 6]],
+-            [1, 6],
+-            [2, 3, 4],
+-        )
+-        before = copy.deepcopy(grid)
+-        self.assertTrue(generator.self_check(grid))
+-        self.assertEqual(
+-            generator.solve_python(grid),
+-            [[1, 2, 3], [4, 5, 6]],
+-        )
+-        self.assertEqual(generator.solve_python(grid), reference_solve(grid))
+-        self.assertEqual(grid, before)
+-
+-    def test_deterministic_fresh_and_rng_isolated(self):
+-        state = random.getstate()
+-        first = generator.generate(1_100_000, 17, difficulty="hard")
+-        second = generator.generate(1_100_000, 17, difficulty="hard")
+-        self.assertEqual(first, second)
+-        self.assertIsNot(first, second)
+-        self.assertIsNot(first[0], second[0])
+-        first[0][0] = 9 if first[0][0] != 9 else 8
+-        self.assertNotEqual(first, second)
+-        self.assertEqual(random.getstate(), state)
+-
+-    def test_seed_and_sample_index_both_matter(self):
+-        base = [
+-            generator.generate(1_200_000, index)
+-            for index in range(12)
+-        ]
+-        different_seed = [
+-            generator.generate(1_200_001, index)
+-            for index in range(12)
+-        ]
+-        different_index = [
+-            generator.generate(1_200_000, index + 1)
+-            for index in range(12)
+-        ]
+-        self.assertNotEqual(base, different_seed)
+-        self.assertNotEqual(base, different_index)
+-
+-    def test_invalid_overrides_fail_closed(self):
+-        with self.assertRaises(ValueError):
+-            generator.generate(1, 1, unknown_axis="x")
+-        with self.assertRaises(ValueError):
+-            generator.generate(1, 1, scene_profile="not_a_profile")
+-
+-    def test_base_sources_match_canonical_program(self):
+-        program = canonical_row()["program_solution"]
+-        for relative in (
+-            "data/base/solutions/training/"
+-            "e1baa8a4__c1fd38e5812b.json",
+-            "data/base/solutions/augmented/"
+-            "e1baa8a4__ae9e6741664f.json",
+-        ):
+-            base = json.loads((ROOT / relative).read_text(encoding="utf-8"))
+-            self.assertEqual(base["racket_target"]["raw_code"], program)
+-            self.assertEqual(base["racket_target"]["target_code"], program)
+-        self.assertEqual(generator.RULE_HASH, "dc8aa1222f34")
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
++        analysis = GEN._analyze(grid)
++        assert analysis["interior_merge"]
++        assert analysis["scene_profile"] == "interior_merges"
++
++
++def test_observable_mutations_break_the_declared_profile():
++    grid = GEN.generate(
++        31119,
++        8,
++        difficulty="hard",
++        scene_profile="uniform_rows",
++    )
++    analysis = GEN._analyze(grid)
++    row_spans = analysis["row_spans"]
++    col_spans = analysis["col_spans"]
++    logical = analysis["output"]
++    assert len(row_spans) >= 2 and row_spans[0] >= 3
++
++    mutated_row_spans = row_spans[:]
++    mutated_row_spans[0] -= 1
++    mutated_row_spans[1] += 1
++    mutated = GEN._expand(logical, mutated_row_spans, col_spans)
++    observed = GEN.observe_overrides(mutated)
++    assert observed["scene_profile"] != "uniform_rows"
++
++
++def test_python_oracle_is_input_pure():
++    grid = GEN.generate(
++        10103,
++        5,
++        difficulty="hard",
++        scene_profile="uniform_cols",
++    )
++    before = grid_key(grid)
++    first = GEN.solve_python(grid)
++    second = GEN.solve_python(grid)
++    assert first == second == reference_solve(grid)
++    assert grid_key(grid) == before
++
++
++def test_generation_is_deterministic():
++    kwargs = {
++        "difficulty": "hard",
++        "scene_profile": "uniform_rows",
++    }
++    assert GEN.generate(9127, 37, **kwargs) == GEN.generate(9127, 37, **kwargs)
++
++
++def test_invalid_overrides_are_rejected():
++    with pytest.raises(ValueError):
++        GEN.generate(1, 0, unknown_axis="x")
++    with pytest.raises(ValueError):
++        GEN.generate(1, 0, scene_profile="not-a-profile")
++
++
++def test_authority_pin_matches_selected_canonical_program():
++    normalized = " ".join(canonical_program().split())
++    assert hashlib.sha256(normalized.encode()).hexdigest()[:12] == GEN.RULE_HASH
++    assert GEN.RULE_HASH == "0805714fcf25"
+--- /dev/null
++++ b/generators/c1fd38e5812b/tests/test_parametric_c1fd38e5812b.py
+@@ -0,0 +1,128 @@
++from __future__ import annotations
++
++import json
++from pathlib import Path
++import sys
++import types
++
++import pytest
++
++PARAMETRIC_ROOT = (
++    Path(__file__).resolve().parents[1] / "workspace" / "parametric"
++)
++sys.path.insert(0, str(PARAMETRIC_ROOT))
++
++from compression_family import (
++    CANONICAL_PARAMETERS,
++    PythonMirrorOracle,
++    RacketOracle,
++    all_settings,
++    build_episode,
++    materialize_program,
++    python_apply,
++    write_episode,
++)
++
++
++def expanded_fixture():
++    logical = [[1, 2, 3], [4, 5, 6]]
++    row_spans = [2, 3]
++    col_spans = [2, 3, 2]
++    return [
++        [value for value, span in zip(row, col_spans) for _ in range(span)]
++        for row, rspan in zip(logical, row_spans)
++        for _ in range(rspan)
++    ]
++
++
++def test_six_programs_are_closed_and_distinct():
++    programs = [materialize_program(**setting) for setting in all_settings()]
++    assert len(programs) == len(set(programs)) == 6
++    assert all(program.startswith("(rule! (lambda (g)") for program in programs)
++    assert all(program.count("(rule!") == 1 for program in programs)
++
++
++def test_canonical_member_matches_compression_rule():
++    grid = expanded_fixture()
++    assert python_apply(grid, **CANONICAL_PARAMETERS) == [[1, 2, 3], [4, 5, 6]]
++
++
++def test_axes_and_orientation_have_independent_effects():
++    grid = expanded_fixture()
++    both = python_apply(grid, compression_axes="both", output_orientation="identity")
++    rows = python_apply(grid, compression_axes="rows", output_orientation="identity")
++    columns = python_apply(grid, compression_axes="columns", output_orientation="identity")
++    transpose = python_apply(grid, compression_axes="both", output_orientation="transpose")
++    assert both == [[1, 2, 3], [4, 5, 6]]
++    assert len(rows) == 2 and len(rows[0]) == 7
++    assert len(columns) == 5 and len(columns[0]) == 3
++    assert transpose == [[1, 4], [2, 5], [3, 6]]
++
++
++def test_episode_has_four_distinct_queries_and_no_private_leakage(tmp_path):
++    episode = build_episode(
++        seed=20261023,
++        chosen=CANONICAL_PARAMETERS,
++        oracle=PythonMirrorOracle(),
++        demo_count=4,
++        query_count=4,
++    )
++    public = episode["public"]
++    private = episode["private"]
++    assert len(public["train"]) == 4
++    assert len(public["test"]) == 4
++    assert all(set(item) == {"input"} for item in public["test"])
++    keys = {json.dumps(item["input"], sort_keys=True) for item in public["test"]}
++    assert len(keys) == 4
++    serialized_public = json.dumps(public, sort_keys=True)
++    assert "compression_axes" not in serialized_public
++    assert "output_orientation" not in serialized_public
++    assert "program" not in serialized_public
++    assert private["rivals_refuted_by_demos"]
++    paths = write_episode(episode, tmp_path)
++    exact_visible = json.dumps(public, sort_keys=True, separators=(",", ":"))
++    import hashlib
++    expected = hashlib.sha256(exact_visible.encode()).hexdigest()
++    assert paths["public"].name == f"challenge-{expected[:16]}.json"
++
++
++def test_racket_programs_match_independent_python_mirror_when_available():
++    pytest.importorskip("arc_repl.racket_bridge")
++    grid = expanded_fixture()
++    with RacketOracle() as oracle:
++        for setting in all_settings():
++            assert oracle.apply(materialize_program(**setting), grid) == python_apply(grid, **setting)
++
++
++def test_racket_adapter_uses_packet_bridge_contract(monkeypatch):
++    calls = []
++
++    class FakeBridge:
++        def __init__(self, prelude_path=None, timeout=10.0):
++            calls.append(("init", prelude_path, timeout))
++
++        def eval_text(self, expression):
++            calls.append(("eval_text", expression))
++            if expression.startswith("(define "):
++                return None
++            return [[9]]
++
++        def define_grid(self, name, grid):
++            calls.append(("define_grid", name, grid))
++
++        def shutdown(self):
++            calls.append(("shutdown",))
++
++    bridge_module = types.ModuleType("arc_repl.racket_bridge")
++    bridge_module.RacketBridge = FakeBridge
++    wrapper_module = types.ModuleType("puzzle_generators.rule_wrap")
++    wrapper_module.strip_rule_wrapper = lambda program: "(lambda (g) g)"
++    monkeypatch.setitem(sys.modules, "arc_repl.racket_bridge", bridge_module)
++    monkeypatch.setitem(sys.modules, "puzzle_generators.rule_wrap", wrapper_module)
++
++    with RacketOracle(timeout_s=3.5) as oracle:
++        assert oracle.apply("(rule! (lambda (g) g))", [[1]]) == [[9]]
++
++    assert calls[0] == ("init", None, 3.5)
++    assert any(call[0] == "define_grid" and call[2] == [[1]] for call in calls)
++    assert calls[-1] == ("shutdown",)
+--- /dev/null
++++ b/generators/c1fd38e5812b/workspace/parametric/README.md
+@@ -0,0 +1,30 @@
++# Parametric compression family
++
++This is a bounded extension of generator `c1fd38e5812b`. It varies two hidden
++parameters:
++
++- `compression_axes`: `both` (canonical), `rows`, or `columns`.
++- `output_orientation`: `identity` (canonical) or `transpose`.
++
++Every family member is materialized as a closed Racket `(rule! (lambda (g)
++...))` program. `compression_family.py` uses the packet's `RacketBridge` for
++all emitted demonstration and query labels. A Python implementation exists
++only as an independent test oracle.
++
++The episode builder greedily selects demonstrations until every rival setting
++has produced a different output on at least one demonstration, then emits
++exactly four distinct query inputs. Hidden parameters, Racket programs, query
++labels, and rival evidence are written only to the private file. The public
++challenge filename is the SHA-256 prefix of the exact visible public JSON.
++
++Run from the packet repository root:
++
++```bash
++python3 WORK/repo/generators/c1fd38e5812b/workspace/parametric/compression_family.py \
++  --out WORK/repo/generators/c1fd38e5812b/workspace/parametric/generated \
++  --compression-axes both --output-orientation identity \
++  --demo-count 4 --query-count 4
++
++python3 review.py run python3 -m pytest -q \
++  generators/c1fd38e5812b/tests/test_parametric_c1fd38e5812b.py
++```
+--- /dev/null
++++ b/generators/c1fd38e5812b/workspace/parametric/compression_family.py
+@@ -0,0 +1,368 @@
++"""Racket-backed parametric extension of c1fd38e5812b.
++
++The canonical setting is ``compression_axes=both`` and
++``output_orientation=identity``.  Episodes vary the axis subset and optional
++transpose while keeping the input generator fixed.  Public challenge files
++contain only demonstrations and query inputs; parameters, programs, rival
++outputs, and query labels stay in private evidence.
++"""
++
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib
++import importlib.util
++import json
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Iterable, Protocol
++
++
++GENERATOR_MODULE = "puzzle_generators.per_puzzle.c1fd38e5812b.generator"
++AXES = ("both", "rows", "columns")
++ORIENTATIONS = ("identity", "transpose")
++CANONICAL_PARAMETERS = {
++    "compression_axes": "both",
++    "output_orientation": "identity",
++}
++
++
++def _canonical_json(value: Any) -> str:
++    return json.dumps(value, sort_keys=True, separators=(",", ":"))
++
++
++def _starts(values: list[int]) -> list[int]:
++    return [0] + [i for i in range(1, len(values)) if values[i] != values[i - 1]]
++
++
++def python_apply(grid: list[list[int]], *, compression_axes: str, output_orientation: str) -> list[list[int]]:
++    """Independent mirror used only by unit tests, never for episode labels."""
++    if compression_axes not in AXES:
++        raise ValueError(compression_axes)
++    if output_orientation not in ORIENTATIONS:
++        raise ValueError(output_orientation)
++    row_ids = _starts([row[0] for row in grid]) if compression_axes in {"both", "rows"} else list(range(len(grid)))
++    col_ids = _starts(grid[0]) if compression_axes in {"both", "columns"} else list(range(len(grid[0])))
++    result = [[grid[r][c] for c in col_ids] for r in row_ids]
++    if output_orientation == "transpose":
++        result = [list(row) for row in zip(*result)]
++    return result
++
++
++def materialize_program(*, compression_axes: str, output_orientation: str) -> str:
++    """Return a closed Racket rule for one family member."""
++    if compression_axes not in AXES:
++        raise ValueError(f"unknown compression_axes: {compression_axes!r}")
++    if output_orientation not in ORIENTATIONS:
++        raise ValueError(f"unknown output_orientation: {output_orientation!r}")
++
++    row_selector = "row-starts" if compression_axes in {"both", "rows"} else "(range height)"
++    col_selector = "col-starts" if compression_axes in {"both", "columns"} else "(range width)"
++    result = "(apply map list core)" if output_orientation == "transpose" else "core"
++    return f"""(rule! (lambda (g)
++  (let* ([height (length g)]
++         [width (length (car g))]
++         [row-starts
++          (cons 0
++                (for/list ([r (in-range 1 height)]
++                           #:when
++                           (not (= (list-ref (list-ref g r) 0)
++                                   (list-ref (list-ref g (sub1 r)) 0))))
++                  r))]
++         [col-starts
++          (cons 0
++                (for/list ([c (in-range 1 width)]
++                           #:when
++                           (not (= (list-ref (car g) c)
++                                   (list-ref (car g) (sub1 c)))))
++                  c))]
++         [selected-rows {row_selector}]
++         [selected-cols {col_selector}]
++         [core
++          (for/list ([r (in-list selected-rows)])
++            (for/list ([c (in-list selected-cols)])
++              (list-ref (list-ref g r) c)))])
++    {result})))"""
++
++
++def all_settings() -> list[dict[str, str]]:
++    return [
++        {"compression_axes": axes, "output_orientation": orientation}
++        for axes in AXES
++        for orientation in ORIENTATIONS
++    ]
++
++
++class Oracle(Protocol):
++    def apply(self, program: str, grid: list[list[int]]) -> list[list[int]]: ...
++
++
++class PythonMirrorOracle:
++    """Test-only oracle; production episode generation must use RacketOracle."""
++
++    def apply(self, program: str, grid: list[list[int]]) -> list[list[int]]:
++        for setting in all_settings():
++            if program == materialize_program(**setting):
++                return python_apply(grid, **setting)
++        raise ValueError("program was not materialized by this family")
++
++
++class RacketOracle:
++    """Evaluate every label through the packet's persistent Racket bridge."""
++
++    def __init__(self, timeout_s: float = 20.0):
++        from arc_repl.racket_bridge import RacketBridge
++        self._bridge = RacketBridge(timeout=timeout_s)
++        self._functions: dict[str, str] = {}
++
++    def close(self) -> None:
++        self._bridge.shutdown()
++
++    def __enter__(self) -> "RacketOracle":
++        return self
++
++    def __exit__(self, exc_type, exc, tb) -> None:
++        self.close()
++
++    @staticmethod
++    def _unwrap(payload: Any) -> list[list[int]]:
++        if isinstance(payload, str):
++            try:
++                return RacketOracle._unwrap(json.loads(payload))
++            except json.JSONDecodeError as error:
++                raise RuntimeError(f"Racket returned non-JSON text: {payload!r}") from error
++        if isinstance(payload, dict):
++            for key in ("value", "result", "grid", "output"):
++                if key in payload:
++                    return RacketOracle._unwrap(payload[key])
++        if (
++            isinstance(payload, list)
++            and payload
++            and all(isinstance(row, list) for row in payload)
++            and all(isinstance(value, int) and not isinstance(value, bool) for row in payload for value in row)
++        ):
++            return payload
++        raise RuntimeError(f"unexpected Racket payload: {payload!r}")
++
++    def apply(self, program: str, grid: list[list[int]]) -> list[list[int]]:
++        from puzzle_generators.rule_wrap import strip_rule_wrapper
++
++        digest = hashlib.sha256(program.encode()).hexdigest()[:16]
++        function = self._functions.get(digest)
++        if function is None:
++            function = f"__c1fd_parametric_{digest}"
++            body = strip_rule_wrapper(program)
++            self._bridge.eval_text(f"(define {function} {body})")
++            self._functions[digest] = function
++        self._bridge.define_grid("__c1fd_parametric_input", grid)
++        return self._unwrap(
++            self._bridge.eval_text(
++                f"({function} __c1fd_parametric_input)"
++            )
++        )
++
++
++@dataclass(frozen=True)
++class Candidate:
++    input: list[list[int]]
++    chosen_output: list[list[int]]
++    rival_outputs: dict[str, list[list[int]]]
++
++
++def _setting_key(setting: dict[str, str]) -> str:
++    return f"{setting['compression_axes']}__{setting['output_orientation']}"
++
++
++def _grid_key(grid: list[list[int]]) -> str:
++    return _canonical_json(grid)
++
++
++def _load_selected_generator():
++    """Load the selected generator in the packet or from this task workspace.
++
++    ``review.py run`` exposes the normal ``puzzle_generators`` runtime package.
++    The source-relative fallback keeps the proposed prototype testable when the
++    small repair kit is inspected outside a fully extracted packet; it still
++    executes the exact selected ``generator.py`` beside this workspace.
++    """
++
++    try:
++        return importlib.import_module(GENERATOR_MODULE)
++    except ModuleNotFoundError:
++        source = Path(__file__).resolve().parents[2] / "generator.py"
++        spec = importlib.util.spec_from_file_location(
++            "c1fd38e5812b_parametric_selected_generator",
++            source,
++        )
++        if spec is None or spec.loader is None:
++            raise RuntimeError(f"cannot load selected generator from {source}")
++        module = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(module)
++        return module
++
++
++def _candidate_stream(seed: int, oracle: Oracle, chosen: dict[str, str]) -> Iterable[Candidate]:
++    generator = _load_selected_generator()
++    chosen_program = materialize_program(**chosen)
++    rivals = [setting for setting in all_settings() if setting != chosen]
++    profiles = (
++        "uniform_rows",
++        "uniform_cols",
++        "nonuniform_runs",
++        "interior_merges",
++        "uniform_runs",
++    )
++    for sample_index in range(1000):
++        profile = profiles[sample_index % len(profiles)]
++        difficulty = ("easy", "medium", "hard")[sample_index % 3]
++        grid = generator.generate(
++            seed,
++            sample_index,
++            difficulty=difficulty,
++            scene_profile=profile,
++        )
++        chosen_output = oracle.apply(chosen_program, grid)
++        rival_outputs = {
++            _setting_key(setting): oracle.apply(materialize_program(**setting), grid)
++            for setting in rivals
++        }
++        yield Candidate(grid, chosen_output, rival_outputs)
++
++
++def build_episode(
++    *,
++    seed: int,
++    chosen: dict[str, str],
++    oracle: Oracle,
++    demo_count: int = 4,
++    query_count: int = 4,
++) -> dict[str, Any]:
++    if demo_count < 1:
++        raise ValueError("demo_count must be positive")
++    if query_count != 4:
++        raise ValueError("query_count must be exactly four")
++    if chosen not in all_settings():
++        raise ValueError(f"unknown setting: {chosen}")
++
++    rival_keys = {
++        _setting_key(setting) for setting in all_settings() if setting != chosen
++    }
++    uncovered = set(rival_keys)
++    demos: list[Candidate] = []
++    queries: list[Candidate] = []
++    seen_inputs: set[str] = set()
++
++    for candidate in _candidate_stream(seed, oracle, chosen):
++        key = _grid_key(candidate.input)
++        if key in seen_inputs:
++            continue
++        mismatches = {
++            rival
++            for rival, output in candidate.rival_outputs.items()
++            if output != candidate.chosen_output
++        }
++        if uncovered and mismatches & uncovered:
++            demos.append(candidate)
++            seen_inputs.add(key)
++            uncovered -= mismatches
++        elif not uncovered and len(demos) < demo_count:
++            demos.append(candidate)
++            seen_inputs.add(key)
++        elif not uncovered and len(demos) >= demo_count and len(queries) < query_count:
++            queries.append(candidate)
++            seen_inputs.add(key)
++        if not uncovered and len(demos) >= demo_count and len(queries) == query_count:
++            break
++
++    if uncovered:
++        raise RuntimeError(f"demos did not refute rivals: {sorted(uncovered)}")
++    if len(demos) != demo_count or len(queries) != query_count:
++        raise RuntimeError("candidate budget exhausted")
++
++    public = {
++        "train": [
++            {"input": candidate.input, "output": candidate.chosen_output}
++            for candidate in demos
++        ],
++        "test": [{"input": candidate.input} for candidate in queries],
++    }
++    public_text = _canonical_json(public)
++    challenge_id = hashlib.sha256(public_text.encode()).hexdigest()
++    private = {
++        "challenge_id": challenge_id,
++        "seed": seed,
++        "parameters": chosen,
++        "program": materialize_program(**chosen),
++        "queries": [
++            {"input": candidate.input, "output": candidate.chosen_output}
++            for candidate in queries
++        ],
++        "rival_programs": {
++            _setting_key(setting): materialize_program(**setting)
++            for setting in all_settings()
++            if setting != chosen
++        },
++        "demo_rival_outputs": [candidate.rival_outputs for candidate in demos],
++        "rivals_refuted_by_demos": sorted(rival_keys),
++        "label_engine": type(oracle).__name__,
++    }
++    return {"public": public, "private": private}
++
++
++def write_episode(episode: dict[str, Any], out_dir: Path) -> dict[str, Path]:
++    out_dir.mkdir(parents=True, exist_ok=True)
++    visible = episode["public"]
++    challenge_id = episode["private"]["challenge_id"]
++    # The public filename depends only on the exact visible public JSON.
++    public_path = out_dir / f"challenge-{challenge_id[:16]}.json"
++    private_path = out_dir / f"private-{challenge_id[:16]}.json"
++    public_path.write_text(json.dumps(visible, indent=2) + "\n", encoding="utf-8")
++    private_path.write_text(json.dumps(episode["private"], indent=2) + "\n", encoding="utf-8")
++    return {"public": public_path, "private": private_path}
++
++
++def write_programs(out_dir: Path) -> list[Path]:
++    out_dir.mkdir(parents=True, exist_ok=True)
++    paths = []
++    for setting in all_settings():
++        path = out_dir / f"{_setting_key(setting)}.rkt"
++        path.write_text(materialize_program(**setting) + "\n", encoding="utf-8")
++        paths.append(path)
++    return paths
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seed", type=int, default=20261023)
++    parser.add_argument("--compression-axes", choices=AXES, default="both")
++    parser.add_argument("--output-orientation", choices=ORIENTATIONS, default="identity")
++    parser.add_argument("--demo-count", type=int, default=4)
++    parser.add_argument("--query-count", type=int, default=4)
++    args = parser.parse_args()
++    chosen = {
++        "compression_axes": args.compression_axes,
++        "output_orientation": args.output_orientation,
++    }
++    with RacketOracle() as oracle:
++        episode = build_episode(
++            seed=args.seed,
++            chosen=chosen,
++            oracle=oracle,
++            demo_count=args.demo_count,
++            query_count=args.query_count,
++        )
++    paths = write_episode(episode, args.out / "episodes")
++    program_paths = write_programs(args.out / "rules")
++    print(json.dumps({
++        "challenge_id": episode["private"]["challenge_id"],
++        "public": str(paths["public"]),
++        "private": str(paths["private"]),
++        "programs": [str(path) for path in program_paths],
++    }, indent=2))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

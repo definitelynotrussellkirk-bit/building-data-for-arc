@@ -1,0 +1,6 @@
+# 01f1e6b34a5b
+
+0-bg grid (h~4-7, w~3-6) with: (a) TOP ROW (row 0): 2-4 TRANSFORM CODE CELLS at random distinct columns, each painted with a value from {1, 2, 3, 4} encoding (1=identity, 2=rotate-CW 90°, 3=rotate 180°, 4=flip-UD). Other top-row cells are 0; (b) ROWS 1..h-1: MOTIF with 3-N scattered non-0 cells (where N is roughly (h-1)*w//2) — usually red, sometimes another color or 2-color mixed, at random distinct positions. The motif is asymmetric so each transform produces a distinct output. Rule (APPLY EACH CODE'S TRANSFORM TO THE MOTIF, OUTPUT SIDE-BY-SIDE): extract the MOTIF (non-0 cells in rows 1..h-1, all color 2), CROP to its bbox. read the TOP-ROW CODES in left-to-right column order. For EACH code C: APPLY the corresponding TRANSFORM to the cropped motif: 1=identity (no change), 2=rot-CW 90°, 3=rot 180°, 4=flip-UD. PRODUCE an OUTPUT where the transformed motifs are STACKED LEFT-TO-RIGHT in the order their codes appeared on the top row, separated by single bg-0 columns. Net: each transform code spawns one transformed copy of the motif in the output gallery.
+
+Kind: `per_puzzle`. Imported version: `2.1.1`.
+Approval is derived by the catalog from current code and retained evidence.

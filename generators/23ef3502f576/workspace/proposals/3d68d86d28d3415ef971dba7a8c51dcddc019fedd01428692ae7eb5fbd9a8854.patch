@@ -1,0 +1,1857 @@
+diff --git a/repo/generators/23ef3502f576/notes.md b/repo/generators/23ef3502f576/notes.md
+--- a/repo/generators/23ef3502f576/notes.md
++++ b/repo/generators/23ef3502f576/notes.md
+@@ -1,4 +1,32 @@
+ # Working notes: 23ef3502f576
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## 2026-10-25 native parametric build
++
++Built `workspace/parametric/adapter.py` with one episode-fixed parameter,
++`selector_measure`:
++
++- `marker_count` returns the exact selected canonical Racket source unchanged.
++- `marker_runs` counts horizontal runs among the header markers, uses that
++  input-derived integer as the panel index, then performs the same whole-panel
++  crop and cyan recoloring.
++
++The shared sampler supports 2--6 stable-prefix demonstrations and 1--4
++stable-prefix queries on matched inputs.  Query four is exactly 30x30 and has a
++three-row header plus three dense 8x30 candidate panels rather than padding.
++
++The first two-demonstration design admitted `header_span` and
++`rightmost_bucket` shortcuts under the canonical setting.  The first teaching
++header was changed constructively from columns `(0,1,5)` to `(0,1,4)`, after
++which the declared 15-policy audit found no query-changing survivor across 128
++seeds, both settings, and every demonstration count from two through six.
++
++Staged task tests passed after replacing the legacy test's fixed parent-depth
++fixture lookup with bounded `reviewer_support` helpers.  Protected-Racket native
++qualification passed at 2, 3, and 6 demonstrations.  The retained causal witness
++uses a qualified `marker_runs` query where the correct run count selects panel
++1; substituting total marker count selects panel 3 and changes the output.
++
++Limits: finite declared rivals and bounded seeds do not prove universal
++identifiability or training value.  The prototype is reviewer-ready only;
++owner exact-source qualification/acceptance and any training-admission decision
++remain separate.
+diff --git a/repo/generators/23ef3502f576/tests/test_generator_23ef3502f576.py b/repo/generators/23ef3502f576/tests/test_generator_23ef3502f576.py
+--- a/repo/generators/23ef3502f576/tests/test_generator_23ef3502f576.py
++++ b/repo/generators/23ef3502f576/tests/test_generator_23ef3502f576.py
+@@ -14,13 +14,15 @@
+ from collections import Counter
+ from pathlib import Path
+ 
+-ROOT = Path(__file__).resolve().parents[1]
++from reviewer_support import canonical_path, find_root
++
++ROOT = find_root(__file__)
+ TASK_ID = "23ef3502f576"
+ GEN = importlib.import_module(f"puzzle_generators.per_puzzle.{TASK_ID}.generator")
+ 
+ 
+ def _canonical_row():
+-    with (ROOT / "data/canonical/puzzles.jsonl").open() as handle:
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
+         for line in handle:
+             row = json.loads(line)
+             if row.get("task_id") == TASK_ID:
+@@ -42,9 +44,13 @@
+ class Generator23ef3502f576Tests(unittest.TestCase):
+     def test_rule_hash_and_source_sync(self):
+         row = _canonical_row()
+-        base = json.loads(
+-            (ROOT / "data/base/solutions/banks/0938460c498b/S19_E4__23ef3502f576.json").read_text()
+-        )
++        candidates = (
++            ROOT / "data/base/solutions/banks/0938460c498b/S19_E4__23ef3502f576.json",
++            ROOT / "shared/data/base/solutions/banks/0938460c498b/S19_E4__23ef3502f576.json",
++        )
++        path = next((candidate for candidate in candidates if candidate.is_file()), None)
++        self.assertIsNotNone(path, "missing selected base solution")
++        base = json.loads(path.read_text(encoding="utf-8"))
+         self.assertEqual(_normalized_hash(row["program_solution"]), GEN.RULE_HASH)
+         self.assertEqual(_normalized_hash(base["racket_target"]["target_code"]), GEN.RULE_HASH)
+         self.assertFalse(base["racket_target"]["needs_conversion"])
+diff --git a/repo/generators/23ef3502f576/tests/test_native_parametric.py b/repo/generators/23ef3502f576/tests/test_native_parametric.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/23ef3502f576/tests/test_native_parametric.py
+@@ -0,0 +1,139 @@
++"""Native selector family: marker count versus horizontal marker runs."""
++from __future__ import annotations
++
++import copy
++import importlib.util
++from pathlib import Path
++
++import pytest
++from reviewer_support import find_root
++
++
++def adapter():
++    path = find_root(__file__) / "generators/23ef3502f576/workspace/parametric/adapter.py"
++    assert path.is_file(), "native selector adapter is missing"
++    spec = importlib.util.spec_from_file_location("_selector_native_test", path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_program_preserves_exact_canonical_bytes_and_has_distinct_alternative():
++    a = adapter()
++    canonical = (Path(a.__file__).parent / "canonical.rkt").read_text()
++    assert a.program({"selector_measure": "marker_count"}) == canonical
++    alternate = a.program({"selector_measure": "marker_runs"})
++    assert alternate != canonical
++    assert alternate.count("(rule!") == 1
++
++
++def test_count_and_run_intermediates_select_different_whole_panels():
++    a = adapter()
++    episode = a.generate(0, {"selector_measure": "marker_count"}, demos=2, queries=4)
++    grid = episode["train"][0]["input"]
++    info = a.analyze(grid)
++    assert info["marker_count"] == 3
++    assert info["marker_runs"] == 2
++    assert a.claim(grid, "marker_count") != a.claim(grid, "marker_runs")
++    assert a.claim(grid, "marker_count") == episode["train"][0]["output"]
++    assert set(v for row in episode["train"][0]["output"] for v in row) <= {0, 8}
++
++
++def test_bad_requests_and_malformed_inputs_fail_closed():
++    a = adapter()
++    base = dict(seed=0, settings={"selector_measure": "marker_count"}, demos=3, queries=4)
++    for change in (
++        {"seed": True}, {"seed": -1}, {"demos": 1}, {"demos": 7},
++        {"queries": True}, {"queries": 0}, {"queries": 5}, {"demos": 2.0},
++        {"settings": {}}, {"settings": {"selector_measure": "bad"}},
++        {"settings": {"selector_measure": "marker_count", "extra": 1}},
++    ):
++        args = dict(base)
++        args.update(change)
++        with pytest.raises(ValueError):
++            a.generate(**args)
++    episode = a.generate(**base)
++    bad = copy.deepcopy(episode["train"][0]["input"])
++    bad[0][0] = True
++    with pytest.raises(ValueError):
++        a.analyze(bad)
++    for grid in ([], [[]], [[0] * 4 for _ in range(4)], [[9] * 4 for _ in range(4)]):
++        with pytest.raises(ValueError):
++            a.analyze(grid)
++
++
++@pytest.mark.parametrize("seed", [0, 17, 63])
++def test_prefixes_matched_settings_distinct_inputs_and_finite_teaching(seed):
++    a = adapter()
++    e2 = a.generate(seed, {"selector_measure": "marker_runs"}, demos=2, queries=4)
++    e6 = a.generate(seed, {"selector_measure": "marker_runs"}, demos=6, queries=4)
++    assert e2["train"] == e6["train"][:2]
++    assert e2["test"] == e6["test"]
++    assert len({str(p["input"]) for p in e6["train"] + e6["test"]}) == 10
++    for mode in a.SETTINGS:
++        episode = a.generate(seed, {"selector_measure": mode}, demos=2, queries=4)
++        assert [p["input"] for p in episode["train"] + episode["test"]] == [
++            p["input"] for p in e2["train"] + e2["test"]
++        ]
++        assert a.teaching_check(episode) == []
++    assert a.generate(seed, {"selector_measure": "marker_runs"}, 2, 1)["test"] == e2["test"][:1]
++
++
++def test_exact_thirty_by_thirty_stress_is_substantive_not_padding():
++    a = adapter()
++    episode = a.generate(17, {"selector_measure": "marker_runs"}, demos=3, queries=4)
++    pair = episode["test"][-1]
++    grid = pair["input"]
++    info = a.analyze(grid)
++    assert len(grid) == len(grid[0]) == 30
++    assert info["header_height"] == 3
++    assert info["panel_height"] == 8
++    assert info["marker_count"] == 3 and info["marker_runs"] == 2
++    assert all(len(cells) >= 45 for cells in info["candidate_cells"])
++    assert sum(v != 0 for row in grid for v in row) > 220
++    assert len(pair["output"]) == 8 and len(pair["output"][0]) == 30
++
++
++def test_public_projection_hides_settings_program_answers_and_future_queries():
++    a = adapter()
++    episode = a.generate(0, {"selector_measure": "marker_runs"}, demos=3, queries=4)
++    visible = a.public_turn(episode, 0)
++    assert set(visible) == {"train", "test"}
++    assert len(visible["test"]) == 1 and set(visible["test"][0]) == {"input"}
++    changed = copy.deepcopy(episode)
++    changed["settings"] = {"secret": 4}
++    changed["program_solution"] = "secret"
++    for pair in changed["test"]:
++        pair["output"] = [[1]]
++    changed["test"][1]["input"] = [[2]]
++    assert a.public_turn(changed, 0) == visible
++    assert a.public_turn(a.generate(0, {"selector_measure": "marker_runs"}, 3, 1), 0) == visible
++    for index in (True, -1, 4):
++        with pytest.raises(ValueError):
++            a.public_turn(episode, index)
++
++
++def test_counterfactual_uses_wrong_intermediate_and_changes_retained_case():
++    a = adapter()
++    episode = a.generate(17, {"selector_measure": "marker_runs"}, demos=3, queries=4)
++    grid = episode["test"][0]["input"]
++    assert a.analyze(grid)["marker_count"] != a.analyze(grid)["marker_runs"]
++    assert a.claim(grid, "marker_runs") != a.claim(grid, "marker_count")
++    assert a.counterfactual_program() == a.program({"selector_measure": "marker_count"})
++
++
++def test_reusable_audit_covers_all_demo_counts_and_settings():
++    root = find_root(__file__)
++    path = root / "generators/23ef3502f576/workspace/parametric/audit.py"
++    assert path.is_file(), "reusable selector audit is missing"
++    spec = importlib.util.spec_from_file_location("_selector_audit_test", path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    result = module.run_audit(seeds=range(4))
++    assert result["status"] == "passed"
++    assert result["episodes"] == 40
++    assert result["demo_counts"] == [2, 3, 4, 5, 6]
++    assert result["settings"] == ["marker_count", "marker_runs"]
++    assert result["failures"] == []
+diff --git a/repo/generators/23ef3502f576/workspace/parametric/README.md b/repo/generators/23ef3502f576/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/23ef3502f576/workspace/parametric/README.md
+@@ -0,0 +1,11 @@
++# Native parametric selector family
++
++`selector_measure=marker_count` returns the exact canonical program.  The
++alternative `marker_runs` counts horizontal runs of header markers instead.
++Both rules first recover an input-dependent panel index and then crop/recolor
++that whole candidate cyan.  Episodes support 2–6 demonstrations and stable
++1–4 query prefixes; the fourth query is a substantive exact 30×30 case.
++
++`adapter.py` contains deterministic generation, finite rival claims, the
++teaching check, and one-query public projection.  Settings, programs, future
++queries, and query answers remain controller-side.
+diff --git a/repo/generators/23ef3502f576/workspace/parametric/adapter.py b/repo/generators/23ef3502f576/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/23ef3502f576/workspace/parametric/adapter.py
+@@ -0,0 +1,310 @@
++"""Native parametric family for 23ef3502f576.
++
++The canonical setting counts header markers.  The alternative counts horizontal
++marker runs.  Both produce a selected-panel index which is then consumed by the
++unchanged crop-and-recolor operation.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++from pathlib import Path
++import random
++
++HERE = Path(__file__).resolve().parent
++TASK = "23ef3502f576"
++PARAMETER = "selector_measure"
++SETTINGS = ("marker_count", "marker_runs")
++RIVALS = SETTINGS + (
++    "fixed_1", "fixed_2", "fixed_3", "largest_area", "smallest_area",
++    "largest_color", "smallest_color", "header_span", "leftmost_bucket",
++    "rightmost_bucket", "selector_color_mod3", "marker_rows",
++)
++
++_CANONICAL = (HERE / "canonical.rkt").read_text()
++_CANONICAL_TAIL = (
++    "(let* ((panels (split-rows-9 g)) (header (first panels)) "
++    "(n (length (panel-occ header))) "
++    "(chosen (list-ref (rest panels) (- n 1)))) (recolor-panel chosen 8))"
++)
++_RUN_TAIL = (
++    "(let* ((panels (split-rows-9 g)) (header (first panels)) "
++    "(cells (panel-occ header)) "
++    "(n (if (empty? cells) 0 "
++    "(let loop ((remaining (rest cells)) (previous (first cells)) (runs 1)) "
++    "(if (empty? remaining) runs "
++    "(let* ((current (first remaining)) "
++    "(continues (and (= (first current) (first previous)) "
++    "(= (second current) (+ (second previous) 1))))) "
++    "(loop (rest remaining) current (+ runs (if continues 0 1)))))))) "
++    "(chosen (list-ref (rest panels) (- n 1)))) (recolor-panel chosen 8))"
++)
++if _CANONICAL.count(_CANONICAL_TAIL) != 1:
++    raise RuntimeError("canonical selector tail changed")
++_ALTERNATE = _CANONICAL.replace(_CANONICAL_TAIL, _RUN_TAIL)
++
++
++def _setting(settings):
++    if (
++        type(settings) is not dict
++        or set(settings) != {PARAMETER}
++        or type(settings[PARAMETER]) is not str
++        or settings[PARAMETER] not in SETTINGS
++    ):
++        raise ValueError("settings must contain only a declared selector_measure")
++    return settings[PARAMETER]
++
++
++def program(settings):
++    return _CANONICAL if _setting(settings) == "marker_count" else _ALTERNATE
++
++
++def counterfactual_program():
++    """Wrong intermediate for a marker-runs episode: use total marker count."""
++    return _CANONICAL
++
++
++def _validate_grid(grid):
++    if type(grid) is not list or not grid or type(grid[0]) is not list or not grid[0]:
++        raise ValueError("grid must be a non-empty rectangular list")
++    height, width = len(grid), len(grid[0])
++    if not (1 <= height <= 30 and 1 <= width <= 30):
++        raise ValueError("grid dimensions must be within 1..30")
++    if any(
++        type(row) is not list
++        or len(row) != width
++        or any(type(value) is not int or not 0 <= value <= 9 for value in row)
++        for row in grid
++    ):
++        raise ValueError("grid requires exact ARC integers in a rectangle")
++    return height, width
++
++
++def _connected(cells):
++    if not cells:
++        return False
++    remaining = set(cells)
++    stack = [remaining.pop()]
++    while stack:
++        row, col = stack.pop()
++        for neighbor in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)):
++            if neighbor in remaining:
++                remaining.remove(neighbor)
++                stack.append(neighbor)
++    return not remaining
++
++
++def analyze(grid):
++    height, width = _validate_grid(grid)
++    dividers = [row for row, values in enumerate(grid) if all(value == 9 for value in values)]
++    if len(dividers) != 3 or any(b == a + 1 for a, b in zip(dividers, dividers[1:])):
++        raise ValueError("expected exactly three separated full color-9 divider rows")
++    d0, d1, d2 = dividers
++    segments = (grid[:d0], grid[d0 + 1:d1], grid[d1 + 1:d2], grid[d2 + 1:])
++    if any(not segment for segment in segments):
++        raise ValueError("header and all three candidate panels must be non-empty")
++    header, *panels = segments
++    if len({len(panel) for panel in panels}) != 1:
++        raise ValueError("candidate panels must have equal height")
++    if any(any(len(row) != width for row in panel) for panel in panels):
++        raise ValueError("candidate panels must preserve the full width")
++
++    markers = sorted(
++        (row, col, value)
++        for row, values in enumerate(header)
++        for col, value in enumerate(values)
++        if value != 0
++    )
++    if not 1 <= len(markers) <= 3:
++        raise ValueError("header must contain one to three markers")
++    colors = {value for _, _, value in markers}
++    if len(colors) != 1 or next(iter(colors)) in (8, 9):
++        raise ValueError("header markers must share one non-reserved color")
++    if any(value not in (0, next(iter(colors))) for values in header for value in values):
++        raise ValueError("header may contain only black and its marker color")
++    runs = 1
++    for previous, current in zip(markers, markers[1:]):
++        if current[0] != previous[0] or current[1] != previous[1] + 1:
++            runs += 1
++    if not 1 <= runs <= 3:
++        raise ValueError("header run count must select one of three panels")
++
++    candidate_colors = []
++    candidate_cells = []
++    for index, panel in enumerate(panels, start=1):
++        occupied = [(row, col) for row, values in enumerate(panel) for col, value in enumerate(values) if value != 0]
++        panel_colors = {panel[row][col] for row, col in occupied}
++        if not occupied or len(panel_colors) != 1 or next(iter(panel_colors)) in (8, 9):
++            raise ValueError(f"candidate {index} must contain one non-reserved color")
++        if not _connected(occupied):
++            raise ValueError(f"candidate {index} must be one connected object")
++        candidate_colors.append(next(iter(panel_colors)))
++        candidate_cells.append(tuple(occupied))
++
++    return {
++        "height": height,
++        "width": width,
++        "header_height": len(header),
++        "panel_height": len(panels[0]),
++        "markers": tuple((row, col) for row, col, _ in markers),
++        "selector_color": next(iter(colors)),
++        "marker_count": len(markers),
++        "marker_runs": runs,
++        "candidate_colors": tuple(candidate_colors),
++        "candidate_cells": tuple(candidate_cells),
++    }
++
++
++def _choice(info, mode):
++    if mode == "marker_count":
++        return info["marker_count"]
++    if mode == "marker_runs":
++        return info["marker_runs"]
++    if mode.startswith("fixed_"):
++        return int(mode.rsplit("_", 1)[1])
++    areas = [len(cells) for cells in info["candidate_cells"]]
++    colors = list(info["candidate_colors"])
++    if mode == "largest_area":
++        return max(range(3), key=lambda index: (areas[index], -index)) + 1
++    if mode == "smallest_area":
++        return min(range(3), key=lambda index: (areas[index], index)) + 1
++    if mode == "largest_color":
++        return max(range(3), key=lambda index: (colors[index], -index)) + 1
++    if mode == "smallest_color":
++        return min(range(3), key=lambda index: (colors[index], index)) + 1
++    columns = [col for _, col in info["markers"]]
++    if mode == "header_span":
++        return ((max(columns) - min(columns)) % 3) + 1
++    if mode == "leftmost_bucket":
++        return (min(columns) % 3) + 1
++    if mode == "rightmost_bucket":
++        return (max(columns) % 3) + 1
++    if mode == "selector_color_mod3":
++        return ((info["selector_color"] - 1) % 3) + 1
++    if mode == "marker_rows":
++        return len({row for row, _ in info["markers"]})
++    raise ValueError("unknown selector policy")
++
++
++def claim(grid, mode):
++    if mode not in RIVALS:
++        raise ValueError("unknown selector policy")
++    info = analyze(grid)
++    choice = _choice(info, mode)
++    if not 1 <= choice <= 3:
++        raise ValueError("selector policy produced an invalid panel index")
++    cells = set(info["candidate_cells"][choice - 1])
++    return [
++        [8 if (row, col) in cells else 0 for col in range(info["width"])]
++        for row in range(info["panel_height"])
++    ]
++
++
++def _rng(seed, stream):
++    digest = hashlib.sha256(f"{TASK}:native-v1:{seed}:{stream}".encode()).digest()
++    return random.Random(int.from_bytes(digest, "big"))
++
++
++def _connected_shape(height, width, target, rng):
++    if not 1 <= target <= height * width:
++        raise ValueError("invalid connected-shape target")
++    start = (rng.randrange(height), rng.randrange(width))
++    cells = {start}
++    while len(cells) < target:
++        frontier = sorted({
++            neighbor
++            for row, col in cells
++            for neighbor in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1))
++            if 0 <= neighbor[0] < height and 0 <= neighbor[1] < width and neighbor not in cells
++        })
++        if not frontier:
++            raise RuntimeError("connected growth exhausted unexpectedly")
++        cells.add(rng.choice(frontier))
++    return cells
++
++
++# header height, panel height, width, marker coordinates, candidate areas, panel colors, selector color
++DEMO_SPECS = (
++    (1, 5, 8, ((0, 0), (0, 1), (0, 4)), (14, 5, 9), (6, 2, 4), 7),
++    (1, 6, 9, ((0, 3), (0, 4)), (11, 7, 16), (5, 7, 1), 3),
++    (1, 4, 7, ((0, 0), (0, 3), (0, 6)), (8, 10, 6), (2, 6, 4), 1),
++    (1, 7, 10, ((0, 1), (0, 8)), (18, 12, 21), (7, 3, 5), 2),
++    (1, 5, 12, ((0, 6),), (9, 17, 13), (4, 1, 6), 5),
++    (2, 6, 14, ((0, 1), (1, 5), (1, 6)), (22, 15, 27), (3, 6, 2), 7),
++)
++QUERY_SPECS = (
++    (1, 5, 11, ((0, 2), (0, 3), (0, 4)), (10, 15, 7), (5, 2, 7), 1),
++    (1, 7, 13, ((0, 0), (0, 12)), (20, 13, 24), (6, 4, 1), 3),
++    (2, 6, 18, ((0, 1), (0, 2), (1, 13)), (19, 25, 16), (2, 7, 4), 5),
++    (3, 8, 30, ((0, 0), (0, 1), (2, 29)), (52, 47, 60), (6, 2, 5), 7),
++)
++
++
++def _scene(seed, spec, stream):
++    header_h, panel_h, width, markers, areas, colors, selector = spec
++    rng = _rng(seed, stream)
++    header = [[0] * width for _ in range(header_h)]
++    for row, col in markers:
++        header[row][col] = selector
++    panels = []
++    for index, (area, color) in enumerate(zip(areas, colors)):
++        shape = _connected_shape(panel_h, width, area, _rng(seed, f"{stream}:shape:{index}"))
++        panels.append([[color if (row, col) in shape else 0 for col in range(width)] for row in range(panel_h)])
++    divider = [[9] * width]
++    grid = header + divider + panels[0] + divider + panels[1] + divider + panels[2]
++    info = analyze(grid)
++    expected_runs = 1 + sum(
++        current[0] != previous[0] or current[1] != previous[1] + 1
++        for previous, current in zip(markers, markers[1:])
++    )
++    if info["marker_count"] != len(markers) or info["marker_runs"] != expected_runs:
++        raise RuntimeError("constructed selector facts drifted")
++    return grid
++
++
++def generate(seed, settings, demos=3, queries=4):
++    mode = _setting(settings)
++    if type(seed) is not int or seed < 0:
++        raise ValueError("seed must be a nonnegative exact integer")
++    if type(demos) is not int or not 2 <= demos <= 6:
++        raise ValueError("demos must be an exact integer in 2..6")
++    if type(queries) is not int or not 1 <= queries <= 4:
++        raise ValueError("queries must be an exact integer in 1..4")
++
++    def pair(spec, stream):
++        grid = _scene(seed, spec, stream)
++        return {"input": grid, "output": claim(grid, mode)}
++
++    return {
++        "train": [pair(spec, f"demo:{index}") for index, spec in enumerate(DEMO_SPECS[:demos])],
++        "test": [pair(spec, f"query:{index}") for index, spec in enumerate(QUERY_SPECS[:queries])],
++        "program_solution": program(settings),
++        "settings": dict(settings),
++    }
++
++
++def teaching_check(episode):
++    mode = _setting(episode["settings"])
++    findings = []
++    for rival in RIVALS:
++        if rival == mode:
++            continue
++        fits = all(claim(pair["input"], rival) == pair["output"] for pair in episode["train"])
++        if fits:
++            changed = [
++                index
++                for index, pair in enumerate(episode["test"])
++                if claim(pair["input"], rival) != pair["output"]
++            ]
++            if changed:
++                findings.append({"rival": rival, "queries": changed})
++    return findings
++
++
++def public_turn(episode, index=0):
++    if type(index) is not int or not 0 <= index < len(episode["test"]):
++        raise ValueError("query index out of range")
++    return deepcopy({
++        "train": [{"input": pair["input"], "output": pair["output"]} for pair in episode["train"]],
++        "test": [{"input": episode["test"][index]["input"]}],
++    })
+diff --git a/repo/generators/23ef3502f576/workspace/parametric/audit.py b/repo/generators/23ef3502f576/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/23ef3502f576/workspace/parametric/audit.py
+@@ -0,0 +1,75 @@
++#!/usr/bin/env python3
++"""Bounded learnability and boundary audit for the native selector family."""
++from __future__ import annotations
++
++import argparse
++import importlib.util
++import json
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++_spec = importlib.util.spec_from_file_location("_selector_native_audit_adapter", HERE / "adapter.py")
++adapter = importlib.util.module_from_spec(_spec)
++assert _spec.loader is not None
++_spec.loader.exec_module(adapter)
++
++
++def run_audit(*, seeds=range(64)):
++    seed_values = list(seeds)
++    failures = []
++    sizes = set()
++    episodes = 0
++    pairs = 0
++    for seed in seed_values:
++        for demos in range(2, 7):
++            for mode in adapter.SETTINGS:
++                episodes += 1
++                try:
++                    episode = adapter.generate(seed, {adapter.PARAMETER: mode}, demos, 4)
++                    findings = adapter.teaching_check(episode)
++                    if findings:
++                        failures.append({"seed": seed, "demos": demos, "setting": mode, "findings": findings})
++                    all_pairs = episode["train"] + episode["test"]
++                    pairs += len(all_pairs)
++                    if len({json.dumps(pair["input"], separators=(",", ":")) for pair in all_pairs}) != len(all_pairs):
++                        failures.append({"seed": seed, "demos": demos, "setting": mode, "error": "duplicate input"})
++                    for pair in all_pairs:
++                        grid = pair["input"]
++                        sizes.add((len(grid), len(grid[0])))
++                        if adapter.claim(grid, mode) != pair["output"]:
++                            failures.append({"seed": seed, "demos": demos, "setting": mode, "error": "claim mismatch"})
++                except Exception as exc:  # retained as evidence instead of hiding a failed draw
++                    failures.append({"seed": seed, "demos": demos, "setting": mode, "error": f"{type(exc).__name__}: {exc}"})
++    return {
++        "schema": "arcpuzzles-parametric-bounded-audit-v1",
++        "task_id": adapter.TASK,
++        "status": "passed" if not failures else "failed",
++        "seeds": len(seed_values),
++        "settings": list(adapter.SETTINGS),
++        "demo_counts": list(range(2, 7)),
++        "queries": 4,
++        "episodes": episodes,
++        "labeled_pairs_claims": pairs,
++        "rivals": list(adapter.RIVALS),
++        "sizes": [list(size) for size in sorted(sizes)],
++        "failures": failures,
++        "limits": "Finite declared rivals and bounded seeds; not universal rule uniqueness or owner acceptance.",
++    }
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--seeds", type=int, default=64)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    if not 1 <= args.seeds <= 4096:
++        raise SystemExit("--seeds must be in 1..4096")
++    result = run_audit(seeds=range(args.seeds))
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({key: result[key] for key in ("status", "episodes", "labeled_pairs_claims", "failures")}, indent=2))
++    raise SystemExit(0 if result["status"] == "passed" else 1)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/repo/generators/23ef3502f576/workspace/parametric/canonical.rkt b/repo/generators/23ef3502f576/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/23ef3502f576/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (render-same-size cells h w (color 8)) (paint-cells (empty-grid h w 0) (filter (lambda (p) (in-bounds? (first p) (second p) h w)) cells) color)) (define (panel-occ panel) (sort (filter (lambda (p) (let ((v (at panel (first p) (second p)))) (and (not (= v 0)) (not (= v 9))))) (grid-positions panel)) cell<)) (define (recolor-panel panel (color 8)) (render-same-size (panel-occ panel) (rows panel) (cols panel) color)) (define (split-rows-9 grid) (let loop ((r 0) (start 0) (acc (list))) (cond ((>= r (rows grid)) (reverse (if (< start (rows grid)) (cons (subgrid grid start 0 (- (rows grid) 1) (- (cols grid) 1)) acc) acc))) ((all? (lambda (c) (= (at grid r c) 9)) (range 0 (cols grid))) (let scan ((rr r)) (if (and (< rr (rows grid)) (all? (lambda (c) (= (at grid rr c) 9)) (range 0 (cols grid)))) (scan (+ rr 1)) (loop rr rr (if (< start r) (cons (subgrid grid start 0 (- r 1) (- (cols grid) 1)) acc) acc))))) (else (loop (+ r 1) start acc))))) (let* ((panels (split-rows-9 g)) (header (first panels)) (n (length (panel-occ header))) (chosen (list-ref (rest panels) (- n 1)))) (recolor-panel chosen 8))))
+\ No newline at end of file
+diff --git a/repo/generators/23ef3502f576/workspace/parametric/evidence/current/audit.json b/repo/generators/23ef3502f576/workspace/parametric/evidence/current/audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/23ef3502f576/workspace/parametric/evidence/current/audit.json
+@@ -0,0 +1,80 @@
++{
++  "demo_counts": [
++    2,
++    3,
++    4,
++    5,
++    6
++  ],
++  "episodes": 1280,
++  "failures": [],
++  "labeled_pairs_claims": 10240,
++  "limits": "Finite declared rivals and bounded seeds; not universal rule uniqueness or owner acceptance.",
++  "queries": 4,
++  "rivals": [
++    "marker_count",
++    "marker_runs",
++    "fixed_1",
++    "fixed_2",
++    "fixed_3",
++    "largest_area",
++    "smallest_area",
++    "largest_color",
++    "smallest_color",
++    "header_span",
++    "leftmost_bucket",
++    "rightmost_bucket",
++    "selector_color_mod3",
++    "marker_rows"
++  ],
++  "schema": "arcpuzzles-parametric-bounded-audit-v1",
++  "seeds": 128,
++  "settings": [
++    "marker_count",
++    "marker_runs"
++  ],
++  "sizes": [
++    [
++      16,
++      7
++    ],
++    [
++      19,
++      8
++    ],
++    [
++      19,
++      11
++    ],
++    [
++      19,
++      12
++    ],
++    [
++      22,
++      9
++    ],
++    [
++      23,
++      14
++    ],
++    [
++      23,
++      18
++    ],
++    [
++      25,
++      10
++    ],
++    [
++      25,
++      13
++    ],
++    [
++      30,
++      30
++    ]
++  ],
++  "status": "passed",
++  "task_id": "23ef3502f576"
++}
+diff --git a/repo/generators/23ef3502f576/workspace/parametric/evidence/current/portability-regression-before.log b/repo/generators/23ef3502f576/workspace/parametric/evidence/current/portability-regression-before.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/23ef3502f576/workspace/parametric/evidence/current/portability-regression-before.log
+@@ -0,0 +1,20 @@
++
++==================================== ERRORS ====================================
++_ ERROR collecting generators/23ef3502f576/tests/test_generator_23ef3502f576.py _
++ImportError while importing test module '/mnt/data/arcpuzzles_review_20261025_100031/WORK/repo/generators/23ef3502f576/tests/test_generator_23ef3502f576.py'.
++Hint: make sure your test modules/packages have valid Python names.
++Traceback:
++/usr/lib/python3.13/importlib/__init__.py:88: in import_module
++    return _bootstrap._gcd_import(name[level:], package, level)
++           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++generators/23ef3502f576/tests/test_generator_23ef3502f576.py:19: in <module>
++    GEN = importlib.import_module(f"puzzle_generators.per_puzzle.{TASK_ID}.generator")
++          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++/usr/lib/python3.13/importlib/__init__.py:88: in import_module
++    return _bootstrap._gcd_import(name[level:], package, level)
++           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
++E   ModuleNotFoundError: No module named 'puzzle_generators.per_puzzle.23ef3502f576'
++=========================== short test summary info ============================
++ERROR generators/23ef3502f576/tests/test_generator_23ef3502f576.py
++!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
++1 error in 0.14s
+diff --git a/repo/generators/23ef3502f576/workspace/parametric/evidence/current/tests.log b/repo/generators/23ef3502f576/workspace/parametric/evidence/current/tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/23ef3502f576/workspace/parametric/evidence/current/tests.log
+@@ -0,0 +1,2 @@
++...................                                                 [100%]
++19 passed, 5 subtests passed in 0.84s
+diff --git a/repo/generators/23ef3502f576/workspace/parametric/evidence/manifest.json b/repo/generators/23ef3502f576/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/23ef3502f576/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,87 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "86a806e4078094191915ed77d1d2c7b2b78c5a8c3d595d13b09f774c9ba105ed",
++  "canonical_rule_hash": "86a806e40780",
++  "default": {
++    "selector_measure": "marker_count"
++  },
++  "evidence_root": "generators/23ef3502f576/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 19629,
++      "path": "generators/23ef3502f576/generator.py",
++      "sha256": "c9ba00b01e87cd5808a20b7e6afc4f4cb180435b45020cb2608d9544d3c54062"
++    },
++    {
++      "bytes": 9197,
++      "path": "generators/23ef3502f576/tests/test_generator_23ef3502f576.py",
++      "sha256": "473ab95b66c1e92153da8afda0bdb6120b02500dfe94c99543d72d51b2a2f7ef"
++    },
++    {
++      "bytes": 5972,
++      "path": "generators/23ef3502f576/tests/test_native_parametric.py",
++      "sha256": "01df55a8ad948b9063338d901c295c4dbb92b9f9e903a6f0a05a72e902287baa"
++    },
++    {
++      "bytes": 12364,
++      "path": "generators/23ef3502f576/workspace/parametric/adapter.py",
++      "sha256": "14acc7b86e802dc6971e6a2e358890f3f7dd8c903d52d36fe1c2d596d4fbc4f1"
++    },
++    {
++      "bytes": 3287,
++      "path": "generators/23ef3502f576/workspace/parametric/audit.py",
++      "sha256": "51458a7bd13877e082d9558d84a1af0b7899601419fcc17c6284d86c723201f3"
++    },
++    {
++      "bytes": 1138,
++      "path": "generators/23ef3502f576/workspace/parametric/canonical.rkt",
++      "sha256": "86a806e4078094191915ed77d1d2c7b2b78c5a8c3d595d13b09f774c9ba105ed"
++    },
++    {
++      "bytes": 1068,
++      "path": "generators/23ef3502f576/workspace/parametric/evidence/current/audit.json",
++      "sha256": "23d18ecc254d7f187d0f1255b351313518b7d5f4eefd20aaf7dea4cf796c6232"
++    },
++    {
++      "bytes": 1365,
++      "path": "generators/23ef3502f576/workspace/parametric/evidence/current/portability-regression-before.log",
++      "sha256": "b0c244a6fff185f8deb6428b2e1ebe29c7abf8b548cebdb2e6b4184744a729f1"
++    },
++    {
++      "bytes": 113,
++      "path": "generators/23ef3502f576/workspace/parametric/evidence/current/tests.log",
++      "sha256": "02034e0441a27f5fa0e543be9625a3e5d69f12646d746d7c6c1be41fd3e1d4b2"
++    },
++    {
++      "bytes": 456,
++      "path": "generators/23ef3502f576/workspace/parametric/promotion.json",
++      "sha256": "7fb588463398b9352c24bc2d15a97fd9e9f45407ab4e71021a30010a49a915ea"
++    }
++  ],
++  "generator_sha256": "c9ba00b01e87cd5808a20b7e6afc4f4cb180435b45020cb2608d9544d3c54062",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "selector_measure": [
++      "marker_count",
++      "marker_runs"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "19 tests plus 5 subtests in staged task runtime; 1280 bounded episodes across 128 seeds, both settings and demo counts 2..6; 10240 Python-labeled pairs; finite 15-policy scope; no owner acceptance.",
++  "rule_task_id": "23ef3502f576",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "23ef3502f576",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/23ef3502f576/workspace/parametric/promotion.json b/repo/generators/23ef3502f576/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/23ef3502f576/workspace/parametric/promotion.json
+@@ -0,0 +1,21 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/23ef3502f576/workspace/parametric/adapter.py",
++  "parameters": {
++    "selector_measure": [
++      "marker_count",
++      "marker_runs"
++    ]
++  },
++  "default": {
++    "selector_measure": "marker_count"
++  },
++  "limits": {
++    "demos": [2, 6],
++    "queries": [1, 4]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/23ef3502f576/workspace/parametric/canonical.rkt"
++  ]
++}
+diff --git a/repo/generators/e250cb77a62e/notes.md b/repo/generators/e250cb77a62e/notes.md
+--- a/repo/generators/e250cb77a62e/notes.md
++++ b/repo/generators/e250cb77a62e/notes.md
+@@ -1,4 +1,36 @@
+ # Working notes: e250cb77a62e
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## 2026-10-25 native parametric build
++
++Built `workspace/parametric/adapter.py` with one episode-fixed parameter,
++`pattern_transform`:
++
++- `as_drawn` returns the exact selected canonical Racket source unchanged.
++- `quarter_turn` extracts the same input-dependent yellow exemplar from the blue
++  frame, rotates its offsets clockwise using the recovered frame-interior
++  height, and stamps the transformed exemplar at every orange seed.
++
++The shared grammar requires one complete blue frame, a connected yellow
++exemplar anchored at and spanning the frame interior, and one to four disjoint
++seed footprints that fit both settings.  Inputs are sampled independently of the
++private setting.  The family supports 2--6 stable-prefix demonstrations and
++1--4 stable-prefix queries.  Query four is exactly 30x30, contains a 32-cell
++exemplar and three seed footprints, and exercises distinct right-edge and
++bottom-edge behavior under the two transforms.
++
++The declared 15-policy audit found no query-changing survivor across 128 seeds,
++both settings, and every demonstration count from two through six.  The staged
++suite initially exposed a real portability defect in the pre-existing canonical
++fixture test: fixed `__file__.parents[...]` depth pointed beneath the staged
++runtime.  The test now uses `reviewer_support.find_root` and `canonical_pairs`;
++the complete isolated suite then passed.
++
++Protected-Racket native qualification passed at 2, 3, and 6 demonstrations.  In
++the retained qualified witness, step A recovers an eight-cell exemplar and its
++frame dimensions; step B rotates those offsets.  Substituting the unrotated
++offsets changes 30 output cells.
++
++Limits: finite declared rivals and bounded seeds do not prove universal
++identifiability or training value.  The prototype is reviewer-ready only;
++owner exact-source qualification/acceptance and any training-admission decision
++remain separate.
+diff --git a/repo/generators/e250cb77a62e/tests/test_generator_e250cb77a62e.py b/repo/generators/e250cb77a62e/tests/test_generator_e250cb77a62e.py
+--- a/repo/generators/e250cb77a62e/tests/test_generator_e250cb77a62e.py
++++ b/repo/generators/e250cb77a62e/tests/test_generator_e250cb77a62e.py
+@@ -1,36 +1,19 @@
+ from __future__ import annotations
+ 
+-import json
+ import random
+ import unittest
+-from pathlib import Path
+ 
+ from puzzle_generators import base
+ from puzzle_generators.per_puzzle.e250cb77a62e import generator
+-
+-
+-ROOT = Path(__file__).resolve().parents[1]
+-
+-
+-def as_grid(value):
+-    return [
+-        [int(cell) for cell in row] if isinstance(row, str) else list(row)
+-        for row in value
+-    ]
++from reviewer_support import canonical_pairs as load_canonical_pairs, find_root
++
++
++ROOT = find_root(__file__)
+ 
+ 
+ def canonical_pairs():
+-    with (ROOT / "data" / "canonical" / "puzzles.jsonl").open() as handle:
+-        for line in handle:
+-            row = json.loads(line)
+-            if row.get("task_id") != generator.TASK_ID:
+-                continue
+-            for split in ("train", "test"):
+-                value = row.get(split)
+-                pairs = value if isinstance(value, list) else [value]
+-                for pair in pairs:
+-                    if pair:
+-                        yield as_grid(pair["input"]), as_grid(pair["output"])
++    for pair in load_canonical_pairs(generator.TASK_ID, root=ROOT, labeled_only=True):
++        yield pair["input"], pair["output"]
+ 
+ 
+ class E250cb77a62eGeneratorTests(unittest.TestCase):
+@@ -232,7 +215,7 @@
+                 ctx = captured[-1]
+                 observed = generator.observe_overrides(grid)
+                 for key in generator.AXES:
+-                    self.assertEqual(ctx._drawn[key], observed[key])
++                    self.assertEqual(ctx.recorded_draws()[key], observed[key])
+                 profiled += generator.is_canonical_profile(grid)
+         self.assertGreater(profiled, 30)
+ 
+@@ -250,7 +233,7 @@
+         finally:
+             base.set_ctx_observer(None)
+         self.assertEqual(
+-            captured[-1]._drawn,
++            captured[-1].recorded_draws(),
+             generator.observe_overrides(grid),
+         )
+ 
+diff --git a/repo/generators/e250cb77a62e/tests/test_native_parametric.py b/repo/generators/e250cb77a62e/tests/test_native_parametric.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e250cb77a62e/tests/test_native_parametric.py
+@@ -0,0 +1,139 @@
++"""Native exemplar-stamping family: as drawn versus clockwise quarter turn."""
++from __future__ import annotations
++
++import copy
++import importlib.util
++from pathlib import Path
++
++import pytest
++from reviewer_support import find_root
++
++
++def adapter():
++    path = find_root(__file__) / "generators/e250cb77a62e/workspace/parametric/adapter.py"
++    assert path.is_file(), "native stamping adapter is missing"
++    spec = importlib.util.spec_from_file_location("_stamp_native_test", path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_program_preserves_exact_canonical_bytes_and_has_distinct_alternative():
++    a = adapter()
++    canonical = (Path(a.__file__).parent / "canonical.rkt").read_text()
++    assert a.program({"pattern_transform": "as_drawn"}) == canonical
++    alternate = a.program({"pattern_transform": "quarter_turn"})
++    assert alternate != canonical
++    assert alternate.count("(rule!") == 1
++
++
++def test_extracted_pattern_is_consumed_by_distinct_stamping_transforms():
++    a = adapter()
++    episode = a.generate(0, {"pattern_transform": "as_drawn"}, demos=2, queries=4)
++    grid = episode["train"][0]["input"]
++    info = a.analyze(grid)
++    assert info["pattern"] != info["quarter_turn_pattern"]
++    assert len(info["seeds"]) >= 2
++    assert a.claim(grid, "as_drawn") == episode["train"][0]["output"]
++    assert a.claim(grid, "as_drawn") != a.claim(grid, "quarter_turn")
++    assert all(episode["train"][0]["output"][r][c] == 8 for r, c in info["seeds"])
++
++
++def test_bad_requests_and_malformed_inputs_fail_closed():
++    a = adapter()
++    base = dict(seed=0, settings={"pattern_transform": "as_drawn"}, demos=3, queries=4)
++    for change in (
++        {"seed": True}, {"seed": -1}, {"demos": 1}, {"demos": 7},
++        {"queries": True}, {"queries": 0}, {"queries": 5}, {"demos": 2.0},
++        {"settings": {}}, {"settings": {"pattern_transform": "bad"}},
++        {"settings": {"pattern_transform": "as_drawn", "extra": 1}},
++    ):
++        args = dict(base)
++        args.update(change)
++        with pytest.raises(ValueError):
++            a.generate(**args)
++    episode = a.generate(**base)
++    bad = copy.deepcopy(episode["train"][0]["input"])
++    bad[0][0] = True
++    with pytest.raises(ValueError):
++        a.analyze(bad)
++    for grid in ([], [[]], [[0] * 4 for _ in range(4)], [[7] * 4 for _ in range(4)]):
++        with pytest.raises(ValueError):
++            a.analyze(grid)
++
++
++@pytest.mark.parametrize("seed", [0, 17, 63])
++def test_prefixes_matched_settings_distinct_inputs_and_finite_teaching(seed):
++    a = adapter()
++    e2 = a.generate(seed, {"pattern_transform": "quarter_turn"}, demos=2, queries=4)
++    e6 = a.generate(seed, {"pattern_transform": "quarter_turn"}, demos=6, queries=4)
++    assert e2["train"] == e6["train"][:2]
++    assert e2["test"] == e6["test"]
++    assert len({str(p["input"]) for p in e6["train"] + e6["test"]}) == 10
++    for mode in a.SETTINGS:
++        episode = a.generate(seed, {"pattern_transform": mode}, demos=2, queries=4)
++        assert [p["input"] for p in episode["train"] + episode["test"]] == [
++            p["input"] for p in e2["train"] + e2["test"]
++        ]
++        assert a.teaching_check(episode) == []
++    assert a.generate(seed, {"pattern_transform": "quarter_turn"}, 2, 1)["test"] == e2["test"][:1]
++
++
++def test_exact_thirty_by_thirty_stress_has_large_exemplar_and_boundary_stamps():
++    a = adapter()
++    episode = a.generate(17, {"pattern_transform": "quarter_turn"}, demos=3, queries=4)
++    pair = episode["test"][-1]
++    grid = pair["input"]
++    info = a.analyze(grid)
++    assert len(grid) == len(grid[0]) == 30
++    assert len(info["pattern"]) >= 30
++    assert len(info["seeds"]) == 3
++    assert info["frame_bbox"][0] == 0 and info["frame_bbox"][1] == 0
++    assert max(r for r, _ in info["quarter_turn_targets"]) == 29
++    assert max(c for _, c in info["as_drawn_targets"]) == 29
++    assert sum(v != 0 for row in grid for v in row) >= 75
++    assert sum(v == 8 for row in pair["output"] for v in row) >= 90
++
++
++def test_public_projection_hides_settings_program_answers_and_future_queries():
++    a = adapter()
++    episode = a.generate(0, {"pattern_transform": "quarter_turn"}, demos=3, queries=4)
++    visible = a.public_turn(episode, 0)
++    assert set(visible) == {"train", "test"}
++    assert len(visible["test"]) == 1 and set(visible["test"][0]) == {"input"}
++    changed = copy.deepcopy(episode)
++    changed["settings"] = {"secret": 4}
++    changed["program_solution"] = "secret"
++    for pair in changed["test"]:
++        pair["output"] = [[1]]
++    changed["test"][1]["input"] = [[2]]
++    assert a.public_turn(changed, 0) == visible
++    assert a.public_turn(a.generate(0, {"pattern_transform": "quarter_turn"}, 3, 1), 0) == visible
++    for index in (True, -1, 4):
++        with pytest.raises(ValueError):
++            a.public_turn(episode, index)
++
++
++def test_counterfactual_substitutes_unrotated_pattern_and_changes_retained_case():
++    a = adapter()
++    episode = a.generate(17, {"pattern_transform": "quarter_turn"}, demos=3, queries=4)
++    grid = episode["test"][0]["input"]
++    assert a.claim(grid, "quarter_turn") != a.claim(grid, "as_drawn")
++    assert a.counterfactual_program() == a.program({"pattern_transform": "as_drawn"})
++
++
++def test_reusable_audit_covers_all_demo_counts_and_settings():
++    root = find_root(__file__)
++    path = root / "generators/e250cb77a62e/workspace/parametric/audit.py"
++    assert path.is_file(), "reusable stamping audit is missing"
++    spec = importlib.util.spec_from_file_location("_stamp_audit_test", path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    result = module.run_audit(seeds=range(4))
++    assert result["status"] == "passed"
++    assert result["episodes"] == 40
++    assert result["demo_counts"] == [2, 3, 4, 5, 6]
++    assert result["settings"] == ["as_drawn", "quarter_turn"]
++    assert result["failures"] == []
+diff --git a/repo/generators/e250cb77a62e/workspace/parametric/README.md b/repo/generators/e250cb77a62e/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e250cb77a62e/workspace/parametric/README.md
+@@ -0,0 +1,25 @@
++# Native parametric stamping family
++
++`pattern_transform` is fixed for the whole episode.
++
++- `as_drawn` preserves the exact canonical program: extract the yellow offsets
++  inside the blue frame and stamp them at every orange seed.
++- `quarter_turn` first extracts the same input-dependent exemplar, then rotates
++  those offsets clockwise and stamps the rotated pattern at every seed.
++
++The shared input grammar admits one complete blue frame, one connected yellow
++exemplar anchored at the interior top-left and spanning the interior, and one to
++four nonoverlapping orange seed placements that fit under both settings.  Inputs
++are sampled independently of the private setting.  The adapter supports 2--6
++stable-prefix demonstrations and 1--4 stable-prefix queries; the fourth query is
++a substantive 30x30 boundary case.
++
++Sequential dependency: step A locates the frame and produces the exemplar offset
++set plus frame interior height.  Step B consumes those values to choose either
++the original offsets or the clockwise-quarter-turn offsets before painting every
++seed footprint.  The retained protected-Racket witness substitutes the unrotated
++intermediate in a qualified `quarter_turn` episode and changes the final output.
++
++`audit.py` checks bounded seed/count coverage, finite declared rivals, input
++uniqueness, and Python-claim consistency.  It is local authoring evidence, not
++owner acceptance or universal identifiability.
+diff --git a/repo/generators/e250cb77a62e/workspace/parametric/adapter.py b/repo/generators/e250cb77a62e/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e250cb77a62e/workspace/parametric/adapter.py
+@@ -0,0 +1,351 @@
++"""Native parametric family for e250cb77a62e.
++
++The canonical setting extracts the yellow exemplar from the blue frame and stamps
++it as drawn at each orange seed.  The alternative consumes that same input-derived
++exemplar, rotates it clockwise by one quarter turn, and stamps the rotated offsets.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++from pathlib import Path
++import random
++
++HERE = Path(__file__).resolve().parent
++TASK = "e250cb77a62e"
++PARAMETER = "pattern_transform"
++SETTINGS = ("as_drawn", "quarter_turn")
++RIVALS = SETTINGS + (
++    "half_turn",
++    "counterclockwise",
++    "reflect_horizontal",
++    "reflect_vertical",
++    "transpose",
++    "first_seed_only",
++    "last_seed_only",
++    "quarter_turn_first_seed",
++    "quarter_turn_last_seed",
++    "every_other_seed",
++    "seed_count_turn",
++    "center_anchor",
++    "solid_bbox",
++)
++
++_CANONICAL = (HERE / "canonical.rkt").read_text()
++_TARGET_LAMBDA = "(lambda (p) (list (+ (fst seed) (fst p)) (+ (snd seed) (snd p))))"
++_ROTATED_LAMBDA = (
++    "(lambda (p) (list (+ (fst seed) (snd p)) "
++    "(+ (snd seed) (- (- r1 r0 2) (fst p)))))"
++)
++if _CANONICAL.count(_TARGET_LAMBDA) != 1:
++    raise RuntimeError("canonical stamping lambda changed")
++_ALTERNATE = _CANONICAL.replace(_TARGET_LAMBDA, _ROTATED_LAMBDA)
++
++
++def _setting(settings):
++    if (
++        type(settings) is not dict
++        or set(settings) != {PARAMETER}
++        or type(settings[PARAMETER]) is not str
++        or settings[PARAMETER] not in SETTINGS
++    ):
++        raise ValueError("settings must contain only a declared pattern_transform")
++    return settings[PARAMETER]
++
++
++def program(settings):
++    return _CANONICAL if _setting(settings) == "as_drawn" else _ALTERNATE
++
++
++def counterfactual_program():
++    """Wrong intermediate use for a quarter-turn episode: stamp it unrotated."""
++    return _CANONICAL
++
++
++def _validate_grid(grid):
++    if type(grid) is not list or not grid or type(grid[0]) is not list or not grid[0]:
++        raise ValueError("grid must be a nonempty rectangular list")
++    height = len(grid)
++    width = len(grid[0])
++    if not (1 <= height <= 30 and 1 <= width <= 30):
++        raise ValueError("grid dimensions must be in 1..30")
++    for row in grid:
++        if type(row) is not list or len(row) != width:
++            raise ValueError("grid must be rectangular")
++        for value in row:
++            if type(value) is not int or not 0 <= value <= 9:
++                raise ValueError("grid cells must be exact integer colors in 0..9")
++    return height, width
++
++
++def _border(r0, c0, r1, c1):
++    return {
++        (row, col)
++        for row in range(r0, r1 + 1)
++        for col in range(c0, c1 + 1)
++        if row in (r0, r1) or col in (c0, c1)
++    }
++
++
++def _connected(cells):
++    if not cells:
++        return False
++    pending = [next(iter(cells))]
++    seen = set(pending)
++    while pending:
++        row, col = pending.pop()
++        for neighbor in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)):
++            if neighbor in cells and neighbor not in seen:
++                seen.add(neighbor)
++                pending.append(neighbor)
++    return seen == cells
++
++
++def _transform(pattern, interior_h, interior_w, mode):
++    if mode == "as_drawn":
++        return tuple(sorted(pattern))
++    if mode == "quarter_turn":
++        return tuple(sorted((col, interior_h - 1 - row) for row, col in pattern))
++    if mode == "half_turn":
++        return tuple(sorted((interior_h - 1 - row, interior_w - 1 - col) for row, col in pattern))
++    if mode == "counterclockwise":
++        return tuple(sorted((interior_w - 1 - col, row) for row, col in pattern))
++    if mode == "reflect_horizontal":
++        return tuple(sorted((row, interior_w - 1 - col) for row, col in pattern))
++    if mode == "reflect_vertical":
++        return tuple(sorted((interior_h - 1 - row, col) for row, col in pattern))
++    if mode == "transpose":
++        return tuple(sorted((col, row) for row, col in pattern))
++    raise ValueError("unknown geometric transform")
++
++
++def _targets(seeds, offsets):
++    return tuple(sorted({(sr + dr, sc + dc) for sr, sc in seeds for dr, dc in offsets}))
++
++
++def analyze(grid):
++    height, width = _validate_grid(grid)
++    if any(value not in {0, 1, 4, 7} for row in grid for value in row):
++        raise ValueError("admitted inputs use only colors 0, 1, 4, and 7")
++
++    blue = {(row, col) for row in range(height) for col in range(width) if grid[row][col] == 1}
++    if not blue:
++        raise ValueError("input needs one complete blue frame")
++    r0 = min(row for row, _ in blue)
++    c0 = min(col for _, col in blue)
++    r1 = max(row for row, _ in blue)
++    c1 = max(col for _, col in blue)
++    if r1 - r0 < 2 or c1 - c0 < 2 or blue != _border(r0, c0, r1, c1):
++        raise ValueError("blue cells must form exactly one complete rectangular frame")
++
++    yellow = {(row, col) for row in range(height) for col in range(width) if grid[row][col] == 4}
++    if not yellow or any(not (r0 < row < r1 and c0 < col < c1) for row, col in yellow):
++        raise ValueError("yellow exemplar must lie strictly inside the frame")
++    interior_h = r1 - r0 - 1
++    interior_w = c1 - c0 - 1
++    pattern = tuple(sorted((row - r0 - 1, col - c0 - 1) for row, col in yellow))
++    pattern_set = set(pattern)
++    if (0, 0) not in pattern_set:
++        raise ValueError("yellow exemplar must include its top-left anchor")
++    if not _connected(pattern_set):
++        raise ValueError("yellow exemplar must be four-connected")
++    if max(row for row, _ in pattern) != interior_h - 1 or max(col for _, col in pattern) != interior_w - 1:
++        raise ValueError("yellow exemplar must span the frame interior")
++
++    seeds = tuple(sorted((row, col) for row in range(height) for col in range(width) if grid[row][col] == 7))
++    if not 1 <= len(seeds) <= 4:
++        raise ValueError("input needs 1..4 orange seeds")
++    if any(r0 <= row <= r1 and c0 <= col <= c1 for row, col in seeds):
++        raise ValueError("orange seeds must be outside the source frame")
++
++    quarter = _transform(pattern, interior_h, interior_w, "quarter_turn")
++    if pattern == quarter:
++        raise ValueError("exemplar must distinguish as-drawn and quarter-turn transforms")
++
++    by_mode = {}
++    frame_box = {(row, col) for row in range(r0, r1 + 1) for col in range(c0, c1 + 1)}
++    for mode, offsets in (("as_drawn", pattern), ("quarter_turn", quarter)):
++        footprints = []
++        for seed_r, seed_c in seeds:
++            footprint = {(seed_r + dr, seed_c + dc) for dr, dc in offsets}
++            if any(not (0 <= row < height and 0 <= col < width) for row, col in footprint):
++                raise ValueError(f"{mode} stamp must fit inside the canvas")
++            if footprint & frame_box:
++                raise ValueError(f"{mode} stamp may not overlap the source frame")
++            footprints.append(footprint)
++        for index, footprint in enumerate(footprints):
++            if any(footprint & other for other in footprints[index + 1 :]):
++                raise ValueError(f"{mode} stamp footprints must be disjoint")
++        by_mode[mode] = tuple(sorted(set().union(*footprints)))
++
++    return {
++        "height": height,
++        "width": width,
++        "frame_bbox": (r0, c0, r1, c1),
++        "interior_height": interior_h,
++        "interior_width": interior_w,
++        "pattern": pattern,
++        "quarter_turn_pattern": quarter,
++        "seeds": seeds,
++        "as_drawn_targets": by_mode["as_drawn"],
++        "quarter_turn_targets": by_mode["quarter_turn"],
++    }
++
++
++def _policy(info, mode):
++    seeds = info["seeds"]
++    pattern = info["pattern"]
++    h = info["interior_height"]
++    w = info["interior_width"]
++    if mode in {"as_drawn", "quarter_turn", "half_turn", "counterclockwise", "reflect_horizontal", "reflect_vertical", "transpose"}:
++        return seeds, _transform(pattern, h, w, mode), False
++    if mode == "first_seed_only":
++        return seeds[:1], pattern, False
++    if mode == "last_seed_only":
++        return seeds[-1:], pattern, False
++    if mode == "quarter_turn_first_seed":
++        return seeds[:1], _transform(pattern, h, w, "quarter_turn"), False
++    if mode == "quarter_turn_last_seed":
++        return seeds[-1:], _transform(pattern, h, w, "quarter_turn"), False
++    if mode == "every_other_seed":
++        return seeds[::2], pattern, False
++    if mode == "seed_count_turn":
++        transforms = ("as_drawn", "quarter_turn", "half_turn", "counterclockwise")
++        return seeds, _transform(pattern, h, w, transforms[len(seeds) % 4]), False
++    if mode == "center_anchor":
++        shifted = tuple(sorted((row - (h - 1) // 2, col - (w - 1) // 2) for row, col in pattern))
++        return seeds, shifted, True
++    if mode == "solid_bbox":
++        return seeds, tuple((row, col) for row in range(h) for col in range(w)), True
++    raise ValueError("unknown stamping policy")
++
++
++def claim(grid, mode):
++    if mode not in RIVALS:
++        raise ValueError("unknown stamping policy")
++    info = analyze(grid)
++    seeds, offsets, clip = _policy(info, mode)
++    output = deepcopy(grid)
++    for seed_r, seed_c in seeds:
++        for dr, dc in offsets:
++            row, col = seed_r + dr, seed_c + dc
++            if 0 <= row < info["height"] and 0 <= col < info["width"]:
++                output[row][col] = 8
++            elif not clip:
++                raise ValueError("stamping policy escaped the canvas")
++    return output
++
++
++def _rng(seed, stream):
++    digest = hashlib.sha256(f"{TASK}:native-v1:{seed}:{stream}".encode()).digest()
++    return random.Random(int.from_bytes(digest, "big"))
++
++
++def _pattern(interior_h, interior_w, target, rng):
++    minimum = interior_h + interior_w - 1
++    if not minimum <= target <= interior_h * interior_w:
++        raise ValueError("invalid exemplar size")
++    cells = {(0, col) for col in range(interior_w)}
++    cells.update((row, interior_w - 1) for row in range(1, interior_h))
++    while len(cells) < target:
++        frontier = sorted({
++            neighbor
++            for row, col in cells
++            for neighbor in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1))
++            if 0 <= neighbor[0] < interior_h
++            and 0 <= neighbor[1] < interior_w
++            and neighbor not in cells
++        })
++        if not frontier:
++            raise RuntimeError("exemplar growth exhausted unexpectedly")
++        cells.add(rng.choice(frontier))
++    result = tuple(sorted(cells))
++    if result == _transform(result, interior_h, interior_w, "quarter_turn"):
++        raise RuntimeError("constructed exemplar failed to separate transforms")
++    return result
++
++
++# height, width, frame top, frame left, interior height, interior width,
++# exemplar size, and orange seed coordinates.
++DEMO_SPECS = (
++    (12, 15, 0, 0, 3, 4, 7, ((6, 0), (6, 8))),
++    (15, 18, 1, 1, 4, 3, 8, ((0, 10), (7, 9), (10, 0))),
++    (16, 19, 0, 11, 3, 5, 9, ((0, 0), (6, 0), (10, 9))),
++    (18, 20, 2, 0, 5, 4, 12, ((0, 11), (9, 9), (13, 0))),
++    (21, 23, 0, 0, 4, 6, 13, ((7, 0), (7, 10), (14, 8))),
++    (25, 25, 1, 1, 6, 5, 17, ((0, 13), (9, 0), (12, 13), (19, 6))),
++)
++QUERY_SPECS = (
++    (13, 16, 0, 8, 3, 4, 8, ((0, 0), (7, 0), (8, 8))),
++    (17, 20, 0, 12, 4, 5, 11, ((0, 0), (7, 0), (11, 10))),
++    (25, 26, 2, 2, 6, 7, 20, ((0, 15), (11, 0), (16, 14))),
++    (30, 30, 0, 0, 8, 10, 32, ((12, 0), (12, 11), (20, 20))),
++)
++
++
++def _scene(seed, spec, stream):
++    height, width, top, left, interior_h, interior_w, target, seeds = spec
++    bottom = top + interior_h + 1
++    right = left + interior_w + 1
++    if bottom >= height or right >= width:
++        raise RuntimeError("frame spec exceeds canvas")
++    grid = [[0] * width for _ in range(height)]
++    for row, col in _border(top, left, bottom, right):
++        grid[row][col] = 1
++    pattern = _pattern(interior_h, interior_w, target, _rng(seed, f"{stream}:pattern"))
++    for dr, dc in pattern:
++        grid[top + 1 + dr][left + 1 + dc] = 4
++    for row, col in seeds:
++        if grid[row][col] != 0:
++            raise RuntimeError("seed spec overlaps source")
++        grid[row][col] = 7
++    analyze(grid)  # construction contract: both settings are total on every draw
++    return grid
++
++
++def generate(seed, settings, demos=3, queries=4):
++    mode = _setting(settings)
++    if type(seed) is not int or seed < 0:
++        raise ValueError("seed must be a nonnegative exact integer")
++    if type(demos) is not int or not 2 <= demos <= 6:
++        raise ValueError("demos must be an exact integer in 2..6")
++    if type(queries) is not int or not 1 <= queries <= 4:
++        raise ValueError("queries must be an exact integer in 1..4")
++
++    def pair(spec, stream):
++        grid = _scene(seed, spec, stream)
++        return {"input": grid, "output": claim(grid, mode)}
++
++    return {
++        "train": [pair(spec, f"demo:{index}") for index, spec in enumerate(DEMO_SPECS[:demos])],
++        "test": [pair(spec, f"query:{index}") for index, spec in enumerate(QUERY_SPECS[:queries])],
++        "program_solution": program(settings),
++        "settings": dict(settings),
++    }
++
++
++def teaching_check(episode):
++    mode = _setting(episode["settings"])
++    findings = []
++    for rival in RIVALS:
++        if rival == mode:
++            continue
++        fits = all(claim(pair["input"], rival) == pair["output"] for pair in episode["train"])
++        if fits:
++            changed = [
++                index
++                for index, pair in enumerate(episode["test"])
++                if claim(pair["input"], rival) != pair["output"]
++            ]
++            if changed:
++                findings.append({"rival": rival, "queries": changed})
++    return findings
++
++
++def public_turn(episode, index=0):
++    if type(index) is not int or not 0 <= index < len(episode["test"]):
++        raise ValueError("query index out of range")
++    return deepcopy({
++        "train": [{"input": pair["input"], "output": pair["output"]} for pair in episode["train"]],
++        "test": [{"input": episode["test"][index]["input"]}],
++    })
+diff --git a/repo/generators/e250cb77a62e/workspace/parametric/audit.py b/repo/generators/e250cb77a62e/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e250cb77a62e/workspace/parametric/audit.py
+@@ -0,0 +1,76 @@
++#!/usr/bin/env python3
++"""Bounded learnability and boundary audit for the native stamping family."""
++from __future__ import annotations
++
++import argparse
++import importlib.util
++import json
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++_spec = importlib.util.spec_from_file_location("_stamp_native_audit_adapter", HERE / "adapter.py")
++adapter = importlib.util.module_from_spec(_spec)
++assert _spec.loader is not None
++_spec.loader.exec_module(adapter)
++
++
++def run_audit(*, seeds=range(64)):
++    seed_values = list(seeds)
++    failures = []
++    sizes = set()
++    episodes = 0
++    pairs = 0
++    for seed in seed_values:
++        for demos in range(2, 7):
++            for mode in adapter.SETTINGS:
++                episodes += 1
++                try:
++                    episode = adapter.generate(seed, {adapter.PARAMETER: mode}, demos, 4)
++                    findings = adapter.teaching_check(episode)
++                    if findings:
++                        failures.append({"seed": seed, "demos": demos, "setting": mode, "findings": findings})
++                    all_pairs = episode["train"] + episode["test"]
++                    pairs += len(all_pairs)
++                    serialized = [json.dumps(pair["input"], separators=(",", ":")) for pair in all_pairs]
++                    if len(set(serialized)) != len(serialized):
++                        failures.append({"seed": seed, "demos": demos, "setting": mode, "error": "duplicate input"})
++                    for pair in all_pairs:
++                        grid = pair["input"]
++                        sizes.add((len(grid), len(grid[0])))
++                        if adapter.claim(grid, mode) != pair["output"]:
++                            failures.append({"seed": seed, "demos": demos, "setting": mode, "error": "claim mismatch"})
++                except Exception as exc:
++                    failures.append({"seed": seed, "demos": demos, "setting": mode, "error": f"{type(exc).__name__}: {exc}"})
++    return {
++        "schema": "arcpuzzles-parametric-bounded-audit-v1",
++        "task_id": adapter.TASK,
++        "status": "passed" if not failures else "failed",
++        "seeds": len(seed_values),
++        "settings": list(adapter.SETTINGS),
++        "demo_counts": list(range(2, 7)),
++        "queries": 4,
++        "episodes": episodes,
++        "labeled_pairs_claims": pairs,
++        "rivals": list(adapter.RIVALS),
++        "sizes": [list(size) for size in sorted(sizes)],
++        "failures": failures,
++        "limits": "Finite declared rivals and bounded seeds; not universal rule uniqueness or owner acceptance.",
++    }
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--seeds", type=int, default=64)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    if not 1 <= args.seeds <= 4096:
++        raise SystemExit("--seeds must be in 1..4096")
++    result = run_audit(seeds=range(args.seeds))
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({key: result[key] for key in ("status", "episodes", "labeled_pairs_claims", "failures")}, indent=2))
++    raise SystemExit(0 if result["status"] == "passed" else 1)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/repo/generators/e250cb77a62e/workspace/parametric/canonical.rkt b/repo/generators/e250cb77a62e/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e250cb77a62e/workspace/parametric/canonical.rkt
+@@ -0,0 +1,43 @@
++(rule!
++  (let* ((frames
++           (filter
++             (lambda (obj)
++               (let* ((bb (obj-bbox obj))
++                      (r0 (first bb))
++                      (c0 (second bb))
++                      (r1 (third bb))
++                      (c1 (fourth bb)))
++                 (and (= (obj-color obj) 1)
++                      (all?
++                        (lambda (p)
++                          (let ((r (fst p)) (c (snd p)))
++                            (= (cell-at g r c) 1)))
++                        (filter
++                          (lambda (p)
++                            (let ((r (fst p)) (c (snd p)))
++                              (or (= r r0) (= r r1) (= c c0) (= c c1))))
++                          (positions-in-rect r0 c0 r1 c1)))
++                      (any?
++                        (lambda (p) (= (cell-at g (fst p) (snd p)) 4))
++                        (positions-in-rect (+ r0 1) (+ c0 1) (- r1 1) (- c1 1))))))
++             (objects g 0)))
++         (frame (first frames))
++         (bb (obj-bbox frame))
++         (r0 (first bb))
++         (c0 (second bb))
++         (r1 (third bb))
++         (c1 (fourth bb))
++         (pattern
++           (map
++             (lambda (p) (list (- (fst p) (+ r0 1)) (- (snd p) (+ c0 1))))
++             (filter
++               (lambda (p) (= (cell-at g (fst p) (snd p)) 4))
++               (positions-in-rect (+ r0 1) (+ c0 1) (- r1 1) (- c1 1)))))
++         (targets
++           (flatmap
++             (lambda (seed)
++               (map
++                 (lambda (p) (list (+ (fst seed) (fst p)) (+ (snd seed) (snd p))))
++                 pattern))
++             (find-color g 7))))
++    (paint-cells g targets 8)))
+\ No newline at end of file
+diff --git a/repo/generators/e250cb77a62e/workspace/parametric/evidence/current/audit.json b/repo/generators/e250cb77a62e/workspace/parametric/evidence/current/audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e250cb77a62e/workspace/parametric/evidence/current/audit.json
+@@ -0,0 +1,81 @@
++{
++  "demo_counts": [
++    2,
++    3,
++    4,
++    5,
++    6
++  ],
++  "episodes": 1280,
++  "failures": [],
++  "labeled_pairs_claims": 10240,
++  "limits": "Finite declared rivals and bounded seeds; not universal rule uniqueness or owner acceptance.",
++  "queries": 4,
++  "rivals": [
++    "as_drawn",
++    "quarter_turn",
++    "half_turn",
++    "counterclockwise",
++    "reflect_horizontal",
++    "reflect_vertical",
++    "transpose",
++    "first_seed_only",
++    "last_seed_only",
++    "quarter_turn_first_seed",
++    "quarter_turn_last_seed",
++    "every_other_seed",
++    "seed_count_turn",
++    "center_anchor",
++    "solid_bbox"
++  ],
++  "schema": "arcpuzzles-parametric-bounded-audit-v1",
++  "seeds": 128,
++  "settings": [
++    "as_drawn",
++    "quarter_turn"
++  ],
++  "sizes": [
++    [
++      12,
++      15
++    ],
++    [
++      13,
++      16
++    ],
++    [
++      15,
++      18
++    ],
++    [
++      16,
++      19
++    ],
++    [
++      17,
++      20
++    ],
++    [
++      18,
++      20
++    ],
++    [
++      21,
++      23
++    ],
++    [
++      25,
++      25
++    ],
++    [
++      25,
++      26
++    ],
++    [
++      30,
++      30
++    ]
++  ],
++  "status": "passed",
++  "task_id": "e250cb77a62e"
++}
+diff --git a/repo/generators/e250cb77a62e/workspace/parametric/evidence/current/portability-regression-before.log b/repo/generators/e250cb77a62e/workspace/parametric/evidence/current/portability-regression-before.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e250cb77a62e/workspace/parametric/evidence/current/portability-regression-before.log
+@@ -0,0 +1,2 @@
++Staged task-tests preflight failure before repair:
++generators/e250cb77a62e/tests/test_generator_e250cb77a62e.py:23: Missing canonical path under the staged task tree. Fixed __file__/parents depth pointed beneath the task instead of the runtime/library root. The repair uses reviewer_support.find_root(__file__) and reviewer_support.canonical_pairs.
+diff --git a/repo/generators/e250cb77a62e/workspace/parametric/evidence/current/tests.log b/repo/generators/e250cb77a62e/workspace/parametric/evidence/current/tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e250cb77a62e/workspace/parametric/evidence/current/tests.log
+@@ -0,0 +1,2 @@
++....................                                         [100%]
++20 passed, 12 subtests passed in 4.53s
+diff --git a/repo/generators/e250cb77a62e/workspace/parametric/evidence/manifest.json b/repo/generators/e250cb77a62e/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e250cb77a62e/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,87 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "b216119b85a08eba0c361bb56f216cf796a34fbfa20611486171dd3181d1a349",
++  "canonical_rule_hash": "61dff2d29f6e",
++  "default": {
++    "pattern_transform": "as_drawn"
++  },
++  "evidence_root": "generators/e250cb77a62e/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 15940,
++      "path": "generators/e250cb77a62e/generator.py",
++      "sha256": "a73045b5ce18a832c90407be4f568ba4f3d4fa800fc0fcd54000528625deef68"
++    },
++    {
++      "bytes": 12641,
++      "path": "generators/e250cb77a62e/tests/test_generator_e250cb77a62e.py",
++      "sha256": "bdfa7f3660af2e48a91c01d925bdbe62c19b00966812b0cb93ede2ebbdf8f4ad"
++    },
++    {
++      "bytes": 5984,
++      "path": "generators/e250cb77a62e/tests/test_native_parametric.py",
++      "sha256": "8df80fd4eecba140e97fc0c310b95f24f41d31896f8833a9c6f778ccf5a6e449"
++    },
++    {
++      "bytes": 13902,
++      "path": "generators/e250cb77a62e/workspace/parametric/adapter.py",
++      "sha256": "6f274070467f59d5d408bb2fc4038c6080719cb80631f1805d1d4a80ba2205f1"
++    },
++    {
++      "bytes": 3278,
++      "path": "generators/e250cb77a62e/workspace/parametric/audit.py",
++      "sha256": "5938ccef18592e74a7ee51780759e738ab297d0e867aadfcb117cfd0ac851fe6"
++    },
++    {
++      "bytes": 1649,
++      "path": "generators/e250cb77a62e/workspace/parametric/canonical.rkt",
++      "sha256": "b216119b85a08eba0c361bb56f216cf796a34fbfa20611486171dd3181d1a349"
++    },
++    {
++      "bytes": 1124,
++      "path": "generators/e250cb77a62e/workspace/parametric/evidence/current/audit.json",
++      "sha256": "9b9080a842360b8c34cdfacf612aa775df9f847a6564a441e4d1e6777685f142"
++    },
++    {
++      "bytes": 349,
++      "path": "generators/e250cb77a62e/workspace/parametric/evidence/current/portability-regression-before.log",
++      "sha256": "628c3058be03b6c66f7fd30a85309589bd192f0ce1dcb3b767a1909c76bcf5a8"
++    },
++    {
++      "bytes": 107,
++      "path": "generators/e250cb77a62e/workspace/parametric/evidence/current/tests.log",
++      "sha256": "927ab13de87bc9f7d75a4d29fecc6574e164ee6e3cb929ffb1c53bb9b623dabc"
++    },
++    {
++      "bytes": 451,
++      "path": "generators/e250cb77a62e/workspace/parametric/promotion.json",
++      "sha256": "a23043e1db333bf21dffcbaf979ae76833040825b0ad9d7bd6b2b83df9f43979"
++    }
++  ],
++  "generator_sha256": "a73045b5ce18a832c90407be4f568ba4f3d4fa800fc0fcd54000528625deef68",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "pattern_transform": [
++      "as_drawn",
++      "quarter_turn"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "20 tests plus 12 subtests in staged task runtime; 1280 bounded episodes across 128 seeds, both settings and demo counts 2..6; 10240 Python-labeled pairs; finite 15-policy scope; no owner acceptance.",
++  "rule_task_id": "e250cb77a62e",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "e250cb77a62e",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/e250cb77a62e/workspace/parametric/promotion.json b/repo/generators/e250cb77a62e/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e250cb77a62e/workspace/parametric/promotion.json
+@@ -0,0 +1,21 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/e250cb77a62e/workspace/parametric/adapter.py",
++  "parameters": {
++    "pattern_transform": [
++      "as_drawn",
++      "quarter_turn"
++    ]
++  },
++  "default": {
++    "pattern_transform": "as_drawn"
++  },
++  "limits": {
++    "demos": [2, 6],
++    "queries": [1, 4]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/e250cb77a62e/workspace/parametric/canonical.rkt"
++  ]
++}

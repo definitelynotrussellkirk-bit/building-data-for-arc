@@ -1,0 +1,25 @@
+(rule!
+  (let ((dummy 0))
+    (define (rect-border? obj)
+      (let* ((bb (obj-bbox obj))
+             (h (+ (- (third bb) (first bb)) 1))
+             (w (+ (- (fourth bb) (second bb)) 1))
+             (border-size (- (* h w) (* (max 0 (- h 2)) (max 0 (- w 2))))))
+        (and (>= h 3) (>= w 3) (= (obj-size obj) border-size)
+             (all? (lambda (p)
+                     (or (= (first p) (first bb)) (= (first p) (third bb))
+                         (= (second p) (second bb)) (= (second p) (fourth bb))))
+                   (obj-cells obj)))))
+    (define frames
+      (sort (filter rect-border? (objects g 0))
+            (lambda (a b) (< (* (obj-h a) (obj-w a)) (* (obj-h b) (obj-w b))))))
+    (for*/fold ([out g])
+               ([r (in-range (rows g))]
+                [c (in-range (cols g))])
+      (if (not (= (at out r c) 0))
+          out
+          (let ((hits (filter (lambda (obj)
+                                (and (> r (obj-r1 obj)) (< r (obj-r2 obj))
+                                     (> c (obj-c1 obj)) (< c (obj-c2 obj))))
+                              frames)))
+            (if (empty? hits) out (set-cell out r c (obj-color (first hits)))))))))

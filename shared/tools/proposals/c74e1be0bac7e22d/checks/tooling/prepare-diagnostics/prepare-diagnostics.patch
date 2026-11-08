@@ -1,0 +1,284 @@
+diff --git a/src/arcpuzzles/review_solve.py b/src/arcpuzzles/review_solve.py
+--- a/src/arcpuzzles/review_solve.py
++++ b/src/arcpuzzles/review_solve.py
+@@ -18,7 +18,7 @@
+ from .catalog import Catalog
+ from .grids import format_task
+ from .review_full_packet import canonical_json
+-from .runtime import run_process
++from .runtime import GenerationFailure, run_process
+ 
+ 
+ SCHEMA = "arcpuzzles-reviewer-solve-v1"
+@@ -112,6 +112,50 @@
+     if digest(canonical_json(labels)) != summary["private_labels_sha256"]:
+         raise ValueError("Private solve labels changed")
+     return summary, {"public": challenge, "test_outputs": labels["test_outputs"]}
++
++
++def _public_preparation_diagnostics(value: dict) -> dict:
++    """Allow process status and fixed infrastructure observations, never logs."""
++    types = {"worker_exit_code": int, "worker_timed_out": bool,
++             "worker_interrupted": bool, "environment_probe": str,
++             "python_executable": str, "python_version": str,
++             "numpy_discoverable": bool, "pillow_discoverable": bool,
++             "racket_discoverable": bool}
++    return {key: value[key] for key, expected in types.items()
++            if key in value and type(value[key]) is expected}
++
++
++def _preparation_diagnostics(exc: Exception) -> dict:
++    """Inspect the isolated worker environment without loading task code.
++
++    Discoverability is a post-failure observation, not a diagnosis or import test.
++    Do not classify or echo worker error text: it may contain private rule/labels.
++    """
++    diagnostic = {"environment_probe": "failed"}
++    if isinstance(exc, GenerationFailure):
++        diagnostic.update(_public_preparation_diagnostics({
++            key: exc.run.get(key.removeprefix("worker_"), False)
++            for key in ("worker_exit_code", "worker_timed_out", "worker_interrupted")}))
++    probe = """import importlib.util, json, os, shutil, sys
++print(json.dumps({
++    "python_executable": sys.executable,
++    "python_version": ".".join(map(str, sys.version_info[:3])),
++    "numpy_discoverable": importlib.util.find_spec("numpy") is not None,
++    "pillow_discoverable": importlib.util.find_spec("PIL") is not None,
++    "racket_discoverable": shutil.which(os.environ.get("RACKET_PATH", "racket")) is not None,
++}))
++"""
++    try:
++        with tempfile.TemporaryDirectory(prefix="arc-solve-environment-") as directory:
++            run = run_process([sys.executable, "-E", "-s", "-c", probe], Path(directory), timeout=10)
++        if not run["timed_out"] and run["exit_code"] == 0:
++            observed = json.loads(run["stdout"])
++            if isinstance(observed, dict):
++                diagnostic.update(_public_preparation_diagnostics(observed))
++                diagnostic["environment_probe"] = "completed"
++    except Exception:
++        pass  # A failed diagnostic must not replace the original blocked result.
++    return diagnostic
+ 
+ 
+ def prepare_solve(packet_root: Path, kind: str = "post_repair") -> dict:
+@@ -191,11 +235,13 @@
+                      "private_labels_sha256": digest(canonical_json(labels)),
+                      "generation_provenance": episode["provenance"]})
+     except Exception as exc:
+-        # Worker errors can quote the private rule. Retain them privately and expose only type/status.
++        # Worker errors can quote the private rule. Keep text private; expose
++        # only process status and independently observed infrastructure metadata.
+         failures = folder / "prepare-failures"
+         failures.mkdir(exist_ok=True)
+         number = len(list(failures.glob("*.json"))) + 1
+-        base.update({"status": "blocked", "stopping_reason": "Episode generation blocked: " + type(exc).__name__})
++        base.update({"status": "blocked", "stopping_reason": "Episode generation blocked: " + type(exc).__name__,
++                     "preparation_diagnostics": _preparation_diagnostics(exc)})
+         _write(failures / f"{number:04d}.json", base)
+         private = root / paths["private"]
+         private.mkdir(parents=True, exist_ok=True)
+@@ -407,8 +453,11 @@
+         "attempt_intent", "execution_status", "visible_passed", "visible_total",
+         "reported_label",
+     )
+-    return {key: value[key] for key in fields if key in value
+-            and (value[key] is None or type(value[key]) in (str, int, bool))}
++    result = {key: value[key] for key in fields if key in value
++              and (value[key] is None or type(value[key]) in (str, int, bool))}
++    if isinstance(value.get("preparation_diagnostics"), dict):
++        result["preparation_diagnostics"] = _public_preparation_diagnostics(value["preparation_diagnostics"])
++    return result
+ 
+ 
+ def main(packet_root: Path, argv: list[str]) -> int:
+diff --git a/tests/test_review_solve_prepare_diagnostics.py b/tests/test_review_solve_prepare_diagnostics.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_review_solve_prepare_diagnostics.py
+@@ -0,0 +1,186 @@
++"""Synthetic preparation failures; never open a packet's task or private data."""
++import importlib.util
++import json
++import os
++from pathlib import Path
++import sys
++
++import pytest
++
++
++REPO_SOURCE = Path(os.environ.get(
++    "ARCPUZZLES_REVIEW_SOURCE", str(Path(__file__).resolve().parents[1] / "src")))
++SOURCE = Path(os.environ.get(
++    "PREPARE_TARGET_SOURCE", str(REPO_SOURCE / "arcpuzzles/review_solve.py")))
++sys.path.insert(0, str(REPO_SOURCE))
++spec = importlib.util.spec_from_file_location("arcpuzzles.prepare_diagnostics_proposal", SOURCE)
++solve = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(solve)
++from arcpuzzles.runtime import GenerationFailure
++
++SECRET = "SYNTHETIC_PRIVATE_RULE_AND_QUERY_LABELS"
++ENVIRONMENT = {
++    "python_executable": "/synthetic/venv/bin/python",
++    "python_version": "3.12.1",
++    "numpy_discoverable": True,
++    "pillow_discoverable": True,
++    "racket_discoverable": False,
++}
++
++
++@pytest.fixture
++def packet(tmp_path, monkeypatch):
++    # The preparation code reads only these synthetic placeholders. Catalog's
++    # generation boundary is replaced before its constructor can read real data.
++    source = tmp_path / "repo/generators/synthetic/generator.py"
++    source.parent.mkdir(parents=True)
++    source.write_text("EXAMPLES_NEEDED = 3\n")
++    canonical = tmp_path / "repo/shared/data/canonical/puzzles.jsonl"
++    canonical.parent.mkdir(parents=True)
++    canonical.write_text("synthetic authority placeholder\n")
++    for kind, paths in solve.KINDS.items():
++        contract = {
++            "schema": solve.BLIND_SCHEMA if kind == "blind" else "synthetic-assignment",
++            "assignment_id": "synthetic-assignment", "packet_id": "synthetic-packet",
++            "task_id": "synthetic", "generator": {"generator": "generators/synthetic/generator.py"},
++        }
++        (tmp_path / paths["contract"]).write_text(json.dumps(contract))
++    return tmp_path
++
++
++def fail_generation(monkeypatch, error):
++    class FailingCatalog:
++        def __init__(self, root):
++            pass
++
++        def generate(self, *args, **kwargs):
++            raise error
++
++    monkeypatch.setattr(solve, "Catalog", FailingCatalog)
++
++
++def probe_success(monkeypatch):
++    def probe(command, cwd, **options):
++        assert command[1:3] == ["-E", "-s"]
++        assert options["timeout"] <= 10
++        assert Path(cwd).is_dir()
++        return {"exit_code": 0, "timed_out": False,
++                "stdout": json.dumps(ENVIRONMENT), "stderr": ""}
++    monkeypatch.setattr(solve, "run_process", probe)
++
++
++@pytest.mark.parametrize("kind", ["post_repair", "blind"])
++def test_blocked_cli_exposes_infrastructure_status_without_private_text(packet, monkeypatch, capsys, kind):
++    run = {"exit_code": 1, "timed_out": False, "stdout": SECRET,
++           "stderr": SECRET, "command": [SECRET]}
++    fail_generation(monkeypatch, GenerationFailure("synthetic", run))
++    probe_success(monkeypatch)
++    argv = (["blind"] if kind == "blind" else []) + ["prepare"]
++    assert solve.main(packet, argv) == 1
++    captured = capsys.readouterr()
++    assert SECRET not in captured.out + captured.err
++    visible = json.loads(captured.out)
++    assert "preparation_diagnostics" in visible, "Blocked preparation loses actionable process/environment status"
++    diagnostic = visible["preparation_diagnostics"]
++    assert diagnostic["worker_exit_code"] == 1
++    assert diagnostic["worker_timed_out"] is False
++    assert diagnostic["environment_probe"] == "completed"
++    assert all(diagnostic[key] == value for key, value in ENVIRONMENT.items())
++    paths = solve.KINDS[kind]
++    retained = json.loads((packet / paths["folder"] / "prepare-failures/0001.json").read_text())
++    assert retained["preparation_diagnostics"] == diagnostic
++    assert SECRET not in json.dumps(retained)
++    # The old private evidence remains available to the maintainer, never to CLI.
++    private = json.loads((packet / paths["private"] / "generation-error-0001.json").read_text())
++    assert SECRET in private["error"]
++
++
++@pytest.mark.parametrize("status", [
++    {"exit_code": -15, "timed_out": True},
++    {"exit_code": 130, "timed_out": False, "interrupted": True},
++])
++def test_worker_timeout_and_interruption_are_retained(packet, monkeypatch, status):
++    fail_generation(monkeypatch, GenerationFailure("synthetic", {**status, "stdout": SECRET, "stderr": SECRET}))
++    probe_success(monkeypatch)
++    summary = solve.prepare_solve(packet)
++    assert "preparation_diagnostics" in summary
++    diagnostic = summary["preparation_diagnostics"]
++    assert diagnostic["worker_exit_code"] == status["exit_code"]
++    assert diagnostic["worker_timed_out"] == status["timed_out"]
++    assert diagnostic["worker_interrupted"] == status.get("interrupted", False)
++    assert SECRET not in json.dumps(diagnostic)
++
++
++def test_failed_environment_probe_does_not_replace_original_failure(packet, monkeypatch, capsys):
++    fail_generation(monkeypatch, ValueError(SECRET))
++    def unavailable_probe(*args, **kwargs):
++        raise OSError(SECRET)
++    monkeypatch.setattr(solve, "run_process", unavailable_probe)
++    assert solve.main(packet, ["prepare"]) == 1
++    captured = capsys.readouterr()
++    assert SECRET not in captured.out + captured.err
++    visible = json.loads(captured.out)
++    assert visible["stopping_reason"] == "Episode generation blocked: ValueError"
++    assert "preparation_diagnostics" in visible
++    assert visible["preparation_diagnostics"]["environment_probe"] == "failed"
++    assert "worker_exit_code" not in visible["preparation_diagnostics"]
++
++
++def test_repeated_failure_preserves_numbered_receipts_and_same_seed(packet, monkeypatch):
++    fail_generation(monkeypatch, GenerationFailure("synthetic", {
++        "exit_code": 1, "timed_out": False, "stdout": "", "stderr": SECRET}))
++    probe_success(monkeypatch)
++    first = solve.prepare_solve(packet, "blind")
++    second = solve.prepare_solve(packet, "blind")
++    assert first["seed"] == second["seed"]
++    assert "preparation_diagnostics" in first
++    assert first["preparation_diagnostics"] == second["preparation_diagnostics"]
++    failures = packet / "solve-blind/prepare-failures"
++    assert sorted(path.name for path in failures.glob("*.json")) == ["0001.json", "0002.json"]
++
++
++def test_public_diagnostics_drop_unrecognized_or_wrong_typed_fields(packet, monkeypatch, capsys):
++    summary = {
++        "status": "blocked", "stopping_reason": "Episode generation blocked: GenerationFailure",
++        "preparation_diagnostics": {
++            "worker_exit_code": {"private": SECRET},
++            "worker_timed_out": False, "numpy_discoverable": SECRET,
++            "environment_probe": "completed", "future_private_field": SECRET,
++        },
++    }
++    monkeypatch.setattr(solve, "prepare_solve", lambda *a: summary)
++    assert solve.main(packet, ["prepare"]) == 1
++    captured = capsys.readouterr()
++    assert SECRET not in captured.out + captured.err
++    assert json.loads(captured.out).get("preparation_diagnostics") == {
++        "worker_timed_out": False, "environment_probe": "completed"}
++
++
++def test_probe_does_not_echo_process_output_or_unknown_fields(packet, monkeypatch, capsys):
++    fail_generation(monkeypatch, RuntimeError(SECRET))
++    def probe(*args, **kwargs):
++        return {"exit_code": 0, "timed_out": False, "stderr": SECRET,
++                "stdout": json.dumps({**ENVIRONMENT, "unexpected": SECRET,
++                                      "numpy_discoverable": {"secret": SECRET}})}
++    monkeypatch.setattr(solve, "run_process", probe)
++    assert solve.main(packet, ["prepare"]) == 1
++    captured = capsys.readouterr()
++    assert SECRET not in captured.out + captured.err
++    visible = json.loads(captured.out)
++    assert "preparation_diagnostics" in visible
++    assert "numpy_discoverable" not in visible["preparation_diagnostics"]
++    assert visible["preparation_diagnostics"]["racket_discoverable"] is False
++
++
++def test_real_probe_uses_isolated_interpreter_and_racket_selection(packet, monkeypatch):
++    fail_generation(monkeypatch, RuntimeError(SECRET))
++    monkeypatch.setenv("RACKET_PATH", str(packet / "absent-racket"))
++    summary = solve.prepare_solve(packet)
++    assert "preparation_diagnostics" in summary
++    diagnostic = summary["preparation_diagnostics"]
++    assert diagnostic["environment_probe"] == "completed"
++    assert diagnostic["python_executable"] == sys.executable
++    assert diagnostic["python_version"] == ".".join(map(str, sys.version_info[:3]))
++    assert type(diagnostic["numpy_discoverable"]) is bool
++    assert type(diagnostic["pillow_discoverable"]) is bool
++    assert diagnostic["racket_discoverable"] is False

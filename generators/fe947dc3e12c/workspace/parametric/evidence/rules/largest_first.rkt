@@ -1,0 +1,11 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((colors (list 1 4 2))
+                  (objs (sort-by (objects g 0) (lambda (o) (* -1 (obj-size o))))))
+             (reduce (lambda (acc pair)
+                       (let ((idx (fst pair))
+                             (obj (snd pair)))
+                         (recolor-cells acc (obj-cells obj) (nth colors idx))))
+                     g
+                     (zip-lists (range 0 (length objs)) objs))))))

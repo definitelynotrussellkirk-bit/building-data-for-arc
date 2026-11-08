@@ -1,0 +1,33 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((hh (rows g))
+                  (ww (cols g))
+                  (bg 7)
+                  (cr #f)
+                  (cc #f)
+                  (d0 (for ((r (range 0 hh)))
+                        (when
+                          (and (not cr) (for/and ((c (range 0 ww))) (!= (at g r c) bg)))
+                          (set! cr r))))
+                  (d1 (for ((c (range 0 ww)))
+                        (when
+                          (and (not cc) (for/and ((r (range 0 hh))) (!= (at g r c) bg)))
+                          (set! cc c))))
+                  (result g)
+                  (d2 (for* ((r (range 0 hh)) (c (range 0 ww)))
+                            (when
+                              (and (!= (at g r c) bg) (!= r cr) (!= c cc))
+                              (let ((v (at g r c)))
+                                (for ((ref (list (list r (- (* 2 cc) c))
+                                              (list (- (* 2 cr) r) c)
+                                              (list (- (* 2 cr) r) (- (* 2 cc) c)))))
+                                  (let ((nr (first ref))
+                                        (nc (second ref)))
+                                    (when
+                                      (and
+                                        (in-bounds? nr nc hh ww)
+                                        (!= nr cr)
+                                        (!= nc cc))
+                                      (set! result (set-cell result nr nc v))))))))))
+             result))))

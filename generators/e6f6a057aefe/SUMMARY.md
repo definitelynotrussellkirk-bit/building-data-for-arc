@@ -1,0 +1,6 @@
+# e6f6a057aefe
+
+Fixed 12×14 0-bg grid with: (a) RANK CELL at (0, 0) painted with a value rank ∈ {1, 2, 3} encoding which size-ranked object to select; (b) ONE COLOR-9 MARKER placed in the lower-right region at (6+jitter, 8+jitter) (random ±1 perturbation); (c) THREE SOURCE OBJECTS at fixed positions sorted ASCENDING BY SIZE — _OBJECTS[0]=2-cell horizontal pair at (2, 1); _OBJECTS[1]=3-cell L-shape at (5, 1); _OBJECTS[2]=5-cell pentomino at (2, 5). Each object painted in a DISTINCT non-{0, 9} color drawn from {2..8}. Sizes are strictly distinct: {2, 3, 5}. Rule (THE RANK AT (0, 0) PICKS A SIZE-RANKED SOURCE, UPSCALE IT 2×, PASTE AT THE 9-MARKER): READ the RANK at (0, 0) — 1→smallest, 2→middle, 3→largest. SELECT the corresponding source object. CROP it to its bbox. UPSCALE the crop by factor 2 (each cell → 2×2 block in same color). find the COLOR-9 MARKER position (mr, mc). PASTE the upscaled crop with its top-left at (mr, mc) on a FRESH OUTPUT GRID. The rank cell, marker, and original source objects are discarded. Net: a 2×-enlarged copy of the rank-selected object appears at the marker's location. Flagged intrinsic-low (uniq_out=33): 3 ranks × 3 fixed objects × marker positions × colors.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

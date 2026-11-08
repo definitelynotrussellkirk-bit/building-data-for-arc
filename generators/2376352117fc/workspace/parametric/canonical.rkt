@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let* ((p1 (first (find-color g 1))) (p2 (first (find-color g 2))) (dr (- (first p2) (first p1))) (dc (- (second p2) (second p1)))) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((p (in-list (find-color g 3)))) (let ((rr (+ (first p) dr)) (cc (+ (second p) dc))) (if (in-bounds? rr cc (rows g) (cols g)) (set-cell out rr cc 8) out))))))

@@ -1,0 +1,1 @@
+(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let ((g2 (fill-all-enclosed g 2))) (recolor g2 0 3)))))

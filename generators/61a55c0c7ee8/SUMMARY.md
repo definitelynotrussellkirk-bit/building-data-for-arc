@@ -1,0 +1,6 @@
+# 61a55c0c7ee8
+
+0-bg grid (h~10-14, w~12-17) with: (a) MULTICOLOR TEMPLATE in the TOP-LEFT corner — fixed cells at (0,0)=1, (0,1)=2, (1,0)=3, (1,1)=1, (2,1)=2 forming a small 3-color motif using source colors {1, 2, 3}; (b) TWO MAROON (color 9) ANCHORS — one at (3, w//2) and one at (5, w-5) — interior anchor positions where copies of the template can be stamped; (c) BOTTOM LEGEND ROWS — rows h-2 and h-1, columns 0..2 hold three (source, destination) color pairs encoded as adjacent cells: (1,4) at col 0, (2,6) at col 1, (3,7) at col 2. The legend defines a recolor mapping {1→4, 2→6, 3→7}. Rule (RECOLOR THE TEMPLATE BY THE LEGEND'S SRC→DST MAPPING, STAMP A COPY AT EACH MAROON ANCHOR): read the BOTTOM LEGEND (rows h-2/h-1) to build a SRC→DST color map. find the MULTICOLOR TEMPLATE in the top-left; APPLY the recolor map to every template cell, producing a RECOLORED TEMPLATE. find every MAROON (color 9) ANCHOR; STAMP a copy of the recolored template at each anchor's position (anchor as anchor position, replacing the 9 with the template's anchor-position color). Original template, anchors, and legend stay or are cleared per demos. Net: the small top-left template multiplies into recolored copies at each maroon anchor location.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

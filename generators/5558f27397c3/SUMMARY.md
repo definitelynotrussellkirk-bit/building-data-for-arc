@@ -1,0 +1,6 @@
+# 5558f27397c3
+
+0-bg grid (h ∈ 12-20, w ∈ 17-26, by difficulty) with: TWO HOLLOW COLOR-5 RECTANGULAR FRAMES each 8×8, anchored at FIXED positions (r0=2, c0=2) and (r0=2, c0=w//2+1) — each frame's interior is 6×6. FOR EACH FRAME: (a) ONE KEY MARKER one row ABOVE the frame's TOP-LEFT CORNER (at row r0-1, col c0+1), value ∈ {6, 7} chosen independently per frame; (b) 2-4 SPARSE INTERIOR CELLS — placed at random non-overlapping interior positions (rows r0+1..r0+6, cols c0+1..c0+6), each painted in ONE non-{0, 5} color drawn per-frame from {2,3,4,6,7,8,9}. Rule (FOR EACH FRAME, USE ITS KEY TO PICK A MIRROR AXIS AND COMPLETE THE INTERIOR PATTERN BY MIRRORING THE CELLS ACROSS THAT AXIS): For EACH color-5 frame: READ its KEY (above top-left). IF KEY = 6: MIRROR each interior cell LEFT↔RIGHT across the frame's vertical center axis (c -> c0 + (c0 + fw - 1 - c)). IF KEY = 7: MIRROR each interior cell TOP↔BOTTOM across the horizontal center axis. The mirrored cell is painted with the SAME color as the source. Original interior cells preserved. Net: each frame's partial pattern is completed into a symmetric pattern across the axis selected by its key.
+
+Kind: `per_puzzle`. Imported version: `2.2.0`.
+Approval is derived by the catalog from current code and retained evidence.

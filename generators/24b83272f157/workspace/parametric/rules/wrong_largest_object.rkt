@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let* ((objs (objects g 0)) (sizes (map (lambda (obj) (length (obj-cells obj))) objs)) (max-size (apply max sizes))) (for/fold ((out g)) ((obj (in-list objs)) (size (in-list sizes))) (if (= size max-size) (paint-cells out (obj-cells obj) 9) out)))))

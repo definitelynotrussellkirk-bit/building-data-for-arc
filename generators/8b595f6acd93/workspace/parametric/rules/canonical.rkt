@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1))) (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range (cols g)))) (if (and (= (at g r c) 0) (all? (lambda (d) (let ((nr (+ r (first d))) (nc (+ c (second d)))) (and (in-bounds? nr nc (rows g) (cols g)) (= (at g nr nc) 3)))) dirs4)) (set-cell out r c 4) out))))

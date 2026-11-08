@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (define (objs-of color) (filter (lambda (obj) (= (obj-color obj) color)) (objects g 0))) (let* ((greens (objs-of 3)) (smallest (first (sort greens (lambda (a b) (if (= (obj-size a) (obj-size b)) (cell< (first (sort (obj-cells a) cell<)) (first (sort (obj-cells b) cell<))) (< (obj-size a) (obj-size b)))))))) (paint-cells g (obj-cells smallest) 6))))

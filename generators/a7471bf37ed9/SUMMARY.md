@@ -1,0 +1,6 @@
+# a7471bf37ed9
+
+0-bg grid (h ∈ 7-10, w ∈ 8-12) with: SEGMENT_COUNT ∈ 1-4 DOMINO GROUPS, each consisting of: (a) ONE 2-CELL DOMINO (horizontal or vertical, oriented per candidate kind ∈ {h_right, h_left, v_down, v_up}) painted in a DISTINCT non-{0, 9} color drawn from {1..8}; (b) ONE COLOR-9 BLOCKER CELL adjacent to ONE end of the domino — for h_right: blocker at (r, c-1) on the left side; for h_left: blocker at (r, c+2); for v_down: blocker at (r-1, c) above; for v_up: blocker at (r+2, c) below. The OPEN CONTINUATION cell (opposite the blocker) is in-bounds and currently 0 — only one side is blocked, the other is open. Placements use _clear_patch with 1-cell neighborhood check. Rule (FOR EACH DOMINO, EXTEND ITS COLOR INTO THE OPEN CONTINUATION CELL — THE BLOCKED SIDE STAYS AS-IS): For EACH domino (2 same-color cells): DETERMINE the BLOCKED side (adjacent color-9 cell) and the OPEN side (currently 0). PAINT the OPEN cell with the domino's color, EXTENDING the domino by 1 cell. Blockers stay 9. Net: each domino grows by one into its open continuation, becoming a 3-cell line.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

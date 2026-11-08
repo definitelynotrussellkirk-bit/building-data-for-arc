@@ -1,0 +1,6 @@
+# a90d16507995
+
+0-bg grid (h~6-10, w~7-12) with TWO ELEMENTS: (a) ONE MULTI-COLOR BLOB in the upper-left quadrant — a 4-connected 2-4 cell blob grown via grow_blob, painted with 2 alternating non-{0,9} colors from a small palette (e.g., colors cycle through palette positions per cell); (b) ONE 9-MARKER (color 9) placed in the lower-right quadrant at a position where the blob's bbox can fit when stamped with the marker as its top-left corner. The marker has clearance for the bbox to land in-bounds without overlapping the original blob. Rule (CROP THE BLOB TO ITS BBOX, STAMP IT WITH THE 9-MARKER AS THE TOP-LEFT CORNER): find the MULTI-COLOR BLOB (the 4-connected non-9 non-0 component). CROP it to its tight bbox. find the 9-MARKER cell at position (mr, mc). PASTE the cropped blob at (mr, mc) — its top-left lands on the marker, the rest fills cells (mr..mr+bh-1, mc..mc+bw-1). The 9-marker cell is overwritten by the blob's top-left value. Original blob cells are cleared in the output; only the stamped copy remains. Net: the multi-color blob is moved/copied to the 9 marker's location on an otherwise empty grid.
+
+Kind: `per_puzzle`. Imported version: `2.1.0`.
+Approval is derived by the catalog from current code and retained evidence.

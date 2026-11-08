@@ -1,0 +1,1634 @@
+diff --git a/repo/generators/1d1cffd62646/SUMMARY.md b/repo/generators/1d1cffd62646/SUMMARY.md
+--- a/repo/generators/1d1cffd62646/SUMMARY.md
++++ b/repo/generators/1d1cffd62646/SUMMARY.md
+@@ -1,6 +1,22 @@
+ # 1d1cffd62646
+ 
+-Two dots: marker + center; rule draws concentric square outlines.
++Three equally spaced, collinear dots define a center and ring spacing. The
++unchanged canonical Racket rule draws concentric square outlines in the dot
++color, including the center and outlines clipped at the grid edges.
+ 
+-Kind: `per_puzzle`. Imported version: `1.1.1`.
++Kind: `per_puzzle`. Generator version: `1.2.0`.
++
++The deterministic sampler supports vertical, horizontal, and both diagonal
++directions, dimensions `10..30`, Chebyshev spacing `2..6` where all three dots
++fit, and a single dot color `1..9`. The supported override names are `grid_h`,
++`grid_w`, `step`, `dot_color`, and `orientation`. Numeric overrides must be
++exact integers; `None` leaves a control unpinned. Unsupported legacy controls
++and impossible combinations raise errors rather than silently changing the
++request. Difficulty affects default dimensions only; explicit dimensions may
++use the full valid range.
++
++`self_check` enforces rectangular integer grids and the three-dot geometry.
++Metadata cannot bypass these checks. Focused regressions are in
++`tests/test_generator_repair.py`.
++
+ Approval is derived by the catalog from current code and retained evidence.
+diff --git a/repo/generators/1d1cffd62646/generator.py b/repo/generators/1d1cffd62646/generator.py
+--- a/repo/generators/1d1cffd62646/generator.py
++++ b/repo/generators/1d1cffd62646/generator.py
+@@ -1,11 +1,12 @@
+-"""Generator for 5c2c9af4.
++"""Three equally spaced collinear dots define concentric square outlines.
+ 
+-Rule: two non-bg dots define a center and a step distance; rule draws
+-concentric square outlines through the grid in the dot color.
++The middle dot is the center; the Chebyshev distance to either endpoint is
++ring spacing. The unchanged canonical Racket rule draws every ring,
++including the center and outlines clipped by the grid edges.
+ 
+-Combinatorial axes (8): grid_h/w, palette_kind, anchor_corner,
+-asymmetry_force, palette_size, position_bias, step, dot_color.
+-Degenerates: no_dots, single_dot, full_grid.
++Numeric overrides are exact integers. Dimensions span 10..30, spacing spans
++2..6 where all three dots fit, and the dot color spans 1..9. Unsupported
++legacy decorative/degenerate controls fail explicitly instead of being ignored.
+ """
+ from __future__ import annotations
+ 
+@@ -13,97 +14,104 @@
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "1d1cffd62646"
+-VERSION = "1.1.1"
++VERSION = "1.2.0"
+ TASK_ID = "1d1cffd62646"
+-SUMMARY = "Two dots: marker + center; rule draws concentric square outlines."
++SUMMARY = "Three collinear dots define the center and spacing of concentric square outlines."
+ 
+ INVARIANTS = [
++    "rectangular grid with dimensions 10..30 and exact integer colors 0..9",
+     "background is 0",
+-    "exactly two non-bg cells of the same color",
+-    "marker row is strictly less than center row",
+-    "step is the chebyshev distance between the two dots and is at least 2",
++    "exactly three non-bg cells of the same color",
++    "dots are collinear and equally spaced; the middle dot is the center",
++    "step is the Chebyshev distance between adjacent dots and lies in 2..6",
+ ]
+ 
+-PALETTE_KINDS = ("warm", "cool", "broad", "primary")
+-DEGENERATE_TEXTURES = ("no_dots", "single_dot", "full_grid")
+-HELPFUL_TEXTURES = PALETTE_KINDS
++ORIENTATIONS = {
++    "vertical": (1, 0),
++    "horizontal": (0, 1),
++    "diag_down": (1, 1),
++    "diag_up": (1, -1),
++}
+ 
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 14..20", "valid": "10..24"},
+-    "grid_w":         {"type": "int", "default": "rng 14..20", "valid": "10..24"},
+-    "palette_kind":   {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(PALETTE_KINDS)},
+-    "anchor_corner":  {"type": "bool", "default": "false",
+-                       "valid": "true|false"},
+-    "asymmetry_force":{"type": "bool", "default": "false",
+-                       "valid": "true|false"},
+-    "palette_size":   {"type": "int", "default": "1", "valid": "1"},
+-    "position_bias":  {"type": "str", "default": "rng", "valid": "rng"},
+-    "step":           {"type": "int", "default": "rng 2..4", "valid": "2..6"},
+-    "dot_color":      {"type": "color", "default": "rng !0", "valid": "1..9"},
+-    "texture":        {"type": "str", "default": "alias for palette_kind",
+-                       "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "grid_h": {"type": "int", "default": "rng 14..24 (difficulty-dependent)",
++               "valid": "10..30"},
++    "grid_w": {"type": "int", "default": "rng 14..24 (difficulty-dependent)",
++               "valid": "10..30"},
++    "step": {"type": "int", "default": "rng 2..6 where three dots fit", "valid": "2..6"},
++    "dot_color": {"type": "color", "default": "rng 1..9", "valid": "1..9"},
++    "orientation": {"type": "str", "default": "rng among fitting directions",
++                    "valid": "|".join(ORIENTATIONS)},
+ }
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
+-    rng = ctx.draw_rng("placement")
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], rng)
+-    if difficulty == "easy":
+-        h_lo, h_hi = 14, 16
+-    elif difficulty == "hard":
+-        h_lo, h_hi = 20, 24
+-    else:
+-        h_lo, h_hi = 14, 20
+-    h = ctx.draw_int("grid_h", h_lo, h_hi)
+-    w = ctx.draw_int("grid_w", h_lo, h_hi)
+-    palette = ctx.draw_distinct_colors("palette", n=1, exclude={0})
+-    color = palette[0]
+-    g = full_grid(h, w, 0)
+-    cr = rng.randint(h // 3, 2 * h // 3)
+-    cc = rng.randint(w // 3, 2 * w // 3)
+-    step = rng.randint(2, 4)
+-    mr, mc = cr - step, cc
+-    if mr < 0:
+-        return [[0]]
+-    g[mr][mc] = color
+-    g[cr][cc] = color
+-    return g
++    """Return a deterministic three-dot input; reject impossible overrides.
++
++    Explicit dimensions use the full valid range regardless of difficulty.
++    A requested spacing restricts unpinned dimensions and orientation choices
++    so valid requests cannot fail merely because an incompatible value was drawn.
++    As in GenCtx, None means that an axis is left unpinned.
++    """
++    unknown = set(overrides) - AXES.keys()
++    if unknown:
++        raise ValueError(f"unsupported overrides: {', '.join(sorted(unknown))}")
++    for name, lo, hi in (("grid_h", 10, 30), ("grid_w", 10, 30),
++                         ("step", 2, 6), ("dot_color", 1, 9)):
++        value = overrides.get(name)
++        if value is not None:
++            if type(value) is not int:
++                raise TypeError(f"{name} must be an integer (not bool)")
++            if not lo <= value <= hi:
++                raise ValueError(f"{name} must lie in {lo}..{hi}")
++    ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION,
++                  task_id=TASK_ID, difficulty=difficulty, overrides=overrides)
++    lo, hi = {"easy": (10, 16), "hard": (20, 30)}.get(difficulty, (14, 24))
++    requested_step = overrides.get("step") or 2
++    lo = max(lo, 2 * requested_step + 1)
++    h_bounds = (10, 30) if overrides.get("grid_h") is not None else (lo, hi)
++    w_bounds = (10, 30) if overrides.get("grid_w") is not None else (lo, hi)
++    h = ctx.draw_int_strict("grid_h", *h_bounds)
++    w = ctx.draw_int_strict("grid_w", *w_bounds)
++    fitting = [name for name, (dr, dc) in ORIENTATIONS.items()
++               if 2 * requested_step * abs(dr) < h
++               and 2 * requested_step * abs(dc) < w]
++    if not fitting:
++        raise ValueError("requested step does not fit three collinear dots in this grid")
++    orientation = ctx.draw_choice("orientation", fitting)
++    dr, dc = ORIENTATIONS[orientation]
++    max_step = min(6, (h - 1) // 2 if dr else 6, (w - 1) // 2 if dc else 6)
++    step = ctx.draw_int_strict("step", 2, max_step)
++    color = ctx.draw_color_strict("dot_color", exclude={0})
++    cr = ctx.draw_int_strict("center_r", step * abs(dr), h - 1 - step * abs(dr))
++    cc = ctx.draw_int_strict("center_c", step * abs(dc), w - 1 - step * abs(dc))
++    grid = full_grid(h, w, 0)
++    for sign in (-1, 0, 1):
++        grid[cr + sign * step * dr][cc + sign * step * dc] = color
++    return grid
+ 
+ 
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Verify: exactly 2 non-bg cells of the same color (the marker pair)."""
+-    if not grid or any(len(row) != len(grid[0]) for row in grid):
+-        return ["grid must be nonempty and rectangular"]
+-    texture = (meta or {}).get("texture", "")
+-    if texture in DEGENERATE_TEXTURES:
+-        return []
+-    h, w = len(grid), len(grid[0])
+-    errs = []
+-    from collections import Counter
+-    counts = Counter(grid[r][c] for r in range(h) for c in range(w) if grid[r][c] != 0)
+-    total_nonzero = sum(counts.values())
+-    if total_nonzero != 2:
+-        errs.append(f"expected exactly 2 non-bg cells, found {total_nonzero}")
+-    elif len(counts) != 1:
+-        errs.append("the 2 non-bg cells must have the same color")
+-    return errs
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    g = full_grid(14, 14, 0)
+-    if name == "no_dots":
+-        return g
+-    if name == "single_dot":
+-        g[7][7] = 2
+-        return g
+-    if name == "full_grid":
+-        for r in range(14):
+-            for c in range(14):
+-                g[r][c] = 2
+-        return g
+-    return g
++    """Validate the three-dot input contract without trusting caller metadata."""
++    if type(grid) is not list or not 10 <= len(grid) <= 30:
++        return ["grid must be a list with 10..30 rows"]
++    if type(grid[0]) is not list or not 10 <= len(grid[0]) <= 30:
++        return ["grid rows must be lists with 10..30 columns"]
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width for row in grid):
++        return ["grid must be rectangular"]
++    if any(type(cell) is not int or not 0 <= cell <= 9 for row in grid for cell in row):
++        return ["grid cells must be exact integer colors 0..9"]
++    dots = [(r, c, color) for r, row in enumerate(grid)
++            for c, color in enumerate(row) if color != 0]
++    if len(dots) != 3:
++        return [f"expected exactly 3 non-bg cells, found {len(dots)}"]
++    if len({dot[2] for dot in dots}) != 1:
++        return ["the 3 non-bg cells must have the same color"]
++    first, center, last = dots
++    delta = (center[0] - first[0], center[1] - first[1])
++    if delta != (last[0] - center[0], last[1] - center[1]):
++        return ["the 3 dots must be collinear and equally spaced"]
++    if not 2 <= max(abs(delta[0]), abs(delta[1])) <= 6:
++        return ["adjacent dots must have Chebyshev spacing in 2..6"]
++    return []
+diff --git a/repo/generators/1d1cffd62646/notes.md b/repo/generators/1d1cffd62646/notes.md
+--- a/repo/generators/1d1cffd62646/notes.md
++++ b/repo/generators/1d1cffd62646/notes.md
+@@ -1,4 +1,62 @@
+-# Working notes: 1d1cffd62646
++# Current notes: 1d1cffd62646
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Canonical family and repair
++
++Original family: `training:5c2c9af4`. Three equally spaced, same-color dots define
++the center (middle dot) and square-ring spacing (Chebyshev distance to either
++endpoint). Draw all concentric square outlines, clipping them at grid edges.
++The canonical Racket source is unchanged, SHA-256
++`fe733c91003d5dc3fae0319eb38e4f28117e81865fdb168346b61281bff2b946`.
++
++The old v1.1.1 sampler emitted only two vertically aligned dots. Its checker
++rejected the original three-dot examples, and advertised spacing/color controls
++were ignored. That restricted distribution never taught midpoint selection from
++the original three-dot configuration. Version 1.2.0 restores three-dot inputs,
++with horizontal, vertical and both diagonal directions. It honors `grid_h`,
++`grid_w`, `step`, `dot_color` and `orientation`; unsupported legacy decorative or
++degenerate controls fail explicitly. Old seeds intentionally yield new inputs.
++
++Exact dimensions support 10..30, dot spacing 2..6 where the triple fits, and
++colors 1..9. Booleans and non-integer numeric controls are rejected. `None`
++retains the existing unpinned-axis convention. Impossible pinned directions fail;
++unpinned directions/dimensions are chosen to accommodate requested spacing.
++Validation accepts other equally spaced collinear slopes with the same contract;
++the sampler covers only its four declared directions.
++
++## Separate proposed parameter family
++
++`workspace/parametric/` contains runnable generation, saved-batch verification,
++an adapter and a promotion contract. `ring_stride=1` is the exact canonical
++program. `ring_stride=2` retains the center and odd positive rings, preserving
++the first ring through the endpoint dots. This changes output geometry while
++retaining the original center/spacing/clipping reasoning.
++
++Counts are independent: 2..8 demonstrations and 1..8 queries. Defaults retain
++two demos and four distinct queries, including a 30x30 query. Inputs are matched
++across settings for the same seed/count request. The demonstrations identify the
++chosen setting against 22 declared hypotheses before any query target is used.
++These finite rivals do not prove universal uniqueness. Labels from the prototype
++CLI are matching-Racket executions; adapter labels are claims for later protected
++qualification. Both lawful parameter programs were replayed on every retained
++pair. Public IDs hash only visible bytes, with all private fields kept apart.
++
++## Evidence and remaining scope
++
++Changed-scope checks: 20 standard-library tests, all four original labeled pairs,
++four generated step-6 orientation witnesses, one production two-demo/four-query
++lesson (six unique inputs, no recorded rejections), and two parameter episodes
++with four queries each. The production lesson and parameter episodes distinguish
++the chosen rule from the declared rivals using demonstrations only.
++
++Independent review covered count/spacing boundaries and export/certificate
++rejection paths. It found an unserializable private-note failure that left a
++partial destination. The writer now serializes all payloads before directory
++creation; its regression failed before the fix and passes afterward. This is
++not a general rollback promise for later filesystem failures.
++
++Compact task-local evidence is in `workspace/parametric/evidence/current/`;
++the returned `checks/` also retains exact commands, pre-repair failures, Racket
++receipts and the independent review. Broad production batteries and protected
++parameter qualification were not run. Source review, parameter acceptance and
++training admission remain separate. Next useful step: accept/review the canonical
++repair, then qualify the proposed adapter against its source inventory if desired.
+diff --git a/repo/generators/1d1cffd62646/tests/test_generator_repair.py b/repo/generators/1d1cffd62646/tests/test_generator_repair.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1d1cffd62646/tests/test_generator_repair.py
+@@ -0,0 +1,134 @@
++"""Focused input-contract regressions for the three-dot square-ring task."""
++from __future__ import annotations
++
++import unittest
++
++from reviewer_support import canonical_pairs, find_root, load_selected_generator
++
++
++ROOT = find_root(__file__)
++GENERATOR, _, _ = load_selected_generator("1d1cffd62646", root=ROOT)
++
++
++def dots(grid):
++    return [(r, c, value) for r, row in enumerate(grid)
++            for c, value in enumerate(row) if value != 0]
++
++
++def grid_with(points, *, h=16, w=18):
++    grid = [[0] * w for _ in range(h)]
++    for r, c, value in points:
++        grid[r][c] = value
++    return grid
++
++
++class GeneratorRepairTests(unittest.TestCase):
++    def test_original_canonical_three_dot_inputs_are_admitted(self):
++        pairs = canonical_pairs("1d1cffd62646", root=ROOT, variant=0)
++        self.assertEqual(len(pairs), 4)
++        for pair in pairs:
++            with self.subTest(split=pair["split"], pair=pair["pair_index"]):
++                self.assertEqual(len(dots(pair["input"])), 3)
++                self.assertEqual(GENERATOR.self_check(pair["input"]), [])
++
++
++    def test_real_overrides_define_three_symmetric_same_color_dots(self):
++        for orientation, delta in [
++            ("vertical", (4, 0)), ("horizontal", (0, 4)),
++            ("diag_down", (4, 4)), ("diag_up", (4, -4)),
++        ]:
++            with self.subTest(orientation=orientation):
++                kwargs = dict(grid_h=16, grid_w=18, step=4,
++                              dot_color=9, orientation=orientation)
++                grid = GENERATOR.generate(17, 2, **kwargs)
++                self.assertEqual((len(grid), len(grid[0])), (16, 18))
++                points = dots(grid)
++                self.assertEqual(len(points), 3)
++                self.assertEqual({point[2] for point in points}, {9})
++                self.assertEqual((points[1][0] - points[0][0], points[1][1] - points[0][1]), delta)
++                self.assertEqual((points[2][0] - points[1][0], points[2][1] - points[1][1]), delta)
++                self.assertEqual(GENERATOR.self_check(grid), [])
++                self.assertEqual(GENERATOR.generate(17, 2, **kwargs), grid)
++
++
++    def test_explicit_dimensions_cover_full_declared_range_even_on_easy(self):
++        for shape in [(10, 30), (30, 10), (23, 28)]:
++            with self.subTest(shape=shape):
++                grid = GENERATOR.generate(3, 0, difficulty="easy", grid_h=shape[0],
++                                          grid_w=shape[1], step=2)
++                self.assertEqual((len(grid), len(grid[0])), shape)
++                self.assertEqual(GENERATOR.self_check(grid), [])
++
++
++    def test_step_override_selects_a_feasible_direction(self):
++        grid = GENERATOR.generate(19, 0, grid_h=10, grid_w=13, step=6)
++        points = dots(grid)
++        self.assertEqual(len(points), 3)
++        self.assertEqual([point[1] for point in points], [0, 6, 12])
++        self.assertEqual(len({point[0] for point in points}), 1)
++
++
++    def test_impossible_spacing_is_rejected_instead_of_clamped(self):
++        for orientation in ["vertical", "horizontal", "diag_down", "diag_up"]:
++            with self.subTest(orientation=orientation), self.assertRaises(ValueError):
++                GENERATOR.generate(0, 0, grid_h=10, grid_w=10, step=6,
++                                   orientation=orientation)
++
++
++    def test_numeric_override_types_are_exact_integers(self):
++        for axis in ["grid_h", "grid_w", "step", "dot_color"]:
++            nominal = 16 if axis in ("grid_h", "grid_w") else 3
++            for value in [True, float(nominal), str(nominal)]:
++                with self.subTest(axis=axis, value=value), self.assertRaises((TypeError, ValueError)):
++                    GENERATOR.generate(0, 0, **{axis: value})
++
++
++    def test_invalid_or_unsupported_controls_fail_visibly(self):
++        for overrides in [
++    {"grid_h": 9}, {"grid_w": 31}, {"step": 1}, {"step": 7},
++    {"dot_color": 0}, {"dot_color": 10}, {"orientation": "diagonal"},
++    {"texture": "no_dots"}, {"texture": "single_dot"},
++    {"texture": "full_grid"}, {"palette_kind": "warm"},
++    {"anchor_corner": True}, {"asymmetry_force": True},
++    {"palette_size": 1}, {"position_bias": "rng"}, {"unknown": 1},
++        ]:
++            with self.subTest(overrides=overrides), self.assertRaises((TypeError, ValueError)):
++                GENERATOR.generate(0, 0, **overrides)
++
++
++    def test_self_check_rejects_malformed_and_out_of_domain_inputs(self):
++        for index, grid in enumerate([None, [], [[]], "000", [[0], []],
++    grid_with([(2, 4, True), (4, 4, True), (6, 4, True)]),
++    grid_with([(2, 4, 2.0), (4, 4, 2.0), (6, 4, 2.0)]),
++    grid_with([(2, 4, 10), (4, 4, 10), (6, 4, 10)]),
++    grid_with([(2, 4, 2), (4, 4, 2)], h=9),
++    grid_with([(2, 4, 2), (4, 4, 2)], h=31),
++    grid_with([(2, 4, 2), (4, 4, 2)]),
++    grid_with([(2, 4, 2), (4, 4, 2), (6, 4, 3)]),
++    grid_with([(2, 4, 2), (4, 4, 2), (7, 4, 2)]),
++    grid_with([(2, 4, 2), (4, 5, 2), (6, 4, 2)]),
++    grid_with([(2, 4, 2), (3, 4, 2), (4, 4, 2)]),
++        ]):
++            with self.subTest(case=index):
++                self.assertTrue(GENERATOR.self_check(grid))
++
++
++    def test_metadata_cannot_bypass_the_input_contract(self):
++        grid = grid_with([(2, 4, 2), (4, 4, 2)])
++        self.assertTrue(GENERATOR.self_check(grid, meta={"texture": "no_dots"}))
++
++
++    def test_default_draws_cover_both_diagonals_and_axis_aligned_dots(self):
++        directions = set()
++        for sample_index in range(32):
++            grid = GENERATOR.generate(17, sample_index)
++            self.assertEqual(GENERATOR.self_check(grid), [])
++            points = dots(grid)
++            self.assertEqual(len(points), 3)
++            dr, dc = points[1][0] - points[0][0], points[1][1] - points[0][1]
++            directions.add((0 if dr == 0 else 1, 0 if dc == 0 else (1 if dc > 0 else -1)))
++        self.assertEqual(directions, {(1, 0), (0, 1), (1, 1), (1, -1)})
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+diff --git a/repo/generators/1d1cffd62646/tests/test_ring_stride.py b/repo/generators/1d1cffd62646/tests/test_ring_stride.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1d1cffd62646/tests/test_ring_stride.py
+@@ -0,0 +1,189 @@
++"""Behavioral checks for the separate proposed ring-stride family."""
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++import tempfile
++import unittest
++from unittest.mock import patch
++
++from reviewer_support import canonical_path, find_root, public_challenge_bytes
++
++TASK = Path(__file__).resolve().parents[1]
++
++
++def marked_grid():
++    grid = [[0] * 17 for _ in range(13)]
++    for r, c in [(4, 6), (6, 8), (8, 10)]:
++        grid[r][c] = 3
++    return grid
++
++
++class RingStrideTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        path = TASK / "workspace/parametric/prototype.py"
++        assert path.exists(), "The runnable ring-stride prototype has not been implemented"
++        spec = importlib.util.spec_from_file_location("ring_stride_test", path)
++        cls.proto = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(cls.proto)
++        from arc_repl.racket_bridge import RacketBridge
++        cls.bridge = RacketBridge(timeout=10)
++        cls.bridge.__enter__()
++        cls.addClassCleanup(cls.bridge.__exit__, None, None, None)
++
++    def test_stride_changes_outer_rings_and_preserves_markers(self):
++        proto, bridge = self.proto, self.bridge
++        grid = marked_grid()
++        one = proto.transform(grid, ring_stride=1)
++        two = proto.transform(grid, ring_stride=2)
++        assert one[6][12] == 3 and two[6][12] == 0
++        assert one[6][14] == two[6][14] == 3
++        assert all(two[r][c] == 3 for r, c in [(4, 6), (6, 8), (8, 10)])
++        assert grid == marked_grid()
++        for setting, expected in [(1, one), (2, two)]:
++            assert proto.racket_label(bridge, proto.materialize_program(setting), grid) == expected
++
++
++    def test_default_is_exact_canonical_source_and_matches_all_original_pairs(self):
++        proto, bridge = self.proto, self.bridge
++        with canonical_path(find_root(__file__)).open() as handle:
++            rows = [json.loads(line) for line in handle]
++        row = next(r for r in rows if r.get("task_id") == proto.TASK_ID and r.get("source") == "training")
++        assert proto.materialize_program(1) == row["program_solution"]
++        for pair in row["train"] + row["test"]:
++            assert proto.transform(pair["input"], ring_stride=1) == pair["output"]
++            assert proto.racket_label(bridge, proto.materialize_program(1), pair["input"]) == pair["output"]
++
++
++    def test_parameter_rejects_values_outside_exact_integer_contract(self):
++        for bad in [0, 3, True, 1.0, "1", None]:
++            with self.subTest(bad=repr(bad)), self.assertRaises(ValueError):
++                self.proto.materialize_program(bad)
++
++
++    def test_count_and_seed_boundaries_fail_before_sampling(self):
++        for kwargs in [{"n_demo": 1}, {"n_demo": 9}, {"n_demo": True}, {"n_demo": 2.0},
++                       {"n_query": 0}, {"n_query": 9}, {"n_query": "4"}, {"seed": -1}]:
++            request = {"seed": 17, "n_demo": 2, "n_query": 4}
++            request.update(kwargs)
++            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
++                self.proto.generate_episode(**request)
++
++
++    def test_matched_inputs_independent_counts_and_demo_only_certificates(self):
++        proto, bridge = self.proto, self.bridge
++        episodes = [proto.generate_episode(17, ring_stride=s, n_demo=2, n_query=4, bridge=bridge)
++                    for s in (1, 2)]
++        inputs = [[pair["input"] for role in ("train", "test") for pair in e[role]] for e in episodes]
++        assert inputs[0] == inputs[1]
++        assert len({json.dumps(g) for g in inputs[0]}) == 6
++        assert (30, 30) in [(len(p["input"]), len(p["input"][0])) for p in episodes[0]["test"]]
++        assert episodes[0]["train"][0]["output"] != episodes[1]["train"][0]["output"]
++        for stride, episode in zip((1, 2), episodes):
++            certificate = proto.lesson_certificate(episode)
++            assert certificate["identifiable"] is True
++            assert certificate["survivors"] == [f"stride-{stride}"]
++            changed = copy.deepcopy(episode)
++            changed["parameters"] = {"ring_stride": 99}
++            for pair in changed["test"]:
++                pair["output"] = [[9]]
++            assert proto.lesson_certificate(changed) == certificate
++            assert proto.verify_episode(episode, bridge=bridge)["pairs"] == 6
++        eight = proto.generate_episode(4, n_demo=8, n_query=1, bridge=bridge)
++        assert len(eight["train"]) == 8 and len(eight["test"]) == 1
++
++
++    def test_underidentified_lesson_has_a_concrete_disagreeing_query(self):
++        proto = self.proto
++        tiny = [[0] * 5 for _ in range(5)]
++        for r, c in [(0, 0), (2, 2), (4, 4)]:
++            tiny[r][c] = 3
++        lesson = {"train": [{"input": tiny, "output": proto.transform(tiny, ring_stride=1)}],
++                  "test": [{"input": marked_grid()}]}
++        certificate = proto.lesson_certificate(lesson)
++        assert {"stride-1", "stride-2"} <= set(certificate["survivors"])
++        assert certificate["identifiable"] is False
++
++
++    def test_writer_uses_exact_public_bytes_and_rejects_duplicates_and_tampering(self):
++        proto, bridge = self.proto, self.bridge
++        temp = tempfile.TemporaryDirectory()
++        self.addCleanup(temp.cleanup)
++        tmp_path = Path(temp.name)
++        episode = proto.generate_episode(23, bridge=bridge)
++        output = tmp_path / "first"
++        proto.write_batch([episode], output)
++        assert proto.verify_batch(output, bridge=bridge)["racket_parameter_replays"] == 12
++        public = list((output / "public").glob("*.json"))
++        assert len(public) == 1
++        payload = public[0].read_bytes()
++        assert payload == public_challenge_bytes(episode)
++        assert public[0].stem == hashlib.sha256(payload).hexdigest()
++        visible = json.loads(payload)
++        assert set(visible) == {"train", "test"}
++        assert all(set(pair) == {"input"} for pair in visible["test"])
++        changed = copy.deepcopy(episode)
++        changed["seed"] += 1
++        changed["private_note"] = "This must never change the public filename or bytes"
++        proto.write_batch([changed], tmp_path / "second")
++        assert (tmp_path / "second/public" / public[0].name).read_bytes() == payload
++        with self.assertRaisesRegex(ValueError, "duplicate"):
++            proto.write_batch([episode, changed], tmp_path / "duplicates")
++        assert not (tmp_path / "duplicates").exists()
++        with self.assertRaises((ValueError, FileExistsError)):
++            proto.write_batch([episode], output)
++        tampered = copy.deepcopy(episode)
++        tampered["test"][0]["output"][0][0] = 9
++        with self.assertRaises(ValueError):
++            proto.verify_episode(tampered, bridge=bridge)
++        tampered = copy.deepcopy(episode)
++        tampered["train"][0]["input"][0][0] = False
++        with self.assertRaises(ValueError):
++            proto.write_batch([tampered], tmp_path / "boolean")
++
++
++    def test_sampler_exhaustion_returns_no_partial_episode(self):
++        with patch.object(self.proto, "_draw_input", side_effect=lambda *a, **k: marked_grid()):
++            with self.assertRaisesRegex(RuntimeError, "exhaust"):
++                self.proto.sample_inputs(7, n_demo=2, n_query=4)
++
++    def test_unserializable_private_metadata_does_not_create_a_destination(self):
++        episode = self.proto.generate_episode(29, bridge=self.bridge)
++        episode["private_note"] = Path("author-note.txt")
++        with tempfile.TemporaryDirectory() as temp:
++            output = Path(temp) / "must-not-exist"
++            with self.assertRaises((TypeError, ValueError)):
++                self.proto.write_batch([episode], output)
++            assert not output.exists(), "Serialization failure left a partially written batch"
++
++    def test_adapter_has_exact_contract_and_reuses_identifiable_matched_inputs(self):
++        path = TASK / "workspace/parametric/adapter.py"
++        assert path.exists(), "The promotion adapter has not been implemented"
++        spec = importlib.util.spec_from_file_location("ring_stride_adapter_test", path)
++        adapter = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(adapter)
++        episodes = []
++        for stride in (1, 2):
++            settings = {"ring_stride": stride}
++            episode = adapter.generate(41, settings, 2, 4)
++            assert episode["program_solution"] == adapter.program(settings)
++            assert episode["program_solution"] == self.proto.materialize_program(stride)
++            assert self.proto.lesson_certificate(episode)["survivors"] == [f"stride-{stride}"]
++            for pair in episode["train"] + episode["test"]:
++                assert self.proto.racket_label(self.bridge, adapter.program(settings), pair["input"]) == pair["output"]
++            episodes.append(episode)
++        assert [p["input"] for p in episodes[0]["train"] + episodes[0]["test"]] == [
++            p["input"] for p in episodes[1]["train"] + episodes[1]["test"]]
++        for settings in ({}, {"ring_stride": 1, "extra": 4}, {"ring_stride": True}):
++            with self.subTest(settings=settings), self.assertRaises(ValueError):
++                adapter.program(settings)
++        contract = json.loads((path.parent / "promotion.json").read_text())
++        assert contract["parameters"] == {"ring_stride": [1, 2]}
++        assert contract["default"] == {"ring_stride": 1}
++        assert contract["limits"] == {"demos": [2, 8], "queries": [1, 8]}
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/repo/generators/1d1cffd62646/workspace/parametric/README.md b/repo/generators/1d1cffd62646/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1d1cffd62646/workspace/parametric/README.md
+@@ -0,0 +1,81 @@
++# Three-dot concentric squares: proposed ring stride
++
++This task-local extension preserves the original `training:5c2c9af4` inference:
++find the middle of three equally spaced dots, infer Chebyshev spacing, and draw
++concentric square outlines clipped by the grid. It is a proposed family, with a
++promotion adapter ready for the owner's separate qualification/acceptance step.
++Neither this prototype nor its examples are admitted to training automatically.
++
++## One meaningful rule parameter
++
++| `ring_stride` | Executed rule |
++|---|---|
++| `1` (canonical default) | Center and every ring at radius `k * dot_spacing`. |
++| `2` | Center and positive odd-numbered rings: radii `spacing`, `3 * spacing`, `5 * spacing`, etc. |
++
++The first ring always contains the endpoint dots. Stride 1 returns the exact
++canonical Racket source in `canonical.rkt`, without rewriting it. Stride 2 applies
++one checked substitution to ring enumeration. Production uses the unchanged
++canonical rule; this extension does not replace it. The parameter changes output
++geometry, while preserving center selection, dot-distance inference and clipping.
++
++## Run from the outer packet folder
++
++```bash
++python3 review.py setup
++python3 review.py run python3 generators/1d1cffd62646/workspace/parametric/prototype.py build --seed 17 --demos 2 --queries 4 --out ../checks/rings-new
++python3 review.py run python3 generators/1d1cffd62646/workspace/parametric/prototype.py verify ../checks/rings-new
++python3 WORK/check_public_exports.py WORK/checks/rings-new/public --demos 2 --queries 4
++python3 review.py run python3 -m unittest discover -s generators/1d1cffd62646/tests -v
++```
++
++`build` emits both settings on the same inputs. Select one with `--ring-stride 1`
++or `--ring-stride 2`. Use a fresh output directory. No pytest install is needed.
++Every exported target is executed through matching Racket and checked against an
++independent distance-based Python mirror. `verify` replays both parameter programs
++on every saved demonstration/query, then recomputes labels and certificates.
++
++Only `public/` contains model-visible challenges. Its filenames are SHA-256 of
++the exact visible bytes written: demonstrations plus query inputs. Hidden seeds,
++parameters, programs and query targets appear only in `private/episodes.jsonl`.
++The writer sorts by public ID, rejects duplicate visible payloads before creating
++its directory, and refuses existing destinations. The manifest is written last.
++Calling `verify_episode` or `verify_batch` without a bridge performs structural,
++source/hash, Python-label and certificate checks only; it makes no Racket replay claim.
++
++## Sampling and teachability limits
++
++Demonstration count is independently configurable in **2..8**, query count in
++**1..8**; booleans, floats and numeric strings are refused. The default is two
++demos and four distinct queries, all under the same parameter setting. Queries
++include 21x27, 30x30, 27x18 and 19x30 grids. No padding or copied input pairs is
++used to meet the requested count. Sampler inputs are identical across settings
++for the same seed/counts, with an input seed separate from the rule parameter.
++
++Sampling uses the repaired production generator's horizontal, vertical and two
++diagonal directions. Its two initial demos use different dot spacings. Up to 64
++complete attempts are allowed; exhausted sampling raises instead of emitting a
++partial episode. The transform/certificate also accepts smaller lawful grids
++(up to 30 per side) for underidentification witnesses; ordinary sampling starts
++at 10 per side. Arbitrary non-45-degree slopes admitted by production validation
++are outside this prototype's declared grammar.
++
++Each episode's demonstrations are checked against **22 explicit hypotheses**:
++both parameter settings plus, under each setting, first/last-dot centers, fixed
++spacings 2..6, Manhattan rings, first-ring-only and wholly-contained-square-only
++shortcuts. The certificate reads demonstration labels and query inputs only;
++changing hidden settings or query answers cannot influence it. A surviving
++hypothesis is problematic only if it changes a query prediction. Generated
++lessons additionally require the selected setting to be the sole survivor.
++These finite rivals do not prove uniqueness against arbitrary programs. Shortcut
++predictions are Python hypotheses; both lawful parameter programs are checked
++against actual Racket.
++
++## Owner pickup
++
++`adapter.py` reuses the same sampler, mirror and certificate. It returns Python
++claims for the public qualification worker to re-execute through protected
++Racket; it does not run an extra Racket process itself. `promotion.json` declares
++the exact parameter domain, default, independent counts and canonical resource.
++The source/evidence manifest is an inventory, not a qualification or approval.
++The production repair must be accepted separately before owner qualification.
+diff --git a/repo/generators/1d1cffd62646/workspace/parametric/adapter.py b/repo/generators/1d1cffd62646/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1d1cffd62646/workspace/parametric/adapter.py
+@@ -0,0 +1,36 @@
++"""Thin opt-in promotion adapter; protected qualification verifies its claims."""
++import importlib.util
++from pathlib import Path
++
++_spec = importlib.util.spec_from_file_location(
++    "_three_dot_ring_stride_1d1cffd62646", Path(__file__).with_name("prototype.py"))
++_prototype = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_prototype)
++
++
++def _settings(settings):
++    if type(settings) is not dict or set(settings) != {"ring_stride"}:
++        raise ValueError("settings must contain exactly ring_stride")
++    return _prototype._stride(settings["ring_stride"])
++
++
++def program(settings):
++    return _prototype.materialize_program(_settings(settings))
++
++
++def generate(seed, settings, demos, queries):
++    """Return Python label claims for independent protected-Racket qualification.
++
++    Ordinary prototype CLI exports instead execute their matching Racket labels
++    directly. This adapter grants no acceptance or training admission.
++    """
++    stride = _settings(settings)
++    train, test = _prototype.sample_inputs(seed, n_demo=demos, n_query=queries)
++    episode = {"program_solution": program(settings)}
++    for role, inputs in (("train", train), ("test", test)):
++        episode[role] = [{"input": grid, "output": _prototype.transform(grid, ring_stride=stride)}
++                         for grid in inputs]
++    proof = _prototype.lesson_certificate(episode)
++    if not proof["identifiable"] or proof["survivors"] != [f"stride-{stride}"]:
++        raise ValueError("demonstrations do not establish every query")
++    return episode
+diff --git a/repo/generators/1d1cffd62646/workspace/parametric/canonical.rkt b/repo/generators/1d1cffd62646/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1d1cffd62646/workspace/parametric/canonical.rkt
+@@ -0,0 +1,36 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (begin
++             (define bg 0)
++             (define dots
++               (sort-by (filter (lambda (rc) (!= (at g (first rc) (second rc)) bg))
++                                (flatmap (lambda (r)
++                                           (map (lambda (c) (list r c)) (range 0 w)))
++                                         (range 0 h)))
++                        (lambda (rc) (first rc))))
++             (define center (second dots))
++             (define cr (first center))
++             (define cc (second center))
++             (define color (at g cr cc))
++             (define d1 (first dots))
++             (define step
++               (max (abs (- (first center) (first d1)))
++                    (abs (- (second center) (second d1)))))
++             (define (in-b r c) (and (>= r 0) (< r h) (>= c 0) (< c w)))
++             (define (square-outline s)
++               (let* ((tr (- cr s))
++                      (br (+ cr s))
++                      (lc (- cc s))
++                      (rc (+ cc s)))
++                 (append (map (lambda (c) (list tr c)) (range lc (+ rc 1)))
++                         (map (lambda (c) (list br c)) (range lc (+ rc 1)))
++                         (map (lambda (r) (list r lc)) (range tr (+ br 1)))
++                         (map (lambda (r) (list r rc)) (range tr (+ br 1))))))
++             (define max-s (+ (max h w) 1))
++             (define max-k (quotient max-s step))
++             (define all-cells
++               (flatmap (lambda (k) (square-outline (* k step))) (range 0 (+ max-k 2))))
++             (define valid-cells
++               (filter (lambda (rc) (in-b (first rc) (second rc))) all-cells))
++             (recolor-cells g valid-cells color)))))
+\ No newline at end of file
+diff --git a/repo/generators/1d1cffd62646/workspace/parametric/evidence/current/focused-tests.log b/repo/generators/1d1cffd62646/workspace/parametric/evidence/current/focused-tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1d1cffd62646/workspace/parametric/evidence/current/focused-tests.log
+@@ -0,0 +1,27 @@
++effective cwd: /workspace/scratch/531bd5d78e91/arc_review/WORK/repo
++Payload paths are relative to repo; use generators/TASK/..., not repo/generators/TASK/...
++test_default_draws_cover_both_diagonals_and_axis_aligned_dots (test_generator_repair.GeneratorRepairTests.test_default_draws_cover_both_diagonals_and_axis_aligned_dots) ... ok
++test_explicit_dimensions_cover_full_declared_range_even_on_easy (test_generator_repair.GeneratorRepairTests.test_explicit_dimensions_cover_full_declared_range_even_on_easy) ... ok
++test_impossible_spacing_is_rejected_instead_of_clamped (test_generator_repair.GeneratorRepairTests.test_impossible_spacing_is_rejected_instead_of_clamped) ... ok
++test_invalid_or_unsupported_controls_fail_visibly (test_generator_repair.GeneratorRepairTests.test_invalid_or_unsupported_controls_fail_visibly) ... ok
++test_metadata_cannot_bypass_the_input_contract (test_generator_repair.GeneratorRepairTests.test_metadata_cannot_bypass_the_input_contract) ... ok
++test_numeric_override_types_are_exact_integers (test_generator_repair.GeneratorRepairTests.test_numeric_override_types_are_exact_integers) ... ok
++test_original_canonical_three_dot_inputs_are_admitted (test_generator_repair.GeneratorRepairTests.test_original_canonical_three_dot_inputs_are_admitted) ... ok
++test_real_overrides_define_three_symmetric_same_color_dots (test_generator_repair.GeneratorRepairTests.test_real_overrides_define_three_symmetric_same_color_dots) ... ok
++test_self_check_rejects_malformed_and_out_of_domain_inputs (test_generator_repair.GeneratorRepairTests.test_self_check_rejects_malformed_and_out_of_domain_inputs) ... ok
++test_step_override_selects_a_feasible_direction (test_generator_repair.GeneratorRepairTests.test_step_override_selects_a_feasible_direction) ... ok
++test_adapter_has_exact_contract_and_reuses_identifiable_matched_inputs (test_ring_stride.RingStrideTests.test_adapter_has_exact_contract_and_reuses_identifiable_matched_inputs) ... ok
++test_count_and_seed_boundaries_fail_before_sampling (test_ring_stride.RingStrideTests.test_count_and_seed_boundaries_fail_before_sampling) ... ok
++test_default_is_exact_canonical_source_and_matches_all_original_pairs (test_ring_stride.RingStrideTests.test_default_is_exact_canonical_source_and_matches_all_original_pairs) ... ok
++test_matched_inputs_independent_counts_and_demo_only_certificates (test_ring_stride.RingStrideTests.test_matched_inputs_independent_counts_and_demo_only_certificates) ... ok
++test_parameter_rejects_values_outside_exact_integer_contract (test_ring_stride.RingStrideTests.test_parameter_rejects_values_outside_exact_integer_contract) ... ok
++test_sampler_exhaustion_returns_no_partial_episode (test_ring_stride.RingStrideTests.test_sampler_exhaustion_returns_no_partial_episode) ... ok
++test_stride_changes_outer_rings_and_preserves_markers (test_ring_stride.RingStrideTests.test_stride_changes_outer_rings_and_preserves_markers) ... ok
++test_underidentified_lesson_has_a_concrete_disagreeing_query (test_ring_stride.RingStrideTests.test_underidentified_lesson_has_a_concrete_disagreeing_query) ... ok
++test_unserializable_private_metadata_does_not_create_a_destination (test_ring_stride.RingStrideTests.test_unserializable_private_metadata_does_not_create_a_destination) ... ok
++test_writer_uses_exact_public_bytes_and_rejects_duplicates_and_tampering (test_ring_stride.RingStrideTests.test_writer_uses_exact_public_bytes_and_rejects_duplicates_and_tampering) ... ok
++
++----------------------------------------------------------------------
++Ran 20 tests in 3.925s
++
++OK
+diff --git a/repo/generators/1d1cffd62646/workspace/parametric/evidence/current/report.json b/repo/generators/1d1cffd62646/workspace/parametric/evidence/current/report.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1d1cffd62646/workspace/parametric/evidence/current/report.json
+@@ -0,0 +1,277 @@
++{
++  "schema": "three-dot-ring-stride-evidence-v1",
++  "assignment_id": "review-205e83d15b70a0aa",
++  "source_bindings": {
++    "canonical_ledger": {
++      "path": "shared/data/canonical/puzzles.jsonl",
++      "sha256": "bca386176d2ae2d932a7b512e99c2e8af649181a108af3cc945bfbc98fe82d3d"
++    },
++    "canonical_resource": {
++      "path": "generators/1d1cffd62646/workspace/parametric/canonical.rkt",
++      "sha256": "fe733c91003d5dc3fae0319eb38e4f28117e81865fdb168346b61281bff2b946"
++    },
++    "generator": {
++      "path": "generators/1d1cffd62646/generator.py",
++      "sha256": "c29c844c6fa26fe31931d2b86ad41e33bafd9615068ed4ca98c93d0b71934391"
++    },
++    "prototype": {
++      "path": "generators/1d1cffd62646/workspace/parametric/prototype.py",
++      "sha256": "4d3d815ef0c46de3c41a76a2e87eb90b8be23c1bbeb16643fdf0cef2bed379a5"
++    }
++  },
++  "tests": {
++    "runner": "unittest",
++    "methods": 20,
++    "failures": 0,
++    "errors": 0,
++    "exit_code": 0,
++    "log": "focused-tests.log"
++  },
++  "racket_replay": {
++    "episodes": 2,
++    "pairs": 12,
++    "queries": 8,
++    "racket_parameter_replays": 24,
++    "reports": [
++      {
++        "certificate": {
++          "identifiable": true,
++          "queries": [
++            {
++              "identifiable": true,
++              "index": 0,
++              "prediction_sha256s": [
++                "87868a404d9d356c4171dde17f276503cf714f148cde142f43fcc185084c09b2"
++              ]
++            },
++            {
++              "identifiable": true,
++              "index": 1,
++              "prediction_sha256s": [
++                "d0f63b13d9ed16fd28573a6c549b43fe6ff6b4c03998e2806f0733a17a4fa328"
++              ]
++            },
++            {
++              "identifiable": true,
++              "index": 2,
++              "prediction_sha256s": [
++                "e6b3508919142a55f2a75ca0f66ebb21ada92f91592908d0df5f4262145ac933"
++              ]
++            },
++            {
++              "identifiable": true,
++              "index": 3,
++              "prediction_sha256s": [
++                "9637addd4f9e654167ed76f3f2ff396b176b2da9db899a330dd106c96acf75c8"
++              ]
++            }
++          ],
++          "rival_count": 22,
++          "survivors": [
++            "stride-2"
++          ]
++        },
++        "demos": 2,
++        "pairs": 6,
++        "queries": 4,
++        "racket_parameter_replays": 12
++      },
++      {
++        "certificate": {
++          "identifiable": true,
++          "queries": [
++            {
++              "identifiable": true,
++              "index": 0,
++              "prediction_sha256s": [
++                "0dd6c7c39d6020dfc2659e81db67c4ea2eace1237a7512d04bf12a4f51fe58a2"
++              ]
++            },
++            {
++              "identifiable": true,
++              "index": 1,
++              "prediction_sha256s": [
++                "c7d2dd838f029929cafb5ef70d7f8950051ab5253c49e7d5665129ce45624f35"
++              ]
++            },
++            {
++              "identifiable": true,
++              "index": 2,
++              "prediction_sha256s": [
++                "ee845695a97f4760f226d81c5901b60f850f8192cf324faa27d2e49959706779"
++              ]
++            },
++            {
++              "identifiable": true,
++              "index": 3,
++              "prediction_sha256s": [
++                "74bad6ce8d99edaf00ba66b0c062e2151c8dcd336c37c168c5c8896b0d876a8b"
++              ]
++            }
++          ],
++          "rival_count": 22,
++          "survivors": [
++            "stride-1"
++          ]
++        },
++        "demos": 2,
++        "pairs": 6,
++        "queries": 4,
++        "racket_parameter_replays": 12
++      }
++    ]
++  },
++  "public_export": {
++    "files_checked": 2,
++    "findings": [],
++    "reference_labels_checked": false
++  },
++  "production_lesson": {
++    "source_bindings": {
++      "prototype": {
++        "path": "generators/1d1cffd62646/workspace/parametric/prototype.py",
++        "sha256": "4d3d815ef0c46de3c41a76a2e87eb90b8be23c1bbeb16643fdf0cef2bed379a5"
++      },
++      "canonical_resource": {
++        "path": "generators/1d1cffd62646/workspace/parametric/canonical.rkt",
++        "sha256": "fe733c91003d5dc3fae0319eb38e4f28117e81865fdb168346b61281bff2b946"
++      },
++      "generator": {
++        "path": "generators/1d1cffd62646/generator.py",
++        "sha256": "c29c844c6fa26fe31931d2b86ad41e33bafd9615068ed4ca98c93d0b71934391"
++      },
++      "canonical_ledger": {
++        "path": "shared/data/canonical/puzzles.jsonl",
++        "sha256": "bca386176d2ae2d932a7b512e99c2e8af649181a108af3cc945bfbc98fe82d3d"
++      }
++    },
++    "certificate": {
++      "rival_count": 22,
++      "survivors": [
++        "stride-1"
++      ],
++      "identifiable": true,
++      "queries": [
++        {
++          "index": 0,
++          "identifiable": true,
++          "prediction_sha256s": [
++            "c1371e28c426840b26c1282d132bdcaa2f26fa8d2976de662377cac1392f6dce"
++          ]
++        },
++        {
++          "index": 1,
++          "identifiable": true,
++          "prediction_sha256s": [
++            "39e92f341744c536a9237e91abd492bb82ffc6ca02b0e9323438f835a52b6f6f"
++          ]
++        },
++        {
++          "index": 2,
++          "identifiable": true,
++          "prediction_sha256s": [
++            "6d51dc53b7b00a947e1ac054fd397324ae51b9f9a17b9311d57eda459ac877b1"
++          ]
++        },
++        {
++          "index": 3,
++          "identifiable": true,
++          "prediction_sha256s": [
++            "95aa2fc7240faaca4b4f133bc1cc24d8ead9c13b8017e4da096a3e4c337519bb"
++          ]
++        }
++      ]
++    },
++    "input_shapes": {
++      "train": [
++        [
++          14,
++          14
++        ],
++        [
++          14,
++          17
++        ]
++      ],
++      "test": [
++        [
++          19,
++          20
++        ],
++        [
++          17,
++          16
++        ],
++        [
++          15,
++          23
++        ],
++        [
++          19,
++          22
++        ]
++      ]
++    },
++    "unique_inputs": 6,
++    "label_basis": "previous production command executed canonical Racket",
++    "reexecuted_racket": false
++  },
++  "adversarial_resolution": {
++    "schema": "bounded-adversarial-static-resolution-v1",
++    "task_id": "1d1cffd62646",
++    "review_date_utc": "2026-10-24",
++    "review_basis": "static_source_and_documented_interface_only",
++    "previous_finding": {
++      "severity": "medium",
++      "title": "Writer creates public output before private JSON serialization validation",
++      "source": "generators/1d1cffd62646/workspace/parametric/prototype.py",
++      "source_sha256": "6943d20cd6e2b1d2c4f0006875822db6d06b364766b1b7fcc2d2078a1d8adbf0",
++      "evidence": "WORK/checks/adversarial/result.json",
++      "trigger": "A valid episode with private_note = pathlib.Path('author-note.txt') passed episode validation but failed JSON serialization after creating its public output."
++    },
++    "current_source_sha256": {
++      "generators/1d1cffd62646/workspace/parametric/prototype.py": "4d3d815ef0c46de3c41a76a2e87eb90b8be23c1bbeb16643fdf0cef2bed379a5",
++      "generators/1d1cffd62646/workspace/parametric/adapter.py": "31c60f3775947f5015787cb7a7e092914a47f2750567dad3561bec4656c66877",
++      "generators/1d1cffd62646/workspace/parametric/promotion.json": "5347ccb5d0bb8b9af87577da8c964c664688db9681a7f637ca5f0b316ff8f8ff"
++    },
++    "resolution": {
++      "status": "resolved_by_static_inspection",
++      "reason": "write_batch now completes public payload preparation, private-row serialization, source binding, and manifest serialization before its first mkdir or file write. The reported unsupported private metadata value therefore raises before destination creation. Public IDs, sorted output order, private/public separation, and existing-destination rejection remain evident in the inspected section.",
++      "remaining_scope_limit": "This resolves the reported serialization-order defect. It does not establish atomic rollback for later filesystem or I/O failures."
++    },
++    "adapter_contract_review": {
++      "status": "no_issue_found_in_static_scope",
++      "interface_authority": [
++        "docs/parametric-promotion.md",
++        "src/arcpuzzles/parametric_worker.py",
++        "src/arcpuzzles/parametric_promotion.py",
++        "src/arcpuzzles/parametric_manifest.py"
++      ],
++      "observations": [
++        "The adapter exports program(settings) and generate(seed, settings, demos, queries), loads its prototype by exact adjacent path, and reuses the existing sampler, transforms, and certificate.",
++        "Settings require exactly ring_stride with an exact integer value of 1 or 2. program returns the prototype materialization; generated program_solution calls that same program function.",
++        "Generated train and test contain input/output pairs, counts are delegated independently to the existing sampler, and the selected setting must be the sole finite certificate survivor.",
++        "The documented interface permits Python label claims because the separate qualification worker re-executes labels through protected Racket; the adapter accurately describes that boundary.",
++        "promotion.json declares the supported schema, task-local adapter, two settings, canonical default 1, demos 2..8, queries 1..8, and the task-local canonical Racket resource. These agree with the adapter and prototype interface."
++      ]
++    },
++    "limits": [
++      "No new adapter, prototype, generator, Racket, or test execution was performed during this resolution check.",
++      "The broad adversarial probe was not rerun; its original source-bound result remains unchanged.",
++      "The root agent's reported final 20-test result is separate evidence and is not claimed as independently executed here.",
++      "Only the changed writer section and finalized adapter/contract were reviewed; this receipt establishes no qualification, approval, safety, or training-admission status."
++    ]
++  },
++  "limits": [
++    "Finite 22-hypothesis certificates, not universal uniqueness.",
++    "Focused tests only; full batteries not run.",
++    "Source inventory is not protected qualification or parameter acceptance.",
++    "No training admission."
++  ],
++  "example_batch_files": {
++    "manifest.json": "5fc6af2df916478bf48c119e0ba2cd6288c734bec0f1436cbe72e6b12b714ca0",
++    "private/episodes.jsonl": "a4a3ec5f7d4ff06b7c1d2522060bd7cfc4d06fc732a2ff42b6eb1aba85b2ea8b",
++    "public/bbf1c0dd8773524dd6c290af4a923d70a0220761ad4c368f49aa42e3ba391494.json": "bbf1c0dd8773524dd6c290af4a923d70a0220761ad4c368f49aa42e3ba391494",
++    "public/baff2acc8962bf77c3e2fdac7ff35e81beb5a38c46452aed681b1ba1de70a4ee.json": "baff2acc8962bf77c3e2fdac7ff35e81beb5a38c46452aed681b1ba1de70a4ee"
++  }
++}
+diff --git a/repo/generators/1d1cffd62646/workspace/parametric/evidence/manifest.json b/repo/generators/1d1cffd62646/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1d1cffd62646/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,82 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "fe733c91003d5dc3fae0319eb38e4f28117e81865fdb168346b61281bff2b946",
++  "canonical_rule_hash": "5d3f4193c512",
++  "default": {
++    "ring_stride": 1
++  },
++  "evidence_root": "generators/1d1cffd62646/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 5581,
++      "path": "generators/1d1cffd62646/generator.py",
++      "sha256": "c29c844c6fa26fe31931d2b86ad41e33bafd9615068ed4ca98c93d0b71934391"
++    },
++    {
++      "bytes": 5910,
++      "path": "generators/1d1cffd62646/tests/test_generator_repair.py",
++      "sha256": "685b557e5032aa2f195be7be3da08f7dfd5d6f24c17d1a23f45e7e91b3f3c343"
++    },
++    {
++      "bytes": 9488,
++      "path": "generators/1d1cffd62646/tests/test_ring_stride.py",
++      "sha256": "f3b15d9349fb47f62c17f82db940f13f8de7710c12a4ebcbdbe77c732d5897e8"
++    },
++    {
++      "bytes": 1546,
++      "path": "generators/1d1cffd62646/workspace/parametric/adapter.py",
++      "sha256": "31c60f3775947f5015787cb7a7e092914a47f2750567dad3561bec4656c66877"
++    },
++    {
++      "bytes": 1766,
++      "path": "generators/1d1cffd62646/workspace/parametric/canonical.rkt",
++      "sha256": "fe733c91003d5dc3fae0319eb38e4f28117e81865fdb168346b61281bff2b946"
++    },
++    {
++      "bytes": 3539,
++      "path": "generators/1d1cffd62646/workspace/parametric/evidence/current/focused-tests.log",
++      "sha256": "d7de0fa4e4072eac717d4334e0d57752f869dba7693e097f8ed9210af494acd5"
++    },
++    {
++      "bytes": 10497,
++      "path": "generators/1d1cffd62646/workspace/parametric/evidence/current/report.json",
++      "sha256": "065487ccf6e0b95479ea3e194b486996cdc8d35bf8717e7cd1097c61a3aa04a4"
++    },
++    {
++      "bytes": 326,
++      "path": "generators/1d1cffd62646/workspace/parametric/promotion.json",
++      "sha256": "5347ccb5d0bb8b9af87577da8c964c664688db9681a7f637ca5f0b316ff8f8ff"
++    },
++    {
++      "bytes": 19405,
++      "path": "generators/1d1cffd62646/workspace/parametric/prototype.py",
++      "sha256": "4d3d815ef0c46de3c41a76a2e87eb90b8be23c1bbeb16643fdf0cef2bed379a5"
++    }
++  ],
++  "generator_sha256": "c29c844c6fa26fe31931d2b86ad41e33bafd9615068ed4ca98c93d0b71934391",
++  "limits": {
++    "demos": [
++      2,
++      8
++    ],
++    "queries": [
++      1,
++      8
++    ]
++  },
++  "parameters": {
++    "ring_stride": [
++      1,
++      2
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "20 focused unittest methods passed; matching Racket labels on 12 retained pairs; 24 parameter program replays; independent bounded adversarial review and serialization regression. No protected qualification or acceptance.",
++  "rule_task_id": "1d1cffd62646",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "1d1cffd62646",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/1d1cffd62646/workspace/parametric/promotion.json b/repo/generators/1d1cffd62646/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1d1cffd62646/workspace/parametric/promotion.json
+@@ -0,0 +1,8 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/1d1cffd62646/workspace/parametric/adapter.py",
++  "parameters": {"ring_stride": [1, 2]},
++  "default": {"ring_stride": 1},
++  "limits": {"demos": [2, 8], "queries": [1, 8]},
++  "resources": ["generators/1d1cffd62646/workspace/parametric/canonical.rkt"]
++}
+diff --git a/repo/generators/1d1cffd62646/workspace/parametric/prototype.py b/repo/generators/1d1cffd62646/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1d1cffd62646/workspace/parametric/prototype.py
+@@ -0,0 +1,410 @@
++"""Proposed concentric-square ring stride, separate from canonical production.
++
++Run with the packet's ``review.py run``. Default stride 1 is the byte-exact
++canonical program; stride 2 retains the center and odd-numbered square rings.
++"""
++from __future__ import annotations
++
++import argparse
++import copy
++import hashlib
++import json
++from pathlib import Path
++import re
++
++from reviewer_support import (canonical_path, find_root, load_selected_generator,
++                              public_challenge_bytes, public_challenge_id)
++
++TASK_ID = "1d1cffd62646"
++PARENT_TASK_ID = "training:5c2c9af4"
++HERE = Path(__file__).resolve().parent
++ROOT = find_root(__file__)
++STRIDES = (1, 2)
++SCHEMA = "three-dot-ring-stride-prototype-v1"
++MODIFIERS = ("first-center", "last-center", "fixed-step-2", "fixed-step-3",
++             "fixed-step-4", "fixed-step-5", "fixed-step-6", "manhattan",
++             "first-ring-only", "whole-squares-only")
++RIVALS = tuple(name for stride in STRIDES for name in
++               (f"stride-{stride}", *(f"stride-{stride}/{m}" for m in MODIFIERS)))
++
++
++def _bytes(value):
++    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
++            + "\n").encode("utf-8")
++
++
++def _sha(value):
++    return hashlib.sha256(value).hexdigest()
++
++
++def _integer(value, name, low, high):
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++    return value
++
++
++def _stride(value):
++    return _integer(value, "ring_stride", 1, 2)
++
++
++def _grid(grid):
++    if (type(grid) is not list or not 1 <= len(grid) <= 30 or
++            type(grid[0]) is not list or not 1 <= len(grid[0]) <= 30):
++        raise ValueError("grid must have 1..30 rows and columns")
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width or
++           any(type(v) is not int or not 0 <= v <= 9 for v in row) for row in grid):
++        raise ValueError("grid must be rectangular with exact integer colors 0..9")
++    return grid
++
++
++def _geometry(grid):
++    _grid(grid)
++    dots = [(r, c) for r, row in enumerate(grid) for c, v in enumerate(row) if v]
++    if len(dots) != 3 or len({grid[r][c] for r, c in dots}) != 1:
++        raise ValueError("input requires exactly three same-color dots")
++    first, center, last = dots
++    dr, dc = center[0] - first[0], center[1] - first[1]
++    if (last != (center[0] + dr, center[1] + dc) or
++            not (dr == 0 or dc == 0 or abs(dr) == abs(dc))):
++        raise ValueError("dots must be equally spaced on a row, column, or diagonal")
++    step = max(abs(dr), abs(dc))
++    _integer(step, "dot step", 2, 6)
++    return dots, center, step, grid[center[0]][center[1]]
++
++
++def materialize_program(ring_stride=1):
++    """Return exact default bytes or the one guarded ring-index substitution."""
++    stride = _stride(ring_stride)
++    program = (HERE / "canonical.rkt").read_text(encoding="utf-8")
++    if stride == 1:
++        return program
++    target = "(range 0 (+ max-k 2))"
++    if program.count(target) != 1:
++        raise ValueError("canonical ring enumeration changed; review the variant")
++    selected = "(filter (lambda (k) (or (= k 0) (= (mod k 2) 1))) " + target + ")"
++    return program.replace(target, selected)
++
++
++def _render(grid, stride, *, center=None, step=None, metric="chebyshev", mode="all"):
++    dots, actual_center, actual_step, color = _geometry(grid)
++    cr, cc = actual_center if center is None else center
++    step = actual_step if step is None else step
++    h, w = len(grid), len(grid[0])
++    result = [row[:] for row in grid]
++    for r in range(h):
++        for c in range(w):
++            dr, dc = abs(r - cr), abs(c - cc)
++            radius = dr + dc if metric == "manhattan" else max(dr, dc)
++            k, remainder = divmod(radius, step)
++            if remainder or (k != 0 and (k - 1) % stride):
++                continue
++            if mode == "first" and k > 1:
++                continue
++            if mode == "whole" and not (0 <= cr - radius and cr + radius < h and
++                                        0 <= cc - radius and cc + radius < w):
++                continue
++            result[r][c] = color
++    return result
++
++
++def transform(grid, *, ring_stride=1):
++    """Independent distance-based mirror; exported labels come from Racket."""
++    return _render(grid, _stride(ring_stride))
++
++
++def _predict(grid, hypothesis):
++    name, _, modifier = hypothesis.partition("/")
++    stride = int(name.removeprefix("stride-"))
++    dots, center, step, color = _geometry(grid)
++    if modifier == "first-center":
++        return _render(grid, stride, center=dots[0])
++    if modifier == "last-center":
++        return _render(grid, stride, center=dots[2])
++    if modifier.startswith("fixed-step-"):
++        return _render(grid, stride, step=int(modifier.removeprefix("fixed-step-")))
++    if modifier == "manhattan":
++        return _render(grid, stride, metric="manhattan")
++    if modifier == "first-ring-only":
++        return _render(grid, stride, mode="first")
++    if modifier == "whole-squares-only":
++        return _render(grid, stride, mode="whole")
++    if modifier:
++        raise ValueError("unknown hypothesis")
++    return transform(grid, ring_stride=stride)
++
++
++def lesson_certificate(episode):
++    """Use only demonstration labels and query inputs, never hidden settings/answers.
++
++    This is a finite declared-rival certificate, not universal rule uniqueness.
++    Extra shortcuts are Python hypotheses; both parameter programs are also
++    checked through Racket by generation/replay tests.
++    """
++    train, test = episode.get("train"), episode.get("test")
++    if type(train) is not list or type(test) is not list or not train or not test:
++        raise ValueError("certificate needs nonempty train/test lists")
++    for pair in train:
++        _geometry(pair["input"])
++        _grid(pair["output"])
++    for pair in test:
++        _geometry(pair["input"])
++    survivors = [name for name in RIVALS if all(_predict(p["input"], name) == p["output"]
++                                               for p in train)]
++    queries = []
++    for index, pair in enumerate(test):
++        predictions = sorted({_sha(_bytes(_predict(pair["input"], name))) for name in survivors})
++        queries.append({"index": index, "identifiable": len(predictions) == 1,
++                        "prediction_sha256s": predictions})
++    return {"rival_count": len(RIVALS), "survivors": survivors,
++            "identifiable": bool(survivors) and all(q["identifiable"] for q in queries),
++            "queries": queries}
++
++
++def _draw_input(seed, index, profile):
++    generator, _, _ = load_selected_generator(TASK_ID, root=ROOT)
++    height, width, step, orientation = profile
++    return generator.generate(seed, index, grid_h=height, grid_w=width, step=step,
++                              orientation=orientation)
++
++
++def sample_inputs(seed, *, n_demo=2, n_query=4):
++    """Setting-neutral, bounded draws; no duplicate pairs or short episodes."""
++    _integer(seed, "seed", 0, 2**63 - 1)
++    _integer(n_demo, "n_demo", 2, 8)
++    _integer(n_query, "n_query", 1, 8)
++    input_seed = int.from_bytes(hashlib.sha256(f"three-dot-input-v1:{seed}".encode()).digest()[:8], "big")
++    demo_profiles = ((13, 17, 2, "diag_down"), (17, 13, 3, "horizontal"),
++                     (21, 21, 4, "diag_up"), (19, 23, 5, "vertical"))
++    query_profiles = ((21, 27, 4, "diag_up"), (30, 30, 5, "vertical"),
++                      (27, 18, 6, "diag_down"), (19, 30, 2, "horizontal"))
++    # Try complete lessons so the acceptance rule is identical for both settings.
++    for attempt in range(64):
++        demos, queries, seen = [], [], set()
++        for i in range(n_demo + n_query):
++            demo = i < n_demo
++            profiles = demo_profiles if demo else query_profiles
++            profile = profiles[(i if demo else i - n_demo) % len(profiles)]
++            grid = _draw_input(input_seed, attempt * (n_demo + n_query) + i, profile)
++            _geometry(grid)
++            identity = _bytes(grid)
++            if identity in seen:
++                break
++            seen.add(identity)
++            (demos if demo else queries).append(grid)
++        if len(demos) != n_demo or len(queries) != n_query:
++            continue
++        for stride in STRIDES:
++            lesson = {"train": [{"input": g, "output": transform(g, ring_stride=stride)} for g in demos],
++                      "test": [{"input": g} for g in queries]}
++            proof = lesson_certificate(lesson)
++            if not proof["identifiable"] or proof["survivors"] != [f"stride-{stride}"]:
++                break
++        else:
++            return demos, queries
++    raise RuntimeError("bounded lesson sampler exhausted; no partial episode returned")
++
++
++def racket_label(bridge, program, grid):
++    from puzzle_generators.rule_wrap import strip_line_comments, strip_rule_wrapper
++    _geometry(grid)
++    body = strip_rule_wrapper(strip_line_comments(program))
++    if not body.lstrip().startswith("(lambda"):
++        raise ValueError("reference must be a self-contained Racket lambda")
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    value = bridge.eval_text(f"({body} {literal})")
++    _grid(value)
++    return value
++
++
++def source_bindings():
++    paths = {"prototype": Path(__file__).resolve(), "canonical_resource": HERE / "canonical.rkt",
++             "generator": ROOT / "generators" / TASK_ID / "generator.py",
++             "canonical_ledger": canonical_path(ROOT)}
++    return {name: {"path": str(path.relative_to(ROOT)), "sha256": _sha(path.read_bytes())}
++            for name, path in paths.items()}
++
++
++def generate_episode(seed, *, ring_stride=1, n_demo=2, n_query=4, bridge=None):
++    stride = _stride(ring_stride)
++    demos, queries = sample_inputs(seed, n_demo=n_demo, n_query=n_query)
++    if bridge is None:
++        from arc_repl.racket_bridge import RacketBridge
++        with RacketBridge(timeout=10) as owned:
++            return _label_episode(seed, stride, demos, queries, owned)
++    return _label_episode(seed, stride, demos, queries, bridge)
++
++
++def _label_episode(seed, stride, demos, queries, bridge):
++    program = materialize_program(stride)
++    episode = {"schema": SCHEMA, "task_id": TASK_ID, "parent_task_id": PARENT_TASK_ID,
++               "status": "proposed", "training_admitted": False, "seed": seed,
++               "parameters": {"ring_stride": stride}, "program": program,
++               "program_sha256": _sha(program.encode()), "source_bindings": source_bindings(),
++               "label_basis": "executed_matching_racket", "train": [], "test": []}
++    for role, grids in (("train", demos), ("test", queries)):
++        for grid in grids:
++            actual = racket_label(bridge, program, grid)
++            if actual != transform(grid, ring_stride=stride):
++                raise ValueError("Racket/Python disagreement; episode not emitted")
++            episode[role].append({"input": grid, "output": actual})
++    episode["certificate"] = lesson_certificate(episode)
++    return episode
++
++
++def verify_episode(episode, *, bridge=None):
++    """Recompute structure, Python labels and proof; Racket replay is explicit."""
++    if episode.get("schema") != SCHEMA or episode.get("task_id") != TASK_ID:
++        raise ValueError("unknown episode schema/task")
++    if (episode.get("status") != "proposed" or episode.get("training_admitted") is not False
++            or episode.get("parent_task_id") != PARENT_TASK_ID):
++        raise ValueError("prototype lineage/admission fields changed")
++    params = episode.get("parameters")
++    if type(params) is not dict or set(params) != {"ring_stride"}:
++        raise ValueError("parameters must contain exactly ring_stride")
++    stride = _stride(params["ring_stride"])
++    _integer(episode.get("seed"), "seed", 0, 2**63 - 1)
++    program = materialize_program(stride)
++    if episode.get("program") != program or episode.get("program_sha256") != _sha(program.encode()):
++        raise ValueError("stored program does not match its selected parameter")
++    if episode.get("source_bindings") != source_bindings():
++        raise ValueError("source bindings are stale or changed")
++    if type(episode.get("train")) is not list or type(episode.get("test")) is not list:
++        raise ValueError("train/test must be lists")
++    _integer(len(episode["train"]), "n_demo", 2, 8)
++    _integer(len(episode["test"]), "n_query", 1, 8)
++    pairs = episode["train"] + episode["test"]
++    seen = set()
++    for pair in pairs:
++        grid, output = pair["input"], pair["output"]
++        _geometry(grid)
++        _grid(output)
++        identity = _bytes(grid)
++        if identity in seen:
++            raise ValueError("duplicate input within an episode")
++        seen.add(identity)
++        if output != transform(grid, ring_stride=stride):
++            raise ValueError("stored output differs from the selected rule")
++        if bridge is not None:
++            # Replay both lawful parameter interpretations, including all queries.
++            for alternative in STRIDES:
++                label = racket_label(bridge, materialize_program(alternative), grid)
++                if label != transform(grid, ring_stride=alternative):
++                    raise ValueError("Racket/parameter mirror disagreement")
++                if alternative == stride and label != output:
++                    raise ValueError("stored output differs from executed Racket")
++    proof = lesson_certificate(episode)
++    if (not proof["identifiable"] or proof["survivors"] != [f"stride-{stride}"]
++            or episode.get("certificate") != proof):
++        raise ValueError("demonstrations/certificate do not establish every query")
++    return {"pairs": len(pairs), "demos": len(episode["train"]), "queries": len(episode["test"]),
++            "racket_parameter_replays": len(pairs) * len(STRIDES) if bridge is not None else 0,
++            "certificate": proof}
++
++
++def write_batch(episodes, out):
++    """Validate first; public IDs hash only the exact visible bytes written."""
++    out = Path(out)
++    if out.exists():
++        raise FileExistsError(out)
++    if type(episodes) is not list or not episodes:
++        raise ValueError("batch must contain episodes")
++    prepared, seen = [], set()
++    for episode in episodes:
++        verify_episode(episode)
++        payload = public_challenge_bytes(episode)
++        identity = public_challenge_id(episode)
++        if identity in seen:
++            raise ValueError("duplicate visible challenge in batch")
++        seen.add(identity)
++        prepared.append((identity, payload, copy.deepcopy(episode)))
++    prepared.sort(key=lambda row: row[0])
++    private_rows, files = [], []
++    for identity, payload, episode in prepared:
++        path = f"public/{identity}.json"
++        private_rows.append({"public_id": identity, "episode": episode})
++        files.append({"public_id": identity, "public_path": path, "sha256": _sha(payload)})
++    # Private annotations may contain unsupported JSON values. Serialize every
++    # payload before creating any directory, so such failures are retryable.
++    private = b"".join(_bytes(row) for row in private_rows)
++    manifest = {"schema": SCHEMA + "-batch", "status": "proposed", "training_admitted": False,
++                "files": files, "private_path": "private/episodes.jsonl",
++                "private_sha256": _sha(private), "source_bindings": source_bindings()}
++    manifest_bytes = _bytes(manifest)
++    out.mkdir(parents=True)
++    (out / "public").mkdir()
++    (out / "private").mkdir()
++    for identity, payload, episode in prepared:
++        (out / f"public/{identity}.json").write_bytes(payload)
++    (out / "private/episodes.jsonl").write_bytes(private)
++    (out / "manifest.json").write_bytes(manifest_bytes)
++    return manifest
++
++
++def verify_batch(out, *, bridge=None):
++    out = Path(out)
++    manifest = json.loads((out / "manifest.json").read_bytes())
++    if (manifest.get("schema") != SCHEMA + "-batch" or manifest.get("private_path") != "private/episodes.jsonl"
++            or manifest.get("status") != "proposed" or manifest.get("training_admitted") is not False
++            or manifest.get("source_bindings") != source_bindings()):
++        raise ValueError("invalid/stale batch manifest")
++    private = (out / "private/episodes.jsonl").read_bytes()
++    if _sha(private) != manifest.get("private_sha256"):
++        raise ValueError("private file hash mismatch")
++    rows = [json.loads(line) for line in private.splitlines()]
++    files = manifest.get("files")
++    if type(files) is not list or not files or len(files) != len(rows):
++        raise ValueError("private/public row count mismatch")
++    identities, reports = [], []
++    for row, record in zip(rows, files):
++        identity = record.get("public_id", "")
++        if not re.fullmatch(r"[0-9a-f]{64}", identity) or record.get("public_path") != f"public/{identity}.json":
++            raise ValueError("invalid public path/ID")
++        if identity in identities or row.get("public_id") != identity:
++            raise ValueError("duplicate or mismatched public identity")
++        identities.append(identity)
++        payload = (out / record["public_path"]).read_bytes()
++        if (_sha(payload) != identity or record.get("sha256") != identity
++                or public_challenge_bytes(row["episode"]) != payload):
++            raise ValueError("public bytes/hash/projection mismatch")
++        reports.append(verify_episode(row["episode"], bridge=bridge))
++    if identities != sorted(identities):
++        raise ValueError("public rows must be sorted by visible ID")
++    if sorted(p.name for p in (out / "public").iterdir()) != sorted(f"{i}.json" for i in identities):
++        raise ValueError("unexpected public files")
++    return {"episodes": len(rows), "pairs": sum(r["pairs"] for r in reports),
++            "queries": sum(r["queries"] for r in reports),
++            "racket_parameter_replays": sum(r["racket_parameter_replays"] for r in reports),
++            "reports": reports}
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    sub = parser.add_subparsers(dest="command", required=True)
++    build = sub.add_parser("build")
++    build.add_argument("--seed", type=int, default=17)
++    build.add_argument("--demos", type=int, default=2)
++    build.add_argument("--queries", type=int, default=4)
++    build.add_argument("--ring-stride", type=int, choices=STRIDES)
++    build.add_argument("--out", type=Path, required=True)
++    verify = sub.add_parser("verify")
++    verify.add_argument("out", type=Path)
++    args = parser.parse_args(argv)
++    from arc_repl.racket_bridge import RacketBridge
++    with RacketBridge(timeout=10) as bridge:
++        if args.command == "build":
++            settings = STRIDES if args.ring_stride is None else (args.ring_stride,)
++            episodes = [generate_episode(args.seed, ring_stride=s, n_demo=args.demos,
++                                         n_query=args.queries, bridge=bridge) for s in settings]
++            write_batch(episodes, args.out)
++            report = {"episodes": len(episodes), "demos_per_episode": args.demos,
++                      "queries_per_episode": args.queries,
++                      "racket_labels": len(episodes) * (args.demos + args.queries),
++                      "status": "proposed", "training_admitted": False}
++        else:
++            report = verify_batch(args.out, bridge=bridge)
++    print(json.dumps(report, sort_keys=True))
++
++
++if __name__ == "__main__":
++    main()

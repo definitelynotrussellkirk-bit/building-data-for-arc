@@ -1,0 +1,9 @@
+# Radial reflections and reconstructed-center majority
+
+Canonical inference: the source is a 9x9 hollow ring of eight 3x3 tiles on a modal background. Reflect each outer tile across its corresponding outer side (or both sides at a corner), clipping at the canvas. Reconstruct the center's eight surrounding cells from the eight tiles' inward-facing tips; use the ring's modal nonbackground color in the center. This coordinate rule is color-independent and applies to all supplied original train/test labels, which are authoring evidence, not an unseen score.
+
+Alternate `center_majority`: after completing the center and reflected copies, count the restored center's eight peripheral colors; choose the most frequent, lower numeric color on ties, then recolor that color throughout this motif's 15x15 footprint to 9 (0 on a 9 background). `wrong_intermediate.rkt` substitutes the original ring's nonbase-color histogram before applying the same recoloring.
+
+Generated grammar: complete 3x3 tiles, varying palettes, asymmetric decorative pixels and inward tips, translated motifs, clipped reflection cases, and four independent motifs on a substantive 30x30 canvas. The eight input tiles may be asymmetric even though the supplied parents have extra reflection symmetry. The center majority's raw-ring frequency rank changes between demonstrations; corner color and numeric ordering are not reliable selectors. Base color is uniquely modal within each ring. Multi-motif source boxes and output footprints do not overlap.
+
+Counts: 2–6 demonstrations, a complete four-query bank shuffled before prefix selection, 1–4 returned queries; all input streams match across settings. All native resources stay in workspace/parametric. Do not claim arbitrary tile sizes, missing ring tiles, or unrestricted overlapping motifs. Owner registration, qualification and acceptance remain pending.

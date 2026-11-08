@@ -1,0 +1,6 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((color (find-first (lambda (v) (!= v 0)) (grid-colors g)))
+                  (n (count-color g color)))
+             (encode-bar n n color)))))

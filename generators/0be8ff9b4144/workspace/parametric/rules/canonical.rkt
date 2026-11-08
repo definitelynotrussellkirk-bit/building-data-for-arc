@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let ((active-rows (filter (lambda (r) (= (at g r 0) 3)) (range 1 (rows g)))) (active-cols (filter (lambda (c) (= (at g 0 c) 2)) (range 1 (cols g))))) (for*/fold ((out g)) ((r (in-list active-rows)) (c (in-list active-cols))) (set-cell out r c 5)))))

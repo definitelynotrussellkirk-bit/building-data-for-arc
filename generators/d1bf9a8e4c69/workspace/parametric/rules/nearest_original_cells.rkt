@@ -1,0 +1,41 @@
+(rule!
+ (lambda (g)
+   (let ()
+     (define (corners obj)
+       (let* ((bb (obj-bbox obj))
+              (r0 (first bb)) (c0 (second bb))
+              (r1 (third bb)) (c1 (fourth bb)))
+         (list (list r0 c0) (list r0 c1) (list r1 c0) (list r1 c1))))
+     (define groups
+       (map (lambda (obj) (list (obj-color obj) (corners obj) (obj-cells obj)))
+            (objects g 0)))
+     (define corner-grid
+       (for/fold ((out (empty-grid (rows g) (cols g) 0)))
+                 ((group (in-list groups)))
+         (paint-cells out (second group) (first group))))
+     (define best
+       (for*/fold ((best #f))
+                  ((i (in-range (length groups)))
+                   (j (in-range (+ i 1) (length groups)))
+                   (p (in-list (third (list-ref groups i))))
+                   (q (in-list (third (list-ref groups j)))))
+         (let ((d (+ (abs (- (first p) (first q)))
+                     (abs (- (second p) (second q))))))
+           (if (or (not best) (< d (first best)))
+               (list d p q)
+               best))))
+     (if (not best)
+         corner-grid
+         (let* ((p (second best)) (q (third best))
+                (r0 (first p)) (c0 (second p))
+                (r1 (first q)) (c1 (second q))
+                (route
+                 (append
+                  (map (lambda (c) (list r0 c))
+                       (range (min c0 c1) (+ (max c0 c1) 1)))
+                  (map (lambda (r) (list r c1))
+                       (range (min r0 r1) (+ (max r0 r1) 1)))))
+                (open (filter (lambda (pos)
+                                (= (at corner-grid (first pos) (second pos)) 0))
+                              route)))
+           (paint-cells corner-grid open 4))))))

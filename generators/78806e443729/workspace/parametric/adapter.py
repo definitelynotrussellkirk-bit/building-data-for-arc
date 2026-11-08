@@ -1,0 +1,58 @@
+"""Native adapter for the 78806e443729 horizontal-beam relay family."""
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+from pathlib import Path
+import sys
+from types import ModuleType
+from typing import Any
+
+_HOME = Path(__file__).resolve().parent
+
+
+def _load_adjacent(filename: str) -> ModuleType:
+    path = (_HOME / filename).resolve()
+    if path.parent != _HOME or not path.is_file():
+        raise ValueError(f"missing adjacent adapter resource: {filename}")
+    name = "_arc_78806e443729_" + path.stem + "_" + hashlib.sha256(str(path).encode()).hexdigest()
+    module = sys.modules.get(name)
+    if module is not None:
+        return module
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load adjacent adapter resource: {filename}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_FAMILY = _load_adjacent("family.py")
+
+
+def _beam_mode(settings: Any) -> str:
+    if type(settings) is not dict or set(settings) != {"beam_mode"}:
+        raise ValueError("settings must name exactly beam_mode")
+    value = settings["beam_mode"]
+    if type(value) is not str or value not in _FAMILY.BEAM_MODES:
+        raise ValueError("beam_mode must be exactly 'horizontal_only' or 'dominant_relay'")
+    return value
+
+
+def program(settings: dict[str, Any]) -> str:
+    return _FAMILY.program_text(_beam_mode(settings))
+
+
+def generate(seed: int, settings: dict[str, Any], demos: int, queries: int) -> dict[str, Any]:
+    if type(seed) is not int:
+        raise TypeError("seed must be a nonnegative integer; bool is forbidden")
+    if seed < 0:
+        raise ValueError("seed must be nonnegative")
+    if type(demos) is not int or not 2 <= demos <= 6:
+        raise ValueError("demos must be an integer in 2..6; bool is forbidden")
+    if type(queries) is not int or not 1 <= queries <= 4:
+        raise ValueError("queries must be an integer in 1..4; bool is forbidden")
+    mode = _beam_mode(settings)
+    source = program({"beam_mode": mode})
+    return _FAMILY.generate_episode(seed, mode, demos, queries, source)

@@ -1,0 +1,6 @@
+# 8b7d1307ff93
+
+0-bg grid (h ∈ 7-9 / 10-14, w ∈ 8-11 / 12-16, depending on difficulty) with: MULTIPLE L-SHAPED 3-CELL GROUPS — n_shapes ∈ 1-6 placements, each shape is an L-tromino (3 of the 4 cells of a 2×2 block) drawn from LSHAPES (4 rotations: NE / NW / SE / SW). Each L is painted in a DISTINCT non-bg color drawn from a 1-6 color palette. Placements use a spread-rejection of 4 cells between origins (no two L origins within 4 cells of each other). The 4th cell of each 2×2 block is 0 by construction (since only 3 cells of the L were painted). Rule (ITERATIVELY FILL THE 4TH CELL OF ANY 2×2 WINDOW WHERE 3 CELLS SHARE A NON-BG COLOR AND THE 4TH IS 0): REPEATEDLY SCAN every 2×2 WINDOW of the grid. When a window has EXACTLY 3 non-bg cells SHARING THE SAME COLOR c AND the 4th cell is 0: PAINT that 4th cell = c. CHAIN: the newly-filled cell may complete adjacent 2×2 windows, cascading further fills. ITERATE UNTIL no 2×2 window still has a fillable corner. Net: each L-tromino becomes a 2×2 solid block; cascading growth may extend beyond the initial Ls when filled cells complete adjacent triples.
+
+Kind: `per_puzzle`. Imported version: `2.0.0`.
+Approval is derived by the catalog from current code and retained evidence.

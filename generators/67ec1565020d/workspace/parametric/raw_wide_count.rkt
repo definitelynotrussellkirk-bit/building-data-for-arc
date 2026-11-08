@@ -1,0 +1,18 @@
+(rule!
+ (let* ((objs (objects g 0))
+        (divider (car (filter (lambda (obj) (and (= (obj-h obj) (rows g)) (= (obj-w obj) 1))) objs)))
+        (split (obj-c1 divider))
+        (controller (filter (lambda (obj) (< (obj-c2 obj) split)) objs))
+        (payload (filter (lambda (obj) (> (obj-c1 obj) split)) objs))
+        (stage
+         (for/fold ((out g)) ((obj (in-list controller)))
+          (let* ((hh (obj-h obj))
+                 (ww (obj-w obj))
+                 (color (cond ((= hh ww) 4) ((> ww hh) 2) (else 3))))
+           (paint-cells out (obj-cells obj) color))))
+        (k (length (filter (lambda (obj) (> (obj-w obj) (obj-h obj))) controller)))
+        (target (list-ref payload (- k 1)))
+        (hh (obj-h target))
+        (ww (obj-w target))
+        (color (cond ((= hh ww) 4) ((> ww hh) 2) (else 3))))
+  (paint-cells stage (obj-cells target) color)))

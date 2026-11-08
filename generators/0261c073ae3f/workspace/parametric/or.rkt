@@ -1,0 +1,20 @@
+(rule!
+  (let* ((sep (first (filter (lambda (c) (all? (lambda (r) (= (at g r c) 5)) (range 0 (rows g)))) (range 0 (cols g)))))
+         (A (subgrid g 0 0 (- (rows g) 1) (- sep 1)))
+         (B (subgrid g 0 (+ sep 1) (- (rows g) 1) (- (cols g) 1))))
+    (define (norm-binary panel)
+      (let* ((cells (filter-cells panel (lambda (r c v) (not (= v 0)))))
+             (bb (bbox-of-cells cells)))
+        (if bb
+            (let ((sub (subgrid panel (first bb) (second bb) (third bb) (fourth bb))))
+              (grid-from-fn (rows sub) (cols sub) (lambda (r c) (if (= (at sub r c) 0) 0 1))))
+            (empty-grid 1 1 0))))
+    (define a (norm-binary A))
+    (define b (norm-binary B))
+    (define h (max (rows a) (rows b)))
+    (define w (max (cols a) (cols b)))
+    (grid-from-fn h w
+      (lambda (r c)
+        (let ((av (if (and (< r (rows a)) (< c (cols a))) (at a r c) 0))
+              (bv (if (and (< r (rows b)) (< c (cols b))) (at b r c) 0)))
+          (if (or (= av 1) (= bv 1)) 7 0))))))

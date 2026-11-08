@@ -1,0 +1,46 @@
+(rule!
+ ;; A blank outline and a colored exemplar contain corresponding compartments.
+ ;; Isolate the two figures before cropping: bounding boxes can overlap without
+ ;; the figures touching. Find four-connected non-outline regions enclosed by
+ ;; each outline. Match left, center and right regions in top-to-bottom order,
+ ;; independent of their different areas, contours and vertical spacing. Return
+ ;; only the blank figure's tight crop, filled with the matched exemplar colors.
+ (lambda (g)
+  (let ()
+   (define reverse-order? #f)
+   (define bg (mode g -1))
+   (define figures (objects-multicolor g bg))
+   (define (palette o)
+    (remove-duplicates (map (lambda (p) (at g (first p) (second p))) (obj-cells o))))
+   (define target-object (first (filter (lambda (o) (= (length (palette o)) 1)) figures)))
+   (define source-object (first (filter (lambda (o) (not (equal? o target-object))) figures)))
+   (define outline (first (palette target-object)))
+   (define (isolate o)
+    (paint-cells (empty-grid (obj-h o) (obj-w o) bg)
+     (map (lambda (p) (list (- (first p) (obj-r1 o)) (- (second p) (obj-c1 o))
+                            (at g (first p) (second p)))) (obj-cells o))))
+   (define target (isolate target-object))
+   (define source (isolate source-object))
+   (define (holes crop)
+    (filter
+     (lambda (o) (and (> (obj-r1 o) 0) (> (obj-c1 o) 0)
+                      (< (obj-r2 o) (- (rows crop) 1)) (< (obj-c2 o) (- (cols crop) 1))))
+     (objects (cellmap crop (r c v) (if (= v outline) 0 1)) 0)))
+   (define (side o crop)
+    (let ((offset (- (* 2 (apply + (map second (obj-cells o))))
+                     (* (- (cols crop) 1) (obj-size o)))))
+     (cond ((< offset 0) -1) ((> offset 0) 1) (else 0))))
+   (define (ordered crop reverse?)
+    (sort (holes crop)
+     (lambda (a b)
+      (let ((sa (side a crop)) (sb (side b crop)))
+       (or (< sa sb)
+           (and (= sa sb)
+                (if (= (obj-r1 a) (obj-r1 b))
+                    (< (obj-c1 a) (obj-c1 b))
+                    (if reverse? (> (obj-r1 a) (obj-r1 b)) (< (obj-r1 a) (obj-r1 b))))))))))
+   (define target-regions (ordered target #f))
+   (define source-regions (ordered source reverse-order?))
+   (for/fold ((out target)) ((t target-regions) (s source-regions))
+    (let ((p (first (obj-cells s))))
+     (recolor-cells out (obj-cells t) (at source (first p) (second p))))))))

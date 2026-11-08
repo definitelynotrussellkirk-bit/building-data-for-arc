@@ -1,0 +1,36 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((nz (find-first (lambda (rc) (!= (at g (fst rc) (snd rc)) 0))
+                                  (flatmap (lambda (r)
+                                             (map (lambda (c) (cons r c)) (range 0 w)))
+                                           (range 0 h))))
+                  (br (fst nz))
+                  (bc (snd nz))
+                  (tl (at g br bc))
+                  (tr (at g br (+ bc 1)))
+                  (bl (at g (+ br 1) bc))
+                  (brr (at g (+ br 1) (+ bc 1))))
+             (cellmap g
+                      (r c v)
+                      (let ((v v))
+                        (if (!= v 0)
+                            v
+                            (cond
+                              ((and
+                                 (> r (+ br 1))
+                                 (> c (+ bc 1))
+                                 (<= r (+ br 3))
+                                 (<= c (+ bc 3))) tl)
+                              ((and
+                                 (> r (+ br 1))
+                                 (< c bc)
+                                 (<= r (+ br 3))
+                                 (>= c (- bc 2))) tr)
+                              ((and
+                                 (< r br)
+                                 (> c (+ bc 1))
+                                 (>= r (- br 2))
+                                 (<= c (+ bc 3))) bl)
+                              ((and (< r br) (< c bc) (>= r (- br 2)) (>= c (- bc 2))) brr)
+                              (else 0)))))))))

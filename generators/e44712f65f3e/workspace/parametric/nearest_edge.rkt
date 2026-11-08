@@ -1,0 +1,91 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((objs (objects-multicolor g 0)))
+             (reduce (lambda (acc obj)
+                       (let* ((bb (obj-bbox obj))
+                              (r0 (fst bb))
+                              (c0 (snd bb))
+                              (r1 (nth bb 2))
+                              (c1 (nth bb 3))
+                              (bh (+ 1 (- r1 r0)))
+                              (bw (+ 1 (- c1 c0)))
+                              (outer (at g r0 c0))
+                              (inner-vals (filter (lambda (v)
+                                                    (and (!= v 0) (!= v outer)))
+                                                  (map (lambda (p)
+                                                         (at g (fst p) (snd p)))
+                                                       (obj-cells obj))))
+                              (inner (if (empty? inner-vals) outer (fst inner-vals)))
+                              (th (quotient bh 2))
+                              (tw (quotient bw 2))
+                              (oh (if (zero? (remainder bh 2)) (* 2 bh) (- (* 2 bh) 1)))
+                              (ow (if (zero? (remainder bw 2)) (* 2 bw) (- (* 2 bw) 1)))
+                              (top-gap r0)
+                              (bottom-gap (- (- h 1) r1))
+                              (left-gap c0)
+                              (right-gap (- (- w 1) c1))
+                              (edge (cond
+                                      ((and (<= top-gap bottom-gap)
+                                            (<= top-gap left-gap)
+                                            (<= top-gap right-gap)) 0)
+                                      ((and (<= bottom-gap left-gap)
+                                            (<= bottom-gap right-gap)) 1)
+                                      ((<= left-gap right-gap) 2)
+                                      (else 3)))
+                              (tr (cond
+                                    ((= edge 0) 0)
+                                    ((= edge 1) (- h oh))
+                                    (else (- r0 th))))
+                              (tc (cond
+                                    ((= edge 2) 0)
+                                    ((= edge 3) (- w ow))
+                                    (else (- c0 tw)))))
+                         (reduce (lambda (a rr)
+                                   (reduce (lambda (aa cc)
+                                             (let* ((gr (+ tr rr))
+                                                    (gc (+ tc cc))
+                                                    (in-inner (and
+                                                                (>= rr th)
+                                                                (< rr (- oh th))
+                                                                (>= cc tw)
+                                                                (< cc (- ow tw))))
+                                                    (inner-border (and
+                                                                    in-inner
+                                                                    (or
+                                                                      (= rr th)
+                                                                      (= rr (- oh th 1))
+                                                                      (= cc tw)
+                                                                      (= cc (- ow tw 1)))))
+                                                    (inner-core (and
+                                                                  in-inner
+                                                                  (not inner-border)))
+                                                    (outer-band (or
+                                                                  (and
+                                                                    (< rr th)
+                                                                    (>= cc tw)
+                                                                    (< cc (- ow tw)))
+                                                                  (and
+                                                                    (>= rr (- oh th))
+                                                                    (>= cc tw)
+                                                                    (< cc (- ow tw)))
+                                                                  (and
+                                                                    (< cc tw)
+                                                                    (>= rr th)
+                                                                    (< rr (- oh th)))
+                                                                  (and
+                                                                    (>= cc (- ow tw))
+                                                                    (>= rr th)
+                                                                    (< rr (- oh th))))))
+                                               (cond
+                                                 ((not (in-bounds? gr gc h w)) aa)
+                                                 (inner-border (set-cell aa gr gc inner))
+                                                 (inner-core (set-cell aa gr gc outer))
+                                                 (outer-band (set-cell aa gr gc outer))
+                                                 (else aa))))
+                                           a
+                                           (range 0 ow)))
+                                 acc
+                                 (range 0 oh))))
+                     (cellmap g (r c v) 0)
+                     objs)))))

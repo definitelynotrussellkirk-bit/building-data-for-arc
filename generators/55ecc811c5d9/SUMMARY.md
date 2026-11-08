@@ -1,0 +1,6 @@
+# 55ecc811c5d9
+
+0-bg grid (h~7-16, w~10-20) with: (a) ROW 0 — n_codes (1-6) NON-ZERO TRANSFORM CODE CELLS at distinct random column positions, each painted with a value 1..4 (transform code); (b) ROW 1 — ALL BG-0 (separator row); (c) ROWS 2..h-1 — a single connected MOTIF (3-5 cell 4-connected blob grown by random adjacency walk) in MOTIF COLOR 8 or 9, placed at a random valid position. Rule (PACK ALL NON-ZERO CONNECTED COMPONENTS INTO A SORTED HORIZONTAL GALLERY): extract every 4-CONNECTED non-bg COMPONENT (including each individual row-0 code cell and the motif). CROP each component to its tight bbox. SORT crops by (WIDTH ASC, HEIGHT ASC, TOP-ROW ASC) — narrowest first, ties broken by shortest, then by original top row position. PACK the sorted crops LEFT-TO-RIGHT with a 1-column bg gap between consecutive crops, BOTTOM-ALIGNED in a tight output grid whose height = max crop height across all components and width = sum of crop widths + (n-1) gaps. Each piece keeps its ORIGINAL COLOR. Net: scattered components and code cells collapse into a horizontal gallery sorted by increasing width.
+
+Kind: `per_puzzle`. Imported version: `2.1.0`.
+Approval is derived by the catalog from current code and retained evidence.

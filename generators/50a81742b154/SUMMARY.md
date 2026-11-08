@@ -1,0 +1,6 @@
+# 50a81742b154
+
+0-bg grid (h~9-12, w~11-14) with FOUR FIXED-POSITION OBJECTS at the corner-like slots: (a) TEMPLATE OBJECT at (1, 1) — a 4-cell L shape [(0,0),(1,0),(2,0),(2,1)] painted in COLOR 8 (cyan, the template color); (b) MATCHING 2-BLOB at (1, w-4) — the SAME 4-cell L shape painted in COLOR 2 (this is the candidate that the rule should recolor); (c) DIFFERENT 2-BLOB at (h-4, 1) — a 2×2 SQUARE shape [(0,0),(0,1),(1,0),(1,1)] painted in COLOR 2; (d) DIFFERENT-2 2-BLOB at (h-4, w-4) — a 3-cell VERTICAL bar [(0,0),(1,0),(2,0)] painted in COLOR 2. Exactly one 2-blob (b) shares the 8-blob's normalized shape; the other two have distinct shapes. Rule (RECOLOR 2-BLOBS WHOSE NORMALIZED SHAPE MATCHES THE 8-BLOB TEMPLATE TO COLOR 3): find the unique 8-BLOB, extract its NORMALIZED CELLS (subtract min row/col from each cell so the shape sits in its own local coordinates). For EACH 2-BLOB: extract its NORMALIZED CELLS. If the 2-blob's normalized shape EQUALS the 8-blob's normalized shape: RECOLOR every cell of that 2-blob to COLOR 3. Other 2-blobs stay color 2; the 8-blob stays color 8. Net: the one 2-blob matching the 8-shape becomes color-3 (green); the rest remain as color-2 decoys.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

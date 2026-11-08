@@ -1,0 +1,2377 @@
+diff --git a/repo/generators/1c781334a4f3/notes.md b/repo/generators/1c781334a4f3/notes.md
+--- a/repo/generators/1c781334a4f3/notes.md
++++ b/repo/generators/1c781334a4f3/notes.md
+@@ -2,3 +2,10 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 optional lesson-shortcut probe — review-faca37a9638144eb
++
++- Production source was not changed; audited SHA-256 is `3ad3c7e216047ee46226537df17b56bd4d43e3340a260d361363fe9962fe7d60`.
++- The wrong rule “sort motif crops by bounding-box area descending, breaking ties by input reading order” matches all four canonical demonstrations and the canonical test.
++- A lawful query with an earlier T tetromino and later U pentomino gives both motifs a 2×3 bounding box, but orthogonal perimeters 10 and 12. Protected Racket puts the U first; the shortcut keeps the T first, producing 12 changed padded cells.
++- Rerunnable evidence: `workspace/review_tools/perimeter_shortcut_probe.py` and `checks/peers/1c781334a4f3/report.json`. Recommended repair is one visible equal-area/unequal-perimeter lesson plus this executable rival in lesson checks.
+diff --git a/repo/generators/1c781334a4f3/tests/test_perimeter_shortcut_probe.py b/repo/generators/1c781334a4f3/tests/test_perimeter_shortcut_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1c781334a4f3/tests/test_perimeter_shortcut_probe.py
+@@ -0,0 +1,32 @@
++"""Focused regression for the retained perimeter-vs-area peer probe."""
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++from reviewer_support import find_root
++
++
++def test_probe_replays_all_visible_pairs_and_separates_query(tmp_path: Path):
++    root = find_root(__file__)
++    script = root / "generators/1c781334a4f3/workspace/review_tools/perimeter_shortcut_probe.py"
++    output = tmp_path / "report.json"
++    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
++    result = subprocess.run(
++        [sys.executable, str(script), "--out", str(output)],
++        cwd=root,
++        env=env,
++        text=True,
++        capture_output=True,
++        timeout=30,
++    )
++    assert result.returncode == 0, result.stderr or result.stdout
++    report = json.loads(output.read_text(encoding="utf-8"))
++    assert report["status"] == "shortcut_reproduced"
++    assert report["visible_pairs_fit"] == 5
++    assert report["query_disagrees"] is True
++    assert report["changed_cells_padded"] == 12
++    assert report["racket"]["protected"] is True
+diff --git a/repo/generators/1c781334a4f3/workspace/review_tools/perimeter_shortcut_probe.py b/repo/generators/1c781334a4f3/workspace/review_tools/perimeter_shortcut_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1c781334a4f3/workspace/review_tools/perimeter_shortcut_probe.py
+@@ -0,0 +1,198 @@
++#!/usr/bin/env python3
++"""Source-bound probe for a bbox-area shortcut in 1c781334a4f3."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++from typing import Any
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import find_root
++
++TASK_ID = "1c781334a4f3"
++EXPECTED_SOURCE_SHA256 = "3ad3c7e216047ee46226537df17b56bd4d43e3340a260d361363fe9962fe7d60"
++
++
++def _normalize(grid: list[Any]) -> list[list[int]]:
++    return [([int(value) for value in row] if isinstance(row, str) else list(row)) for row in grid]
++
++
++def _components(grid: list[list[int]]) -> list[list[tuple[int, int]]]:
++    height, width = len(grid), len(grid[0])
++    seen: set[tuple[int, int]] = set()
++    result: list[list[tuple[int, int]]] = []
++    for row in range(height):
++        for column in range(width):
++            start = (row, column)
++            if grid[row][column] == 0 or start in seen:
++                continue
++            stack = [start]
++            seen.add(start)
++            cells: list[tuple[int, int]] = []
++            while stack:
++                current = stack.pop()
++                cells.append(current)
++                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
++                    neighbor = (current[0] + dr, current[1] + dc)
++                    if (
++                        0 <= neighbor[0] < height
++                        and 0 <= neighbor[1] < width
++                        and grid[neighbor[0]][neighbor[1]] != 0
++                        and neighbor not in seen
++                    ):
++                        seen.add(neighbor)
++                        stack.append(neighbor)
++            result.append(cells)
++    return result
++
++
++def _crop(grid: list[list[int]], cells: list[tuple[int, int]]):
++    r0 = min(row for row, _ in cells)
++    r1 = max(row for row, _ in cells)
++    c0 = min(column for _, column in cells)
++    c1 = max(column for _, column in cells)
++    crop = [row[c0 : c1 + 1] for row in grid[r0 : r1 + 1]]
++    return crop, (r0, c0, r1, c1)
++
++
++def bbox_area_shortcut(grid: list[list[int]]) -> list[list[int]]:
++    """Wrong rule: rank crops by bbox area, then input reading order."""
++    items = []
++    for cells in _components(grid):
++        crop, (r0, c0, r1, c1) = _crop(grid, cells)
++        items.append(((r1 - r0 + 1) * (c1 - c0 + 1), r0, c0, crop))
++    items.sort(key=lambda item: (-item[0], item[1], item[2]))
++    width = max(len(item[3][0]) for item in items)
++    output: list[list[int]] = []
++    for index, (_, _, _, crop) in enumerate(items):
++        output.extend(row + [0] * (width - len(row)) for row in crop)
++        if index + 1 < len(items):
++            output.append([0] * width)
++    return output
++
++
++def _custom_query() -> list[list[int]]:
++    grid = [[0 for _ in range(11)] for _ in range(9)]
++    # Earlier T tetromino: bbox area 6, orthogonal perimeter 10.
++    for row, column in ((1, 1), (1, 2), (1, 3), (2, 2)):
++        grid[row][column] = 2
++    # Later U pentomino: same bbox area 6, larger perimeter 12.
++    for row, column in ((5, 6), (5, 8), (6, 6), (6, 7), (6, 8)):
++        grid[row][column] = 3
++    return grid
++
++
++def _racket_grid(grid: list[list[int]]) -> str:
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++def _diff_cells(a: list[list[int]], b: list[list[int]]) -> int:
++    height = max(len(a), len(b))
++    width = max(max(map(len, a), default=0), max(map(len, b), default=0))
++    return sum(
++        (a[row][column] if row < len(a) and column < len(a[row]) else None)
++        != (b[row][column] if row < len(b) and column < len(b[row]) else None)
++        for row in range(height)
++        for column in range(width)
++    )
++
++
++def _load_generator(path: Path):
++    spec = importlib.util.spec_from_file_location("_peer_1c781334a4f3", path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++
++    root = find_root(__file__)
++    source = root / "generators" / TASK_ID / "generator.py"
++    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
++    if source_sha != EXPECTED_SOURCE_SHA256:
++        raise RuntimeError(f"source drift: {source_sha}")
++
++    canonical = None
++    with (root / "shared/data/canonical/puzzles.jsonl").open(encoding="utf-8") as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                canonical = row
++                break
++    if canonical is None:
++        raise RuntimeError("canonical row missing")
++    program = canonical["program_solution"]
++    pairs = canonical["train"] + ([canonical["test"]] if isinstance(canonical["test"], dict) else canonical["test"])
++
++    generator = _load_generator(source)
++    custom = _custom_query()
++    if generator.self_check(custom) != []:
++        raise RuntimeError(f"custom query rejected: {generator.self_check(custom)}")
++
++    with RacketBridge() as bridge:
++        runtime = bridge.runtime_identity
++        if runtime.get("backend") != "racket" or runtime.get("protected") is not True:
++            raise RuntimeError(f"unprotected runtime: {runtime}")
++
++        def execute(grid: list[list[int]]) -> list[list[int]]:
++            return bridge.eval_text(f"({wrap_rule(program)} {_racket_grid(grid)})")
++
++        canonical_checks = []
++        for index, pair in enumerate(pairs):
++            input_grid = _normalize(pair["input"])
++            expected = _normalize(pair["output"])
++            actual = execute(input_grid)
++            wrong = bbox_area_shortcut(input_grid)
++            canonical_checks.append(
++                {
++                    "pair_index": index,
++                    "racket_matches_stored": actual == expected,
++                    "shortcut_matches": wrong == expected,
++                }
++            )
++        if not all(row["racket_matches_stored"] and row["shortcut_matches"] for row in canonical_checks):
++            raise RuntimeError(f"shortcut did not fit canonical examples: {canonical_checks}")
++
++        correct = execute(custom)
++        wrong = bbox_area_shortcut(custom)
++        if correct == wrong:
++            raise RuntimeError("custom query did not separate the shortcut")
++
++    report = {
++        "schema": "arcpuzzles-peer-shortcut-probe-v1",
++        "task_id": TASK_ID,
++        "status": "shortcut_reproduced",
++        "source_sha256": source_sha,
++        "canonical_program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++        "shortcut": "Sort motif crops by bounding-box area descending, breaking ties by input reading order.",
++        "canonical_examples_checked": len(canonical_checks),
++        "visible_pairs_fit": sum(row["shortcut_matches"] for row in canonical_checks),
++        "query_disagrees": correct != wrong,
++        "canonical_checks": canonical_checks,
++        "custom_query": custom,
++        "custom_self_check": [],
++        "correct_output": correct,
++        "shortcut_output": wrong,
++        "changed_cells_padded": _diff_cells(correct, wrong),
++        "reason": "The earlier T tetromino and later U pentomino have equal 2x3 bounding boxes, but orthogonal perimeters 10 and 12. The canonical rule must put the U first; the shortcut keeps input order.",
++        "recommendation": "Add one visible lesson with equal-area crops and unequal orthogonal perimeters, and retain this executable shortcut in lesson checks.",
++        "racket": runtime,
++        "limits": "One constructive query plus the five canonical pairs; no prevalence or production-source change claim.",
++    }
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({"status": report["status"], "canonical_examples": len(canonical_checks), "changed_cells": report["changed_cells_padded"], "report": str(args.out)}, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/213c98056707/notes.md b/repo/generators/213c98056707/notes.md
+--- a/repo/generators/213c98056707/notes.md
++++ b/repo/generators/213c98056707/notes.md
+@@ -8,3 +8,10 @@
+ 
+ Current source-bound ticket observations: `generators/213c98056707/evidence/supplementary-current.json`. Results are reviewer-reported; blocked or unknown stays explicit. These observations do not approve a generator or variant, resolve audits, or admit data to training.
+ <!-- arcpuzzles-current-supplementary:end -->
++
++## 2026-10-24 optional lesson-shortcut probe — review-faca37a9638144eb
++
++- Production source was not changed; audited SHA-256 is `22a373ba707af38b8ecdbc503b4bb3ba0df969139c7e5b873d60b81cd0afbe04`.
++- The wrong rule “select the ring with largest bounding-box area, then fill it with the key color” matches all four canonical demonstrations and the canonical test.
++- A lawful query separates height from area: the canonical target is a 6×3 ring, while a shorter 5×6 ring has larger area. Protected Racket selects 6×3; the shortcut selects 5×6, producing 30 changed padded cells and a different output shape.
++- Rerunnable evidence: `workspace/review_tools/tallest_shortcut_probe.py` and `checks/peers/213c98056707/report.json`. Recommended repair is one visible height-versus-area lesson plus this executable rival in lesson checks. Existing request/validator findings remain unresolved and separate.
+diff --git a/repo/generators/213c98056707/tests/test_tallest_shortcut_probe.py b/repo/generators/213c98056707/tests/test_tallest_shortcut_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/213c98056707/tests/test_tallest_shortcut_probe.py
+@@ -0,0 +1,32 @@
++"""Focused regression for the retained tallest-vs-area peer probe."""
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++from reviewer_support import find_root
++
++
++def test_probe_replays_all_visible_pairs_and_separates_query(tmp_path: Path):
++    root = find_root(__file__)
++    script = root / "generators/213c98056707/workspace/review_tools/tallest_shortcut_probe.py"
++    output = tmp_path / "report.json"
++    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
++    result = subprocess.run(
++        [sys.executable, str(script), "--out", str(output)],
++        cwd=root,
++        env=env,
++        text=True,
++        capture_output=True,
++        timeout=30,
++    )
++    assert result.returncode == 0, result.stderr or result.stdout
++    report = json.loads(output.read_text(encoding="utf-8"))
++    assert report["status"] == "shortcut_reproduced"
++    assert report["visible_pairs_fit"] == 5
++    assert report["query_disagrees"] is True
++    assert report["changed_cells_padded"] == 30
++    assert report["racket"]["protected"] is True
+diff --git a/repo/generators/213c98056707/workspace/review_tools/tallest_shortcut_probe.py b/repo/generators/213c98056707/workspace/review_tools/tallest_shortcut_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/213c98056707/workspace/review_tools/tallest_shortcut_probe.py
+@@ -0,0 +1,221 @@
++#!/usr/bin/env python3
++"""Source-bound probe for a largest-area shortcut in 213c98056707."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++from typing import Any
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import find_root
++
++TASK_ID = "213c98056707"
++EXPECTED_SOURCE_SHA256 = "22a373ba707af38b8ecdbc503b4bb3ba0df969139c7e5b873d60b81cd0afbe04"
++
++
++def _normalize(grid: list[Any]) -> list[list[int]]:
++    return [([int(value) for value in row] if isinstance(row, str) else list(row)) for row in grid]
++
++
++def _components(grid: list[list[int]]) -> list[list[tuple[int, int]]]:
++    height, width = len(grid), len(grid[0])
++    seen: set[tuple[int, int]] = set()
++    result: list[list[tuple[int, int]]] = []
++    for row in range(height):
++        for column in range(width):
++            start = (row, column)
++            if grid[row][column] == 0 or start in seen:
++                continue
++            stack = [start]
++            seen.add(start)
++            cells: list[tuple[int, int]] = []
++            while stack:
++                current = stack.pop()
++                cells.append(current)
++                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
++                    neighbor = (current[0] + dr, current[1] + dc)
++                    if (
++                        0 <= neighbor[0] < height
++                        and 0 <= neighbor[1] < width
++                        and grid[neighbor[0]][neighbor[1]] != 0
++                        and neighbor not in seen
++                    ):
++                        seen.add(neighbor)
++                        stack.append(neighbor)
++            result.append(cells)
++    return result
++
++
++def _bbox(cells: list[tuple[int, int]]) -> tuple[int, int, int, int]:
++    return (
++        min(row for row, _ in cells),
++        min(column for _, column in cells),
++        max(row for row, _ in cells),
++        max(column for _, column in cells),
++    )
++
++
++def largest_area_shortcut(grid: list[list[int]]) -> list[list[int]]:
++    """Wrong rule: choose the ring with largest bbox area, not greatest height."""
++    components = _components(grid)
++    key_component = next(component for component in components if len(component) == 1)
++    key_row, key_column = key_component[0]
++    key_color = grid[key_row][key_column]
++    rings = []
++    for cells in components:
++        if len(cells) == 1:
++            continue
++        r0, c0, r1, c1 = _bbox(cells)
++        border = {
++            (row, column)
++            for row in range(r0, r1 + 1)
++            for column in range(c0, c1 + 1)
++            if row in (r0, r1) or column in (c0, c1)
++        }
++        if set(cells) == border:
++            rings.append(((r1 - r0 + 1) * (c1 - c0 + 1), r0, c0, (r0, c0, r1, c1)))
++    rings.sort(key=lambda item: (-item[0], item[1], item[2]))
++    _, _, _, (r0, c0, r1, c1) = rings[0]
++    output = [row[c0 : c1 + 1] for row in grid[r0 : r1 + 1]]
++    for row in range(1, len(output) - 1):
++        for column in range(1, len(output[0]) - 1):
++            output[row][column] = key_color
++    return output
++
++
++def _paint_ring(grid: list[list[int]], r0: int, c0: int, height: int, width: int, color: int) -> None:
++    for column in range(c0, c0 + width):
++        grid[r0][column] = color
++        grid[r0 + height - 1][column] = color
++    for row in range(r0 + 1, r0 + height - 1):
++        grid[row][c0] = color
++        grid[row][c0 + width - 1] = color
++
++
++def _custom_query() -> list[list[int]]:
++    grid = [[0 for _ in range(18)] for _ in range(15)]
++    # Tallest ring: 6x3 (area 18), canonical target.
++    _paint_ring(grid, 1, 1, 6, 3, 2)
++    # Shorter but larger-area ring: 5x6 (area 30), shortcut target.
++    _paint_ring(grid, 8, 8, 5, 6, 3)
++    grid[14][17] = 4
++    return grid
++
++
++def _racket_grid(grid: list[list[int]]) -> str:
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++def _diff_cells(a: list[list[int]], b: list[list[int]]) -> int:
++    height = max(len(a), len(b))
++    width = max(max(map(len, a), default=0), max(map(len, b), default=0))
++    return sum(
++        (a[row][column] if row < len(a) and column < len(a[row]) else None)
++        != (b[row][column] if row < len(b) and column < len(b[row]) else None)
++        for row in range(height)
++        for column in range(width)
++    )
++
++
++def _load_generator(path: Path):
++    spec = importlib.util.spec_from_file_location("_peer_213c98056707", path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++
++    root = find_root(__file__)
++    source = root / "generators" / TASK_ID / "generator.py"
++    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
++    if source_sha != EXPECTED_SOURCE_SHA256:
++        raise RuntimeError(f"source drift: {source_sha}")
++
++    canonical = None
++    with (root / "shared/data/canonical/puzzles.jsonl").open(encoding="utf-8") as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                canonical = row
++                break
++    if canonical is None:
++        raise RuntimeError("canonical row missing")
++    program = canonical["program_solution"]
++    tests = canonical["test"] if isinstance(canonical["test"], list) else [canonical["test"]]
++    pairs = canonical["train"] + tests
++
++    generator = _load_generator(source)
++    custom = _custom_query()
++    if generator.self_check(custom) != []:
++        raise RuntimeError(f"custom query rejected: {generator.self_check(custom)}")
++
++    with RacketBridge() as bridge:
++        runtime = bridge.runtime_identity
++        if runtime.get("backend") != "racket" or runtime.get("protected") is not True:
++            raise RuntimeError(f"unprotected runtime: {runtime}")
++
++        def execute(grid: list[list[int]]) -> list[list[int]]:
++            return bridge.eval_text(f"({wrap_rule(program)} {_racket_grid(grid)})")
++
++        canonical_checks = []
++        for index, pair in enumerate(pairs):
++            input_grid = _normalize(pair["input"])
++            expected = _normalize(pair["output"])
++            actual = execute(input_grid)
++            wrong = largest_area_shortcut(input_grid)
++            canonical_checks.append(
++                {
++                    "pair_index": index,
++                    "racket_matches_stored": actual == expected,
++                    "shortcut_matches": wrong == expected,
++                }
++            )
++        if not all(row["racket_matches_stored"] and row["shortcut_matches"] for row in canonical_checks):
++            raise RuntimeError(f"shortcut did not fit canonical examples: {canonical_checks}")
++
++        correct = execute(custom)
++        wrong = largest_area_shortcut(custom)
++        if correct == wrong:
++            raise RuntimeError("custom query did not separate the shortcut")
++
++    report = {
++        "schema": "arcpuzzles-peer-shortcut-probe-v1",
++        "task_id": TASK_ID,
++        "status": "shortcut_reproduced",
++        "source_sha256": source_sha,
++        "canonical_program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++        "shortcut": "Select the hollow ring with largest bounding-box area, breaking ties by input reading order, then fill it with the singleton key color.",
++        "canonical_examples_checked": len(canonical_checks),
++        "visible_pairs_fit": sum(row["shortcut_matches"] for row in canonical_checks),
++        "query_disagrees": correct != wrong,
++        "canonical_checks": canonical_checks,
++        "custom_query": custom,
++        "custom_self_check": [],
++        "correct_output": correct,
++        "shortcut_output": wrong,
++        "correct_shape": [len(correct), len(correct[0])],
++        "shortcut_shape": [len(wrong), len(wrong[0])],
++        "changed_cells_padded": _diff_cells(correct, wrong),
++        "reason": "The 6x3 ring is uniquely tallest but has smaller area than the 5x6 ring. The canonical rule selects 6x3; the shortcut selects 5x6.",
++        "recommendation": "Add one visible lesson where height and bounding-box area rank different rings, and retain this executable shortcut in lesson checks.",
++        "racket": runtime,
++        "limits": "One constructive query plus the five canonical pairs; no prevalence or production-source change claim.",
++    }
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({"status": report["status"], "canonical_examples": len(canonical_checks), "changed_cells": report["changed_cells_padded"], "report": str(args.out)}, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/eefadafb2b7b/notes.md b/repo/generators/eefadafb2b7b/notes.md
+--- a/repo/generators/eefadafb2b7b/notes.md
++++ b/repo/generators/eefadafb2b7b/notes.md
+@@ -82,3 +82,13 @@
+ **Choice.** Reproduce and document the ignored-axis defect in `612b4efbecf0` and the portal-teaching defect in `4cea2727fcf9`, but make no source changes to either.
+ 
+ **Why.** The assignment explicitly separates adversarial audits from the selected repair. The reproducers and source hashes in `AUDIT.md` are sufficient for follow-up ownership without expanding the allowed patch scope.
++
++## 2026-10-24 native connectivity promotion — review-faca37a9638144eb
++
++- Promoted the retained `connectivity ∈ {8,4}` proposal to a native adapter. The default `8` program is byte-for-byte canonical; `4` changes only the cyan component constructor from `objects-8` to `objects`. The production generator remains unchanged at SHA-256 `68be4a4a51650f17e612f4edc8066b331717a659a8b0571ad6dbc687191da15a`.
++- The native sampler now supports independent 2–6 demonstrations and 1–4 queries with matched inputs across settings, count-stable prefixes, four distinct queries, strict request typing, and a substantive 30×30 query containing 151 nonzero cells.
++- Adversarial lesson review initially found that `smallest_component_8` fit the three visible demonstrations for the 4-connected setting and changed a query. The sampler now reserves an isolated cyan singleton in every scene. A second review found `bbox_bridge_4` still survived; every scene now also carries a moat-separated 4-connected outer frame whose bounding box spans both red rings. After these repairs, the first three demonstrations leave only the intended rule among the ten declared finite candidates for both settings.
++- Reusable audit: `workspace/parametric/self_audit.py`. Current evidence covers 8 jobs, seeds 0/17, demo boundaries 2/6, all four queries, 128 protected-Racket labels, matched-input and prefix checks, and 16 one-query public projections.
++- Native qualification is source-bound at `checks/eefadafb2b7b/qualification/qualification.json`: 2 settings × 2 seeds, 4 jobs, 32 protected-Racket labels, status `qualified`; training admission remains false.
++- Required causal dependency: Step A partitions cyan cells under the episode-selected adjacency; Step B asks whether one derived component touches both red rings. In the retained 4-connected witness the two diagonal bridge cells are separate and the answer is `[[0]]`; replacing that intermediate with the 8-connected partition merges them and changes the protected-Racket answer to `[[8]]`. Evidence: `checks/eefadafb2b7b/causal/witness.json`.
++- Status is reviewer-ready only. Exact-source owner acceptance and any downstream training decision remain pending; finite rivals and finite seeds do not prove universal identifiability.
+diff --git a/repo/generators/eefadafb2b7b/tests/test_parametric_native.py b/repo/generators/eefadafb2b7b/tests/test_parametric_native.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/tests/test_parametric_native.py
+@@ -0,0 +1,198 @@
++"""Native promotion checks for the eefadafb2b7b connectivity family."""
++from __future__ import annotations
++
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import random
++
++import pytest
++
++from reviewer_support import (
++    canonical_path,
++    find_root,
++    public_challenge_bytes,
++    public_challenge_id,
++)
++
++TASK_ID = "eefadafb2b7b"
++ROOT = find_root(__file__)
++HOME = ROOT / "generators" / TASK_ID
++PARAMETRIC = HOME / "workspace" / "parametric"
++
++
++def _load(name: str):
++    path = PARAMETRIC / name
++    assert path.is_file(), f"missing required parametric source: {path}"
++    spec = importlib.util.spec_from_file_location(
++        f"_eefadafb2b7b_{name.replace('.', '_')}", path
++    )
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _canonical_program() -> str:
++    programs = set()
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        for line in handle:
++            if not line.strip():
++                continue
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                programs.add(row["program_solution"])
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def _inputs(episode):
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def _freeze(grid):
++    return tuple(tuple(row) for row in grid)
++
++
++def _racket_grid(grid):
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++@pytest.fixture(scope="module")
++def racket_apply():
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    with RacketBridge() as bridge:
++        identity = bridge.runtime_identity
++        assert identity["backend"] == "racket"
++        assert identity["protected"] is True
++
++        def apply(program: str, grid):
++            return bridge.eval_text(f"({wrap_rule(program)} {_racket_grid(grid)})")
++
++        yield apply
++
++
++def test_native_files_and_contract_are_complete():
++    for name in ("adapter.py", "prototype.py", "promotion.json", "canonical.rkt"):
++        assert (PARAMETRIC / name).is_file()
++    contract = json.loads((PARAMETRIC / "promotion.json").read_text(encoding="utf-8"))
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": "generators/eefadafb2b7b/workspace/parametric/adapter.py",
++        "parameters": {"connectivity": [8, 4]},
++        "default": {"connectivity": 8},
++        "limits": {"demos": [2, 6], "queries": [1, 4]},
++        "resources": [
++            "generators/eefadafb2b7b/workspace/parametric/prototype.py",
++            "generators/eefadafb2b7b/workspace/parametric/canonical.rkt",
++        ],
++    }
++
++
++def test_default_program_is_exact_canonical_and_alternate_is_only_connectivity_change():
++    prototype = _load("prototype.py")
++    canonical = _canonical_program()
++    assert prototype.program({"connectivity": 8}) == canonical
++    alternate = prototype.program({"connectivity": 4})
++    assert alternate != canonical
++    assert canonical.count("(objects-8 cyan-mask 0)") == 1
++    assert alternate.count("(objects cyan-mask 0)") == 1
++    assert "(objects-8 cyan-mask 0)" not in alternate
++
++
++def test_settings_share_inputs_and_three_demos_identify_the_selected_rule():
++    prototype = _load("prototype.py")
++    eight = prototype.generate(17, {"connectivity": 8}, demos=3, queries=4)
++    four = prototype.generate(17, {"connectivity": 4}, demos=3, queries=4)
++    assert _inputs(eight) == _inputs(four)
++    assert prototype.fit_settings(eight["train"]) == [{"connectivity": 8}]
++    assert prototype.fit_settings(four["train"]) == [{"connectivity": 4}]
++    assert any(a["output"] != b["output"] for a, b in zip(eight["test"], four["test"]))
++
++
++def test_counts_are_independent_prefix_stable_and_query_four_is_substantive_30x30():
++    prototype = _load("prototype.py")
++    short = prototype.generate(23, {"connectivity": 4}, demos=2, queries=1)
++    medium = prototype.generate(23, {"connectivity": 4}, demos=2, queries=4)
++    long = prototype.generate(23, {"connectivity": 4}, demos=6, queries=4)
++    assert short["train"] == medium["train"] == long["train"][:2]
++    assert short["test"] == medium["test"][:1]
++    assert medium["test"] == long["test"]
++    assert [(len(p["input"]), len(p["input"][0])) for p in long["test"]] == [
++        (12, 15),
++        (18, 20),
++        (24, 27),
++        (30, 30),
++    ]
++    pairs = long["train"] + long["test"]
++    assert len({_freeze(pair["input"]) for pair in pairs}) == len(pairs)
++    stress = long["test"][-1]["input"]
++    occupied_rows = {r for r, row in enumerate(stress) if any(row)}
++    occupied_cols = {c for c in range(30) if any(stress[r][c] for r in range(30))}
++    assert {0, 29} <= occupied_rows
++    assert {0, 29} <= occupied_cols
++    assert sum(cell != 0 for row in stress for cell in row) >= 90
++
++
++def test_public_projection_hashes_only_visible_bytes():
++    prototype = _load("prototype.py")
++    episode = prototype.generate(31, {"connectivity": 4}, demos=3, queries=4)
++    visible = public_challenge_bytes(episode)
++    identity = public_challenge_id(episode)
++    mutated = copy.deepcopy(episode)
++    mutated["settings"] = {"private": "changed"}
++    mutated["seed"] = 999
++    mutated["program_solution"] = "private changed program"
++    mutated["test"][0]["output"] = [[9]]
++    assert public_challenge_bytes(mutated) == visible
++    assert public_challenge_id(mutated) == identity
++    assert hashlib.sha256(visible).hexdigest() == identity
++    public = json.loads(visible)
++    assert all(set(pair) == {"input"} for pair in public["test"])
++
++
++def test_three_demos_eliminate_every_declared_finite_shortcut():
++    prototype = _load("prototype.py")
++    for connectivity in (8, 4):
++        report = prototype.self_review(
++            prototype.generate(41, {"connectivity": connectivity}, demos=3, queries=4)
++        )
++        intended = f"connectivity_{connectivity}"
++        assert report["selected"] == {"connectivity": connectivity}
++        assert report["survivors"] == [intended]
++        assert report["harmful_survivors"] == []
++        assert report["intended_survivors"] == [intended]
++
++
++def test_native_adapter_enforces_types_and_racket_executes_all_labels(racket_apply):
++    adapter = _load("adapter.py")
++    prototype = _load("prototype.py")
++    before = random.getstate()
++    for connectivity in (8, 4):
++        settings = {"connectivity": connectivity}
++        episode = adapter.generate(7, settings, 2, 4)
++        assert set(episode) == {"train", "test", "program_solution"}
++        assert episode["program_solution"] == adapter.program(settings)
++        for pair in episode["train"] + episode["test"]:
++            assert pair["output"] == prototype.solve(pair["input"], settings)
++            assert racket_apply(episode["program_solution"], pair["input"]) == pair["output"]
++    assert random.getstate() == before
++
++    bad = [
++        (-1, {"connectivity": 8}, 2, 4),
++        (True, {"connectivity": 8}, 2, 4),
++        (0, {"connectivity": 8}, 1, 4),
++        (0, {"connectivity": 8}, 7, 4),
++        (0, {"connectivity": 8}, 2, 0),
++        (0, {"connectivity": 8}, 2, 5),
++        (0, {"connectivity": 6}, 2, 4),
++        (0, {"connectivity": True}, 2, 4),
++        (0, {"connectivity": 8, "extra": 1}, 2, 4),
++    ]
++    for args in bad:
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(*args)
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/README.md b/repo/generators/eefadafb2b7b/workspace/parametric/README.md
+--- a/repo/generators/eefadafb2b7b/workspace/parametric/README.md
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/README.md
+@@ -1,45 +1,68 @@
+-# Proposed connectivity parameter for `eefadafb2b7b`
++# Native connectivity family for `eefadafb2b7b`
+ 
+-This task-local prototype preserves the original family and changes one executed
+-rule choice: cyan cells form components using either **8-connectivity** (the
+-canonical/default setting) or **4-connectivity**. Everything else stays fixed:
+-identify the two red `2×2` blocks, test the one-cell ring around each block, and
+-return `[[8]]` exactly when one cyan component touches both rings.
++This task-local adapter promotes one nearby, episode-fixed rule parameter while
++leaving the production generator and canonical task unchanged:
+ 
+-The production generator and canonical authority remain fixed at connectivity
+-8. The prototype is not an approved production axis and does not refresh any
+-approval hash.
++- `connectivity=8` is the canonical/default setting. `program()` returns the
++  exact canonical Racket bytes.
++- `connectivity=4` changes only the component constructor from
++  `(objects-8 cyan-mask 0)` to `(objects cyan-mask 0)`.
+ 
+-## Parameter
++Both settings retain the same object roles and decision rule: identify the two
++red `2×2` blocks, derive cyan components, and return `[[8]]` exactly when one
++derived component touches the one-cell ring around both blocks.
+ 
+-- `connectivity`: allowed `(8, 4)`; default `8`.
+-- The default Racket text is byte-for-byte the canonical program.
+-- The alternative replaces only `(objects-8 cyan-mask 0)` with
+-  `(objects cyan-mask 0)`.
+-- A `diagonal_bridge` demonstration distinguishes the two settings before the
+-  query, while `bbox_decoy` and `small_bridge` retain the family's other
+-  negative and positive reasoning cases.
++## Native contract
+ 
+-## Run retained evidence
++`adapter.py` exports:
+ 
+-From the outer extracted packet directory:
++```python
++program(settings: dict[str, int]) -> str
++generate(seed: int, settings: dict[str, int], demos: int, queries: int) -> dict
++```
++
++The supported request space is:
++
++- settings: `{"connectivity": 8}` or `{"connectivity": 4}`;
++- demonstrations: 2 through 6;
++- queries: 1 through 4;
++- seed: plain nonnegative Python integer below `2**63`.
++
++Inputs are independent of the hidden setting, demo and query prefixes are stable
++under count changes, and every maximal episode contains four distinct queries.
++The fourth query is a substantive `30×30` boundary-spanning case.
++
++## Teaching and adversarial coverage
++
++The first demonstration is a diagonal-only bridge that separates 8-connectivity
++from 4-connectivity. The next demonstrations add a positive orthogonal bridge
++and a negative bounding-box decoy. Every scene also contains:
++
++- a moat-separated, 4-connected outer component whose bounding box spans both
++  red rings, defeating component-bounding-box shortcuts; and
++- a protected one-cell cyan component, defeating smallest-component-only
++  shortcuts.
++
++`prototype.py:self_review()` evaluates the selected rule against a finite set of
++connectivity, ring-contact, bounding-box, extreme-component, and constant-output
++rivals. This is a bounded adversarial check, not a uniqueness proof.
++
++## Reusable audit
++
++From `WORK/repo` in an extracted review packet:
+ 
+ ```bash
+-python3 review.py run python3 generators/eefadafb2b7b/workspace/parametric/prototype.py \
+-  --base-seed 20261020 \
+-  --out ../checks/parametric/eefadafb2b7b-connectivity-v1
++python3 ../../review.py run python3 \
++  generators/eefadafb2b7b/workspace/parametric/self_audit.py \
++  --out generators/eefadafb2b7b/workspace/parametric/evidence/current
+ ```
+ 
+-The command writes:
++The audit runs protected Racket over both settings, seeds 0 and 17, demo-count
++boundaries 2 and 6, and all four queries. It also checks matched inputs, prefix
++stability, finite rivals, public/private projection, exact visible-byte IDs, and
++the 30×30 stress case. Public artifacts contain one query at a time and exclude
++settings, programs, query answers, future queries, and requested total counts.
+ 
+-- public challenges with three labeled demonstrations and one unlabeled query;
+-- private episodes containing the hidden parameter, exact Racket text/hash,
+-  rival outputs, and query answer;
+-- exact `.rkt` files for both settings;
+-- a cross-setting witness on the same query input;
+-- `report.json` with protected-runtime identity, source hashes, command line,
+-  canonical-label replay, parity checks, limitations, and file inventory.
+-
+-All retained labels and rival predictions are produced by the included protected
+-Racket bridge. The independent Python implementation is checked only as a
+-parity oracle.
++Native qualification and the source-bound causal witness live under
++`WORK/checks/eefadafb2b7b/`. They are reviewer evidence only: exact-source owner
++acceptance and any training admission remain separate downstream decisions.
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/adapter.py b/repo/generators/eefadafb2b7b/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/adapter.py
+@@ -0,0 +1,19 @@
++"""Exact-path native adapter for the reviewed connectivity prototype."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_NAME = "_eefadafb2b7b_native_" + hashlib.sha256(str(_PATH).encode()).hexdigest()
++_SPEC = importlib.util.spec_from_file_location(_NAME, _PATH)
++if _SPEC is None or _SPEC.loader is None:  # pragma: no cover
++    raise ImportError(f"cannot load adjacent prototype: {_PATH}")
++_MODULE = importlib.util.module_from_spec(_SPEC)
++sys.modules[_NAME] = _MODULE
++_SPEC.loader.exec_module(_MODULE)
++
++program = _MODULE.program
++generate = _MODULE.generate
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/canonical.rkt b/repo/generators/eefadafb2b7b/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/canonical.rkt
+@@ -0,0 +1,49 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (let* ((blocks (filter (lambda (b) b)
++                                  (flatmap (lambda (r)
++                                             (map (lambda (c)
++                                                    (and
++                                                      (and
++                                                        (= (at g r c) 2)
++                                                        (= (at g r (+ c 1)) 2)
++                                                        (= (at g (+ r 1) c) 2)
++                                                        (= (at g (+ r 1) (+ c 1)) 2))
++                                                      (list r c)))
++                                                  (range 0 (- w 1))))
++                                           (range 0 (- h 1)))))
++                  (b1r (first (first blocks)))
++                  (b1c (second (first blocks)))
++                  (b2r (first (second blocks)))
++                  (b2c (second (second blocks)))
++                  (touches-block (lambda (cr cc br bc)
++                                   (and
++                                     (>= cr (- br 1))
++                                     (<= cr (+ br 2))
++                                     (>= cc (- bc 1))
++                                     (<= cc (+ bc 2))
++                                     (not (and
++                                            (>= cr br)
++                                            (<= cr (+ br 1))
++                                            (>= cc bc)
++                                            (<= cc (+ bc 1)))))))
++                  (cyan-mask (cellmap g (r c v) (if (= v 8) 1 0)))
++                  (cyan-objs (objects-8 cyan-mask 0))
++                  (bridge (find (lambda (obj)
++                                  (let ((cells (obj-cells obj)))
++                                    (and
++                                      (find (lambda (p)
++                                              (touches-block (first p)
++                                                             (second p)
++                                                             b1r
++                                                             b1c))
++                                            cells)
++                                      (find (lambda (p)
++                                              (touches-block (first p)
++                                                             (second p)
++                                                             b2r
++                                                             b2c))
++                                            cells))))
++                                cyan-objs)))
++             (list (list (if bridge 8 0)))))))
+\ No newline at end of file
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/0cc702b56716207ca5ee6f6635e8785a363c55c63eee1858ba03d39e001b4af4.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/0cc702b56716207ca5ee6f6635e8785a363c55c63eee1858ba03d39e001b4af4.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/0cc702b56716207ca5ee6f6635e8785a363c55c63eee1858ba03d39e001b4af4.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,8,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,8,2,2,0,8],[8,0,0,8,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[0]]},{"input":[[8,0,8,8,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,2,2,0,8],[8,0,0,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,8,8,0,8,0,8],[8,0,0,0,0,2,2,0,0,8,0,8],[8,0,0,0,0,2,2,0,8,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,2,2,8,0,0,0,8],[8,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,8,8,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/143a9237844a2ed8b75f49ef17923940742cd75a1ec5742b8868e7ebf547e6de.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/143a9237844a2ed8b75f49ef17923940742cd75a1ec5742b8868e7ebf547e6de.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/143a9237844a2ed8b75f49ef17923940742cd75a1ec5742b8868e7ebf547e6de.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,0,0,0,0,0,0,0,0,8,0,8,0,8,8],[8,0,2,2,0,0,0,0,0,0,0,0,0,8,8],[8,0,2,2,8,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[8,8,8,8,8,8,8,8,8,8,8,8,8,0,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,8,2,2,0,8],[8,0,0,8,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,2,2,0,8],[8,0,0,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,8,8,0,8,0,8],[8,0,0,0,0,2,2,0,0,8,0,8],[8,0,0,0,0,2,2,0,8,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,2,2,8,0,0,0,8],[8,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,8,8,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/2ef54a1c80b208f4c989cdf5d73a87d483bfd69df944f511366a3d094cae8555.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/2ef54a1c80b208f4c989cdf5d73a87d483bfd69df944f511366a3d094cae8555.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/2ef54a1c80b208f4c989cdf5d73a87d483bfd69df944f511366a3d094cae8555.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,2,2,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,0,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,8,0,0,8],[8,0,2,2,8,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[0]]},{"input":[[8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,2,2,8,0,0,0,8],[8,0,0,0,0,8,0,8,8,0,0,8],[8,0,0,0,0,8,0,0,2,2,0,8],[8,0,0,0,0,8,8,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,0],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,8],[8,0,2,2,0,0,0,0,8,8],[8,0,8,0,0,8,8,0,0,8],[8,0,0,0,8,2,2,0,8,8],[8,0,0,0,8,2,2,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/30a0ab8f40af686ec5f93842a48456c3c4bf722beedafa9588355eee2ce42cb1.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/30a0ab8f40af686ec5f93842a48456c3c4bf722beedafa9588355eee2ce42cb1.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/30a0ab8f40af686ec5f93842a48456c3c4bf722beedafa9588355eee2ce42cb1.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,2,2,8,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,8,0,0,8],[8,0,2,2,8,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,2,2,8,0,0,0,8],[8,0,0,0,0,8,0,8,8,0,0,8],[8,0,0,0,0,8,0,0,2,2,0,8],[8,0,0,0,0,8,8,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,0],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,8],[8,0,2,2,0,0,0,0,8,8],[8,0,8,0,0,8,8,0,0,8],[8,0,0,0,8,2,2,0,8,8],[8,0,0,0,8,2,2,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/344d9c325e37e59429d899a3829ac51b0a0d3ed51dda945341fd2133a19a0483.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/344d9c325e37e59429d899a3829ac51b0a0d3ed51dda945341fd2133a19a0483.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/344d9c325e37e59429d899a3829ac51b0a0d3ed51dda945341fd2133a19a0483.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8,2,2,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,0,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,8,2,2,0,8],[8,0,0,8,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,2,2,0,8],[8,0,0,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,8,8,0,8,0,8],[8,0,0,0,0,2,2,0,0,8,0,8],[8,0,0,0,0,2,2,0,8,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,2,2,8,0,0,0,8],[8,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,8,8,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/3eba17110ee4efbfe21e5a471fb7dec08c4dbc2b9b1d8d9866b5b5246337d7c1.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/3eba17110ee4efbfe21e5a471fb7dec08c4dbc2b9b1d8d9866b5b5246337d7c1.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/3eba17110ee4efbfe21e5a471fb7dec08c4dbc2b9b1d8d9866b5b5246337d7c1.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,2,2,8,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,8,0,0,8],[8,0,2,2,8,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[0]]},{"input":[[8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,2,2,8,0,0,0,8],[8,0,0,0,0,8,0,8,8,0,0,8],[8,0,0,0,0,8,0,0,2,2,0,8],[8,0,0,0,0,8,8,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,0],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,8],[8,0,2,2,0,0,0,0,8,8],[8,0,8,0,0,8,8,0,0,8],[8,0,0,0,8,2,2,0,8,8],[8,0,0,0,8,2,2,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/4d36f562bec0ef173bc3686a5974d1c4367cea8d031fadf525e6c1326080170c.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/4d36f562bec0ef173bc3686a5974d1c4367cea8d031fadf525e6c1326080170c.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/4d36f562bec0ef173bc3686a5974d1c4367cea8d031fadf525e6c1326080170c.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,0,0],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,2,2,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,8,0,0,8],[8,0,2,2,8,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[0]]},{"input":[[8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,2,2,8,0,0,0,8],[8,0,0,0,0,8,0,8,8,0,0,8],[8,0,0,0,0,8,0,0,2,2,0,8],[8,0,0,0,0,8,8,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,0],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,8],[8,0,2,2,0,0,0,0,8,8],[8,0,8,0,0,8,8,0,0,8],[8,0,0,0,8,2,2,0,8,8],[8,0,0,0,8,2,2,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/5c236c0c2a1d0046321d08620192373cd5a091950506803b9356b441d8a3c19e.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/5c236c0c2a1d0046321d08620192373cd5a091950506803b9356b441d8a3c19e.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/5c236c0c2a1d0046321d08620192373cd5a091950506803b9356b441d8a3c19e.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,0,0,0,0,0,0,0,0,8,0,8,0,8,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,8,8],[8,0,0,0,8,2,2,0,0,0,0,0,0,0,8],[8,0,0,8,0,0,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,0,0,0,0,0,8],[8,0,2,2,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[8,8,8,8,8,8,8,8,8,8,8,8,8,0,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,8,0,0,8],[8,0,2,2,8,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,2,2,8,0,0,0,8],[8,0,0,0,0,8,0,8,8,0,0,8],[8,0,0,0,0,8,0,0,2,2,0,8],[8,0,0,0,0,8,8,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,0],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,8],[8,0,2,2,0,0,0,0,8,8],[8,0,8,0,0,8,8,0,0,8],[8,0,0,0,8,2,2,0,8,8],[8,0,0,0,8,2,2,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/619f28919f400d8d64aff437285e301ccb00f7ed5178d1ea8fa70a3b0538b8b3.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/619f28919f400d8d64aff437285e301ccb00f7ed5178d1ea8fa70a3b0538b8b3.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/619f28919f400d8d64aff437285e301ccb00f7ed5178d1ea8fa70a3b0538b8b3.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,0,0,0,0,0,0,0,0,8,0,8,0,8,8],[8,0,2,2,0,0,0,0,0,0,0,0,0,8,8],[8,0,2,2,8,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[8,8,8,8,8,8,8,8,8,8,8,8,8,0,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,8,2,2,0,8],[8,0,0,8,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[0]]},{"input":[[8,0,8,8,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,2,2,0,8],[8,0,0,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,8,8,0,8,0,8],[8,0,0,0,0,2,2,0,0,8,0,8],[8,0,0,0,0,2,2,0,8,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,2,2,8,0,0,0,8],[8,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,8,8,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/624d132dfddd216b7c66f0a2f5f1e98833c45bc52e6e7b0a5eec5ef5adf70157.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/624d132dfddd216b7c66f0a2f5f1e98833c45bc52e6e7b0a5eec5ef5adf70157.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/624d132dfddd216b7c66f0a2f5f1e98833c45bc52e6e7b0a5eec5ef5adf70157.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,0,0],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,2,2,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,8,0,0,8],[8,0,2,2,8,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,2,2,8,0,0,0,8],[8,0,0,0,0,8,0,8,8,0,0,8],[8,0,0,0,0,8,0,0,2,2,0,8],[8,0,0,0,0,8,8,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,0],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,8],[8,0,2,2,0,0,0,0,8,8],[8,0,8,0,0,8,8,0,0,8],[8,0,0,0,8,2,2,0,8,8],[8,0,0,0,8,2,2,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/6c5a6bce3dbc023933a64667f93110794da6c9509daa040d18661f71d855f76e.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/6c5a6bce3dbc023933a64667f93110794da6c9509daa040d18661f71d855f76e.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/6c5a6bce3dbc023933a64667f93110794da6c9509daa040d18661f71d855f76e.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,0,0,0,0,0,0,0,0,8,0,8,0,8,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,8,8],[8,0,0,0,8,2,2,0,0,0,0,0,0,0,8],[8,0,0,8,0,0,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,0,0,0,0,0,8],[8,0,2,2,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[8,8,8,8,8,8,8,8,8,8,8,8,8,0,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,8,0,0,8],[8,0,2,2,8,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[0]]},{"input":[[8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,2,2,8,0,0,0,8],[8,0,0,0,0,8,0,8,8,0,0,8],[8,0,0,0,0,8,0,0,2,2,0,8],[8,0,0,0,0,8,8,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,0],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,8],[8,0,2,2,0,0,0,0,8,8],[8,0,8,0,0,8,8,0,0,8],[8,0,0,0,8,2,2,0,8,8],[8,0,0,0,8,2,2,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/8aa724212ecc9322ae5bff2611018fd1f76ae59d0217de6c5ee23a84812b6055.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/8aa724212ecc9322ae5bff2611018fd1f76ae59d0217de6c5ee23a84812b6055.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/8aa724212ecc9322ae5bff2611018fd1f76ae59d0217de6c5ee23a84812b6055.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,0,0],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,2,2,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,8,2,2,0,8],[8,0,0,8,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[0]]},{"input":[[8,0,8,8,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,2,2,0,8],[8,0,0,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,8,8,0,8,0,8],[8,0,0,0,0,2,2,0,0,8,0,8],[8,0,0,0,0,2,2,0,8,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,2,2,8,0,0,0,8],[8,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,8,8,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/9318dd108951a9b49e78c947942994bdd73b4fe4f73c168133f3e0df38d66e0b.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/9318dd108951a9b49e78c947942994bdd73b4fe4f73c168133f3e0df38d66e0b.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/9318dd108951a9b49e78c947942994bdd73b4fe4f73c168133f3e0df38d66e0b.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,0,0],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,2,2,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,8,2,2,0,8],[8,0,0,8,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,2,2,0,8],[8,0,0,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,8,8,0,8,0,8],[8,0,0,0,0,2,2,0,0,8,0,8],[8,0,0,0,0,2,2,0,8,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,2,2,8,0,0,0,8],[8,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,8,8,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/a56ed2e143e57bc502ad15033e7862cbb165d7ed388eafb1e0c1b23089c2faf4.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/a56ed2e143e57bc502ad15033e7862cbb165d7ed388eafb1e0c1b23089c2faf4.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/a56ed2e143e57bc502ad15033e7862cbb165d7ed388eafb1e0c1b23089c2faf4.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8,2,2,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,0,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,8,2,2,0,8],[8,0,0,8,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[0]]},{"input":[[8,0,8,8,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,2,2,0,8],[8,0,0,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,8,8,0,8,0,8],[8,0,0,0,0,2,2,0,0,8,0,8],[8,0,0,0,0,2,2,0,8,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,2,2,8,0,0,0,8],[8,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,8,8,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/e2f20cf6d9ec283e9345df060d3d5db7044097b209c8ea1029658a91d9c5f485.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/e2f20cf6d9ec283e9345df060d3d5db7044097b209c8ea1029658a91d9c5f485.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/e2f20cf6d9ec283e9345df060d3d5db7044097b209c8ea1029658a91d9c5f485.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,8,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,8,2,2,0,8],[8,0,0,8,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,2,2,0,8],[8,0,0,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,8,8,0,8,0,8],[8,0,0,0,0,2,2,0,0,8,0,8],[8,0,0,0,0,2,2,0,8,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,0,8,8,8,8,8,8,8,8],[0,0,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,2,2,8,0,0,0,8],[8,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,8,8,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,8,2,2,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/e69c38a9b05133f262c7bd0dce633bc0392e5661f296de3acf859f83637a10cc.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/e69c38a9b05133f262c7bd0dce633bc0392e5661f296de3acf859f83637a10cc.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/public/e69c38a9b05133f262c7bd0dce633bc0392e5661f296de3acf859f83637a10cc.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,2,2,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,0,8]]}],"train":[{"input":[[8,0,8,8,8,8,8,8,8],[0,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,2,2,0,8],[8,0,0,0,0,8,0,0,8],[8,0,2,2,8,0,0,0,8],[8,0,2,2,0,0,0,0,8],[8,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,0,0,0,0,0,0,0,8],[8,0,0,0,0,2,2,0,0,0,0,8],[8,0,0,0,0,2,2,8,0,0,0,8],[8,0,0,0,0,8,0,8,8,0,0,8],[8,0,0,0,0,8,0,0,2,2,0,8],[8,0,0,0,0,8,8,0,2,2,0,8],[8,0,0,0,0,0,0,0,0,0,0,8],[0,0,0,0,0,0,0,0,0,0,0,8],[8,0,8,8,8,8,8,8,8,8,8,8]],"output":[[8]]},{"input":[[8,8,8,8,8,8,8,8,0,8],[8,8,0,8,0,8,0,8,0,0],[8,0,0,0,0,0,0,0,8,8],[8,0,0,0,0,0,0,0,0,8],[8,0,0,0,0,0,0,0,8,8],[8,0,2,2,0,0,0,0,0,8],[8,0,2,2,0,0,0,0,8,8],[8,0,8,0,0,8,8,0,0,8],[8,0,0,0,8,2,2,0,8,8],[8,0,0,0,8,2,2,0,0,8],[8,0,0,0,0,0,0,0,0,8],[8,8,8,8,8,8,8,8,8,8]],"output":[[0]]}]}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/report.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/report.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/current/report.json
+@@ -0,0 +1,459 @@
++{
++  "job_count": 8,
++  "jobs": [
++    {
++      "demos": 2,
++      "finite_self_review": {
++        "harmful_survivors": [],
++        "intended_survivors": [
++          "connectivity_8"
++        ],
++        "limits": "Finite declared candidates only; not a uniqueness proof.",
++        "query_mismatch_indices": {
++          "always_8": [],
++          "any_ring_contacts": [],
++          "bbox_bridge_4": [],
++          "bbox_bridge_8": [],
++          "connectivity_8": []
++        },
++        "schema": "eefadafb2b7b-native-self-review-v1",
++        "selected": {
++          "connectivity": 8
++        },
++        "survivors": [
++          "connectivity_8",
++          "any_ring_contacts",
++          "bbox_bridge_8",
++          "bbox_bridge_4",
++          "always_8"
++        ],
++        "tested_candidates": [
++          "always_0",
++          "always_8",
++          "any_ring_contacts",
++          "bbox_bridge_4",
++          "bbox_bridge_8",
++          "connectivity_4",
++          "connectivity_8",
++          "largest_component_4",
++          "largest_component_8",
++          "smallest_component_8"
++        ]
++      },
++      "program_sha256": "18feebb9e3604b407f2e0ad19a770842ae16863a5b6da24eaa90769b32b3e79a",
++      "queries": 4,
++      "seed": 0,
++      "settings": {
++        "connectivity": 8
++      },
++      "stress_nonzero_cells": 151,
++      "survivors": [
++        8
++      ]
++    },
++    {
++      "demos": 2,
++      "finite_self_review": {
++        "harmful_survivors": [],
++        "intended_survivors": [
++          "connectivity_4"
++        ],
++        "limits": "Finite declared candidates only; not a uniqueness proof.",
++        "query_mismatch_indices": {
++          "connectivity_4": []
++        },
++        "schema": "eefadafb2b7b-native-self-review-v1",
++        "selected": {
++          "connectivity": 4
++        },
++        "survivors": [
++          "connectivity_4"
++        ],
++        "tested_candidates": [
++          "always_0",
++          "always_8",
++          "any_ring_contacts",
++          "bbox_bridge_4",
++          "bbox_bridge_8",
++          "connectivity_4",
++          "connectivity_8",
++          "largest_component_4",
++          "largest_component_8",
++          "smallest_component_8"
++        ]
++      },
++      "program_sha256": "322c50192ea4267f38ac297a9816d84c1638911cf9835700cd95c0040334d77c",
++      "queries": 4,
++      "seed": 0,
++      "settings": {
++        "connectivity": 4
++      },
++      "stress_nonzero_cells": 151,
++      "survivors": [
++        4
++      ]
++    },
++    {
++      "demos": 6,
++      "finite_self_review": {
++        "harmful_survivors": [],
++        "intended_survivors": [
++          "connectivity_8"
++        ],
++        "limits": "Finite declared candidates only; not a uniqueness proof.",
++        "query_mismatch_indices": {
++          "connectivity_8": []
++        },
++        "schema": "eefadafb2b7b-native-self-review-v1",
++        "selected": {
++          "connectivity": 8
++        },
++        "survivors": [
++          "connectivity_8"
++        ],
++        "tested_candidates": [
++          "always_0",
++          "always_8",
++          "any_ring_contacts",
++          "bbox_bridge_4",
++          "bbox_bridge_8",
++          "connectivity_4",
++          "connectivity_8",
++          "largest_component_4",
++          "largest_component_8",
++          "smallest_component_8"
++        ]
++      },
++      "program_sha256": "18feebb9e3604b407f2e0ad19a770842ae16863a5b6da24eaa90769b32b3e79a",
++      "queries": 4,
++      "seed": 0,
++      "settings": {
++        "connectivity": 8
++      },
++      "stress_nonzero_cells": 151,
++      "survivors": [
++        8
++      ]
++    },
++    {
++      "demos": 6,
++      "finite_self_review": {
++        "harmful_survivors": [],
++        "intended_survivors": [
++          "connectivity_4"
++        ],
++        "limits": "Finite declared candidates only; not a uniqueness proof.",
++        "query_mismatch_indices": {
++          "connectivity_4": []
++        },
++        "schema": "eefadafb2b7b-native-self-review-v1",
++        "selected": {
++          "connectivity": 4
++        },
++        "survivors": [
++          "connectivity_4"
++        ],
++        "tested_candidates": [
++          "always_0",
++          "always_8",
++          "any_ring_contacts",
++          "bbox_bridge_4",
++          "bbox_bridge_8",
++          "connectivity_4",
++          "connectivity_8",
++          "largest_component_4",
++          "largest_component_8",
++          "smallest_component_8"
++        ]
++      },
++      "program_sha256": "322c50192ea4267f38ac297a9816d84c1638911cf9835700cd95c0040334d77c",
++      "queries": 4,
++      "seed": 0,
++      "settings": {
++        "connectivity": 4
++      },
++      "stress_nonzero_cells": 151,
++      "survivors": [
++        4
++      ]
++    },
++    {
++      "demos": 2,
++      "finite_self_review": {
++        "harmful_survivors": [],
++        "intended_survivors": [
++          "connectivity_8"
++        ],
++        "limits": "Finite declared candidates only; not a uniqueness proof.",
++        "query_mismatch_indices": {
++          "always_8": [],
++          "any_ring_contacts": [],
++          "bbox_bridge_4": [],
++          "bbox_bridge_8": [],
++          "connectivity_8": []
++        },
++        "schema": "eefadafb2b7b-native-self-review-v1",
++        "selected": {
++          "connectivity": 8
++        },
++        "survivors": [
++          "connectivity_8",
++          "any_ring_contacts",
++          "bbox_bridge_8",
++          "bbox_bridge_4",
++          "always_8"
++        ],
++        "tested_candidates": [
++          "always_0",
++          "always_8",
++          "any_ring_contacts",
++          "bbox_bridge_4",
++          "bbox_bridge_8",
++          "connectivity_4",
++          "connectivity_8",
++          "largest_component_4",
++          "largest_component_8",
++          "smallest_component_8"
++        ]
++      },
++      "program_sha256": "18feebb9e3604b407f2e0ad19a770842ae16863a5b6da24eaa90769b32b3e79a",
++      "queries": 4,
++      "seed": 17,
++      "settings": {
++        "connectivity": 8
++      },
++      "stress_nonzero_cells": 151,
++      "survivors": [
++        8
++      ]
++    },
++    {
++      "demos": 2,
++      "finite_self_review": {
++        "harmful_survivors": [],
++        "intended_survivors": [
++          "connectivity_4"
++        ],
++        "limits": "Finite declared candidates only; not a uniqueness proof.",
++        "query_mismatch_indices": {
++          "connectivity_4": []
++        },
++        "schema": "eefadafb2b7b-native-self-review-v1",
++        "selected": {
++          "connectivity": 4
++        },
++        "survivors": [
++          "connectivity_4"
++        ],
++        "tested_candidates": [
++          "always_0",
++          "always_8",
++          "any_ring_contacts",
++          "bbox_bridge_4",
++          "bbox_bridge_8",
++          "connectivity_4",
++          "connectivity_8",
++          "largest_component_4",
++          "largest_component_8",
++          "smallest_component_8"
++        ]
++      },
++      "program_sha256": "322c50192ea4267f38ac297a9816d84c1638911cf9835700cd95c0040334d77c",
++      "queries": 4,
++      "seed": 17,
++      "settings": {
++        "connectivity": 4
++      },
++      "stress_nonzero_cells": 151,
++      "survivors": [
++        4
++      ]
++    },
++    {
++      "demos": 6,
++      "finite_self_review": {
++        "harmful_survivors": [],
++        "intended_survivors": [
++          "connectivity_8"
++        ],
++        "limits": "Finite declared candidates only; not a uniqueness proof.",
++        "query_mismatch_indices": {
++          "connectivity_8": []
++        },
++        "schema": "eefadafb2b7b-native-self-review-v1",
++        "selected": {
++          "connectivity": 8
++        },
++        "survivors": [
++          "connectivity_8"
++        ],
++        "tested_candidates": [
++          "always_0",
++          "always_8",
++          "any_ring_contacts",
++          "bbox_bridge_4",
++          "bbox_bridge_8",
++          "connectivity_4",
++          "connectivity_8",
++          "largest_component_4",
++          "largest_component_8",
++          "smallest_component_8"
++        ]
++      },
++      "program_sha256": "18feebb9e3604b407f2e0ad19a770842ae16863a5b6da24eaa90769b32b3e79a",
++      "queries": 4,
++      "seed": 17,
++      "settings": {
++        "connectivity": 8
++      },
++      "stress_nonzero_cells": 151,
++      "survivors": [
++        8
++      ]
++    },
++    {
++      "demos": 6,
++      "finite_self_review": {
++        "harmful_survivors": [],
++        "intended_survivors": [
++          "connectivity_4"
++        ],
++        "limits": "Finite declared candidates only; not a uniqueness proof.",
++        "query_mismatch_indices": {
++          "connectivity_4": []
++        },
++        "schema": "eefadafb2b7b-native-self-review-v1",
++        "selected": {
++          "connectivity": 4
++        },
++        "survivors": [
++          "connectivity_4"
++        ],
++        "tested_candidates": [
++          "always_0",
++          "always_8",
++          "any_ring_contacts",
++          "bbox_bridge_4",
++          "bbox_bridge_8",
++          "connectivity_4",
++          "connectivity_8",
++          "largest_component_4",
++          "largest_component_8",
++          "smallest_component_8"
++        ]
++      },
++      "program_sha256": "322c50192ea4267f38ac297a9816d84c1638911cf9835700cd95c0040334d77c",
++      "queries": 4,
++      "seed": 17,
++      "settings": {
++        "connectivity": 4
++      },
++      "stress_nonzero_cells": 151,
++      "survivors": [
++        4
++      ]
++    }
++  ],
++  "limits": "Finite tested rivals and seeds only; not a universal uniqueness proof or acceptance.",
++  "programs": {
++    "4": "322c50192ea4267f38ac297a9816d84c1638911cf9835700cd95c0040334d77c",
++    "8": "18feebb9e3604b407f2e0ad19a770842ae16863a5b6da24eaa90769b32b3e79a"
++  },
++  "public_file_count": 16,
++  "public_files": [
++    {
++      "bytes": 1574,
++      "path": "public/0cc702b56716207ca5ee6f6635e8785a363c55c63eee1858ba03d39e001b4af4.json",
++      "sha256": "0cc702b56716207ca5ee6f6635e8785a363c55c63eee1858ba03d39e001b4af4"
++    },
++    {
++      "bytes": 1202,
++      "path": "public/143a9237844a2ed8b75f49ef17923940742cd75a1ec5742b8868e7ebf547e6de.json",
++      "sha256": "143a9237844a2ed8b75f49ef17923940742cd75a1ec5742b8868e7ebf547e6de"
++    },
++    {
++      "bytes": 2678,
++      "path": "public/2ef54a1c80b208f4c989cdf5d73a87d483bfd69df944f511366a3d094cae8555.json",
++      "sha256": "2ef54a1c80b208f4c989cdf5d73a87d483bfd69df944f511366a3d094cae8555"
++    },
++    {
++      "bytes": 1574,
++      "path": "public/30a0ab8f40af686ec5f93842a48456c3c4bf722beedafa9588355eee2ce42cb1.json",
++      "sha256": "30a0ab8f40af686ec5f93842a48456c3c4bf722beedafa9588355eee2ce42cb1"
++    },
++    {
++      "bytes": 2678,
++      "path": "public/344d9c325e37e59429d899a3829ac51b0a0d3ed51dda945341fd2133a19a0483.json",
++      "sha256": "344d9c325e37e59429d899a3829ac51b0a0d3ed51dda945341fd2133a19a0483"
++    },
++    {
++      "bytes": 1574,
++      "path": "public/3eba17110ee4efbfe21e5a471fb7dec08c4dbc2b9b1d8d9866b5b5246337d7c1.json",
++      "sha256": "3eba17110ee4efbfe21e5a471fb7dec08c4dbc2b9b1d8d9866b5b5246337d7c1"
++    },
++    {
++      "bytes": 2162,
++      "path": "public/4d36f562bec0ef173bc3686a5974d1c4367cea8d031fadf525e6c1326080170c.json",
++      "sha256": "4d36f562bec0ef173bc3686a5974d1c4367cea8d031fadf525e6c1326080170c"
++    },
++    {
++      "bytes": 1202,
++      "path": "public/5c236c0c2a1d0046321d08620192373cd5a091950506803b9356b441d8a3c19e.json",
++      "sha256": "5c236c0c2a1d0046321d08620192373cd5a091950506803b9356b441d8a3c19e"
++    },
++    {
++      "bytes": 1202,
++      "path": "public/619f28919f400d8d64aff437285e301ccb00f7ed5178d1ea8fa70a3b0538b8b3.json",
++      "sha256": "619f28919f400d8d64aff437285e301ccb00f7ed5178d1ea8fa70a3b0538b8b3"
++    },
++    {
++      "bytes": 2162,
++      "path": "public/624d132dfddd216b7c66f0a2f5f1e98833c45bc52e6e7b0a5eec5ef5adf70157.json",
++      "sha256": "624d132dfddd216b7c66f0a2f5f1e98833c45bc52e6e7b0a5eec5ef5adf70157"
++    },
++    {
++      "bytes": 1202,
++      "path": "public/6c5a6bce3dbc023933a64667f93110794da6c9509daa040d18661f71d855f76e.json",
++      "sha256": "6c5a6bce3dbc023933a64667f93110794da6c9509daa040d18661f71d855f76e"
++    },
++    {
++      "bytes": 2162,
++      "path": "public/8aa724212ecc9322ae5bff2611018fd1f76ae59d0217de6c5ee23a84812b6055.json",
++      "sha256": "8aa724212ecc9322ae5bff2611018fd1f76ae59d0217de6c5ee23a84812b6055"
++    },
++    {
++      "bytes": 2162,
++      "path": "public/9318dd108951a9b49e78c947942994bdd73b4fe4f73c168133f3e0df38d66e0b.json",
++      "sha256": "9318dd108951a9b49e78c947942994bdd73b4fe4f73c168133f3e0df38d66e0b"
++    },
++    {
++      "bytes": 2678,
++      "path": "public/a56ed2e143e57bc502ad15033e7862cbb165d7ed388eafb1e0c1b23089c2faf4.json",
++      "sha256": "a56ed2e143e57bc502ad15033e7862cbb165d7ed388eafb1e0c1b23089c2faf4"
++    },
++    {
++      "bytes": 1574,
++      "path": "public/e2f20cf6d9ec283e9345df060d3d5db7044097b209c8ea1029658a91d9c5f485.json",
++      "sha256": "e2f20cf6d9ec283e9345df060d3d5db7044097b209c8ea1029658a91d9c5f485"
++    },
++    {
++      "bytes": 2678,
++      "path": "public/e69c38a9b05133f262c7bd0dce633bc0392e5661f296de3acf859f83637a10cc.json",
++      "sha256": "e69c38a9b05133f262c7bd0dce633bc0392e5661f296de3acf859f83637a10cc"
++    }
++  ],
++  "racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "racket_evaluations": 128,
++  "schema": "eefadafb2b7b-native-self-audit-v1",
++  "scope": "Finite settings {8,4}, seeds 0/17 by default, demo boundaries 2/6, four queries, protected-Racket labels, finite candidate shortcuts, matched inputs, prefix stability, public projection, and 30x30 stress.",
++  "status": "passed"
++}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/manifest.json b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/manifest.json
+--- a/repo/generators/eefadafb2b7b/workspace/parametric/evidence/manifest.json
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/evidence/manifest.json
+@@ -1,58 +1,149 @@
+ {
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "18feebb9e3604b407f2e0ad19a770842ae16863a5b6da24eaa90769b32b3e79a",
+   "canonical_rule_hash": "1d44fc0f4360",
++  "default": {
++    "connectivity": 8
++  },
++  "evidence_root": "generators/eefadafb2b7b/workspace/parametric/evidence/current",
+   "files": [
+     {
+-      "bytes": 1905,
+-      "path": "generators/eefadafb2b7b/workspace/parametric/README.md",
+-      "sha256": "6d1b5e8382347b54bcccd69b6bfb629847dfe9d4b04a78e53a13d5a1758beeb1"
++      "bytes": 21298,
++      "path": "generators/eefadafb2b7b/generator.py",
++      "sha256": "68be4a4a51650f17e612f4edc8066b331717a659a8b0571ad6dbc687191da15a"
+     },
+     {
+-      "bytes": 652,
+-      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/returned/private/cross-setting-witness.json",
+-      "sha256": "0dc16842dc15ab5a10c72baacf02f892c264cb4351fa2ad92082b39abf38397a"
++      "bytes": 4486,
++      "path": "generators/eefadafb2b7b/tests/test_parametric_connectivity.py",
++      "sha256": "edef8db5edee788a4849741d2cfac381379286ab58160634e3356298da43bbd5"
+     },
+     {
+-      "bytes": 6509,
+-      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/returned/private/episodes/episode-001.json",
+-      "sha256": "7fc89703629d341964d698aedcfcad1ea36b6d39609525ba7bb699da4da487d2"
++      "bytes": 7466,
++      "path": "generators/eefadafb2b7b/tests/test_parametric_native.py",
++      "sha256": "e8fe1bb482e75cd036d443fb26f23ae13f53108a31616890fdad7deec795412f"
+     },
+     {
+-      "bytes": 6507,
+-      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/returned/private/episodes/episode-002.json",
+-      "sha256": "4a4bd5d2a14dde0e8d510025bdc7b1f32082e0ce245c0cc31657848cfdb7b9bb"
+-    },
+-    {
+-      "bytes": 2794,
+-      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/returned/private/rules/connectivity-4.rkt",
+-      "sha256": "322c50192ea4267f38ac297a9816d84c1638911cf9835700cd95c0040334d77c"
++      "bytes": 680,
++      "path": "generators/eefadafb2b7b/workspace/parametric/adapter.py",
++      "sha256": "e27a32a2ccb9d40dc70c04ce6fb82eeebfd265759d651a5e05ed1c3eea18095d"
+     },
+     {
+       "bytes": 2796,
+-      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/returned/private/rules/connectivity-8.rkt",
++      "path": "generators/eefadafb2b7b/workspace/parametric/canonical.rkt",
+       "sha256": "18feebb9e3604b407f2e0ad19a770842ae16863a5b6da24eaa90769b32b3e79a"
+     },
+     {
+-      "bytes": 2595,
+-      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/returned/public/episode-001.json",
+-      "sha256": "269af8669ac28605fb4f11756e924fbdbbd6bfd68f93d538f8d7f208a8086252"
++      "bytes": 1574,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/0cc702b56716207ca5ee6f6635e8785a363c55c63eee1858ba03d39e001b4af4.json",
++      "sha256": "0cc702b56716207ca5ee6f6635e8785a363c55c63eee1858ba03d39e001b4af4"
+     },
+     {
+-      "bytes": 2595,
+-      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/returned/public/episode-002.json",
+-      "sha256": "f8218e4bb01399259b86e5905ab58799ee72d2ed87971d9fc69a1dca3bc8418d"
++      "bytes": 1202,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/143a9237844a2ed8b75f49ef17923940742cd75a1ec5742b8868e7ebf547e6de.json",
++      "sha256": "143a9237844a2ed8b75f49ef17923940742cd75a1ec5742b8868e7ebf547e6de"
+     },
+     {
+-      "bytes": 10047,
+-      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/returned/report.json",
+-      "sha256": "b7a3b6dc9e752d097c574f795370dbc8dc5a7abdbdc216634203bd226a83c3d8"
++      "bytes": 2678,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/2ef54a1c80b208f4c989cdf5d73a87d483bfd69df944f511366a3d094cae8555.json",
++      "sha256": "2ef54a1c80b208f4c989cdf5d73a87d483bfd69df944f511366a3d094cae8555"
+     },
+     {
+-      "bytes": 22891,
++      "bytes": 1574,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/30a0ab8f40af686ec5f93842a48456c3c4bf722beedafa9588355eee2ce42cb1.json",
++      "sha256": "30a0ab8f40af686ec5f93842a48456c3c4bf722beedafa9588355eee2ce42cb1"
++    },
++    {
++      "bytes": 2678,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/344d9c325e37e59429d899a3829ac51b0a0d3ed51dda945341fd2133a19a0483.json",
++      "sha256": "344d9c325e37e59429d899a3829ac51b0a0d3ed51dda945341fd2133a19a0483"
++    },
++    {
++      "bytes": 1574,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/3eba17110ee4efbfe21e5a471fb7dec08c4dbc2b9b1d8d9866b5b5246337d7c1.json",
++      "sha256": "3eba17110ee4efbfe21e5a471fb7dec08c4dbc2b9b1d8d9866b5b5246337d7c1"
++    },
++    {
++      "bytes": 2162,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/4d36f562bec0ef173bc3686a5974d1c4367cea8d031fadf525e6c1326080170c.json",
++      "sha256": "4d36f562bec0ef173bc3686a5974d1c4367cea8d031fadf525e6c1326080170c"
++    },
++    {
++      "bytes": 1202,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/5c236c0c2a1d0046321d08620192373cd5a091950506803b9356b441d8a3c19e.json",
++      "sha256": "5c236c0c2a1d0046321d08620192373cd5a091950506803b9356b441d8a3c19e"
++    },
++    {
++      "bytes": 1202,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/619f28919f400d8d64aff437285e301ccb00f7ed5178d1ea8fa70a3b0538b8b3.json",
++      "sha256": "619f28919f400d8d64aff437285e301ccb00f7ed5178d1ea8fa70a3b0538b8b3"
++    },
++    {
++      "bytes": 2162,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/624d132dfddd216b7c66f0a2f5f1e98833c45bc52e6e7b0a5eec5ef5adf70157.json",
++      "sha256": "624d132dfddd216b7c66f0a2f5f1e98833c45bc52e6e7b0a5eec5ef5adf70157"
++    },
++    {
++      "bytes": 1202,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/6c5a6bce3dbc023933a64667f93110794da6c9509daa040d18661f71d855f76e.json",
++      "sha256": "6c5a6bce3dbc023933a64667f93110794da6c9509daa040d18661f71d855f76e"
++    },
++    {
++      "bytes": 2162,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/8aa724212ecc9322ae5bff2611018fd1f76ae59d0217de6c5ee23a84812b6055.json",
++      "sha256": "8aa724212ecc9322ae5bff2611018fd1f76ae59d0217de6c5ee23a84812b6055"
++    },
++    {
++      "bytes": 2162,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/9318dd108951a9b49e78c947942994bdd73b4fe4f73c168133f3e0df38d66e0b.json",
++      "sha256": "9318dd108951a9b49e78c947942994bdd73b4fe4f73c168133f3e0df38d66e0b"
++    },
++    {
++      "bytes": 2678,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/a56ed2e143e57bc502ad15033e7862cbb165d7ed388eafb1e0c1b23089c2faf4.json",
++      "sha256": "a56ed2e143e57bc502ad15033e7862cbb165d7ed388eafb1e0c1b23089c2faf4"
++    },
++    {
++      "bytes": 1574,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/e2f20cf6d9ec283e9345df060d3d5db7044097b209c8ea1029658a91d9c5f485.json",
++      "sha256": "e2f20cf6d9ec283e9345df060d3d5db7044097b209c8ea1029658a91d9c5f485"
++    },
++    {
++      "bytes": 2678,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/public/e69c38a9b05133f262c7bd0dce633bc0392e5661f296de3acf859f83637a10cc.json",
++      "sha256": "e69c38a9b05133f262c7bd0dce633bc0392e5661f296de3acf859f83637a10cc"
++    },
++    {
++      "bytes": 13824,
++      "path": "generators/eefadafb2b7b/workspace/parametric/evidence/current/report.json",
++      "sha256": "5beceaa4a01b6d3d6516160fc0d5909934d5e5023a6d1fe5d548276d01070e59"
++    },
++    {
++      "bytes": 401,
++      "path": "generators/eefadafb2b7b/workspace/parametric/promotion.json",
++      "sha256": "43e449140430a9503b74aab5c33c2d2d2bf0560deca6d9e78597b7b7d011f8c2"
++    },
++    {
++      "bytes": 37515,
+       "path": "generators/eefadafb2b7b/workspace/parametric/prototype.py",
+-      "sha256": "78627a99ae4bde7a1a9790489e8c32894e657ee751062f787e580a47248b2266"
++      "sha256": "18b0793135bfc8454af3a7205b521a24979373f7c1e3a0dbf43e7d736ff6915b"
++    },
++    {
++      "bytes": 9957,
++      "path": "generators/eefadafb2b7b/workspace/parametric/self_audit.py",
++      "sha256": "35545e230e7ee970d3714d67ef264e56d7ba58463bfd9f6935ae16a37a813f97"
+     }
+   ],
+   "generator_sha256": "68be4a4a51650f17e612f4edc8066b331717a659a8b0571ad6dbc687191da15a",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
+   "parameters": {
+     "connectivity": [
+       8,
+@@ -60,11 +151,12 @@
+     ]
+   },
+   "production_parametric_api": false,
+-  "return_id": "review-544a4199ee12ccaa:v0001",
+-  "return_zip_sha256": "fb969fff94486d9aa5216b8f4901f06b94b57af14b93814ea862f00c3d88d6a7",
++  "reported_checks": "11 focused tests; 55 staged task tests; 8-job protected-Racket self-audit with 128 evaluations; 16 public exports checked",
++  "rule_task_id": "eefadafb2b7b",
+   "schema": "arcpuzzles-parametric-prototype-evidence-v1",
+-  "scope": "Strict request boundary only;224 lawful calls byte-identical. Reviewer12/12 battery,48 portable tests,4680 override draws with0 findings.300 four-ordered-demo/fixed-query lessons clean;638/1500 unsupported arbitrary rotations ambiguous and900 hook warnings; required-policy failure retained, diagnostic success is not rotation qualification. Prototype2 three-demo/query settings with actual Racket labels/rivals and8 canonical default matches. Canonical authority unchanged; no fresh whole-task replay claimed. Public/private artifacts separate; descriptive authoring filenames must be hidden/renamed for model-visible use. No owner battery rerun or training admission.",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
+   "task_id": "eefadafb2b7b",
++  "training_admitted": false,
+   "variant_approved": false,
+   "verification_status": "reviewer_reported"
+ }
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/promotion.json b/repo/generators/eefadafb2b7b/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/promotion.json
+@@ -0,0 +1,11 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/eefadafb2b7b/workspace/parametric/adapter.py",
++  "parameters": {"connectivity": [8, 4]},
++  "default": {"connectivity": 8},
++  "limits": {"demos": [2, 6], "queries": [1, 4]},
++  "resources": [
++    "generators/eefadafb2b7b/workspace/parametric/prototype.py",
++    "generators/eefadafb2b7b/workspace/parametric/canonical.rkt"
++  ]
++}
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/prototype.py b/repo/generators/eefadafb2b7b/workspace/parametric/prototype.py
+--- a/repo/generators/eefadafb2b7b/workspace/parametric/prototype.py
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/prototype.py
+@@ -14,6 +14,7 @@
+ from copy import deepcopy
+ import hashlib
+ import json
++import random
+ from pathlib import Path
+ import sys
+ from typing import Any
+@@ -625,6 +626,407 @@
+     return report
+ 
+ 
++
++# ---------------------------------------------------------------------------
++# Native promotion adapter implementation.
++# ---------------------------------------------------------------------------
++
++SETTINGS = ({"connectivity": 8}, {"connectivity": 4})
++DEMO_PROFILES = (
++    "diagonal_bridge",
++    "small_bridge",
++    "bbox_decoy",
++    "split_contacts",
++    "small_bridge",
++    "diagonal_bridge",
++)
++DEMO_SHAPES = ((9, 9), (10, 12), (12, 10), (13, 14), (15, 12), (16, 16))
++QUERY_PROFILES = (
++    "diagonal_bridge",
++    "small_bridge",
++    "diagonal_bridge",
++    "diagonal_bridge",
++)
++QUERY_SHAPES = ((12, 15), (18, 20), (24, 27), (30, 30))
++
++_CORE_RED = {
++    (0, 0), (0, 1), (1, 0), (1, 1),
++    (3, 3), (3, 4), (4, 3), (4, 4),
++}
++_CORE_CYAN = {
++    "diagonal_bridge": {(2, 1), (3, 2)},
++    "bbox_decoy": {(2, 0), (2, 1), (1, 2), (0, 2), (4, 2)},
++    "small_bridge": {(2, 1), (2, 2), (3, 2), (0, 2), (0, 3), (0, 4), (1, 4)},
++    "split_contacts": {(0, 2), (0, 3), (4, 2)},
++}
++_PROFILE_EXPECTED = {
++    "diagonal_bridge": {8: [[8]], 4: [[0]]},
++    "small_bridge": {8: [[8]], 4: [[8]]},
++    "bbox_decoy": {8: [[0]], 4: [[0]]},
++    "split_contacts": {8: [[0]], 4: [[0]]},
++}
++_NATIVE_CANONICAL_PATH = Path(__file__).resolve().with_name("canonical.rkt")
++
++
++def _native_int(name: str, value: Any, low: int, high: int) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be a plain Python int in [{low}, {high}]")
++    return value
++
++
++def _native_settings(settings: Any) -> dict[str, int]:
++    if type(settings) is not dict or set(settings) != {"connectivity"}:
++        raise ValueError("settings must contain exactly connectivity")
++    value = settings["connectivity"]
++    if type(value) is not int or value not in CONNECTIVITIES:
++        raise ValueError(f"connectivity must be exactly one of {CONNECTIVITIES}")
++    return {"connectivity": value}
++
++
++def _native_canonical() -> str:
++    if not _NATIVE_CANONICAL_PATH.is_file():
++        raise FileNotFoundError(_NATIVE_CANONICAL_PATH)
++    return _NATIVE_CANONICAL_PATH.read_text(encoding="utf-8")
++
++
++def program(settings: Any) -> str:
++    """Return complete exact Racket for one native connectivity setting."""
++    connectivity = _native_settings(settings)["connectivity"]
++    source = _native_canonical()
++    if connectivity == 8:
++        return source
++    if source.count(_CONNECTIVITY_SITE) != 1:
++        raise ValueError("canonical connectivity site changed")
++    alternate = source.replace(_CONNECTIVITY_SITE, "(objects cyan-mask 0)", 1)
++    if alternate == source:
++        raise ValueError("alternate connectivity did not change the program")
++    return alternate
++
++
++def _native_rng(seed: int, role: str, index: int) -> random.Random:
++    digest = hashlib.sha256(
++        f"{TASK_ID}|native-connectivity-v2|{seed}|{role}|{index}".encode("utf-8")
++    ).digest()
++    return random.Random(int.from_bytes(digest[:16], "big"))
++
++
++def _transform_point(row: int, column: int, transform: int) -> tuple[int, int]:
++    if transform >= 4:
++        column = 4 - column
++    for _ in range(transform % 4):
++        row, column = column, 4 - row
++    return row, column
++
++
++def _core_grid(profile: str, transform: int) -> list[list[int]]:
++    if profile not in _CORE_CYAN:
++        raise ValueError(f"unknown profile: {profile}")
++    grid = [[0 for _ in range(5)] for _ in range(5)]
++    for row, column in _CORE_RED:
++        rr, cc = _transform_point(row, column, transform)
++        grid[rr][cc] = 2
++    for row, column in _CORE_CYAN[profile]:
++        rr, cc = _transform_point(row, column, transform)
++        if grid[rr][cc] != 0:
++            raise RuntimeError("transformed cyan overlaps red")
++        grid[rr][cc] = 8
++    return grid
++
++
++def _core_offset(
++    height: int,
++    width: int,
++    role: str,
++    index: int,
++    rng: random.Random,
++) -> tuple[int, int]:
++    min_row = min_column = 2
++    max_row, max_column = height - 7, width - 7
++    if max_row < min_row or max_column < min_column:
++        raise ValueError("native scenes need at least 9x9 canvases")
++    if role == "query":
++        anchors = (
++            (min_row, min_column),
++            (min_row, max_column),
++            (max_row, min_column),
++            ((min_row + max_row) // 2, (min_column + max_column) // 2),
++        )
++        return anchors[index]
++    return rng.randint(min_row, max_row), rng.randint(min_column, max_column)
++
++
++def _paint_distractors(
++    grid: list[list[int]],
++    core_row: int,
++    core_column: int,
++    rng: random.Random,
++) -> None:
++    """Add a moat-separated large cyan distractor field.
++
++    The one-cell expanded core rectangle contains both red rings and every core
++    cyan cell. Leaving it empty prevents distractors from touching a block ring
++    or joining the teaching component under either 4- or 8-connectivity.
++    """
++    height, width = len(grid), len(grid[0])
++    forbidden = {
++        (row, column)
++        for row in range(max(0, core_row - 1), min(height, core_row + 6))
++        for column in range(max(0, core_column - 1), min(width, core_column + 6))
++    }
++    corners = ((0, 0), (0, width - 1), (height - 1, 0), (height - 1, width - 1))
++    core_center = (core_row + 2, core_column + 2)
++    singleton = max(
++        (cell for cell in corners if cell not in forbidden),
++        key=lambda cell: abs(cell[0] - core_center[0]) + abs(cell[1] - core_center[1]),
++    )
++    singleton_halo = {
++        (row, column)
++        for row in range(max(0, singleton[0] - 1), min(height, singleton[0] + 2))
++        for column in range(max(0, singleton[1] - 1), min(width, singleton[1] + 2))
++    }
++
++    def paint(row: int, column: int) -> None:
++        if (
++            (row, column) not in forbidden
++            and (row, column) not in singleton_halo
++            and grid[row][column] == 0
++        ):
++            grid[row][column] = 8
++
++    # A moat-separated outer frame is one true 4-connected component whose
++    # bounding box spans both red rings.  It therefore gives the visible
++    # negative examples a constructive witness against the wrong rule
++    # "bridge if a component's bounding box touches both rings".  The reserved
++    # singleton halo may remove one corner of the frame; the remaining U-shaped
++    # path stays connected and still reaches all four canvas extremes.
++    for column in range(width):
++        paint(0, column)
++        paint(height - 1, column)
++    for row in range(1, height - 1):
++        paint(row, 0)
++        paint(row, width - 1)
++
++    # A deterministic inner zig-zag adds density without crossing the moat.
++    for column in range(1, width - 1, 2):
++        paint(1, column)
++    for row in range(2, height - 2, 2):
++        paint(row, width - 2)
++
++    target_cyan = max(18, (height * width) // 9)
++    attempts = 0
++    while sum(cell == 8 for row in grid for cell in row) < target_cyan:
++        attempts += 1
++        if attempts > height * width * 20:
++            raise RuntimeError("could not place substantive distractor field")
++        row = rng.randrange(height)
++        column = rng.randrange(width)
++        paint(row, column)
++        # Grow short local runs so the texture is not merely isolated noise.
++        if rng.random() < 0.65:
++            dr, dc = rng.choice(((0, 1), (1, 0), (1, 1), (1, -1)))
++            neighbor_row, neighbor_column = row + dr, column + dc
++            if 0 <= neighbor_row < height and 0 <= neighbor_column < width:
++                paint(neighbor_row, neighbor_column)
++
++    # Materialize the reserved singleton after all other noise is painted.
++    # Its protected Chebyshev halo makes it a genuine one-cell component.
++    if grid[singleton[0]][singleton[1]] != 0:
++        raise RuntimeError("reserved singleton cell was overwritten")
++    grid[singleton[0]][singleton[1]] = 8
++
++
++def _native_scene(
++    seed: int,
++    role: str,
++    index: int,
++    profile: str,
++    shape: tuple[int, int],
++) -> list[list[int]]:
++    rng = _native_rng(seed, role, index)
++    height, width = shape
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    transform = rng.randrange(8)
++    core = _core_grid(profile, transform)
++    core_row, core_column = _core_offset(height, width, role, index, rng)
++    for row in range(5):
++        for column in range(5):
++            value = core[row][column]
++            if value:
++                grid[core_row + row][core_column + column] = value
++    _paint_distractors(grid, core_row, core_column, rng)
++
++    if len(_blocks(grid)) != 2:
++        raise RuntimeError("native scene must contain exactly two red 2x2 blocks")
++    for connectivity in CONNECTIVITIES:
++        observed = apply_python(grid, connectivity)
++        expected = _PROFILE_EXPECTED[profile][connectivity]
++        if observed != expected:
++            raise RuntimeError(
++                f"profile {profile} changed under connectivity={connectivity}: "
++                f"expected {expected}, observed {observed}"
++            )
++    return grid
++
++
++def solve(grid: list[list[int]], settings: Any) -> list[list[int]]:
++    connectivity = _native_settings(settings)["connectivity"]
++    return apply_python(grid, connectivity)
++
++
++def generate(
++    seed: Any,
++    settings: Any,
++    demos: Any = 3,
++    queries: Any = 4,
++) -> dict[str, Any]:
++    """Generate a prefix-stable native episode without executing nested Racket."""
++    seed = _native_int("seed", seed, 0, 2**63 - 1)
++    settings = _native_settings(settings)
++    demos = _native_int("demos", demos, 2, 6)
++    queries = _native_int("queries", queries, 1, 4)
++
++    train_inputs = [
++        _native_scene(seed, "demo", index, DEMO_PROFILES[index], DEMO_SHAPES[index])
++        for index in range(demos)
++    ]
++    test_inputs = [
++        _native_scene(seed, "query", index, QUERY_PROFILES[index], QUERY_SHAPES[index])
++        for index in range(queries)
++    ]
++    all_inputs = train_inputs + test_inputs
++    serialized = {json.dumps(grid, separators=(",", ":")) for grid in all_inputs}
++    if len(serialized) != len(all_inputs):
++        raise RuntimeError("native episode produced duplicate inputs")
++
++    def pair(grid: list[list[int]]) -> dict[str, Any]:
++        return {"input": deepcopy(grid), "output": solve(grid, settings)}
++
++    return {
++        "train": [pair(grid) for grid in train_inputs],
++        "test": [pair(grid) for grid in test_inputs],
++        "program_solution": program(settings),
++    }
++
++
++def fit_settings(demonstrations: list[dict[str, Any]]) -> list[dict[str, int]]:
++    survivors = []
++    for setting in SETTINGS:
++        if all(
++            solve(pair["input"], setting) == normalize_grid(pair["output"])
++            for pair in demonstrations
++        ):
++            survivors.append(dict(setting))
++    return survivors
++
++
++def _any_ring_contacts(grid: list[list[int]]) -> list[list[int]]:
++    blocks = _blocks(grid)
++    cyan = [
++        (row, column)
++        for row, values in enumerate(grid)
++        for column, value in enumerate(values)
++        if value == 8
++    ]
++    bridge = len(blocks) == 2 and all(
++        any(_touches_ring(cell, block) for cell in cyan) for block in blocks
++    )
++    return [[8 if bridge else 0]]
++
++
++def _bbox_bridge(grid: list[list[int]], connectivity: int = 8) -> list[list[int]]:
++    blocks = _blocks(grid)
++    if len(blocks) != 2:
++        return [[0]]
++    for component in _components(grid, connectivity):
++        rows = [row for row, _ in component]
++        columns = [column for _, column in component]
++        bbox = [
++            (row, column)
++            for row in range(min(rows), max(rows) + 1)
++            for column in range(min(columns), max(columns) + 1)
++        ]
++        if all(any(_touches_ring(cell, block) for cell in bbox) for block in blocks):
++            return [[8]]
++    return [[0]]
++
++
++def _extreme_component_bridge(
++    grid: list[list[int]], connectivity: int, *, largest: bool
++) -> list[list[int]]:
++    blocks = _blocks(grid)
++    components = _components(grid, connectivity)
++    if len(blocks) != 2 or not components:
++        return [[0]]
++    size = (max if largest else min)(len(component) for component in components)
++    bridge = any(
++        len(component) == size
++        and all(
++            any(_touches_ring(cell, block) for cell in component)
++            for block in blocks
++        )
++        for component in components
++    )
++    return [[8 if bridge else 0]]
++
++
++def candidate_rules() -> dict[str, Any]:
++    return {
++        "connectivity_8": lambda grid: apply_python(grid, 8),
++        "connectivity_4": lambda grid: apply_python(grid, 4),
++        "any_ring_contacts": _any_ring_contacts,
++        "bbox_bridge_8": lambda grid: _bbox_bridge(grid, 8),
++        "bbox_bridge_4": lambda grid: _bbox_bridge(grid, 4),
++        "largest_component_8": lambda grid: _extreme_component_bridge(grid, 8, largest=True),
++        "largest_component_4": lambda grid: _extreme_component_bridge(grid, 4, largest=True),
++        "smallest_component_8": lambda grid: _extreme_component_bridge(grid, 8, largest=False),
++        "always_0": lambda grid: [[0]],
++        "always_8": lambda grid: [[8]],
++    }
++
++
++def self_review(episode: dict[str, Any]) -> dict[str, Any]:
++    if not isinstance(episode, dict):
++        raise ValueError("episode must be an object")
++    train = episode.get("train")
++    test = episode.get("test")
++    if not isinstance(train, list) or not isinstance(test, list) or not train or not test:
++        raise ValueError("episode needs nonempty train/test lists")
++    selected = None
++    for setting in SETTINGS:
++        if program(setting) == episode.get("program_solution"):
++            selected = dict(setting)
++            break
++    if selected is None:
++        raise ValueError("episode program does not match a declared setting")
++
++    survivors = []
++    harmful = []
++    query_mismatches = {}
++    for name, rule in candidate_rules().items():
++        if all(rule(pair["input"]) == pair["output"] for pair in train):
++            survivors.append(name)
++            mismatches = [
++                index
++                for index, pair in enumerate(test)
++                if rule(pair["input"]) != pair["output"]
++            ]
++            query_mismatches[name] = mismatches
++            if mismatches:
++                harmful.append(name)
++    intended = [
++        name for name in survivors if name == f"connectivity_{selected['connectivity']}"
++    ]
++    return {
++        "schema": "eefadafb2b7b-native-self-review-v1",
++        "selected": selected,
++        "tested_candidates": sorted(candidate_rules()),
++        "survivors": survivors,
++        "intended_survivors": intended,
++        "harmful_survivors": harmful,
++        "query_mismatch_indices": query_mismatches,
++        "limits": "Finite declared candidates only; not a uniqueness proof.",
++    }
++
+ def main(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--base-seed", type=int, default=20261020)
+diff --git a/repo/generators/eefadafb2b7b/workspace/parametric/self_audit.py b/repo/generators/eefadafb2b7b/workspace/parametric/self_audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/eefadafb2b7b/workspace/parametric/self_audit.py
+@@ -0,0 +1,243 @@
++#!/usr/bin/env python3
++"""Protected-Racket audit for the native connectivity family.
++
++This is reusable authoring evidence, not acceptance. It checks the declared
++finite settings, independent count boundaries, matched inputs, prefix stability,
++finite shortcut review, a substantive 30x30 query, and exact one-query public
++projection.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++from typing import Any
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import public_challenge_bytes, public_challenge_id
++
++HERE = Path(__file__).resolve().parent
++PROTOTYPE_PATH = HERE / "prototype.py"
++
++
++def _load_prototype():
++    name = "_eefadafb2b7b_self_audit_" + hashlib.sha256(
++        str(PROTOTYPE_PATH).encode()
++    ).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, PROTOTYPE_PATH)
++    if spec is None or spec.loader is None:
++        raise ImportError(PROTOTYPE_PATH)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _grid_literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join(
++        "(" + " ".join(map(str, row)) + ")" for row in grid
++    ) + ")"
++
++
++def _write(path: Path, value: Any) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(
++        json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
++        encoding="utf-8",
++    )
++
++
++def _hash_file(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def audit(output: Path, seeds: list[int]) -> dict[str, Any]:
++    prototype = _load_prototype()
++    if output.exists():
++        raise FileExistsError(output)
++    output.mkdir(parents=True)
++
++    programs = {
++        connectivity: prototype.program({"connectivity": connectivity})
++        for connectivity in (8, 4)
++    }
++    wrapped = {key: wrap_rule(value) for key, value in programs.items()}
++    jobs = []
++    evaluations = 0
++
++    with RacketBridge() as bridge:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise RuntimeError("audit requires protected Racket")
++
++        def execute(connectivity: int, grid: list[list[int]]) -> list[list[int]]:
++            nonlocal evaluations
++            evaluations += 1
++            return bridge.eval_text(
++                f"({wrapped[connectivity]} {_grid_literal(grid)})"
++            )
++
++        for seed in seeds:
++            generated: dict[tuple[int, int], dict[str, Any]] = {}
++            for demos in (2, 6):
++                for connectivity in (8, 4):
++                    settings = {"connectivity": connectivity}
++                    episode = prototype.generate(seed, settings, demos, 4)
++                    generated[(demos, connectivity)] = episode
++                    selected_labels = []
++                    for pair in episode["train"] + episode["test"]:
++                        observed = execute(connectivity, pair["input"])
++                        if observed != pair["output"]:
++                            raise AssertionError(
++                                f"Racket label mismatch seed={seed} demos={demos} "
++                                f"connectivity={connectivity}"
++                            )
++                        selected_labels.append(observed)
++
++                    survivors = []
++                    for candidate in (8, 4):
++                        candidate_outputs = [
++                            execute(candidate, pair["input"])
++                            for pair in episode["train"]
++                        ]
++                        if all(
++                            observed == pair["output"]
++                            for observed, pair in zip(candidate_outputs, episode["train"])
++                        ):
++                            survivors.append(candidate)
++                    if survivors != [connectivity]:
++                        raise AssertionError(
++                            f"demo-only survivors differ: {seed=} {demos=} "
++                            f"{connectivity=} {survivors=}"
++                        )
++                    review = prototype.self_review(episode)
++                    if review["harmful_survivors"]:
++                        raise AssertionError(
++                            f"finite harmful survivor: {seed=} {demos=} "
++                            f"{connectivity=} {review['harmful_survivors']}"
++                        )
++                    stress = episode["test"][-1]["input"]
++                    stress_nonzero = sum(cell != 0 for row in stress for cell in row)
++                    if (len(stress), len(stress[0])) != (30, 30) or stress_nonzero < 90:
++                        raise AssertionError("30x30 stress query is not substantive")
++                    jobs.append(
++                        {
++                            "seed": seed,
++                            "demos": demos,
++                            "queries": 4,
++                            "settings": settings,
++                            "survivors": survivors,
++                            "finite_self_review": review,
++                            "stress_nonzero_cells": stress_nonzero,
++                            "program_sha256": hashlib.sha256(
++                                programs[connectivity].encode()
++                            ).hexdigest(),
++                        }
++                    )
++
++                left = generated[(demos, 8)]
++                right = generated[(demos, 4)]
++                left_inputs = [p["input"] for p in left["train"] + left["test"]]
++                right_inputs = [p["input"] for p in right["train"] + right["test"]]
++                if left_inputs != right_inputs:
++                    raise AssertionError("settings changed the input stream")
++
++            for connectivity in (8, 4):
++                short = generated[(2, connectivity)]
++                long = generated[(6, connectivity)]
++                if short["train"] != long["train"][:2] or short["test"] != long["test"]:
++                    raise AssertionError("demo/query streams are not prefix stable")
++
++            # Three demos are the qualification/default teaching count. Save one
++            # query per public file, with no future-query or total-count hint.
++            for connectivity in (8, 4):
++                settings = {"connectivity": connectivity}
++                episode = prototype.generate(seed, settings, 3, 4)
++                first_only = prototype.generate(seed, settings, 3, 1)
++                for index, query in enumerate(episode["test"]):
++                    turn = {"train": episode["train"], "test": [query]}
++                    body = public_challenge_bytes(turn)
++                    identifier = public_challenge_id(turn)
++                    path = output / "public" / f"{identifier}.json"
++                    if path.exists() and path.read_bytes() != body:
++                        raise AssertionError("public ID collision")
++                    path.parent.mkdir(parents=True, exist_ok=True)
++                    path.write_bytes(body)
++                    if index == 0 and body != public_challenge_bytes(first_only):
++                        raise AssertionError(
++                            "first sequential turn differs from single-query use"
++                        )
++
++    public_files = sorted((output / "public").glob("*.json"))
++    report = {
++        "schema": "eefadafb2b7b-native-self-audit-v1",
++        "status": "passed",
++        "scope": (
++            "Finite settings {8,4}, seeds 0/17 by default, demo boundaries 2/6, "
++            "four queries, protected-Racket labels, finite candidate shortcuts, "
++            "matched inputs, prefix stability, public projection, and 30x30 stress."
++        ),
++        "jobs": jobs,
++        "job_count": len(jobs),
++        "racket_evaluations": evaluations,
++        "racket": {
++            key: identity[key]
++            for key in (
++                "schema",
++                "backend",
++                "protected",
++                "binary_sha256",
++                "prelude_sha256",
++                "bridge_sha256",
++                "boot_script_sha256",
++                "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        },
++        "programs": {
++            str(key): hashlib.sha256(value.encode()).hexdigest()
++            for key, value in programs.items()
++        },
++        "public_files": [
++            {
++                "path": path.relative_to(output).as_posix(),
++                "sha256": _hash_file(path),
++                "bytes": path.stat().st_size,
++            }
++            for path in public_files
++        ],
++        "public_file_count": len(public_files),
++        "limits": "Finite tested rivals and seeds only; not a universal uniqueness proof or acceptance.",
++    }
++    _write(output / "report.json", report)
++    return report
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seed", type=int, action="append", dest="seeds")
++    args = parser.parse_args(argv)
++    seeds = [0, 17] if args.seeds is None else args.seeds
++    if len(seeds) != len(set(seeds)) or any(type(seed) is not int or seed < 0 for seed in seeds):
++        raise ValueError("seeds must be distinct nonnegative integers")
++    report = audit(args.out, seeds)
++    print(
++        json.dumps(
++            {
++                "status": report["status"],
++                "jobs": report["job_count"],
++                "racket_evaluations": report["racket_evaluations"],
++                "public_files": report["public_file_count"],
++                "report": str(args.out / "report.json"),
++            },
++            sort_keys=True,
++        )
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

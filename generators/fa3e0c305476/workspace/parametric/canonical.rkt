@@ -1,0 +1,7 @@
+(rule! (lambda (g)
+  (paint-objects-by g (objects g 0)
+    (lambda (obj)
+      (with-bbox obj (r1 c1 r2 c2)
+        (let* ((sub (subgrid g r1 c1 r2 c2))
+               (n-holes (length (objects sub 8))))
+          (casev n-holes {1 1 2 2 3 3 4 7} (obj-color obj))))))))

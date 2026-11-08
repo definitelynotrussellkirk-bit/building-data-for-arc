@@ -1,0 +1,4 @@
+# Working notes: b8d99a6f466a
+
+Record design decisions, hypotheses, review findings, and unresolved questions here.
+Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.

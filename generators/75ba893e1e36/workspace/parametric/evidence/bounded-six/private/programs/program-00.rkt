@@ -1,0 +1,1 @@
+(rule! (lambda (g) (stack-grids 'horizontal (list (flip-lr g) g))))

@@ -1,0 +1,6 @@
+# f358bc90694d
+
+0-bg grid (h~6-9, w~8-12) with: (a) 3-5 ACTIVE ROWS — for each active row, a SEED CELL placed at COLUMN 0 painted in a row-specific non-0 color drawn from a 4-6 color palette; (b) WITHIN SOME ACTIVE ROWS (with 50% probability): a BLOCKER CELL placed at a random column c ∈ [3, w-1] painted in a DIFFERENT non-0 color (drawn from the next color in the palette). The remaining cells stay bg-0. Each active row has the seed at col 0 and optionally a blocker further right. Rule (EACH LEFT-BORDER SEED BEAMS RIGHTWARD THROUGH ZEROS UNTIL THE FIRST NONZERO BLOCKER OR THE GRID EDGE): for EACH ACTIVE ROW with a color-C seed at (r, 0): SCAN columns 1..w-1 left-to-right. PAINT each bg-0 cell with COLOR C until you hit a NON-0 BLOCKER cell — the blocker stays unchanged, and the beam STOPS at the cell BEFORE the blocker (the blocker is not overwritten). If no blocker exists, the beam extends to col w-1. The seed stays at col 0. Other rows are unchanged. Net: each active row becomes a horizontal colored beam from the left edge until its blocker (or the right edge).
+
+Kind: `per_puzzle`. Imported version: `2.1.0`.
+Approval is derived by the catalog from current code and retained evidence.

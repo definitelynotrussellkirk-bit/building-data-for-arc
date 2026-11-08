@@ -1,0 +1,100 @@
+--- a/src/arcpuzzles/worker.py
++++ b/src/arcpuzzles/worker.py
+@@ -30,8 +30,57 @@
+     )
+ 
+ 
++def _lesson_rivals(module, episode):
++    """Score named pure grid rules; only demo survivors need query checks."""
++    from reviewer_support import normalize_grid
++
++    declarations, rivals, errors = [], {}, []
++    for attribute in ("LESSON_COMPETITORS", "CANONICAL_SHORTCUTS"):
++        if not hasattr(module, attribute):
++            continue
++        declarations.append(attribute)
++        raw = getattr(module, attribute)
++        if not isinstance(raw, dict):
++            errors.append(f"{attribute}: expected dict of named callables")
++            continue
++        for name, fn in raw.items():
++            if not isinstance(name, str) or not callable(fn):
++                errors.append(f"{attribute}:{name!r}: expected string name and callable")
++            else:
++                rivals[f"{attribute}:{name}"] = fn
++
++    def predict(fn, pair):
++        predictions = []
++        for _ in range(2):
++            grid = deepcopy(pair["input"])
++            output = fn(grid)
++            if grid != pair["input"]:
++                raise ValueError("rival mutated its input")
++            predictions.append(normalize_grid(output))
++        if predictions[0] != predictions[1]:
++            raise ValueError("rival returned inconsistent predictions")
++        return predictions[0]
++
++    results = {}
++    query_reasons = [[] for _ in episode["test"]]
++    for name, fn in sorted(rivals.items()):
++        try:
++            if not all(predict(fn, pair) == pair["output"] for pair in episode["train"]):
++                results[name] = "refuted"
++                continue
++            disagreements = [index for index, query in enumerate(episode["test"])
++                             if predict(fn, query) != query["output"]]
++            results[name] = "ambiguous" if disagreements else "survived_all"
++            for index in disagreements:
++                query_reasons[index].append(f"{name} fits every demo but disagrees with query")
++        except Exception as exc:
++            results[name] = "error"
++            errors.append(f"{name}: {type(exc).__name__}: {exc}")
++    return declarations, results, errors, query_reasons
++
++
+ def lesson_check(module, episode: dict, request: dict) -> dict:
+-    """A declared hook's verdict on these pairs, not a universal ambiguity claim."""
++    """Declared hook/rival evidence on materialized pairs, not universal identifiability."""
+     policy = request.get("demonstration_policy", {"automatic": False, "declared_minimum": None})
+     reasons = []
+     minimum = policy["declared_minimum"]
+@@ -39,24 +88,35 @@
+         reasons.append(f"below declared minimum: {len(episode['train'])} < {minimum}")
+     hook = getattr(module, "lesson_identifiable", None)
+     declared = hasattr(module, "lesson_identifiable")
++    rival_declarations, rival_results, rival_errors, rival_findings = ([], {}, [], [])
++    if any(hasattr(module, attr) for attr in ("LESSON_COMPETITORS", "CANONICAL_SHORTCUTS")):
++        rival_declarations, rival_results, rival_errors, rival_findings = _lesson_rivals(module, episode)
++    reasons.extend(rival_errors)
+     queries = []
+-    if declared:
++    if declared or rival_declarations:
+         for index, query in enumerate(episode["test"]):
+             demos, checked_query = deepcopy(episode["train"]), deepcopy(query)
+             try:
+-                findings = hook(demos, checked_query)
++                findings = hook(demos, checked_query) if declared else []
+                 if (not isinstance(findings, list) or any(not isinstance(item, str) for item in findings)):
+                     raise ValueError("lesson_identifiable must return a list of reason strings")
+                 if demos != episode["train"] or checked_query != query:
+                     raise ValueError("lesson_identifiable mutated its lesson")
+             except Exception as exc:
+                 findings = [f"{type(exc).__name__}: {exc}"]
++            if rival_findings:
++                findings = findings + rival_findings[index]
+             queries.append({"query_index": index, "reasons": findings})
+             reasons.extend(f"query {index}: {item}" for item in findings)
+     verdict = {"status": ("diagnostic_unsupported" if reasons else
++                           "passed_declared_rivals" if rival_results and not declared else
+                            "passed_declared_hook" if declared else "not_declared"),
+                "hook_declared": declared, "queries": queries, "reasons": reasons,
+-               "scope": "declared hook on materialized demos and each labeled query"}
++               "rival_declarations": rival_declarations, "rivals": rival_results,
++               "contract": ("hook_and_rivals" if declared and rival_results else
++                            "rivals_only" if rival_results else
++                            "hook_only" if declared else "none"),
++               "scope": "declared checks on materialized demos and each labeled query"}
+     if reasons and policy["automatic"]:
+         raise ValueError("Automatic lesson unsupported: " + json.dumps(verdict))
+     return verdict

@@ -1,0 +1,1105 @@
+diff --git a/repo/generators/dd47ca15f98a/SUMMARY.md b/repo/generators/dd47ca15f98a/SUMMARY.md
+--- a/repo/generators/dd47ca15f98a/SUMMARY.md
++++ b/repo/generators/dd47ca15f98a/SUMMARY.md
+@@ -1,6 +1,7 @@
+-# dd47ca15f98a
++# dd47ca15f98a — Marker-vector motif repetition
+ 
+-0-bg grid (h~9-12, w~9-14) with: (a) color-1 (blue) MARKER at (0,0); (b) color-2 (red) MARKER at offset (dr, dc) from blue — defines the translation VECTOR; (c) a small MOTIF (3-5 cells) in some non-{0,1,2} color placed apart from markers, with room to fit several translated copies. Rule: find p1 = color-1 cell, p2 = color-2 cell; vector = (p2 - p1). Extract motif cells (non-{0,1,2}). Output: fresh empty grid. For k = 0, 1, 2, ... while all translated cells (shifted by k*vector) stay in bounds, stamp the motif (with original colors). Stop when out-of-bounds. Markers DISAPPEAR in output.
++A unique blue marker and red marker define a signed translation vector. A non-marker motif is copied from its original position by repeated multiples of that vector until the next complete copy would leave the grid; markers disappear in the output.
+ 
+-Kind: `per_puzzle`. Imported version: `2.0.1`.
+-Approval is derived by the catalog from current code and retained evidence.
++Selected generator version: `2.1.0`. The generator now reflects complete scenes horizontally and vertically with deterministic RNG, so both vector signs and all relative marker corners occur. This removes the imported synthetic-only assumption that the blue marker is always top-left and the vector always points down/right, while preserving the exact rule.
++
++The source-bound signed-direction probe is `workspace/direction_probe.py`; focused regressions are under `tests/`.
+diff --git a/repo/generators/dd47ca15f98a/generator.py b/repo/generators/dd47ca15f98a/generator.py
+--- a/repo/generators/dd47ca15f98a/generator.py
++++ b/repo/generators/dd47ca15f98a/generator.py
+@@ -13,7 +13,7 @@
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "dd47ca15f98a"
+-VERSION = "2.0.1"
++VERSION = "2.1.0"
+ TASK_ID = "dd47ca15f98a"
+ 
+ SUMMARY = (
+@@ -113,6 +113,14 @@
+     left = rng.randint(1, max_left)
+     color = rng.choice([3, 4, 5, 6, 7, 8, 9])
+     _stamp(g, cells, top, left, color)
++
++    # The canonical task uses both vector signs. Reflecting the complete scene
++    # preserves the exact marker-vector rule while preventing a synthetic-only
++    # shortcut that takes absolute marker deltas or assumes a top-left anchor.
++    if rng.choice((False, True)):
++        g = [row[::-1] for row in g]
++    if rng.choice((False, True)):
++        g = g[::-1]
+     return g
+ 
+ 
+diff --git a/repo/generators/dd47ca15f98a/notes.md b/repo/generators/dd47ca15f98a/notes.md
+--- a/repo/generators/dd47ca15f98a/notes.md
++++ b/repo/generators/dd47ca15f98a/notes.md
+@@ -2,3 +2,12 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++
++## 2026-10-25 signed-direction repair
++
++The imported generator always placed the blue marker at the top-left and drew only nonnegative translation vectors. Consequently an `abs(red-blue)`/down-right shortcut fit the synthetic distribution even though a canonical negative-direction example rejects it.
++
++Version `2.1.0` retains the same rule and construction, then independently reflects the completed input horizontally and vertically with the existing deterministic layout RNG. This preserves the exact relative marker-vector semantics and all motif-copy guarantees while producing both row and column signs and every relative marker corner. No canonical Racket authority changed.
++
++Regression tests first failed on the imported source because no negative vector signs or adversarial witness existed. After the repair, the full task-local suite passed. `workspace/direction_probe.py` is a reusable source-bound probe; it found a generated vector `(1,-2)` whose intended signed-vector output matches protected Racket and differs from the absolute-delta rival. The bounded test does not prove uniqueness against every possible shortcut.
+diff --git a/repo/generators/dd47ca15f98a/tests/test_directional_coverage.py b/repo/generators/dd47ca15f98a/tests/test_directional_coverage.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dd47ca15f98a/tests/test_directional_coverage.py
+@@ -0,0 +1,83 @@
++"""Regression tests for signed marker-vector coverage in dd47ca15f98a."""
++from __future__ import annotations
++
++from pathlib import Path
++
++from reviewer_support import find_root, load_selected_generator
++
++TASK = "dd47ca15f98a"
++ROOT = find_root(__file__)
++GEN, _, _ = load_selected_generator(TASK, root=ROOT)
++
++
++def marker_vector(grid):
++    one = [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == 1]
++    two = [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == 2]
++    assert len(one) == len(two) == 1
++    return one[0], (two[0][0] - one[0][0], two[0][1] - one[0][1])
++
++
++def apply_repeat(grid, *, absolute=False):
++    height, width = len(grid), len(grid[0])
++    marker, vector = marker_vector(grid)
++    del marker
++    dr, dc = vector
++    if absolute:
++        dr, dc = abs(dr), abs(dc)
++    motif = [
++        (r, c, value)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value not in (0, 1, 2)
++    ]
++    out = [[0 for _ in range(width)] for _ in range(height)]
++    k = 0
++    while True:
++        shifted = [(r + k * dr, c + k * dc, value) for r, c, value in motif]
++        if not all(0 <= r < height and 0 <= c < width for r, c, _ in shifted):
++            return out
++        for r, c, value in shifted:
++            out[r][c] = value
++        k += 1
++
++
++def test_generated_vectors_cover_both_signs_and_all_marker_corners():
++    row_signs = set()
++    col_signs = set()
++    marker_corners = set()
++    for index in range(256):
++        grid = GEN.generate(1000 + index, index * 17 + 3)
++        assert GEN.self_check(grid) == []
++        marker, (dr, dc) = marker_vector(grid)
++        row_signs.add((dr > 0) - (dr < 0))
++        col_signs.add((dc > 0) - (dc < 0))
++        height, width = len(grid), len(grid[0])
++        assert marker[0] in (0, height - 1)
++        assert marker[1] in (0, width - 1)
++        marker_corners.add((marker[0] == height - 1, marker[1] == width - 1))
++    assert {-1, 1} <= row_signs
++    assert {-1, 1} <= col_signs
++    assert marker_corners == {(False, False), (False, True), (True, False), (True, True)}
++
++
++def test_signed_generation_is_deterministic_and_lawful():
++    for index in range(128):
++        seed = 20_000 + index * 31
++        first = GEN.generate(seed, index, difficulty=("easy", "medium", "hard")[index % 3])
++        second = GEN.generate(seed, index, difficulty=("easy", "medium", "hard")[index % 3])
++        assert first == second
++        assert GEN.self_check(first) == []
++
++
++def test_negative_vector_refutes_absolute_direction_shortcut():
++    witness = None
++    for index in range(256):
++        grid = GEN.generate(30_000 + index, index * 13)
++        _, (dr, dc) = marker_vector(grid)
++        if dr < 0 or dc < 0:
++            intended = apply_repeat(grid)
++            rival = apply_repeat(grid, absolute=True)
++            if intended != rival:
++                witness = (grid, intended, rival)
++                break
++    assert witness is not None
+diff --git a/repo/generators/dd47ca15f98a/workspace/direction_probe.py b/repo/generators/dd47ca15f98a/workspace/direction_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dd47ca15f98a/workspace/direction_probe.py
+@@ -0,0 +1,87 @@
++#!/usr/bin/env python3
++"""Find a generated signed-vector case that rejects an absolute-delta shortcut."""
++from __future__ import annotations
++
++import argparse
++import json
++from pathlib import Path
++
++from reviewer_support import find_root, load_selected_generator
++
++TASK = "dd47ca15f98a"
++ROOT = find_root(__file__)
++GEN, SOURCE, SOURCE_SHA256 = load_selected_generator(TASK, root=ROOT)
++
++
++def marker_vector(grid):
++    one = [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == 1]
++    two = [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == 2]
++    if len(one) != 1 or len(two) != 1:
++        raise ValueError("expected one marker of each color")
++    return one[0], (two[0][0] - one[0][0], two[0][1] - one[0][1])
++
++
++def apply_repeat(grid, *, absolute=False):
++    h, w = len(grid), len(grid[0])
++    _, (dr, dc) = marker_vector(grid)
++    if absolute:
++        dr, dc = abs(dr), abs(dc)
++    motif = [
++        (r, c, value)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value not in (0, 1, 2)
++    ]
++    out = [[0 for _ in range(w)] for _ in range(h)]
++    k = 0
++    while True:
++        shifted = [(r + k * dr, c + k * dc, value) for r, c, value in motif]
++        if not all(0 <= r < h and 0 <= c < w for r, c, _ in shifted):
++            return out
++        for r, c, value in shifted:
++            out[r][c] = value
++        k += 1
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--limit", type=int, default=512)
++    args = parser.parse_args()
++    if args.limit < 1:
++        raise SystemExit("--limit must be positive")
++
++    for index in range(args.limit):
++        seed = 30_000 + index
++        sample_index = index * 13
++        grid = GEN.generate(seed, sample_index)
++        marker, vector = marker_vector(grid)
++        intended = apply_repeat(grid)
++        rival = apply_repeat(grid, absolute=True)
++        if (vector[0] < 0 or vector[1] < 0) and intended != rival:
++            args.out.mkdir(parents=True, exist_ok=False)
++            (args.out / "input.json").write_text(json.dumps(grid) + "\n", encoding="utf-8")
++            report = {
++                "schema": "dd47ca15f98a-signed-direction-probe-v1",
++                "task_id": TASK,
++                "source_path": str(SOURCE.relative_to(ROOT)),
++                "source_sha256": SOURCE_SHA256,
++                "seed": seed,
++                "sample_index": sample_index,
++                "blue_marker": marker,
++                "vector": vector,
++                "intended_output": intended,
++                "absolute_delta_rival_output": rival,
++                "disagrees": True,
++                "limits": f"first witness in a deterministic search of at most {args.limit} generated cases",
++            }
++            (args.out / "probe.json").write_text(
++                json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
++            )
++            print(json.dumps(report, indent=2, sort_keys=True))
++            return 0
++    raise SystemExit("no signed-direction disagreement found")
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/dfc7297269cc/SUMMARY.md b/repo/generators/dfc7297269cc/SUMMARY.md
+--- a/repo/generators/dfc7297269cc/SUMMARY.md
++++ b/repo/generators/dfc7297269cc/SUMMARY.md
+@@ -7,3 +7,8 @@
+ The generator exposes four exact controls (`grid_h`, `grid_w`, `motifs`, `n_colors`) and embeds a transformed 5x7 teaching tile. Every ordinary draw contains 1–4 positive sandwiches plus three negative witnesses: a two-zero same-color span, unequal one-zero endpoints, and a vertical sandwich. These refute the canonical-fitting `span_fill`, `any_nonzero_endpoints`, and `horizontal_or_vertical` shortcuts.
+ 
+ Task-local regressions and reusable independent probes are under `tests/` and `workspace/reference_probe.py`.
++
++
++## Parametric sidecar
++
++A reviewer-ready native sidecar keeps `horizontal_all` as the exact canonical default and adds `ranked_vertical`: the number of canonical horizontal sandwiches selects the same-ranked vertical sandwich to complete. It supports 2–6 demonstrations and 1–4 prefix-stable queries; production `generator.py` and canonical authority are unchanged. See `workspace/parametric/`.
+diff --git a/repo/generators/dfc7297269cc/notes.md b/repo/generators/dfc7297269cc/notes.md
+--- a/repo/generators/dfc7297269cc/notes.md
++++ b/repo/generators/dfc7297269cc/notes.md
+@@ -121,3 +121,19 @@
+ **Rationale.** Future reviewers can load any candidate generator path, inspect exact axes, run independent intended/rival outputs, build minimal counterexamples, and execute the selected Racket authority. It avoids circular tests that merely call production helpers.
+ 
+ **Limitations.** The Racket parity helper uses the packet runtime and is skipped only when Racket is genuinely unavailable. It is test tooling, not a second source of training labels.
++
++
++## 2026-10-25 native parametric admission proposal
++
++The selected production generator and canonical Racket authority remain unchanged. A task-local native sidecar now exposes one private parameter, `completion`, with two matched-input settings:
++
++- `horizontal_all` is the byte-exact canonical rule: fill every zero between equal nonzero horizontal neighbours.
++- `ranked_vertical` first finds and completes those canonical horizontal sandwiches, counts them, then fills the vertical sandwich at the same one-based row-major rank.
++
++This was chosen because it preserves the canonical default while creating a genuine sequential dependency: the vertical output cell cannot be selected until the input-dependent horizontal count is known. The protected-Racket counterfactual fixes the rank to one on the same qualified input; the selected vertical cell changes, so the final grid changes.
++
++The sidecar supports 2–6 demonstrations and 1–4 independently requested, prefix-stable queries. The first two demonstrations use ranks two and four. A bounded executable rival audit covers canonical-only, all-vertical, first/last/fixed-rank, row-count, colour-count, reverse-rank, and candidate-colour-extreme hypotheses. Across 64 seeds, both settings, and demonstration counts 2, 3, and 6, the audit checked 768 episodes and 4,736 labelled pairs, including 384 exact 30×30 stress pairs, with no declared-rival survivor or construction failure. This is finite evidence, not a universal identifiability proof.
++
++Native qualification executed both settings at seeds 0 and 17 with three demonstrations and four queries: four jobs, 40 protected-Racket evaluations, and source-bound program hashes. Sixteen sequential one-query public projections passed masking and file-identity checks. The reusable audit is `workspace/parametric/audit_lessons.py`; the promotion adapter, exact default program, alternative program, manifest, and promotion contract all live under `workspace/parametric/`.
++
++Owner-side exact-byte integration, native requalification, witness replay, fresh acceptance, and explicit training admission remain required.
+diff --git a/repo/generators/dfc7297269cc/tests/test_parametric.py b/repo/generators/dfc7297269cc/tests/test_parametric.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dfc7297269cc/tests/test_parametric.py
+@@ -0,0 +1,160 @@
++"""Focused tests for the native parametric family of dfc7297269cc."""
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++from reviewer_support import canonical_path, find_root, public_challenge_bytes
++
++TASK = "dfc7297269cc"
++TASK_ROOT = Path(__file__).resolve().parents[1]
++PROTOTYPE = TASK_ROOT / "workspace" / "parametric" / "prototype.py"
++PROMOTION = TASK_ROOT / "workspace" / "parametric" / "promotion.json"
++
++
++def load_prototype():
++    assert PROTOTYPE.is_file(), f"missing parametric prototype: {PROTOTYPE}"
++    spec = importlib.util.spec_from_file_location(f"_{TASK}_parametric_test", PROTOTYPE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def canonical_program() -> str:
++    root = find_root(__file__)
++    for line in canonical_path(root).read_text(encoding="utf-8").splitlines():
++        row = json.loads(line)
++        if row.get("task_id") == TASK:
++            return row["program_solution"]
++    raise AssertionError(f"missing canonical task {TASK}")
++
++
++def all_inputs(episode):
++    return [pair["input"] for split in ("train", "test") for pair in episode[split]]
++
++
++def test_default_program_is_exact_canonical_and_ranked_rule_is_distinct():
++    p = load_prototype()
++    canonical = p.program({"completion": "horizontal_all"})
++    ranked = p.program({"completion": "ranked_vertical"})
++    assert canonical == canonical_program()
++    assert ranked != canonical
++    assert ranked.strip().startswith("(rule!")
++
++
++def test_promotion_contract_declares_only_supported_counts_and_settings():
++    data = json.loads(PROMOTION.read_text(encoding="utf-8"))
++    assert data == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": "generators/dfc7297269cc/workspace/parametric/adapter.py",
++        "parameters": {"completion": ["horizontal_all", "ranked_vertical"]},
++        "default": {"completion": "horizontal_all"},
++        "limits": {"demos": [2, 6], "queries": [1, 4]},
++        "resources": [
++            "generators/dfc7297269cc/workspace/parametric/prototype.py",
++            "generators/dfc7297269cc/workspace/parametric/canonical.rkt",
++            "generators/dfc7297269cc/workspace/parametric/ranked_vertical.rkt",
++        ],
++    }
++
++
++def test_controls_are_strict_and_bad_settings_are_rejected():
++    p = load_prototype()
++    good = {"completion": "horizontal_all"}
++    for bad_seed in (True, 1.0, "1", -1, 2**63):
++        with pytest.raises((TypeError, ValueError)):
++            p.generate(bad_seed, good, 3, 4)
++    for settings in (
++        {},
++        {"completion": "unknown"},
++        {"completion": "horizontal_all", "extra": 1},
++        {"completion": True},
++    ):
++        with pytest.raises((TypeError, ValueError)):
++            p.generate(0, settings, 3, 4)
++    for demos in (1, 7, True, 3.0):
++        with pytest.raises((TypeError, ValueError)):
++            p.generate(0, good, demos, 4)
++    for queries in (0, 5, True, 4.0):
++        with pytest.raises((TypeError, ValueError)):
++            p.generate(0, good, 3, queries)
++
++
++def test_inputs_are_setting_neutral_distinct_and_prefix_stable():
++    p = load_prototype()
++    canonical = p.generate(41, {"completion": "horizontal_all"}, 3, 4)
++    ranked = p.generate(41, {"completion": "ranked_vertical"}, 3, 4)
++    assert all_inputs(canonical) == all_inputs(ranked)
++    assert len({json.dumps(grid) for grid in all_inputs(canonical)}) == 7
++    assert all(a["output"] != b["output"] for a, b in zip(canonical["train"], ranked["train"]))
++
++    two = p.generate(41, {"completion": "horizontal_all"}, 2, 4)
++    six = p.generate(41, {"completion": "horizontal_all"}, 6, 4)
++    one_query = p.generate(41, {"completion": "horizontal_all"}, 3, 1)
++    assert two["train"] == six["train"][:2]
++    assert two["test"] == six["test"]
++    assert one_query["train"] == canonical["train"]
++    assert one_query["test"] == canonical["test"][:1]
++
++
++def test_two_demonstrations_identify_both_settings_and_refute_declared_rivals():
++    p = load_prototype()
++    for seed in range(16):
++        canonical = p.generate(seed, {"completion": "horizontal_all"}, 2, 4)
++        ranked = p.generate(seed, {"completion": "ranked_vertical"}, 2, 4)
++        assert p.surviving_rivals(canonical["train"], "horizontal_all") == []
++        assert p.surviving_rivals(ranked["train"], "ranked_vertical") == []
++        assert all(a["output"] != b["output"] for a, b in zip(canonical["train"], ranked["train"]))
++
++
++def test_queries_cover_four_profiles_and_substantive_exact_30_by_30():
++    p = load_prototype()
++    episode = p.generate(5, {"completion": "ranked_vertical"}, 3, 4)
++    dims = [(len(pair["input"]), len(pair["input"][0])) for pair in episode["test"]]
++    assert dims == [(15, 17), (20, 22), (25, 27), (30, 30)]
++    large = episode["test"][-1]["input"]
++    occupied = {(r, c) for r, row in enumerate(large) for c, value in enumerate(row) if value}
++    assert len(occupied) >= 55
++    assert {0, 29} <= {r for r, _ in occupied}
++    assert {0, 29} <= {c for _, c in occupied}
++    assert len({value for row in large for value in row if value}) == 9
++
++    for split in ("train", "test"):
++        for pair in episode[split]:
++            grid = pair["input"]
++            horizontal = p.horizontal_centers(grid)
++            vertical = p.vertical_centers(grid)
++            assert 1 <= len(horizontal) <= 4
++            assert len(vertical) == 6
++            assert pair["output"] == p.apply_rule(grid, "ranked_vertical")
++
++
++def test_wrong_intermediate_changes_the_final_output():
++    p = load_prototype()
++    episode = p.generate(7, {"completion": "ranked_vertical"}, 3, 4)
++    grid = episode["test"][0]["input"]  # profile rank is three
++    assert len(p.horizontal_centers(grid)) == 3
++    correct = p.apply_rule(grid, "ranked_vertical")
++    wrong = p.apply_with_vertical_rank(grid, 1)
++    assert correct != wrong
++    assert p.changed_cells(correct, wrong) == 2
++
++
++def test_public_first_turn_is_count_stable_and_hides_private_values():
++    p = load_prototype()
++    four = p.generate(13, {"completion": "ranked_vertical"}, 3, 4)
++    one = p.generate(13, {"completion": "ranked_vertical"}, 3, 1)
++    public_four = public_challenge_bytes(
++        {"train": four["train"], "test": [{"input": four["test"][0]["input"]}]}
++    )
++    public_one = public_challenge_bytes(
++        {"train": one["train"], "test": [{"input": one["test"][0]["input"]}]}
++    )
++    assert public_four == public_one
++    assert b"ranked_vertical" not in public_four
++    assert b"program_solution" not in public_four
++    projected = json.loads(public_four)
++    assert set(projected["test"][0]) == {"input"}
+diff --git a/repo/generators/dfc7297269cc/workspace/parametric/README.md b/repo/generators/dfc7297269cc/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dfc7297269cc/workspace/parametric/README.md
+@@ -0,0 +1,37 @@
++# Parametric horizontal-sandwich family
++
++Status: reviewer-ready proposal; owner exact-source acceptance remains required.
++The production generator and selected canonical authority are unchanged.
++
++Each episode fixes one private `completion` setting while sharing identical
++inputs across settings:
++
++| setting | rule |
++| --- | --- |
++| `horizontal_all` | fill every equal-color horizontal sandwich; exact canonical default |
++| `ranked_vertical` | fill the canonical horizontal sandwiches, count them, then fill the same-ranked vertical sandwich in row-major order |
++
++The family supports 2–6 demonstrations and 1–4 independently requested,
++prefix-stable queries. The first two demonstrations use horizontal counts two
++and four and reject fixed-rank, first/last, row-count, color-count, reverse-rank,
++all-vertical, and candidate-color-extreme shortcuts. Four queries cover
++15×17, 20×22, 25×27, and a substantive 30×30 scene with all four boundaries,
++dense distractor blocks, four possible horizontal counts, and six vertical
++candidates.
++
++Sequential dependency: step A finds and completes the canonical horizontal
++sandwiches; their input-dependent count is the one-based intermediate rank.
++Step B cannot select which vertical sandwich to complete until that count is
++known. The protected witness replaces the measured rank with rank one on the
++same qualified input and changes two final cells.
++
++Focused tests:
++
++```bash
++python3 review.py run python3 -m pytest \
++  generators/dfc7297269cc/tests/test_parametric.py -q
++```
++
++The native qualification executes every claimed label through protected Racket.
++Public projections contain only demonstrations and one masked query; settings,
++programs, answers, future queries, seeds, and total query count remain private.
+diff --git a/repo/generators/dfc7297269cc/workspace/parametric/adapter.py b/repo/generators/dfc7297269cc/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dfc7297269cc/workspace/parametric/adapter.py
+@@ -0,0 +1,28 @@
++"""Thin native-promotion adapter for the dfc7297269cc parametric family."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++from typing import Any
++
++_HERE = Path(__file__).resolve().parent
++_SPEC = importlib.util.spec_from_file_location(
++    "_dfc7297269cc_parametric_prototype", _HERE / "prototype.py"
++)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError("cannot load sibling dfc7297269cc parametric prototype")
++_IMPL = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(_IMPL)
++
++
++def program(settings: dict[str, Any]) -> str:
++    return _IMPL.program(settings)
++
++
++def generate(
++    seed: int,
++    settings: dict[str, Any],
++    demos: int = 3,
++    queries: int = 4,
++) -> dict[str, Any]:
++    return _IMPL.generate(seed, settings, demos=demos, queries=queries)
+diff --git a/repo/generators/dfc7297269cc/workspace/parametric/audit_lessons.py b/repo/generators/dfc7297269cc/workspace/parametric/audit_lessons.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dfc7297269cc/workspace/parametric/audit_lessons.py
+@@ -0,0 +1,78 @@
++#!/usr/bin/env python3
++"""Bounded learnability and boundary audit for future reviewers."""
++from __future__ import annotations
++
++import argparse
++import importlib.util
++import json
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++SPEC = importlib.util.spec_from_file_location("_dfc7297269cc_audit_target", HERE / "prototype.py")
++if SPEC is None or SPEC.loader is None:
++    raise SystemExit("cannot load prototype.py")
++P = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(P)
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--seeds", type=int, default=64)
++    parser.add_argument("--out", type=Path)
++    args = parser.parse_args()
++    if args.seeds < 1:
++        raise SystemExit("--seeds must be positive")
++
++    failures = []
++    episodes = 0
++    pairs = 0
++    exact_30 = 0
++    setting_differences = 0
++    for seed in range(args.seeds):
++        for demos in (2, 3, 6):
++            for queries in (1, 4):
++                generated = {
++                    setting: P.generate(seed, {P.PARAMETER: setting}, demos, queries)
++                    for setting in P.SETTINGS
++                }
++                episodes += len(P.SETTINGS)
++                pairs += len(P.SETTINGS) * (demos + queries)
++                left, right = (generated[setting] for setting in P.SETTINGS)
++                left_inputs = [pair["input"] for split in ("train", "test") for pair in left[split]]
++                right_inputs = [pair["input"] for split in ("train", "test") for pair in right[split]]
++                if left_inputs != right_inputs:
++                    failures.append({"seed": seed, "demos": demos, "queries": queries, "error": "setting-confounded inputs"})
++                for setting, episode in generated.items():
++                    survivors = P.surviving_rivals(episode["train"], setting)
++                    if survivors:
++                        failures.append({"seed": seed, "demos": demos, "queries": queries, "setting": setting, "survivors": survivors})
++                    for pair in episode["test"]:
++                        if (len(pair["input"]), len(pair["input"][0])) == (30, 30):
++                            exact_30 += 1
++                setting_differences += sum(
++                    a["output"] != b["output"]
++                    for split in ("train", "test")
++                    for a, b in zip(left[split], right[split])
++                )
++
++    report = {
++        "schema": "dfc7297269cc-parametric-audit-v1",
++        "seeds": args.seeds,
++        "episodes": episodes,
++        "pairs": pairs,
++        "exact_30_pairs": exact_30,
++        "setting_answer_differences": setting_differences,
++        "failures": failures,
++        "passed": not failures,
++        "limits": "finite deterministic sweep over seeds and declared rivals; not a universal identifiability proof",
++    }
++    text = json.dumps(report, indent=2, sort_keys=True) + "\n"
++    if args.out:
++        args.out.parent.mkdir(parents=True, exist_ok=True)
++        args.out.write_text(text, encoding="utf-8")
++    print(text, end="")
++    return 0 if not failures else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/dfc7297269cc/workspace/parametric/canonical.rkt b/repo/generators/dfc7297269cc/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dfc7297269cc/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range 1 (- (cols g) 1)))) (if (and (= (at g r c) 0) (not (= (at g r (- c 1)) 0)) (= (at g r (- c 1)) (at g r (+ c 1)))) (set-cell out r c (at g r (- c 1))) out))))
+\ No newline at end of file
+diff --git a/repo/generators/dfc7297269cc/workspace/parametric/evidence/current/audit.json b/repo/generators/dfc7297269cc/workspace/parametric/evidence/current/audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dfc7297269cc/workspace/parametric/evidence/current/audit.json
+@@ -0,0 +1,11 @@
++{
++  "episodes": 768,
++  "exact_30_pairs": 384,
++  "failures": [],
++  "limits": "finite deterministic sweep over seeds and declared rivals; not a universal identifiability proof",
++  "pairs": 4736,
++  "passed": true,
++  "schema": "dfc7297269cc-parametric-audit-v1",
++  "seeds": 64,
++  "setting_answer_differences": 2368
++}
+diff --git a/repo/generators/dfc7297269cc/workspace/parametric/evidence/manifest.json b/repo/generators/dfc7297269cc/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dfc7297269cc/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,82 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "80ec612874997e47020d36844a24d64e4365db45e6c2386a7a4719eb014ca187",
++  "canonical_rule_hash": "80ec61287499",
++  "default": {
++    "completion": "horizontal_all"
++  },
++  "evidence_root": "generators/dfc7297269cc/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 13099,
++      "path": "generators/dfc7297269cc/generator.py",
++      "sha256": "92519a1fabdd7fbfb96fccf57d53788ad232a954d6a463c44ff78c462f3a0988"
++    },
++    {
++      "bytes": 6682,
++      "path": "generators/dfc7297269cc/tests/test_parametric.py",
++      "sha256": "c71104240fc5fef500405f52e672473948b42fd30611d7c5dc939b3f1521210e"
++    },
++    {
++      "bytes": 817,
++      "path": "generators/dfc7297269cc/workspace/parametric/adapter.py",
++      "sha256": "2f7d79c70e06477c11a899b75ad4bb3f210514082c828952f1b4409aaa58bab2"
++    },
++    {
++      "bytes": 3152,
++      "path": "generators/dfc7297269cc/workspace/parametric/audit_lessons.py",
++      "sha256": "f8f0003cd7005e68bb824255e3bd3509a7ca7d2ced6eee9005ecc737b6ba59b4"
++    },
++    {
++      "bytes": 240,
++      "path": "generators/dfc7297269cc/workspace/parametric/canonical.rkt",
++      "sha256": "80ec612874997e47020d36844a24d64e4365db45e6c2386a7a4719eb014ca187"
++    },
++    {
++      "bytes": 313,
++      "path": "generators/dfc7297269cc/workspace/parametric/evidence/current/audit.json",
++      "sha256": "0f1c2ed56dd707b096f6a3e0b1866fd1cc58ce164be94f195e90d53c846306e2"
++    },
++    {
++      "bytes": 597,
++      "path": "generators/dfc7297269cc/workspace/parametric/promotion.json",
++      "sha256": "31f67e82b46140262797df1cf8c8991df1bde5286955d4e692c44c48a839f584"
++    },
++    {
++      "bytes": 12316,
++      "path": "generators/dfc7297269cc/workspace/parametric/prototype.py",
++      "sha256": "a6ef84f9e7449e0609e051b5d3fd70b000b7fe9f2255da181e6f05ee8c9845f7"
++    },
++    {
++      "bytes": 1025,
++      "path": "generators/dfc7297269cc/workspace/parametric/ranked_vertical.rkt",
++      "sha256": "3b9786e93c2cfe9e56b8f596eaff1f35079bc608f6036983e66d481312a40c14"
++    }
++  ],
++  "generator_sha256": "92519a1fabdd7fbfb96fccf57d53788ad232a954d6a463c44ff78c462f3a0988",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "completion": [
++      "horizontal_all",
++      "ranked_vertical"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "54 staged task tests passed; 64-seed finite sweep covered 768 episodes, 4,736 pairs, 384 exact 30x30 pairs, matched inputs, count boundaries, prefix stability, and 11 declared alternative-rule shortcuts with zero survivors.",
++  "rule_task_id": "dfc7297269cc",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "dfc7297269cc",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/dfc7297269cc/workspace/parametric/promotion.json b/repo/generators/dfc7297269cc/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dfc7297269cc/workspace/parametric/promotion.json
+@@ -0,0 +1,28 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/dfc7297269cc/workspace/parametric/adapter.py",
++  "parameters": {
++    "completion": [
++      "horizontal_all",
++      "ranked_vertical"
++    ]
++  },
++  "default": {
++    "completion": "horizontal_all"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "resources": [
++    "generators/dfc7297269cc/workspace/parametric/prototype.py",
++    "generators/dfc7297269cc/workspace/parametric/canonical.rkt",
++    "generators/dfc7297269cc/workspace/parametric/ranked_vertical.rkt"
++  ]
++}
+diff --git a/repo/generators/dfc7297269cc/workspace/parametric/prototype.py b/repo/generators/dfc7297269cc/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dfc7297269cc/workspace/parametric/prototype.py
+@@ -0,0 +1,335 @@
++"""Parametric horizontal-sandwich family for ``dfc7297269cc``.
++
++``horizontal_all`` is the byte-exact canonical rule. ``ranked_vertical`` first
++finds every canonical horizontal sandwich, uses their count as a one-based
++rank, and then also completes the same-ranked vertical sandwich in row-major
++order. Inputs are sampled independently of the private setting.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import random
++from pathlib import Path
++from typing import Any, Callable
++
++TASK_ID = "dfc7297269cc"
++PARAMETER = "completion"
++SETTINGS = ("horizontal_all", "ranked_vertical")
++MIN_DEMOS = 2
++MAX_DEMOS = 6
++MIN_QUERIES = 1
++MAX_QUERIES = 4
++MAX_SEED = 2**63 - 1
++
++_HOME = Path(__file__).resolve().parent
++_PROGRAM_FILES = {
++    "horizontal_all": _HOME / "canonical.rkt",
++    "ranked_vertical": _HOME / "ranked_vertical.rkt",
++}
++
++# (height, width, number of horizontal sandwiches). The first two demos use
++# ranks two and four so the minimum visible curriculum defeats fixed-rank,
++# first/last, row-count, and color-count selectors.
++_TRAIN_PROFILES = (
++    (12, 14, 2),
++    (14, 16, 4),
++    (16, 18, 1),
++    (18, 20, 3),
++    (20, 22, 4),
++    (22, 24, 2),
++)
++_QUERY_PROFILES = (
++    (15, 17, 3),
++    (20, 22, 1),
++    (25, 27, 4),
++    (30, 30, 2),
++)
++
++
++def _strict_int(name: str, value: Any, low: int, high: int) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be an exact integer; bool is forbidden")
++    if not low <= value <= high:
++        raise ValueError(f"{name} must be in [{low}, {high}]")
++    return value
++
++
++def _validate_settings(settings: Any) -> str:
++    if type(settings) is not dict or set(settings) != {PARAMETER}:
++        raise ValueError(f"settings must contain exactly {PARAMETER!r}")
++    value = settings[PARAMETER]
++    if type(value) is not str or value not in SETTINGS:
++        raise ValueError(f"{PARAMETER} must be one of {SETTINGS!r}")
++    return value
++
++
++def program(settings: dict[str, Any]) -> str:
++    return _PROGRAM_FILES[_validate_settings(settings)].read_text(encoding="utf-8")
++
++
++def _validate_grid(grid: Any) -> tuple[int, int]:
++    if type(grid) is not list or not grid or type(grid[0]) is not list or not grid[0]:
++        raise ValueError("grid must be a nonempty list of nonempty rows")
++    width = len(grid[0])
++    if len(grid) > 30 or width > 30:
++        raise ValueError("grid dimensions must not exceed 30")
++    if any(
++        type(row) is not list
++        or len(row) != width
++        or any(type(value) is not int or not 0 <= value <= 9 for value in row)
++        for row in grid
++    ):
++        raise ValueError("grid must be rectangular with exact ARC colors")
++    return len(grid), width
++
++
++def horizontal_centers(grid: list[list[int]]) -> list[tuple[int, int, int]]:
++    height, width = _validate_grid(grid)
++    return [
++        (row, col, grid[row][col - 1])
++        for row in range(height)
++        for col in range(1, width - 1)
++        if grid[row][col] == 0
++        and grid[row][col - 1] != 0
++        and grid[row][col - 1] == grid[row][col + 1]
++    ]
++
++
++def vertical_centers(grid: list[list[int]]) -> list[tuple[int, int, int]]:
++    height, width = _validate_grid(grid)
++    return [
++        (row, col, grid[row - 1][col])
++        for row in range(1, height - 1)
++        for col in range(width)
++        if grid[row][col] == 0
++        and grid[row - 1][col] != 0
++        and grid[row - 1][col] == grid[row + 1][col]
++    ]
++
++
++def _paint_centers(grid: list[list[int]], centers: list[tuple[int, int, int]]) -> list[list[int]]:
++    out = deepcopy(grid)
++    for row, col, color in centers:
++        out[row][col] = color
++    return out
++
++
++def apply_with_vertical_rank(grid: list[list[int]], rank: int) -> list[list[int]]:
++    """Fill canonical centers and one explicit one-based vertical candidate."""
++    if type(rank) is not int:
++        raise TypeError("rank must be an exact integer")
++    horizontal = horizontal_centers(grid)
++    vertical = vertical_centers(grid)
++    if not 1 <= rank <= len(vertical):
++        raise ValueError(f"rank must be in [1, {len(vertical)}]")
++    out = _paint_centers(grid, horizontal)
++    row, col, color = vertical[rank - 1]
++    out[row][col] = color
++    return out
++
++
++def apply_rule(grid: list[list[int]], completion: str) -> list[list[int]]:
++    if type(completion) is not str or completion not in SETTINGS:
++        raise ValueError(f"completion must be one of {SETTINGS!r}")
++    horizontal = horizontal_centers(grid)
++    if completion == "horizontal_all":
++        return _paint_centers(grid, horizontal)
++    if not horizontal:
++        raise ValueError("ranked_vertical requires at least one horizontal sandwich")
++    return apply_with_vertical_rank(grid, len(horizontal))
++
++
++def changed_cells(left: list[list[int]], right: list[list[int]]) -> int:
++    if _validate_grid(left) != _validate_grid(right):
++        raise ValueError("grids must have the same shape")
++    return sum(
++        left[row][col] != right[row][col]
++        for row in range(len(left))
++        for col in range(len(left[0]))
++    )
++
++
++def _rng(seed: int, split: str, index: int) -> random.Random:
++    raw = f"{TASK_ID}|ranked-vertical-inputs-v1|{seed}|{split}|{index}".encode()
++    return random.Random(int.from_bytes(hashlib.sha256(raw).digest()[:16], "big"))
++
++
++def _set(grid: list[list[int]], row: int, col: int, color: int) -> None:
++    if grid[row][col] != 0:
++        raise RuntimeError(f"construction overlap at {(row, col)}")
++    grid[row][col] = color
++
++
++def _solid_rect(
++    grid: list[list[int]], top: int, left: int, height: int, width: int, color: int
++) -> None:
++    for row in range(top, top + height):
++        for col in range(left, left + width):
++            _set(grid, row, col, color)
++
++
++def _motif_specs(rank: int, width: int, colors: tuple[int, int]) -> list[tuple[int, int, int]]:
++    left, right = 2, width - 3
++    if rank == 1:
++        return [(1, left, colors[0])]
++    if rank == 2:
++        return [(1, left, colors[0]), (1, right, colors[0])]
++    if rank == 3:
++        return [
++            (1, left, colors[0]),
++            (1, right, colors[0]),
++            (4, width // 2, colors[1]),
++        ]
++    if rank == 4:
++        return [
++            (1, left, colors[0]),
++            (1, right, colors[0]),
++            (4, 3, colors[1]),
++            (4, width - 4, colors[1]),
++        ]
++    raise ValueError(f"unsupported horizontal rank {rank}")
++
++
++def _sample_input(seed: int, split: str, index: int) -> list[list[int]]:
++    profiles = _TRAIN_PROFILES if split == "train" else _QUERY_PROFILES
++    height, width, rank = profiles[index]
++    rng = _rng(seed, split, index)
++    palette = list(range(1, 10))
++    rng.shuffle(palette)
++    motif_colors = (palette[0], palette[1])
++    # The relative order makes the lowest candidate rank 3 and the highest rank
++    # 4, so neither color-extreme shortcut can fit the first two demonstrations.
++    sorted_candidates = sorted(palette[2:8])
++    candidate_colors = tuple(sorted_candidates[i] for i in (1, 4, 0, 5, 2, 3))
++    distractor = palette[8]
++
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    for row, center, color in _motif_specs(rank, width, motif_colors):
++        _set(grid, row, center - 1, color)
++        _set(grid, row, center + 1, color)
++
++    candidate_rows = (height - 5, height - 2)
++    candidate_cols = (2, width // 2, width - 3)
++    for color, (row, col) in zip(
++        candidate_colors,
++        ((row, col) for row in candidate_rows for col in candidate_cols),
++    ):
++        _set(grid, row - 1, col, color)
++        _set(grid, row + 1, col, color)
++
++    # Ensure the second motif color is visible even in rank-1/rank-2 profiles.
++    _solid_rect(grid, 2, width // 2 - 1, 2, 2, motif_colors[1])
++
++    # Boundary-touching and dense distractors are solid, so they add content
++    # without creating another zero-centered sandwich.
++    _solid_rect(grid, 0, width // 2 - 1, 1, 3, distractor)
++    _solid_rect(grid, height // 2 - 1, 0, 2, 1, distractor)
++    _solid_rect(grid, height // 2 + 1, width - 1, 2, 1, motif_colors[1])
++    if height >= 20:
++        _solid_rect(grid, 7, 1, 3, 6, distractor)
++        _solid_rect(grid, height // 2, width - 6, 4, 4, distractor)
++
++    if rng.choice((False, True)):
++        grid = [row[::-1] for row in grid]
++    if rng.choice((False, True)):
++        grid = grid[::-1]
++
++    horizontal = horizontal_centers(grid)
++    vertical = vertical_centers(grid)
++    if len(horizontal) != rank:
++        raise RuntimeError(f"constructed {len(horizontal)} horizontal centers, expected {rank}")
++    if len(vertical) != 6:
++        raise RuntimeError(f"constructed {len(vertical)} vertical centers, expected 6")
++    if set((r, c) for r, c, _ in horizontal) & set((r, c) for r, c, _ in vertical):
++        raise RuntimeError("horizontal and vertical centers must be disjoint")
++    return grid
++
++
++def _fill_all_vertical(grid: list[list[int]]) -> list[list[int]]:
++    return _paint_centers(_paint_centers(grid, horizontal_centers(grid)), vertical_centers(grid))
++
++
++def _candidate_color_rank(grid: list[list[int]], chooser: Callable[[list[int]], int]) -> int:
++    colors = [color for _, _, color in vertical_centers(grid)]
++    chosen = chooser(colors)
++    return colors.index(chosen) + 1
++
++
++def _rival_outputs(grid: list[list[int]], completion: str) -> dict[str, list[list[int]]]:
++    horizontal = horizontal_centers(grid)
++    vertical = vertical_centers(grid)
++    canonical = _paint_centers(grid, horizontal)
++    if completion == "horizontal_all":
++        return {
++            "ranked_vertical": apply_with_vertical_rank(grid, len(horizontal)),
++            "fill_all_vertical": _fill_all_vertical(grid),
++            "first_vertical": apply_with_vertical_rank(grid, 1),
++        }
++    rows = len({row for row, _, _ in horizontal})
++    colors = len({color for _, _, color in horizontal})
++    return {
++        "horizontal_only": canonical,
++        "fill_all_vertical": _fill_all_vertical(grid),
++        "first_vertical": apply_with_vertical_rank(grid, 1),
++        "last_vertical": apply_with_vertical_rank(grid, len(vertical)),
++        "fixed_second": apply_with_vertical_rank(grid, 2),
++        "fixed_fourth": apply_with_vertical_rank(grid, 4),
++        "horizontal_row_count": apply_with_vertical_rank(grid, rows),
++        "horizontal_color_count": apply_with_vertical_rank(grid, colors),
++        "reverse_rank": apply_with_vertical_rank(grid, len(vertical) + 1 - len(horizontal)),
++        "lowest_candidate_color": apply_with_vertical_rank(
++            grid, _candidate_color_rank(grid, min)
++        ),
++        "highest_candidate_color": apply_with_vertical_rank(
++            grid, _candidate_color_rank(grid, max)
++        ),
++    }
++
++
++def surviving_rivals(train: list[dict[str, Any]], completion: str) -> list[str]:
++    if type(train) is not list or not train:
++        raise ValueError("train must be a nonempty list")
++    if completion not in SETTINGS:
++        raise ValueError(f"completion must be one of {SETTINGS!r}")
++    names = set(_rival_outputs(train[0]["input"], completion))
++    return sorted(
++        name
++        for name in names
++        if all(
++            _rival_outputs(pair["input"], completion)[name] == pair["output"]
++            for pair in train
++        )
++    )
++
++
++def generate(
++    seed: int,
++    settings: dict[str, Any],
++    demos: int = 3,
++    queries: int = 4,
++) -> dict[str, Any]:
++    seed = _strict_int("seed", seed, 0, MAX_SEED)
++    demos = _strict_int("demos", demos, MIN_DEMOS, MAX_DEMOS)
++    queries = _strict_int("queries", queries, MIN_QUERIES, MAX_QUERIES)
++    completion = _validate_settings(settings)
++
++    train = []
++    for index in range(demos):
++        grid = _sample_input(seed, "train", index)
++        train.append({"input": grid, "output": apply_rule(grid, completion)})
++    test = []
++    for index in range(queries):
++        grid = _sample_input(seed, "test", index)
++        test.append({"input": grid, "output": apply_rule(grid, completion)})
++
++    serialized = [repr(pair["input"]) for pair in [*train, *test]]
++    if len(serialized) != len(set(serialized)):
++        raise RuntimeError("all demonstration and query inputs must be distinct")
++    if surviving_rivals(train, completion):
++        raise RuntimeError("visible demonstrations leave a declared rival alive")
++    return {
++        "train": train,
++        "test": test,
++        "program_solution": program({PARAMETER: completion}),
++    }
+diff --git a/repo/generators/dfc7297269cc/workspace/parametric/ranked_vertical.rkt b/repo/generators/dfc7297269cc/workspace/parametric/ranked_vertical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/dfc7297269cc/workspace/parametric/ranked_vertical.rkt
+@@ -0,0 +1,21 @@
++(rule!
++ (let* ((horizontal-centers
++         (for*/list ((r (in-range (rows g)))
++                     (c (in-range 1 (- (cols g) 1)))
++                     #:when (and (= (at g r c) 0)
++                                 (not (= (at g r (- c 1)) 0))
++                                 (= (at g r (- c 1)) (at g r (+ c 1)))))
++           (list r c (at g r (- c 1)))))
++        (rank (length horizontal-centers))
++        (vertical-centers
++         (for*/list ((r (in-range 1 (- (rows g) 1)))
++                     (c (in-range (cols g)))
++                     #:when (and (= (at g r c) 0)
++                                 (not (= (at g (- r 1) c) 0))
++                                 (= (at g (- r 1) c) (at g (+ r 1) c))))
++           (list r c (at g (- r 1) c))))
++        (base
++         (for/fold ((out g)) ((item (in-list horizontal-centers)))
++           (set-cell out (first item) (second item) (third item))))
++        (chosen (list-ref vertical-centers (- rank 1))))
++   (set-cell base (first chosen) (second chosen) (third chosen))))

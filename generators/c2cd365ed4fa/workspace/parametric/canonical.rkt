@@ -1,0 +1,26 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (begin
+             (define bg 7)
+             (define fg-colors (filter (lambda (c) (!= c bg)) (grid-colors g)))
+             (define (color-count c)
+               (length (objects-8 (cellmap g (r cc v) (if (= v c) c bg)) bg)))
+             (define color-counts (map (lambda (c) (list c (color-count c))) fg-colors))
+             (define max-h (max-of second color-counts))
+             (define base (empty-grid max-h 5 bg))
+             (reduce (lambda (gg cc)
+                       (let* ((c (first cc))
+                              (n (second cc))
+                              (col (cond
+                                     ((= c 5) 0)
+                                     ((= c 2) 1)
+                                     ((= c 8) 2)
+                                     ((= c 9) 3)
+                                     ((= c 6) 4)
+                                     (else 0))))
+                         (reduce (lambda (gg2 i) (set-cell gg2 (- (- max-h 1) i) col c))
+                                 gg
+                                 (range 0 n))))
+                     base
+                     color-counts)))))

@@ -1,0 +1,294 @@
+--- current-approved/generator.py
++++ proposed/generator.py
+@@ -5,13 +5,6 @@
+ independent of orientation. Different colors may touch or interlock. Same-color
+ components may not touch orthogonally. Explicit uniform diagnostic textures are
+ negative examples outside the default, nonidentity training distribution.
+-
+-Default samples alternate incomplete and complete orientation sets.  Therefore
+-every four-pair default episode keeps an incomplete witness in the demonstrations
+-under every possible query rotation.  Explicit cardinality, palette-size, or
+-texture overrides are exact diagnostics and do not inherit that teaching schedule.
+-Complete default samples use four distinct foreground colors, preserving the
+-five-color canonical profile while partial samples retain repeated-color support.
+ """
+ from __future__ import annotations
+ 
+@@ -25,16 +18,11 @@
+ VERSION = "2.2.0"
+ RULE_HASH = "bbdf13ba2dfd"
+ SUMMARY = "Tiny L triomino orientations select large output corner placements."
+-EXAMPLES_NEEDED = 3
+-LESSON_SCHEDULE_PERIOD = 2
+-SCHEDULE_PROFILES = ("partial", "complete")
+ INVARIANTS = [
+     "odd square canvas 5..15 with a nonzero strict-majority background",
+     "one to four monochrome 4-connected L triominoes, each in a 2x2 box",
+     "each orientation occurs at most once; repeated colors remain separate objects",
+     "orientation, not position or color, selects the corresponding output corner",
+-    "ordinary defaults alternate partial/full cardinality for query-rotation safety",
+-    "complete ordinary defaults use four distinct foreground colors",
+     "uniform no_corners/full_grid textures are explicit rejection diagnostics only",
+ ]
+ PALETTE_KINDS = ("warm", "cool", "broad", "primary")
+@@ -44,11 +32,22 @@
+ AXES = {
+     "canvas_size": {"type": "int", "default": "difficulty-dependent odd 5..15", "valid": "5|7|9|11|13|15"},
+     "bg_color": {"type": "color", "default": "rng nonzero", "valid": "1..9"},
+-    "n_corners": {"type": "int", "default": "difficulty-dependent 1..4", "valid": "1..4"},
++    "n_corners": {"type": "int", "default": "four-slot teaching schedule by difficulty", "valid": "1..4"},
+     "palette_kind": {"type": "str", "default": "rng", "valid": "|".join(PALETTE_KINDS)},
+     "palette_size": {"type": "int", "default": "rng 1..n_corners", "valid": "1..4", "constraint": "<= n_corners"},
+     "layout": {"type": "str", "default": "rng", "valid": "|".join(LAYOUTS)},
+     "texture": {"type": "str", "default": "palette_kind", "valid": "|".join(HELPFUL_TEXTURES), "diagnostic": "|".join(DEGENERATE_TEXTURES)},
++}
++# Multi-axis vetoes below carry ``ValueError.incompatible_axes``; the empty
++# matrix makes that structured exception contract explicit to the override gate.
++INCOMPATIBLE_OVERRIDE_COMBINATIONS = []
++EXAMPLES_NEEDED = 3
++LESSON_SCHEDULE_PERIOD = 4
++_LESSON_CARDINALITY_SCHEDULE = {
++    "easy": (1, 2, 4, 4),
++    None: (2, 3, 4, 4),
++    "medium": (2, 3, 4, 4),
++    "hard": (3, 3, 4, 4),
+ }
+ 
+ # The occupied vertex, not the missing vertex, is the destination corner.
+@@ -60,21 +59,6 @@
+ )
+ _NEIGHBORS = ((-1, 0), (1, 0), (0, -1), (0, 1))
+ _SIZES = (5, 7, 9, 11, 13, 15)
+-
+-
+-def schedule_profile(seed, sample_index, *, difficulty=None):
+-    """Return the ordinary-default lesson profile for one sample.
+-
+-    Every fixed-seed episode alternates partial/full cardinality, while the
+-    seed-dependent phase preserves both profiles at any fixed sample position
+-    across a population.  Grouping the seed phase in period-sized blocks also
+-    prevents the common ``generate(seed, seed)`` census from aliasing to one
+-    profile forever.  ``difficulty`` remains explicit for framework/tooling
+-    callers even though the phase is shared across bands.
+-    """
+-    del difficulty
+-    seed_phase = seed // LESSON_SCHEDULE_PERIOD
+-    return SCHEDULE_PROFILES[(seed_phase + sample_index) % LESSON_SCHEDULE_PERIOD]
+ 
+ 
+ def _components(grid, bg):
+@@ -141,6 +125,25 @@
+     return errors
+ 
+ 
++def _incompatible(message, *axes):
++    error = ValueError(message)
++    error.incompatible_axes = tuple(axes)
++    raise error
++
++
++def _validate_call(seed, sample_index, difficulty, overrides):
++    """Reject lossy public-call scalars before keyed generation sees them."""
++    if type(seed) is not int:
++        raise TypeError("seed must be an integer (not bool)")
++    if type(sample_index) is not int:
++        raise TypeError("sample_index must be an integer (not bool)")
++    if sample_index < 0:
++        raise ValueError("sample_index must be nonnegative")
++    if difficulty not in (None, "easy", "medium", "hard"):
++        raise ValueError("difficulty must be easy, medium, hard, or None")
++    _validate_overrides(overrides)
++
++
+ def _validate_overrides(overrides):
+     unknown = sorted(set(overrides) - set(AXES))
+     if unknown:
+@@ -163,12 +166,44 @@
+         raise ValueError("canvas_size must be odd and in 5..15")
+     texture, kind = overrides.get("texture"), overrides.get("palette_kind")
+     if texture in PALETTE_KINDS and kind is not None and texture != kind:
+-        raise ValueError("texture and palette_kind select conflicting palettes")
++        _incompatible(
++            "texture and palette_kind select conflicting palettes",
++            "texture", "palette_kind",
++        )
+     if texture == "all_corners" and overrides.get("n_corners") not in (None, 4):
+-        raise ValueError("all_corners requires n_corners=4")
++        _incompatible(
++            "texture=all_corners requires n_corners=4",
++            "texture", "n_corners",
++        )
+     if (overrides.get("palette_size") is not None and overrides.get("n_corners") is not None
+             and overrides["palette_size"] > overrides["n_corners"]):
+-        raise ValueError("palette_size must not exceed n_corners")
++        _incompatible(
++            "palette_size must not exceed n_corners",
++            "palette_size", "n_corners",
++        )
++
++
++def schedule_n_corners(seed, sample_index, difficulty=None):
++    """Return the four-slot lesson cardinality schedule.
++
++    Every period contains two incomplete orientation sets and two complete
++    sets. The seed rotates (but never changes) that cycle, restoring support
++    across fixed-index seed sweeps while keeping canonical-like dense examples.
++    Every three-demonstration holdout rotation therefore includes a
++    counterexample to ``complete_all_corners``.
++    """
++    if type(seed) is not int:
++        raise TypeError("seed must be an integer (not bool)")
++    if type(sample_index) is not int:
++        raise TypeError("sample_index must be an integer (not bool)")
++    if sample_index < 0:
++        raise ValueError("sample_index must be nonnegative")
++    if difficulty not in _LESSON_CARDINALITY_SCHEDULE:
++        raise ValueError("difficulty must be easy, medium, hard, or None")
++    phase = seed % LESSON_SCHEDULE_PERIOD
++    return _LESSON_CARDINALITY_SCHEDULE[difficulty][
++        (sample_index + phase) % LESSON_SCHEDULE_PERIOD
++    ]
+ 
+ 
+ def _already_solved(grid, size, bg, orientations, colors):
+@@ -251,54 +286,46 @@
+ SEMANTIC_WITNESSES = {"incomplete_corner_set": _incomplete_corner_set}
+ SEMANTIC_RIVALS = {"complete_all_corners": _complete_all_corners}
+ WITNESS_RIVALS = {"incomplete_corner_set": ["complete_all_corners"]}
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
+ CANONICAL_SHORTCUTS = SEMANTIC_RIVALS
+-LESSON_COMPETITORS = SEMANTIC_RIVALS
+-
+-
+-def _grids_equal(left, right):
+-    try:
+-        return [list(row) for row in left] == [list(row) for row in right]
+-    except TypeError:
+-        return False
+-
+-
+-def lesson_identifiable(demos, query) -> list[str]:
+-    """Reject labeled lessons where a declared wrong rule survives all demos."""
++
++
++def lesson_identifiable(demos, query):
++    """Require visible demonstrations to falsify every declared rival."""
++    if not isinstance(demos, (list, tuple)) or len(demos) < EXAMPLES_NEEDED:
++        return [f"need at least {EXAMPLES_NEEDED} demonstrations"]
++    if not isinstance(query, dict) or "input" not in query or "output" not in query:
++        return ["query must contain input and oracle output"]
++
+     reasons = []
+-    pairs = [("demo", index, pair) for index, pair in enumerate(demos)]
+-    pairs.append(("query", 0, query))
+-    for kind, index, pair in pairs:
++    for index, pair in enumerate(demos):
+         if not isinstance(pair, dict) or "input" not in pair or "output" not in pair:
+-            reasons.append(f"{kind} {index}: pair must contain input and output")
++            reasons.append(f"demo {index} must contain input and output")
+             continue
+         errors = self_check(pair["input"])
+         if errors:
+-            reasons.extend(f"{kind} {index}: {error}" for error in errors)
+-            continue
+-        try:
+-            expected = rule_mirror(pair["input"])
+-        except (TypeError, ValueError) as exc:
+-            reasons.append(f"{kind} {index}: canonical rule failed: {exc}")
+-            continue
+-        if not _grids_equal(pair["output"], expected):
+-            reasons.append(f"{kind} {index}: output disagrees with the orientation rule")
++            reasons.append(f"demo {index} is outside the curriculum: {errors}")
++        elif rule_mirror(pair["input"]) != pair["output"]:
++            reasons.append(f"demo {index} disagrees with the orientation rule")
++
++    query_errors = self_check(query["input"])
++    if query_errors:
++        reasons.append(f"query is outside the curriculum: {query_errors}")
++    elif rule_mirror(query["input"]) != query["output"]:
++        reasons.append("query disagrees with the orientation rule")
+     if reasons:
+         return reasons
+ 
+     for name, competitor in LESSON_COMPETITORS.items():
+         try:
+-            fits_demos = all(
+-                _grids_equal(competitor(pair["input"]), pair["output"])
+-                for pair in demos
++            survives = all(
++                competitor(pair["input"]) == pair["output"] for pair in demos
+             )
+-            changes_query = not _grids_equal(
+-                competitor(query["input"]), query["output"]
+-            )
+-        except (KeyError, TypeError, ValueError) as exc:
+-            reasons.append(f"competitor {name!r} failed: {exc}")
++        except Exception as exc:  # pragma: no cover - gate-visible defensive path
++            reasons.append(f"rival {name} raised {type(exc).__name__}: {exc}")
+             continue
+-        if fits_demos and changes_query:
+-            reasons.append(f"competing rule survives demos: {name}")
++        if survives:
++            reasons.append(f"demonstrations do not falsify rival: {name}")
+     return reasons
+ 
+ 
+@@ -352,49 +379,29 @@
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    if isinstance(seed, bool) or not isinstance(seed, Integral):
+-        raise ValueError("seed must be an integer (not bool)")
+-    if (isinstance(sample_index, bool) or not isinstance(sample_index, Integral)
+-            or sample_index < 0):
+-        raise ValueError("sample_index must be a nonnegative integer (not bool)")
+-    _validate_overrides(overrides)
+-    if difficulty not in (None, "easy", "medium", "hard"):
+-        raise ValueError("difficulty must be easy, medium, hard, or None")
++    _validate_call(seed, sample_index, difficulty, overrides)
+     ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION,
+                   task_id=TASK_ID, difficulty=difficulty, overrides=overrides)
+     band = {"easy": (5, 7), "hard": (11, 13, 15)}.get(difficulty, (7, 9, 11))
+     size = ctx.draw_choice("canvas_size", _SIZES if overrides.get("canvas_size") is not None else band)
+     bg = ctx.draw_color("bg_color", exclude={0})
+     texture = ctx.draw_choice("texture", HELPFUL_TEXTURES + DEGENERATE_TEXTURES) if overrides.get("texture") is not None else None
+-    ordinary_default = not any(
+-        overrides.get(key) is not None
+-        for key in ("n_corners", "palette_size", "texture")
+-    )
+     # Rejection diagnostics ignore layout/cardinality, not malformed values.
+     if texture in DEGENERATE_TEXTURES:
+         return full_grid(size, size, bg)
+-    n_options = {"easy": (1, 2, 4, 4), "hard": (3, 4, 4)}.get(difficulty, (1, 2, 3, 4, 4, 4))
+     if texture == "all_corners":
+         n = ctx.draw_choice("n_corners", (4,))
++    elif overrides.get("n_corners") is not None:
++        n = ctx.draw_choice("n_corners", (1, 2, 3, 4))
+     else:
+         # A palette_size pin requires enough components, not a random rejection.
+         minimum = overrides.get("palette_size") or 1
+-        if ordinary_default:
+-            if schedule_profile(seed, sample_index, difficulty=difficulty) == "complete":
+-                options = (4,)
+-            else:
+-                partial = {"easy": (1, 2), "hard": (3,)}.get(difficulty, (1, 2, 3))
+-                options = tuple(n for n in partial if n >= minimum)
+-        else:
+-            options = tuple(n for n in n_options if n >= minimum) or tuple(range(minimum, 5))
+-        n = ctx.draw_choice("n_corners", (1, 2, 3, 4) if overrides.get("n_corners") is not None else options)
+-    palette_options = (
+-        (4,)
+-        if ordinary_default
+-        and schedule_profile(seed, sample_index, difficulty=difficulty) == "complete"
+-        else tuple(range(1, n+1)) + (n, n)
+-    )
+-    palette_size = ctx.draw_choice("palette_size", palette_options)
++        scheduled = max(
++            schedule_n_corners(seed, sample_index, difficulty=difficulty),
++            minimum,
++        )
++        n = ctx.draw_choice("n_corners", (scheduled,))
++    palette_size = ctx.draw_choice("palette_size", tuple(range(1, n+1)) + (n, n))
+     kind = ctx.draw_choice("palette_kind", (texture,) if texture in PALETTE_KINDS else PALETTE_KINDS)
+     layout_options = (("separated",) if texture == "all_corners" and overrides.get("layout") is None else LAYOUTS)
+     layout = ctx.draw_choice("layout", layout_options)

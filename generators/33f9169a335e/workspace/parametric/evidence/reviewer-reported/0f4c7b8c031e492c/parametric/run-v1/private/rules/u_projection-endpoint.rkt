@@ -1,0 +1,17 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((gaps (filter (lambda (c)
+                                  (for/or ((r (range 0 (- h 1))))
+                                          (for/or ((cc (list (- c 1))))
+                                                  (and
+                                                    (and (>= cc 0) (< (+ cc 2) w))
+                                                    (and
+                                                      (!= 0 (at g r cc))
+                                                      (!= 0 (at g r (+ cc 1)))
+                                                      (!= 0 (at g r (+ cc 2)))
+                                                      (!= 0 (at g (+ r 1) cc))
+                                                      (zero? (at g (+ r 1) (+ cc 1)))
+                                                      (!= 0 (at g (+ r 1) (+ cc 2))))))))
+                                (range 0 w))))
+             (cellmap g (r c v) (if (and (= r (- h 1)) (member? c gaps)) 4 v))))))

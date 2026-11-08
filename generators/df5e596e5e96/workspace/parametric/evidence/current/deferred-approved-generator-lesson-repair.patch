@@ -1,0 +1,254 @@
+--- a/generators/df5e596e5e96/generator.py
++++ b/generators/df5e596e5e96/generator.py
+@@ -53,9 +53,9 @@
+ INCOMPATIBLE_OVERRIDE_COMBINATIONS: list[dict[str, Any]] = []
+ 
+ SCHEDULE_PROFILES = (
++    "symmetric_priority",
+     "full_relations",
+-    "rotation_duplicate",
+-    "two_rotations",
++    "symmetric_priority_varied",
+     "paired_classes",
+ )
+ EXAMPLES_NEEDED = 3
+@@ -90,6 +90,19 @@
+     ),
+ }
+ 
++# Reflection-symmetric supports whose quarter-turns are distinct.  A quarter
++# turn therefore belongs to both the rotational and reflected orbits, making
++# the canonical "rotation before reflection" priority visible.  The paired A
++# motif above is outside each symmetric motif's D4 orbit and supplies the
++# same-count unrelated control in three-panel lessons.
++_SYMMETRIC_MOTIFS: dict[int, tuple[tuple[int, int], ...]] = {
++    4: ((0, 0), (0, 1), (0, 2), (1, 1)),
++    5: ((0, 0), (0, 1), (0, 2), (1, 1), (2, 1)),
++    6: ((0, 0), (0, 1), (0, 2), (0, 3), (1, 1), (1, 2)),
++    7: ((0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 2)),
++    8: ((0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 2), (3, 2)),
++}
++
+ 
+ def _normalize(cells: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+     cells = tuple(cells)
+@@ -140,6 +153,15 @@
+             raise AssertionError(f"left motif for {cell_count} is not asymmetric")
+         if _orbit(left, range(8)) & _orbit(right, range(8)):
+             raise AssertionError(f"motifs for {cell_count} share a D4 orbit")
++        symmetric = _SYMMETRIC_MOTIFS[cell_count]
++        if len(symmetric) != cell_count:
++            raise AssertionError(f"symmetric motif count mismatch for {cell_count}")
++        if len(_orbit(symmetric, range(4))) != 4 or len(_orbit(symmetric, range(8))) != 4:
++            raise AssertionError(f"symmetric motif for {cell_count} lacks the required orbit")
++        if _orbit(symmetric, range(8)) & _orbit(left, range(8)):
++            raise AssertionError(f"symmetric and unrelated motifs overlap for {cell_count}")
++        if _dihedral(symmetric, 1) not in _orbit(symmetric, range(4, 8)):
++            raise AssertionError(f"symmetric motif for {cell_count} lacks precedence overlap")
+ 
+ 
+ _validate_catalog()
+@@ -187,20 +209,20 @@
+ 
+ def _profile_tokens(profile: str, n_panels: int) -> tuple[str, ...]:
+     profiles = {
++        "symmetric_priority": {
++            3: ("s", "sr", "a"),
++            4: ("s", "sr", "a", "b"),
++            5: ("s", "sr", "a", "f", "b"),
++        },
+         "full_relations": {
+             3: ("a", "f", "b"),
+             4: ("a", "r", "f", "b"),
+             5: ("a", "a", "r", "f", "b"),
+         },
+-        "rotation_duplicate": {
+-            3: ("a", "f", "b"),
+-            4: ("a", "a", "f", "b"),
+-            5: ("a", "r", "r", "f", "b"),
+-        },
+-        "two_rotations": {
+-            3: ("a", "f", "b"),
+-            4: ("a", "r2", "f", "b"),
+-            5: ("a", "r", "r2", "f", "b"),
++        "symmetric_priority_varied": {
++            3: ("s", "sr", "a"),
++            4: ("s", "sr", "a", "b"),
++            5: ("s", "sr", "a", "f", "b"),
+         },
+         "paired_classes": {
+             3: ("a", "f", "b"),
+@@ -211,16 +233,42 @@
+     return profiles[profile][n_panels]
+ 
+ 
+-def _palette(rng, sample_index: int, n_panels: int) -> tuple[int, ...]:
++def _token_family(token: str) -> str:
++    if token in {"a", "r", "r2", "f"}:
++        return "a"
++    if token in {"s", "sr"}:
++        return "s"
++    return token
++
++
++def _palette(rng, sample_index: int, tokens: Sequence[str]) -> tuple[int, ...]:
+     # Slots 0/1 are canonical one-color anchors; slots 2/3 prove that color is
+-    # irrelevant. Any sliding three-demo window therefore contains a varied
+-    # palette while 50% of default draws exactly match the canonical profile.
++    # irrelevant. For varied slots, bind at least one related token pair to
++    # different colors after shuffling; a positional color cycle alone can
++    # accidentally assign the same repeated color to every related pair.
++    n_panels = len(tokens)
+     colors = list(range(1, 10))
+     if sample_index % 4 in (0, 1):
+         color = rng.choice(colors)
+         return (color,) * n_panels
++
+     chosen = rng.sample(colors, min(3, n_panels))
+-    return tuple(chosen[index % len(chosen)] for index in range(n_panels))
++    assigned = [chosen[index % len(chosen)] for index in range(n_panels)]
++    related_pair = next(
++        (
++            (left, right)
++            for left in range(n_panels)
++            for right in range(left + 1, n_panels)
++            if _token_family(tokens[left]) == _token_family(tokens[right])
++        ),
++        None,
++    )
++    if related_pair is None:
++        raise AssertionError("varied curriculum profile lacks a related token pair")
++    left, right = related_pair
++    if assigned[left] == assigned[right]:
++        assigned[right] = next(color for color in chosen if color != assigned[left])
++    return tuple(assigned)
+ 
+ 
+ def _place_shape(
+@@ -257,21 +305,25 @@
+ 
+     count = _cell_count(rng, difficulty)
+     base_a, base_b = _MOTIF_PAIRS[count]
++    symmetric = _SYMMETRIC_MOTIFS[count]
+     base_rotation = rng.randrange(4)
+     a = _dihedral(base_a, base_rotation)
++    s = _dihedral(symmetric, rng.randrange(4))
+     variants = {
+         "a": a,
+         "r": _dihedral(a, 1),
+         "r2": _dihedral(a, 2),
+         "f": _dihedral(a, 4),
+         "b": _dihedral(base_b, rng.randrange(8)),
++        "s": s,
++        "sr": _dihedral(s, 1),
+     }
+     tokens = list(_profile_tokens(profile, n_panels))
+     # Relation semantics depend on pairwise shape classes, not a privileged
+     # panel position. Shuffling the constructive multiset preserves every
+     # witness while preventing four memorized matrices from becoming the task.
+     rng.shuffle(tokens)
+-    colors = _palette(rng, sample_index, n_panels)
++    colors = _palette(rng, sample_index, tokens)
+ 
+     grid = full_grid(5, 6 * n_panels - 1, 0)
+     for panel_index, (token, color) in enumerate(zip(tokens, colors)):
+@@ -412,6 +464,30 @@
+     return [[2 if value == 3 else value for value in row] for row in rule_mirror(grid)]
+ 
+ 
++def _relation_reflection_before_rotation(left, right) -> int:
++    if right == left:
++        return 1
++    if right in _orbit(left, range(4, 8)):
++        return 3
++    if right in _orbit(left, range(4)):
++        return 2
++    return 0
++
++
++def _rival_reflection_before_rotation(grid) -> list[list[int]]:
++    facts, errors = _analyze(grid)
++    if errors:
++        raise ValueError("malformed input: " + "; ".join(errors))
++    panels = facts["panels"]
++    return [
++        [
++            8 if row == col else _relation_reflection_before_rotation(panels[row], panels[col])
++            for col in range(len(panels))
++        ]
++        for row in range(len(panels))
++    ]
++
++
+ def _rival_same_count_implies_rotation(grid) -> list[list[int]]:
+     facts, errors = _analyze(grid)
+     if errors:
+@@ -439,6 +515,7 @@
+ 
+ 
+ SEMANTIC_RIVALS: dict[str, Callable[[list[list[int]]], list[list[int]]]] = {
++    "reflection_before_rotation": _rival_reflection_before_rotation,
+     "reflection_as_rotation": _rival_reflection_as_rotation,
+     "same_count_implies_rotation": _rival_same_count_implies_rotation,
+     "color_sensitive": _rival_color_sensitive,
+@@ -489,12 +566,27 @@
+         return False
+ 
+ 
++def _witness_rotation_reflection_overlap(grid) -> bool:
++    try:
++        official = rule_mirror(grid)
++        rival = _rival_reflection_before_rotation(grid)
++        return any(
++            official[row][col] == 2 and rival[row][col] == 3
++            for row in range(len(official))
++            for col in range(row + 1, len(official))
++        )
++    except Exception:
++        return False
++
++
+ SEMANTIC_WITNESSES: dict[str, Callable[[list[list[int]]], bool]] = {
++    "rotation_reflection_overlap": _witness_rotation_reflection_overlap,
+     "same_count_unrelated": _witness_same_count_unrelated,
+     "cross_color_related": _witness_cross_color_related,
+     "reflection_relation": _witness_reflection_relation,
+ }
+ WITNESS_RIVALS = {
++    "rotation_reflection_overlap": ["reflection_before_rotation"],
+     "same_count_unrelated": ["same_count_implies_rotation"],
+     "cross_color_related": ["color_sensitive"],
+     "reflection_relation": ["reflection_as_rotation"],
+--- a/generators/df5e596e5e96/tests/test_generator_df5e596e5e96.py
++++ b/generators/df5e596e5e96/tests/test_generator_df5e596e5e96.py
+@@ -95,6 +95,30 @@
+         assert GEN.lesson_identifiable(pairs[:3], pairs[3]) == []
+ 
+ 
++def test_rotation_before_reflection_precedence_is_visible_in_every_three_demo_window():
++    assert "reflection_before_rotation" in GEN.LESSON_COMPETITORS
++    witness = GEN.SEMANTIC_WITNESSES["rotation_reflection_overlap"]
++    rival = GEN.LESSON_COMPETITORS["reflection_before_rotation"]
++
++    for difficulty in ("easy", "medium", "hard"):
++        for start in range(8):
++            pairs = []
++            for sample_index in range(start, start + 4):
++                grid = GEN.generate(7300 + start, sample_index, difficulty=difficulty)
++                pairs.append({"input": grid, "output": GEN.rule_mirror(grid)})
++
++            demos, query = pairs[:3], pairs[3]
++            assert any(witness(pair["input"]) for pair in demos)
++            assert any(rival(pair["input"]) != pair["output"] for pair in demos)
++            assert GEN.lesson_identifiable(demos, query) == []
++
++
++def test_varied_palette_guarantees_a_cross_color_related_pair():
++    grid = GEN.generate(124016, 2, difficulty="medium")
++    assert GEN.schedule_profile(124016, 2, "medium") == "symmetric_priority_varied"
++    assert GEN.SEMANTIC_WITNESSES["cross_color_related"](grid)
++
++
+ def test_same_count_unrelated_and_color_blind_shortcuts_fit_canonical_but_not_schedule():
+     pairs = canonical_pairs(TASK)
+     for name in ("same_count_implies_rotation", "color_sensitive"):

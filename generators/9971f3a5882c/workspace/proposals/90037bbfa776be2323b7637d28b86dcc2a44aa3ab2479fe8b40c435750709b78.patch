@@ -1,0 +1,4505 @@
+diff --git a/repo/generators/9971f3a5882c/notes.md b/repo/generators/9971f3a5882c/notes.md
+--- a/repo/generators/9971f3a5882c/notes.md
++++ b/repo/generators/9971f3a5882c/notes.md
+@@ -193,3 +193,33 @@
+ No GPU work, model training, approval refresh or training admission was performed.
+ The main repair is suitable for routine acceptance; the separate prototype and
+ audit follow-ups retain their own review decisions.
++
++## D6 — Promote the nearest/farthest prototype to a native qualified contract
++
++The old prototype fixed episodes at three demonstrations and one query and kept
++its own legacy evidence flow.  The native contract now supports 2–6
++demonstrations and 1–4 independent, prefix-stable queries, with four distinct
++queries retained for sequential reveal.  Input draws are identical across
++settings; public bytes exclude settings, programs, future queries and query
++answers.  The fourth query is a substantive 30×30 sparse lattice rather than a
++padded small case.
++
++The canonical `nearest` program is unchanged byte-for-byte.  `farthest` changes
++only the four marker-extremum choices.  A reusable protected-Racket audit checks
++both settings, six executable shortcut rivals, private/public projection,
++setting-independent sampling, prefix stability and 30×30 labels.  It passed 12
++jobs with 53 distinct Racket executions and no surviving rival.  Native
++qualification independently passed 4/4 setting/seed jobs with 32 Racket
++evaluations.  The source-bound inventory replaced the stale prototype manifest.
++
++The required sequential dependency is: A computes the original lattice bbox,
++full rows/columns and side-partitioned markers; B consumes that exact partition
++to choose an extremum and redraw the lattice.  A protected-Racket ablation that
++decrements bbox `c1` before classification reclassifies an edge-aligned marker
++and changes 90 final cells on an exact qualified query.  Evidence is under
++`workspace/parametric/evidence/current/`, `checks/9971f3a5882c/qualification/`,
++and `checks/9971f3a5882c/causal/`.
++
++This return is reviewer-ready only.  Owner acceptance on exact integrated bytes
++and any training admission remain pending; production generator and canonical
++ledger bytes were not changed.
+diff --git a/repo/generators/9971f3a5882c/tests/test_parametric_audit.py b/repo/generators/9971f3a5882c/tests/test_parametric_audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/tests/test_parametric_audit.py
+@@ -0,0 +1,71 @@
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++
++TASK = Path(__file__).resolve().parents[1]
++PARAMETRIC = TASK / "workspace" / "parametric"
++
++
++def load(name: str, path: Path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_audit_runner_emits_replayable_masked_evidence(tmp_path):
++    native = load("native_for_audit_test", PARAMETRIC / "native.py")
++    audit = load("audit_under_test", PARAMETRIC / "audit.py")
++    witness = native.dependency_witness()
++
++    by_program = {
++        native.program({"marker_selection": setting}):
++            (lambda grid, setting=setting: native.native_transform(
++                grid, {"marker_selection": setting}
++            ))
++        for setting in native.SETTINGS
++    }
++    by_program.update({
++        text: (lambda grid, name=name: native.rival_transform(grid, name))
++        for name, text in native.plausible_programs().items()
++    })
++    by_program[native.wrong_intermediate_program()] = (
++        lambda grid: witness["counterfactual_output"]
++        if grid == witness["input"]
++        else (_ for _ in ()).throw(AssertionError("unexpected counterfactual grid"))
++    )
++
++    def apply(program, grid):
++        return by_program[program](grid)
++
++    summary = audit.run_audit(
++        tmp_path,
++        seeds=(0,),
++        demo_counts=(2, 6),
++        queries=4,
++        apply_program=apply,
++        runtime_identity={"backend": "test", "protected": False},
++    )
++
++    assert summary["status"] == "pass"
++    assert summary["jobs"] == 4
++    assert summary["failures"] == []
++    assert summary["thirty_by_thirty_queries"] == 4
++    assert summary["causal_witness"]["outputs_differ"] is True
++    assert (tmp_path / "summary.json").is_file()
++    case = json.loads((tmp_path / "audited-case.json").read_text())
++    assert case["settings"] == {"marker_selection": "nearest"}
++    assert case["output"] != case["counterfactual_output"]
++
++    public_files = sorted((tmp_path / "public").glob("*.json"))
++    assert len(public_files) == 2
++    for path in public_files:
++        payload = json.loads(path.read_text())
++        assert all("output" in pair for pair in payload["train"])
++        assert all(set(pair) == {"input"} for pair in payload["test"])
++        raw = path.read_text()
++        assert "program_solution" not in raw
++        assert "marker_selection" not in raw
+diff --git a/repo/generators/9971f3a5882c/tests/test_parametric_native_adapter.py b/repo/generators/9971f3a5882c/tests/test_parametric_native_adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/tests/test_parametric_native_adapter.py
+@@ -0,0 +1,196 @@
++"""Native promotion contract for the nearest/farthest marker family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from reviewer_support import canonical_path, find_root, public_challenge_bytes
++
++
++TASK_ID = "9971f3a5882c"
++ROOT = find_root(__file__)
++HERE = ROOT / "generators" / TASK_ID / "workspace" / "parametric"
++
++
++def _load(path: Path, prefix: str):
++    source = path.read_bytes()
++    name = prefix + hashlib.sha256(str(path).encode() + source).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec and spec.loader
++    module = importlib.util.module_from_spec(spec)
++    exec(compile(source, str(path), "exec"), module.__dict__)
++    return module
++
++
++@pytest.fixture(scope="module")
++def prototype():
++    return _load(HERE / "prototype.py", "_9971_native_prototype_")
++
++
++@pytest.fixture(scope="module")
++def adapter():
++    return _load(HERE / "adapter.py", "_9971_native_adapter_")
++
++
++def _canonical_program() -> str:
++    rows = []
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID and isinstance(row.get("program_solution"), str):
++                rows.append(row["program_solution"])
++    assert len(set(rows)) == 1
++    return rows[0]
++
++
++def _inputs(episode):
++    return [pair["input"] for split in ("train", "test") for pair in episode[split]]
++
++
++def test_promotion_contract_declares_native_limits_and_default():
++    contract = json.loads((HERE / "promotion.json").read_text())
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": f"generators/{TASK_ID}/workspace/parametric/adapter.py",
++        "parameters": {"marker_selection": ["nearest", "farthest"]},
++        "default": {"marker_selection": "nearest"},
++        "limits": {"demos": [2, 6], "queries": [1, 4]},
++        "resources": [f"generators/{TASK_ID}/workspace/parametric/nearest.rkt"],
++    }
++
++
++def test_default_program_is_exact_canonical_and_alternate_is_distinct(adapter):
++    nearest = adapter.program({"marker_selection": "nearest"})
++    farthest = adapter.program({"marker_selection": "farthest"})
++    assert nearest == _canonical_program()
++    assert nearest == (HERE / "nearest.rkt").read_text(encoding="utf-8")
++    assert farthest != nearest
++    assert hashlib.sha256(farthest.encode()).hexdigest() == hashlib.sha256(
++        adapter.program({"marker_selection": "farthest"}).encode()
++    ).hexdigest()
++
++
++@pytest.mark.parametrize("setting", ["nearest", "farthest"])
++def test_counts_are_independent_prefix_stable_and_deterministic(adapter, setting):
++    settings = {"marker_selection": setting}
++    short = adapter.generate(17, settings, 2, 1)
++    long = adapter.generate(17, settings, 6, 4)
++    replay = adapter.generate(17, settings, 6, 4)
++    assert long == replay
++    assert short["train"] == long["train"][:2]
++    assert short["test"] == long["test"][:1]
++    assert len(long["train"]) == 6
++    assert len(long["test"]) == 4
++    assert long["program_solution"] == adapter.program(settings)
++    assert len({json.dumps(grid, separators=(",", ":")) for grid in _inputs(long)}) == 10
++
++
++def test_same_seed_uses_matched_inputs_across_settings(adapter):
++    nearest = adapter.generate(91, {"marker_selection": "nearest"}, 3, 4)
++    farthest = adapter.generate(91, {"marker_selection": "farthest"}, 3, 4)
++    assert _inputs(nearest) == _inputs(farthest)
++    assert any(a["output"] != b["output"] for a, b in zip(nearest["train"], farthest["train"]))
++    assert any(a["output"] != b["output"] for a, b in zip(nearest["test"], farthest["test"]))
++
++
++@pytest.mark.parametrize("setting", ["nearest", "farthest"])
++@pytest.mark.parametrize("demos", [2, 3, 6])
++def test_visible_demonstrations_identify_setting_and_declared_shortcuts(
++    prototype, adapter, setting, demos
++):
++    episode = adapter.generate(0, {"marker_selection": setting}, demos, 4)
++    certificate = prototype.teaching_certificate(episode)
++    assert certificate["setting_survivors"] == [setting]
++    assert certificate["plausible_rival_survivors"] == []
++    assert certificate["demonstrations_checked"] == demos
++
++
++def test_four_queries_are_novel_and_include_substantive_30x30_stress(prototype, adapter):
++    episode = adapter.generate(123, {"marker_selection": "nearest"}, 3, 4)
++    queries = episode["test"]
++    assert len({json.dumps(pair["input"], separators=(",", ":")) for pair in queries}) == 4
++    stress = queries[-1]
++    assert (len(stress["input"]), len(stress["input"][0])) == (30, 30)
++    analysis = prototype.native_analysis(stress["input"])
++    assert analysis["bbox"][1] - analysis["bbox"][0] + 1 >= 14
++    assert analysis["bbox"][3] - analysis["bbox"][2] + 1 >= 16
++    assert len(analysis["full_rows"]) >= 5
++    assert len(analysis["full_cols"]) >= 5
++    changed = [
++        (r, c)
++        for r, row in enumerate(stress["output"])
++        for c, value in enumerate(row)
++        if value != stress["input"][r][c]
++    ]
++    assert len(changed) >= 100
++    assert max(r for r, _ in changed) - min(r for r, _ in changed) + 1 >= 20
++    assert max(c for _, c in changed) - min(c for _, c in changed) + 1 >= 20
++
++
++@pytest.mark.parametrize("setting", ["nearest", "farthest"])
++def test_claimed_labels_match_independent_python_transform(prototype, adapter, setting):
++    episode = adapter.generate(42, {"marker_selection": setting}, 3, 4)
++    for split in ("train", "test"):
++        for pair in episode[split]:
++            assert pair["output"] == prototype.native_transform(
++                pair["input"], {"marker_selection": setting}
++            )
++
++
++def test_public_projection_masks_all_query_answers_and_first_turn_is_invariant(adapter):
++    one = adapter.generate(17, {"marker_selection": "nearest"}, 3, 1)
++    four = adapter.generate(17, {"marker_selection": "nearest"}, 3, 4)
++    first_turn = {"train": four["train"], "test": [four["test"][0]]}
++    assert public_challenge_bytes(one) == public_challenge_bytes(first_turn)
++    visible = json.loads(public_challenge_bytes(four))
++    assert set(visible) == {"train", "test"}
++    assert all(set(pair) == {"input", "output"} for pair in visible["train"])
++    assert all(set(pair) == {"input"} for pair in visible["test"])
++    text = json.dumps(visible, sort_keys=True)
++    assert "marker_selection" not in text
++    assert "nearest" not in text and "farthest" not in text
++    assert "program_solution" not in text
++
++
++def test_dependency_witness_names_real_intermediate_and_changes_output(prototype):
++    witness = prototype.dependency_witness()
++    assert witness["settings"] == {"marker_selection": "nearest"}
++    assert witness["ablation"] == "wrong_intermediate"
++    assert witness["program"] == prototype.program(witness["settings"])
++    assert witness["counterfactual_program"] != witness["program"]
++    assert witness["output"] == prototype.native_transform(witness["input"], witness["settings"])
++    assert witness["counterfactual_output"] != witness["output"]
++    assert set(witness["intermediate_value"]) == {"bbox", "markers_by_side", "full_rows", "full_cols"}
++
++
++@pytest.mark.parametrize(
++    "settings,demos,queries,match",
++    [
++        ({"marker_selection": "middle"}, 3, 4, "marker_selection"),
++        ({"marker_selection": "nearest", "extra": 1}, 3, 4, "exactly"),
++        ({"marker_selection": "nearest"}, True, 4, "demos"),
++        ({"marker_selection": "nearest"}, 1, 4, "demos"),
++        ({"marker_selection": "nearest"}, 3, 5, "queries"),
++    ],
++)
++def test_adapter_rejects_invalid_typed_requests(adapter, settings, demos, queries, match):
++    with pytest.raises(ValueError, match=match):
++        adapter.generate(0, settings, demos, queries)
++
++
++def test_every_declared_plausible_rival_has_a_distinct_racket_program(prototype):
++    programs = prototype.plausible_programs()
++    assert set(programs) == {
++        "ignore_top_nearest",
++        "ignore_top_farthest",
++        "unit_expansion",
++        "boundaries_only_nearest",
++        "boundaries_only_farthest",
++        "identity",
++    }
++    assert len(set(programs.values())) == len(programs)
++    assert all(source.startswith("(rule!") for source in programs.values())
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/README.md b/repo/generators/9971f3a5882c/workspace/parametric/README.md
+--- a/repo/generators/9971f3a5882c/workspace/parametric/README.md
++++ b/repo/generators/9971f3a5882c/workspace/parametric/README.md
+@@ -1,108 +1,62 @@
+-# Nearest/farthest marker selection — prototype
++# Native nearest/farthest marker-selection family
+ 
+-This task-local extension is **proposed and unapproved**. It changes the executed
+-rule through one bounded parameter, `marker_selection`, whose values are
+-`nearest` and `farthest`. `nearest` is the canonical default. The selected
+-generator and its canonical Racket authority remain the production interface.
++This task-local family is **qualified but not owner-accepted**.  It exposes one
++episode-fixed parameter, `marker_selection`, with values `nearest` and
++`farthest`.  `nearest` is the exact canonical default; the selected production
++generator and canonical ledger are unchanged.  Owner acceptance and training
++admission remain pending.
+ 
+-Both settings detect the same sparse color-3 lattice, associate the same exterior
+-color-6 markers with its original bounding-box sides, move the source boundary
+-lines, keep internal rows and columns at their original coordinates, and restore
+-all markers. Only the extremum used to select a marker on an occupied side
+-changes. When only one marker occupies each side the two rules agree.
++Both settings first compute an input-dependent intermediate: the original sparse
++color-3 lattice bounding box, full rows/columns, and color-6 markers partitioned
++by the side on which they lie.  The second step consumes that partition to choose
++the nearest or farthest marker on each occupied side, derive new boundaries,
++move only source boundary lines, extend internal full lines, and restore all
++markers.  The second step cannot be chosen before the first has classified the
++markers.
+ 
+-`nearest.rkt` is the exact selected canonical program, checked byte for byte
+-against every canonical variant at startup and against the generator's normalized
+-rule hash. `farthest` is materialized by four asserted, single-occurrence extrema
+-substitutions. The included `RacketBridge` evaluates the exact lambda inside the
+-ARC `rule!` wrapper. A small independent Python mirror checks parity, but never
+-supplies saved episode labels. Every retained reference includes its exact UTF-8
+-text and SHA-256.
++## Native contract
+ 
+-## Run from the outer extraction directory
++- `adapter.py` exports `program(settings)` and
++  `generate(seed, settings, demos, queries)`.
++- `promotion.json` declares 2–6 demonstrations and 1–4 queries.
++- `nearest.rkt` is the canonical program byte-for-byte.
++- `native.py` constructs setting-independent inputs, deterministic prefix-stable
++  demo/query streams, four distinct queries, and substantive 30×30 stress.
++- Public challenge bytes contain demonstration inputs/outputs and query inputs
++  only.  Settings, programs, seeds, future turns, and query labels stay private.
++- `audit.py` replays labels and a finite shortcut inventory through protected
++  Racket and writes source-bound evidence.
+ 
+-The packet wrapper prepares `RACKET_PATH`, local imports, and the payload working
+-directory (`WORK/repo`). Use a new output directory for each evidence run:
++Run the reusable audit from the packet root:
+ 
+ ```bash
+-python3 review.py run python3 generators/9971f3a5882c/workspace/parametric/prototype.py evidence --seed 19073 --out ../checks/parametric/evidence
++python3 review.py run python3 \
++  generators/9971f3a5882c/workspace/parametric/audit.py \
++  --out generators/9971f3a5882c/workspace/parametric/evidence/current \
++  --seeds 0 17 --demos 2 3 6 --queries 4
+ ```
+ 
+-Tests require pytest; use the packet's isolated interpreter when available:
++Run native qualification:
+ 
+ ```bash
+-WORK/.venv-review/bin/python review.py run "$PWD/WORK/.venv-review/bin/python" -m pytest -q generators/9971f3a5882c/tests/test_parametric_extension.py
++python3 review.py run python3 -m arcpuzzles parametric qualify 9971f3a5882c \
++  --out ../checks/9971f3a5882c/qualification --summary
+ ```
+ 
+-Audit an existing **private** episode, replay its labels and source bindings, and
+-write a fresh receipt:
++## Current bounded evidence
+ 
+-```bash
+-python3 review.py run python3 generators/9971f3a5882c/workspace/parametric/prototype.py audit ../checks/parametric/evidence/private/episode-003.json --out ../checks/parametric/diagnostic-audit.json
+-```
++The protected-Racket self-audit covers both settings, seeds 0 and 17, demo counts
++2, 3, and 6, and four queries per job: 12 jobs, 53 distinct Racket executions
++after caching, 12 30×30 queries, and no survivor among the alternate setting or
++six declared shortcuts (`ignore_top_*`, unit expansion, boundary-only variants,
++and identity).  The native qualifier independently passed four setting/seed jobs
++with 32 protected-Racket executions.
+ 
+-The evidence command exits 0 when the declared positive and negative evidence was
+-materialized and verified. The audit command exits 1 for harmful ambiguity and
+-0 when no declared harmful ambiguity is found. Execution errors remain errors.
+-The intentionally ambiguous episode is expected to produce audit exit 1.
++The sequential-dependency witness corrupts the intermediate right bbox boundary
++before side classification.  That reclassifies an edge-aligned top marker as a
++right marker and changes 90 final cells.  The witness is bound to an exact
++qualified query and replayed through protected Racket.
+ 
+-## Deterministic episodes and identifiability
+-
+-The seed must be a nonnegative Python `int`; booleans and coercions are rejected.
+-Without an explicit setting, SHA-256 of
+-`9971f3a5882c:prototype-1:marker_selection:<seed>` selects one of the two values
+-using the first digest byte modulo two. The setting is chosen once before the
+-four input draws and governs every demonstration and query. Explicit settings
+-are useful for paired comparisons. Default solver/program calls use `nearest`.
+-
+-Every episode has three demonstrations and one query. The teaching layout puts
+-two distinct same-side markers in demonstrations and the query; each alternate
+-parameter must be refuted by an actual demonstration output before the episode
+-is returned. The sampler uses the selected generator's public `generate` API,
+-its keyed input draws and its unchanged structural input validator.
+-
+-The evidence bundle retains a complete teaching episode for each value using
+-the same input draws, a deliberately ambiguous diagnostic (single-marker demos,
+-double-marker query), and an answer-equivalent control (single-marker demos and
+-query). The last two are intentional audits, not natural solve failures.
+-`audit_episode` executes both exact Racket programs and reports:
+-
+-- `refuted_by_demonstrations` when a setting disagrees with any demonstration;
+-- `harmful_ambiguity` when it fits all demonstrations but changes a query label;
+-- `survived_all` when it matches both demonstrations and queries.
+-
+-An answer-equivalent surviving setting is not a harmful ambiguity. The existing
+-canonical generator lesson hook is not used to judge farthest episodes because
+-that hook intentionally treats farthest as a rival of the canonical rule.
+-
+-## Evidence boundaries
+-
+-`public/episode-NNN.json` contains only train input/output pairs and test inputs,
+-with neutral filenames. It contains no parameters, seed, source metadata, program,
+-or query answers. Only these files are model-facing challenges. `private/` and
+-`manifest.json` are controller/authoring material and must remain private.
+-
+-Private episodes bind the current generator, prototype, template, README, focused
+-tests, selected canonical rows, loaded generation helpers, bridge and Racket
+-prelude sources by hash. The private run report also records the Racket version,
+-executable hash and Python version. Verification checks those bindings,
+-the exact program text/hash, deterministic input replay, and fresh Racket labels.
+-The manifest hashes every saved file; it is integrity evidence, not a signature or
+-an approval. Episodes remain runnable from relocated library/runtime trees using
+-`reviewer_support.find_root` and `load_selected_generator`; tests obtain canonical
+-pairs through `reviewer_support.canonical_pairs`.
+-
+-The shared 9×9 lawful witness duplicates markers on all four sides. Its nearest
+-bbox is `(2,6,2,6)` and farthest bbox `(1,7,1,7)` in zero-based
+-`(row_min,row_max,column_min,column_max)` order. Four near markers lie on the
+-farthest boundary and must remain color 6. It is outside the named sampling
+-profiles but inside the selected structural grammar. Outputs, including punctured
+-boundaries, must not be validated with the input lattice validator.
+-
+-This is bounded evidence: two parameter values, one retained seed, medium
+-difficulty, and four explicitly constructed episodes. Generated named double
+-profiles duplicate lateral markers; the separate handmade witness covers top and
+-bottom extrema. The 64-seed check concerns parameter selection, not exhaustive
+-episode execution. Finite agreement against two rivals is not a proof of general
+-identifiability. No new production parameter API, training admission, catalog
+-kind, or approval is introduced.
++This evidence is finite.  It does not prove universal identifiability, owner
++acceptance, production API integration, measured training gain, or training
++admission.  `training_admitted` remains false.
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/adapter.py b/repo/generators/9971f3a5882c/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/workspace/parametric/adapter.py
+@@ -0,0 +1,28 @@
++"""Native promotion entrypoint for the nearest/farthest marker family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++
++
++def _native():
++    path = HERE / "native.py"
++    source = path.read_bytes()
++    name = "_9971_parametric_" + hashlib.sha256(str(path).encode() + source).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(f"cannot load task-local native family {path}")
++    module = importlib.util.module_from_spec(spec)
++    exec(compile(source, str(path), "exec"), module.__dict__)
++    return module
++
++
++def program(settings):
++    return _native().program(settings)
++
++
++def generate(seed, settings, demos, queries):
++    return _native().generate(seed, settings, demos, queries)
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/audit.py b/repo/generators/9971f3a5882c/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/workspace/parametric/audit.py
+@@ -0,0 +1,430 @@
++#!/usr/bin/env python3
++"""Replayable finite audit for the native nearest/farthest family.
++
++The default CLI uses the checkout's protected Racket bridge.  ``run_audit``
++also accepts an evaluator injection so the orchestration can be unit tested
++without replacing the live qualification gate.
++"""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import shutil
++from typing import Callable, Iterable
++
++from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++from reviewer_support import find_root, public_challenge_bytes, public_challenge_id
++
++
++HERE = Path(__file__).resolve().parent
++TASK_ID = "9971f3a5882c"
++
++
++def _load_native():
++    path = HERE / "native.py"
++    digest = hashlib.sha256(path.read_bytes()).hexdigest()
++    name = f"_audit_native_{digest}"
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _json(path: Path, value) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    temporary = path.with_suffix(path.suffix + ".tmp")
++    temporary.write_text(
++        json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
++        encoding="utf-8",
++    )
++    temporary.replace(path)
++
++
++def _digest(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def _input_key(program: str, grid: list[list[int]]) -> str:
++    body = json.dumps(grid, separators=(",", ":"), ensure_ascii=False)
++    return hashlib.sha256((program + "\0" + body).encode("utf-8")).hexdigest()
++
++
++def _same_inputs(left: dict, right: dict) -> bool:
++    return [pair["input"] for pair in left["train"]] == [
++        pair["input"] for pair in right["train"]
++    ] and [pair["input"] for pair in left["test"]] == [
++        pair["input"] for pair in right["test"]
++    ]
++
++
++def _public_payload(episode: dict) -> dict:
++    return {
++        "train": deepcopy(episode["train"]),
++        "test": [{"input": deepcopy(pair["input"])} for pair in episode["test"]],
++    }
++
++
++def _run(
++    output_dir: Path,
++    *,
++    seeds: tuple[int, ...],
++    demo_counts: tuple[int, ...],
++    queries: int,
++    apply_program: Callable[[str, list[list[int]]], list[list[int]]],
++    runtime_identity: dict,
++) -> dict:
++    native = _load_native()
++    output_dir.mkdir(parents=True, exist_ok=True)
++    public_dir = output_dir / "public"
++    if public_dir.exists():
++        shutil.rmtree(public_dir)
++    public_dir.mkdir(parents=True)
++
++    cache: dict[str, list[list[int]]] = {}
++    cache_hits = 0
++    failures: list[str] = []
++    job_records: list[dict] = []
++    thirty_by_thirty = 0
++
++    def require(condition: bool, message: str) -> None:
++        if not condition:
++            failures.append(message)
++
++    def execute(program: str, grid: list[list[int]]) -> list[list[int]]:
++        nonlocal cache_hits
++        key = _input_key(program, grid)
++        if key in cache:
++            cache_hits += 1
++            return deepcopy(cache[key])
++        result = _grid(apply_program(program, deepcopy(grid)))
++        cache[key] = deepcopy(result)
++        return result
++
++    declared = {
++        setting: native.program({"marker_selection": setting})
++        for setting in native.SETTINGS
++    }
++    rivals = native.plausible_programs()
++    require(set(rivals) == set(native.PLAUSIBLE_RIVALS), "Racket rival inventory drifted")
++    require(len(set(declared.values())) == len(declared), "declared programs are not distinct")
++    require(len(set(rivals.values())) == len(rivals), "plausible rival programs are not distinct")
++    require(
++        not (set(declared.values()) & set(rivals.values())),
++        "a plausible rival duplicates a declared program",
++    )
++
++    episodes: dict[tuple[int, int, str], dict] = {}
++    for seed in seeds:
++        for demos in demo_counts:
++            for setting in native.SETTINGS:
++                settings = {"marker_selection": setting}
++                episode = native.generate(seed, settings, demos, queries)
++                episodes[(seed, demos, setting)] = episode
++
++                selected_program = declared[setting]
++                claimed_pairs = episode["train"] + episode["test"]
++                wrong_claims = sum(
++                    execute(selected_program, pair["input"]) != pair["output"]
++                    for pair in claimed_pairs
++                )
++                require(
++                    wrong_claims == 0,
++                    f"seed={seed} demos={demos} setting={setting}: "
++                    f"{wrong_claims} claimed labels disagree with Racket",
++                )
++
++                setting_survivors = [
++                    candidate
++                    for candidate, candidate_program in declared.items()
++                    if all(
++                        execute(candidate_program, pair["input"]) == pair["output"]
++                        for pair in episode["train"]
++                    )
++                ]
++                rival_survivors = [
++                    name
++                    for name, candidate_program in rivals.items()
++                    if all(
++                        execute(candidate_program, pair["input"]) == pair["output"]
++                        for pair in episode["train"]
++                    )
++                ]
++                require(
++                    setting_survivors == [setting],
++                    f"seed={seed} demos={demos} setting={setting}: "
++                    f"declared survivors={setting_survivors}",
++                )
++                require(
++                    not rival_survivors,
++                    f"seed={seed} demos={demos} setting={setting}: "
++                    f"plausible survivors={rival_survivors}",
++                )
++
++                query_inputs = [
++                    json.dumps(pair["input"], separators=(",", ":"))
++                    for pair in episode["test"]
++                ]
++                require(
++                    len(query_inputs) == len(set(query_inputs)),
++                    f"seed={seed} demos={demos} setting={setting}: duplicate queries",
++                )
++                thirty_by_thirty += sum(
++                    len(pair["input"]) == 30 and len(pair["input"][0]) == 30
++                    for pair in episode["test"]
++                )
++
++                one = native.generate(seed, settings, demos, 1)
++                require(
++                    one["train"] == episode["train"]
++                    and one["test"][0] == episode["test"][0],
++                    f"seed={seed} demos={demos} setting={setting}: query prefix drift",
++                )
++                require(
++                    native.visible_turn(one, 0) == native.visible_turn(episode, 0),
++                    f"seed={seed} demos={demos} setting={setting}: first public turn drift",
++                )
++                visible = json.loads(native.visible_turn(episode, 0))
++                require(
++                    all(set(pair) == {"input"} for pair in visible["test"]),
++                    f"seed={seed} demos={demos} setting={setting}: public query leaked output",
++                )
++
++                job_records.append(
++                    {
++                        "seed": seed,
++                        "demos": demos,
++                        "queries": queries,
++                        "settings": settings,
++                        "declared_survivors": setting_survivors,
++                        "plausible_rival_survivors": rival_survivors,
++                        "claimed_pairs_executed": len(claimed_pairs),
++                        "query_shapes": [
++                            [len(pair["input"]), len(pair["input"][0])]
++                            for pair in episode["test"]
++                        ],
++                    }
++                )
++
++            nearest = episodes[(seed, demos, "nearest")]
++            farthest = episodes[(seed, demos, "farthest")]
++            require(
++                _same_inputs(nearest, farthest),
++                f"seed={seed} demos={demos}: inputs depend on private setting",
++            )
++            require(
++                all(
++                    left["output"] != right["output"]
++                    for split in ("train", "test")
++                    for left, right in zip(nearest[split], farthest[split])
++                ),
++                f"seed={seed} demos={demos}: a pair does not distinguish settings",
++            )
++
++        for setting in native.SETTINGS:
++            small = native.generate(seed, {"marker_selection": setting}, 2, 1)
++            large = native.generate(seed, {"marker_selection": setting}, 6, queries)
++            require(
++                small["train"] == large["train"][:2]
++                and small["test"] == large["test"][:1],
++                f"seed={seed} setting={setting}: demo/query streams are not prefix stable",
++            )
++
++    public_records = []
++    public_seed = seeds[0]
++    public_demos = demo_counts[0]
++    for setting in native.SETTINGS:
++        episode = episodes[(public_seed, public_demos, setting)]
++        challenge = _public_payload(episode)
++        raw = public_challenge_bytes(challenge)
++        challenge_id = public_challenge_id(challenge)
++        path = public_dir / f"{challenge_id}.json"
++        path.write_bytes(raw)
++        parsed = json.loads(raw)
++        require(
++            all(set(pair) == {"input"} for pair in parsed["test"]),
++            f"public file {path.name} leaked query labels",
++        )
++        require(
++            b"program_solution" not in raw and b"marker_selection" not in raw,
++            f"public file {path.name} leaked private metadata",
++        )
++        public_records.append(
++            {
++                "setting_used_privately": setting,
++                "challenge_id": challenge_id,
++                "path": f"public/{path.name}",
++                "sha256": hashlib.sha256(raw).hexdigest(),
++            }
++        )
++
++    witness = native.dependency_witness()
++    correct_actual = execute(witness["program"], witness["input"])
++    counterfactual_actual = execute(witness["counterfactual_program"], witness["input"])
++    require(correct_actual == witness["output"], "causal witness correct program label mismatch")
++    require(
++        counterfactual_actual == witness["counterfactual_output"],
++        "causal witness Python counterfactual disagrees with Racket",
++    )
++    require(
++        correct_actual != counterfactual_actual,
++        "causal witness ablation did not change final output",
++    )
++    audited_case = deepcopy(witness)
++    audited_case["output"] = correct_actual
++    audited_case["counterfactual_output"] = counterfactual_actual
++    audited_case["step_a"] = (
++        "Compute the original color-3 lattice bbox/full lines, then classify every "
++        "color-6 marker by side relative to that input-dependent bbox."
++    )
++    audited_case["step_b"] = (
++        "Choose the nearest/farthest marker within each classified side, derive "
++        "new boundaries, move source boundary lines, extend internal lines, and restore markers."
++    )
++    _json(output_dir / "audited-case.json", audited_case)
++    _json(output_dir / "jobs.json", job_records)
++
++    source_paths = {
++        name: HERE / filename
++        for name, filename in {
++            "adapter": "adapter.py",
++            "audit": "audit.py",
++            "native": "native.py",
++            "nearest_program": "nearest.rkt",
++            "promotion": "promotion.json",
++        }.items()
++    }
++    source_hashes = {name: _digest(path) for name, path in source_paths.items()}
++    runtime_is_live = runtime_identity.get("backend") == "racket"
++    if runtime_is_live:
++        require(
++            runtime_identity.get("protected") is True,
++            "live audit did not use a protected Racket backend",
++        )
++
++    summary = {
++        "schema": "arcpuzzles-parametric-self-audit-v1",
++        "task_id": TASK_ID,
++        "status": "pass" if not failures else "fail",
++        "seeds": list(seeds),
++        "demo_counts": list(demo_counts),
++        "queries": queries,
++        "settings": list(native.SETTINGS),
++        "jobs": len(job_records),
++        "declared_programs": {
++            setting: hashlib.sha256(text.encode("utf-8")).hexdigest()
++            for setting, text in declared.items()
++        },
++        "plausible_programs": {
++            name: hashlib.sha256(text.encode("utf-8")).hexdigest()
++            for name, text in rivals.items()
++        },
++        "racket_evaluations": len(cache),
++        "evaluation_cache_hits": cache_hits,
++        "thirty_by_thirty_queries": thirty_by_thirty,
++        "public_challenges": public_records,
++        "causal_witness": {
++            "ablation": witness["ablation"],
++            "outputs_differ": correct_actual != counterfactual_actual,
++            "changed_cells": sum(
++                before != after
++                for before_row, after_row in zip(correct_actual, counterfactual_actual)
++                for before, after in zip(before_row, after_row)
++            ),
++            "case_path": "audited-case.json",
++        },
++        "runtime_identity": runtime_identity,
++        "source_hashes": source_hashes,
++        "failures": failures,
++    }
++    _json(output_dir / "summary.json", summary)
++    if failures:
++        raise RuntimeError("self-audit failed: " + "; ".join(failures))
++    return summary
++
++
++def run_audit(
++    output_dir: str | Path,
++    *,
++    seeds: Iterable[int] = (0, 17),
++    demo_counts: Iterable[int] = (2, 3, 6),
++    queries: int = 4,
++    apply_program: Callable[[str, list[list[int]]], list[list[int]]] | None = None,
++    runtime_identity: dict | None = None,
++) -> dict:
++    """Run the finite audit, using protected Racket unless an evaluator is injected."""
++    seeds = tuple(seeds)
++    demo_counts = tuple(demo_counts)
++    if not seeds or any(type(seed) is not int or not 0 <= seed <= 2**63 - 1 for seed in seeds):
++        raise ValueError("seeds must be nonempty exact integers in 0..2**63-1")
++    if not demo_counts or any(type(count) is not int or not 2 <= count <= 6 for count in demo_counts):
++        raise ValueError("demo_counts must be nonempty exact integers in 2..6")
++    if type(queries) is not int or not 1 <= queries <= 4:
++        raise ValueError("queries must be an exact integer in 1..4")
++    output = Path(output_dir).resolve()
++
++    if apply_program is not None:
++        if runtime_identity is None:
++            runtime_identity = {"backend": "injected", "protected": False}
++        return _run(
++            output,
++            seeds=seeds,
++            demo_counts=demo_counts,
++            queries=queries,
++            apply_program=apply_program,
++            runtime_identity=deepcopy(runtime_identity),
++        )
++
++    root = find_root(__file__)
++    runtime = root / "shared" / "runtime"
++    with _local_imports(runtime, HERE):
++        evaluator, identity, bridge = _real_evaluator(runtime)
++        try:
++            return _run(
++                output,
++                seeds=seeds,
++                demo_counts=demo_counts,
++                queries=queries,
++                apply_program=evaluator,
++                runtime_identity=identity,
++            )
++        finally:
++            bridge.close()
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", required=True, help="evidence output directory")
++    parser.add_argument("--seeds", type=int, nargs="+", default=[0, 17])
++    parser.add_argument("--demos", type=int, nargs="+", default=[2, 3, 6])
++    parser.add_argument("--queries", type=int, default=4)
++    args = parser.parse_args(argv)
++    summary = run_audit(
++        args.out,
++        seeds=args.seeds,
++        demo_counts=args.demos,
++        queries=args.queries,
++    )
++    print(
++        json.dumps(
++            {
++                "status": summary["status"],
++                "jobs": summary["jobs"],
++                "racket_evaluations": summary["racket_evaluations"],
++                "thirty_by_thirty_queries": summary["thirty_by_thirty_queries"],
++                "changed_cells": summary["causal_witness"]["changed_cells"],
++                "output": str(Path(args.out).resolve()),
++            },
++            sort_keys=True,
++        )
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/audited-case.json b/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/audited-case.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/audited-case.json
+@@ -0,0 +1,1750 @@
++{
++  "ablation": "wrong_intermediate",
++  "counterfactual_output": [
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      6,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ]
++  ],
++  "counterfactual_program": "(rule! (lambda (g)\n         (let* ((h (rows g))\n                (w (cols g)))\n           (let* ((cells (find-color g 3))\n                  (marks (find-color g 6))\n                  (r0 (min-of fst cells))\n                  (r1 (max-of fst cells))\n                  (c0 (min-of snd cells))\n                  (c1 (- (max-of snd cells) 1))\n                  (above (filter (lambda (p)\n                                   (and (< (fst p) r0) (>= (snd p) c0) (<= (snd p) c1)))\n                                 marks))\n                  (below (filter (lambda (p)\n                                   (and (> (fst p) r1) (>= (snd p) c0) (<= (snd p) c1)))\n                                 marks))\n                  (lefts (filter (lambda (p) (< (snd p) c0)) marks))\n                  (rights (filter (lambda (p) (> (snd p) c1)) marks))\n                  (nr0 (if (empty? above) r0 (+ 1 (max-of fst above))))\n                  (nr1 (if (empty? below) r1 (- (min-of fst below) 1)))\n                  (nc0 (if (empty? lefts) c0 (+ 1 (max-of snd lefts))))\n                  (nc1 (if (empty? rights) c1 (- (min-of snd rights) 1)))\n                  (full-rows (filter (lambda (r)\n                                       (all? (lambda (c) (= (at g r c) 3))\n                                             (range c0 (+ c1 1))))\n                                     (range r0 (+ r1 1))))\n                  (full-cols (filter (lambda (c)\n                                       (all? (lambda (r) (= (at g r c) 3))\n                                             (range r0 (+ r1 1))))\n                                     (range c0 (+ c1 1))))\n                  (base (cellmap g (r c v) (if (= v 6) 6 0))))\n             (define (map-r r) (cond ((= r r0) nr0) ((= r r1) nr1) (else r)))\n             (define (map-c c) (cond ((= c c0) nc0) ((= c c1) nc1) (else c)))\n             (define (paint-h acc r)\n               (reduce (lambda (a c) (set-cell a r c 3)) acc (range nc0 (+ nc1 1))))\n             (define (paint-v acc c)\n               (reduce (lambda (a r) (set-cell a r c 3)) acc (range nr0 (+ nr1 1))))\n             (recolor-cells (reduce (lambda (acc c) (paint-v acc (map-c c)))\n                                    (reduce (lambda (acc r) (paint-h acc (map-r r)))\n                                            base\n                                            full-rows)\n                                    full-cols)\n                            marks\n                            6)))))",
++  "input": [
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ]
++  ],
++  "intermediate_value": {
++    "bbox": [
++      6,
++      13,
++      7,
++      18
++    ],
++    "full_cols": [
++      7,
++      10,
++      14,
++      18
++    ],
++    "full_rows": [
++      6,
++      8,
++      11,
++      13
++    ],
++    "markers_by_side": {
++      "bottom": [
++        [
++          15,
++          18
++        ],
++        [
++          19,
++          7
++        ]
++      ],
++      "left": [
++        [
++          10,
++          3
++        ]
++      ],
++      "right": [
++        [
++          6,
++          22
++        ]
++      ],
++      "top": [
++        [
++          0,
++          13
++        ],
++        [
++          4,
++          18
++        ]
++      ]
++    }
++  },
++  "output": [
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      6,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      6,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      3,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ]
++  ],
++  "program": "(rule! (lambda (g)\n         (let* ((h (rows g))\n                (w (cols g)))\n           (let* ((cells (find-color g 3))\n                  (marks (find-color g 6))\n                  (r0 (min-of fst cells))\n                  (r1 (max-of fst cells))\n                  (c0 (min-of snd cells))\n                  (c1 (max-of snd cells))\n                  (above (filter (lambda (p)\n                                   (and (< (fst p) r0) (>= (snd p) c0) (<= (snd p) c1)))\n                                 marks))\n                  (below (filter (lambda (p)\n                                   (and (> (fst p) r1) (>= (snd p) c0) (<= (snd p) c1)))\n                                 marks))\n                  (lefts (filter (lambda (p) (< (snd p) c0)) marks))\n                  (rights (filter (lambda (p) (> (snd p) c1)) marks))\n                  (nr0 (if (empty? above) r0 (+ 1 (max-of fst above))))\n                  (nr1 (if (empty? below) r1 (- (min-of fst below) 1)))\n                  (nc0 (if (empty? lefts) c0 (+ 1 (max-of snd lefts))))\n                  (nc1 (if (empty? rights) c1 (- (min-of snd rights) 1)))\n                  (full-rows (filter (lambda (r)\n                                       (all? (lambda (c) (= (at g r c) 3))\n                                             (range c0 (+ c1 1))))\n                                     (range r0 (+ r1 1))))\n                  (full-cols (filter (lambda (c)\n                                       (all? (lambda (r) (= (at g r c) 3))\n                                             (range r0 (+ r1 1))))\n                                     (range c0 (+ c1 1))))\n                  (base (cellmap g (r c v) (if (= v 6) 6 0))))\n             (define (map-r r) (cond ((= r r0) nr0) ((= r r1) nr1) (else r)))\n             (define (map-c c) (cond ((= c c0) nc0) ((= c c1) nc1) (else c)))\n             (define (paint-h acc r)\n               (reduce (lambda (a c) (set-cell a r c 3)) acc (range nc0 (+ nc1 1))))\n             (define (paint-v acc c)\n               (reduce (lambda (a r) (set-cell a r c 3)) acc (range nr0 (+ nr1 1))))\n             (recolor-cells (reduce (lambda (acc c) (paint-v acc (map-c c)))\n                                    (reduce (lambda (acc r) (paint-h acc (map-r r)))\n                                            base\n                                            full-rows)\n                                    full-cols)\n                            marks\n                            6)))))",
++  "settings": {
++    "marker_selection": "nearest"
++  },
++  "step_a": "Compute the original color-3 lattice bbox/full lines, then classify every color-6 marker by side relative to that input-dependent bbox.",
++  "step_b": "Choose the nearest/farthest marker within each classified side, derive new boundaries, move source boundary lines, extend internal lines, and restore markers."
++}
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/jobs.json b/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/jobs.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/jobs.json
+@@ -0,0 +1,374 @@
++[
++  {
++    "claimed_pairs_executed": 6,
++    "declared_survivors": [
++      "nearest"
++    ],
++    "demos": 2,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 0,
++    "settings": {
++      "marker_selection": "nearest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 6,
++    "declared_survivors": [
++      "farthest"
++    ],
++    "demos": 2,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 0,
++    "settings": {
++      "marker_selection": "farthest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 7,
++    "declared_survivors": [
++      "nearest"
++    ],
++    "demos": 3,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 0,
++    "settings": {
++      "marker_selection": "nearest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 7,
++    "declared_survivors": [
++      "farthest"
++    ],
++    "demos": 3,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 0,
++    "settings": {
++      "marker_selection": "farthest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 10,
++    "declared_survivors": [
++      "nearest"
++    ],
++    "demos": 6,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 0,
++    "settings": {
++      "marker_selection": "nearest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 10,
++    "declared_survivors": [
++      "farthest"
++    ],
++    "demos": 6,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 0,
++    "settings": {
++      "marker_selection": "farthest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 6,
++    "declared_survivors": [
++      "nearest"
++    ],
++    "demos": 2,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 17,
++    "settings": {
++      "marker_selection": "nearest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 6,
++    "declared_survivors": [
++      "farthest"
++    ],
++    "demos": 2,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 17,
++    "settings": {
++      "marker_selection": "farthest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 7,
++    "declared_survivors": [
++      "nearest"
++    ],
++    "demos": 3,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 17,
++    "settings": {
++      "marker_selection": "nearest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 7,
++    "declared_survivors": [
++      "farthest"
++    ],
++    "demos": 3,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 17,
++    "settings": {
++      "marker_selection": "farthest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 10,
++    "declared_survivors": [
++      "nearest"
++    ],
++    "demos": 6,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 17,
++    "settings": {
++      "marker_selection": "nearest"
++    }
++  },
++  {
++    "claimed_pairs_executed": 10,
++    "declared_survivors": [
++      "farthest"
++    ],
++    "demos": 6,
++    "plausible_rival_survivors": [],
++    "queries": 4,
++    "query_shapes": [
++      [
++        20,
++        26
++      ],
++      [
++        26,
++        20
++      ],
++      [
++        28,
++        29
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "seed": 17,
++    "settings": {
++      "marker_selection": "farthest"
++    }
++  }
++]
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/public/4c1ee5d2e8e182343caffc1134f08a9d8c155fff87a701e41d4434f52fbfb4e6.json b/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/public/4c1ee5d2e8e182343caffc1134f08a9d8c155fff87a701e41d4434f52fbfb4e6.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/public/4c1ee5d2e8e182343caffc1134f08a9d8c155fff87a701e41d4434f52fbfb4e6.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,6,0,0,0],[0,0,0,0,0,0,0,3,0,0,3,0,0,0,3,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,3,0,0,0,3,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,6,0,0,0,3,0,0,3,0,0,0,3,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,3,0,0,0,3,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,3,3,3,3,3,3,3,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,6],[0,0,0,0,0,0,3,3,3,3,3,3,3,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,3,3,3,3,3,3,3,0,0,0,0,0,0],[6,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,6,0,0,3,3,3,3,3,3,3,3,0,0,6,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,6],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,6,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,6,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,6],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,6,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,6,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}],"train":[{"input":[[0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,3,3,3,3,3,3,3,0,0,0,0,6,0,0],[0,0,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,6,0,0,3,3,3,3,3,3,3,0,0,6,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0],[0,0,0,3,0,0,0,0,3,0,0,6,0,0,0,3,0,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,0,0,3,0,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,0,0,3,0,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,0,0,3,6,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,0,0,3,0,0,0],[0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,0,0,3,0,0,0],[0,0,6,3,0,0,0,0,3,0,0,0,0,0,6,3,0,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,0,0,3,0,0,0],[0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0],[0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,3,3,3,3,3,0,0,0,0,0],[6,0,0,0,0,3,0,3,0,3,0,0,0,0,0],[0,0,0,0,0,3,3,3,3,3,0,0,0,0,0],[0,0,0,0,0,3,0,3,0,3,0,0,0,0,0],[0,0,0,0,0,3,3,3,3,3,0,0,0,0,0],[0,0,0,0,0,3,0,3,0,3,0,0,0,0,0],[0,0,0,6,0,3,3,3,3,3,0,0,6,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,6,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,0,0,0,0,0,0],[0,3,3,3,3,3,3,3,3,3,3,3,0,0,0],[0,3,0,0,0,0,0,3,0,0,0,3,0,0,0],[0,3,0,0,0,0,0,3,0,0,0,3,0,0,0],[6,3,0,0,0,0,0,3,0,0,0,3,0,0,0],[0,3,3,3,3,3,3,3,3,3,3,3,0,0,0],[0,3,0,0,0,0,0,3,0,0,0,3,0,0,0],[0,3,3,3,3,3,3,3,3,3,3,3,0,0,0],[0,3,0,0,0,0,0,3,0,0,0,3,0,0,0],[0,3,0,6,0,0,0,3,0,0,0,3,6,0,0],[0,3,0,0,0,0,0,3,0,0,0,3,0,0,0],[0,3,0,0,0,0,0,3,0,6,0,3,0,0,0],[0,3,0,0,0,0,0,3,0,0,0,3,0,0,0],[0,3,3,3,3,3,3,3,3,3,3,3,0,0,0],[0,0,0,0,0,0,0,0,6,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}]}
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/public/7098346b6571eb7b353659cbfd8ebfa9e4add153ac9a6a71dab9ee8bafbe07d6.json b/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/public/7098346b6571eb7b353659cbfd8ebfa9e4add153ac9a6a71dab9ee8bafbe07d6.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/public/7098346b6571eb7b353659cbfd8ebfa9e4add153ac9a6a71dab9ee8bafbe07d6.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,6,0,0,0],[0,0,0,0,0,0,0,3,0,0,3,0,0,0,3,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,3,0,0,0,3,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,6,0,0,0,3,0,0,3,0,0,0,3,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,3,0,0,0,3,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,3,3,3,3,3,3,3,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,6],[0,0,0,0,0,0,3,3,3,3,3,3,3,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,3,3,3,3,3,3,3,0,0,0,0,0,0],[6,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,0,0,0,3,0,3,0,0,3,0,3,0,0,0,0,0,0],[0,0,0,6,0,0,3,3,3,3,3,3,3,3,0,0,6,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,6],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,6,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,6,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,6],[0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[6,0,0,0,0,0,0,3,0,0,0,3,0,0,0,3,0,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,6,0,0,0,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,6,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}],"train":[{"input":[[0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,3,3,3,3,3,3,3,0,0,0,0,6,0,0],[0,0,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,3,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,3,0,0,3,0,0,3,0,0,0,0,0,0,0],[0,0,6,0,0,3,3,3,3,3,3,3,0,0,6,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,6,0,0,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,3,0,0,0,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,3,0,0,6,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,3,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,3,0,0,0,0,0],[0,0,6,3,0,0,0,0,3,0,0,0,0,3,6,0,0,0,0],[0,0,0,3,0,0,0,0,3,0,0,0,0,3,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0],[0,0,0,0,0,6,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,3,3,3,3,3,0,0,0,0,0],[6,0,0,0,0,3,0,3,0,3,0,0,0,0,0],[0,0,0,0,0,3,3,3,3,3,0,0,0,0,0],[0,0,0,0,0,3,0,3,0,3,0,0,0,0,0],[0,0,0,0,0,3,3,3,3,3,0,0,0,0,0],[0,0,0,0,0,3,0,3,0,3,0,0,0,0,0],[0,0,0,6,0,3,3,3,3,3,0,0,6,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,6,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,0,0,0,0,0,0],[0,0,0,0,3,3,3,3,3,3,3,3,0,0,0],[0,0,0,0,3,0,0,3,0,0,0,3,0,0,0],[0,0,0,0,3,0,0,3,0,0,0,3,0,0,0],[6,0,0,0,3,0,0,3,0,0,0,3,0,0,0],[0,0,0,0,3,3,3,3,3,3,3,3,0,0,0],[0,0,0,0,3,0,0,3,0,0,0,3,0,0,0],[0,0,0,0,3,3,3,3,3,3,3,3,0,0,0],[0,0,0,0,3,0,0,3,0,0,0,3,0,0,0],[0,0,0,6,3,0,0,3,0,0,0,3,6,0,0],[0,0,0,0,3,3,3,3,3,3,3,3,0,0,0],[0,0,0,0,0,0,0,0,0,6,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,6,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}]}
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/summary.json b/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/summary.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/workspace/parametric/evidence/current/summary.json
+@@ -0,0 +1,73 @@
++{
++  "causal_witness": {
++    "ablation": "wrong_intermediate",
++    "case_path": "audited-case.json",
++    "changed_cells": 90,
++    "outputs_differ": true
++  },
++  "declared_programs": {
++    "farthest": "343fdaec34513f164d4031c9eba05a9f515965255ae4910c856ac25e7dd4ece1",
++    "nearest": "b1b4ad49109b21cae627cbc9c0a39b3695abe47fa0ab44a4b4dc3c89b5028527"
++  },
++  "demo_counts": [
++    2,
++    3,
++    6
++  ],
++  "evaluation_cache_hits": 169,
++  "failures": [],
++  "jobs": 12,
++  "plausible_programs": {
++    "boundaries_only_farthest": "e7b3e94c26ffb81ceacadfea7b78fa87b6cbb76e1ef8e064ac909bdfc1e2ec69",
++    "boundaries_only_nearest": "fa000a52b6a5d004db857784fb75b01829e05e4d0c757eb8495cbdf485f4f75f",
++    "identity": "5321b18d8d6a5f3e4e9ee2ea0244bc1b6d8cf87398d7687f31d10044ee728a94",
++    "ignore_top_farthest": "924998dca2d625b5a879aa2bb96528b8e225a3a6393422b5cf7f90570de57dd7",
++    "ignore_top_nearest": "28cc8d7620ab3b121f1ec9f2d963ef33f33668106aecc62aaeaef391e6d2fe3c",
++    "unit_expansion": "069a6396e06a95aab18679d68742da9120b648fa29dfdf6d0b73d73674c8d369"
++  },
++  "public_challenges": [
++    {
++      "challenge_id": "7098346b6571eb7b353659cbfd8ebfa9e4add153ac9a6a71dab9ee8bafbe07d6",
++      "path": "public/7098346b6571eb7b353659cbfd8ebfa9e4add153ac9a6a71dab9ee8bafbe07d6.json",
++      "setting_used_privately": "nearest",
++      "sha256": "7098346b6571eb7b353659cbfd8ebfa9e4add153ac9a6a71dab9ee8bafbe07d6"
++    },
++    {
++      "challenge_id": "4c1ee5d2e8e182343caffc1134f08a9d8c155fff87a701e41d4434f52fbfb4e6",
++      "path": "public/4c1ee5d2e8e182343caffc1134f08a9d8c155fff87a701e41d4434f52fbfb4e6.json",
++      "setting_used_privately": "farthest",
++      "sha256": "4c1ee5d2e8e182343caffc1134f08a9d8c155fff87a701e41d4434f52fbfb4e6"
++    }
++  ],
++  "queries": 4,
++  "racket_evaluations": 53,
++  "runtime_identity": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "schema": "arcpuzzles-parametric-self-audit-v1",
++  "seeds": [
++    0,
++    17
++  ],
++  "settings": [
++    "nearest",
++    "farthest"
++  ],
++  "source_hashes": {
++    "adapter": "c687b837cf596682781753bb592b7418e7653834c8cf2d3c36af7e2650e537a5",
++    "audit": "e193899801f5674749ddd15fa6bb0aef0fddda3d9738abcafd608d88cfa387f9",
++    "native": "afe84e9fc16414f179d04f702386c3b46eff14848b8d26c9a35cdda1b5357383",
++    "nearest_program": "b1b4ad49109b21cae627cbc9c0a39b3695abe47fa0ab44a4b4dc3c89b5028527",
++    "promotion": "677d1650f85533dcf0e9955b8125fcc900b764977f63007efc7eada1fc4accab"
++  },
++  "status": "pass",
++  "task_id": "9971f3a5882c",
++  "thirty_by_thirty_queries": 12
++}
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/evidence/manifest.json b/repo/generators/9971f3a5882c/workspace/parametric/evidence/manifest.json
+--- a/repo/generators/9971f3a5882c/workspace/parametric/evidence/manifest.json
++++ b/repo/generators/9971f3a5882c/workspace/parametric/evidence/manifest.json
+@@ -1,182 +1,94 @@
+ {
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "b1b4ad49109b21cae627cbc9c0a39b3695abe47fa0ab44a4b4dc3c89b5028527",
+   "canonical_rule_hash": "f753f2c684d9",
++  "default": {
++    "marker_selection": "nearest"
++  },
++  "evidence_root": "generators/9971f3a5882c/workspace/parametric/evidence/current",
+   "files": [
+     {
+-      "bytes": 1515,
+-      "original_member": "checks/parametric/commands.jsonl",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/commands.jsonl",
+-      "sha256": "12ddd173bff133d610b5a5326e37b9ed8ccce714087fa8decfcb3c99eb80a953"
++      "bytes": 25747,
++      "path": "generators/9971f3a5882c/generator.py",
++      "sha256": "ac6f4a04bb8a7947d942a3eb5232eafd065956f1d1226a3190e727f75ac84e14"
+     },
+     {
+-      "bytes": 13355,
+-      "original_member": "checks/parametric/diagnostic-audit.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/diagnostic-audit.json",
+-      "sha256": "3bc49c88d9fa6ca329c0fb5133e242b7ee7759b4413a0288e38494364314d041"
++      "bytes": 2477,
++      "path": "generators/9971f3a5882c/tests/test_parametric_audit.py",
++      "sha256": "8747ba8f767fda887c154152ea8bd00ca94eb2b7c0e83e557b2963960d59f4a2"
+     },
+     {
+-      "bytes": 222,
+-      "original_member": "checks/parametric/diagnostic-audit.log",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/diagnostic-audit.log",
+-      "sha256": "3760f73cc687b78f2ad917f8407c6bbb73542c4d29356f10d32ad86f8be33484"
++      "bytes": 8197,
++      "path": "generators/9971f3a5882c/tests/test_parametric_native_adapter.py",
++      "sha256": "e41d3e791b994f34982f522a89fb39f35c857476ebc55a9b8cd400a26db9f325"
+     },
+     {
+-      "bytes": 13338,
+-      "original_member": "checks/parametric/equivalent-audit.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/equivalent-audit.json",
+-      "sha256": "f0213447f81a347c94a5efe26087c5345d9dc985d8f26a90234292a87d88ff60"
++      "bytes": 864,
++      "path": "generators/9971f3a5882c/workspace/parametric/adapter.py",
++      "sha256": "c687b837cf596682781753bb592b7418e7653834c8cf2d3c36af7e2650e537a5"
+     },
+     {
+-      "bytes": 231,
+-      "original_member": "checks/parametric/equivalent-audit.log",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/equivalent-audit.log",
+-      "sha256": "08c5288a201151b467ef83dd8ba19e8ffaaca10cb182f0440e876a7e69629cf5"
++      "bytes": 16361,
++      "path": "generators/9971f3a5882c/workspace/parametric/audit.py",
++      "sha256": "e193899801f5674749ddd15fa6bb0aef0fddda3d9738abcafd608d88cfa387f9"
+     },
+     {
+-      "bytes": 2420,
+-      "original_member": "checks/parametric/evidence-command.log",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence-command.log",
+-      "sha256": "a51b7755feab64b09196cd532bd02320812058810d0c7e01da6d1914328040e6"
++      "bytes": 20923,
++      "path": "generators/9971f3a5882c/workspace/parametric/evidence/current/audited-case.json",
++      "sha256": "62e79e71ad0bb3a189f491432891d3a06f80632a26d34c20610bfddc0f6a3f30"
+     },
+     {
+-      "bytes": 2284,
+-      "original_member": "checks/parametric/evidence/manifest.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/manifest.json",
+-      "sha256": "17e86fe134fde202ee023fb5a8ed47395a024c51460d79e9b955cdcd27fdd1ed"
++      "bytes": 5149,
++      "path": "generators/9971f3a5882c/workspace/parametric/evidence/current/jobs.json",
++      "sha256": "52cd80074d71c158129b098693f54b6a76d0f4f7bc4e0c3cec2f3cfcec61023b"
+     },
+     {
+-      "bytes": 11250,
+-      "original_member": "checks/parametric/evidence/private/episode-001.audit.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/episode-001.audit.json",
+-      "sha256": "aa3135b0ced5dea905abbcaa993a1d1176b1f115ad02c29a63dee58be94b3daf"
++      "bytes": 8243,
++      "path": "generators/9971f3a5882c/workspace/parametric/evidence/current/public/4c1ee5d2e8e182343caffc1134f08a9d8c155fff87a701e41d4434f52fbfb4e6.json",
++      "sha256": "4c1ee5d2e8e182343caffc1134f08a9d8c155fff87a701e41d4434f52fbfb4e6"
+     },
+     {
+-      "bytes": 28479,
+-      "original_member": "checks/parametric/evidence/private/episode-001.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/episode-001.json",
+-      "sha256": "4385f6d0797568fed42e939475c8e9e8d5036e77c21fd5ba9e987848bdd33194"
++      "bytes": 8243,
++      "path": "generators/9971f3a5882c/workspace/parametric/evidence/current/public/7098346b6571eb7b353659cbfd8ebfa9e4add153ac9a6a71dab9ee8bafbe07d6.json",
++      "sha256": "7098346b6571eb7b353659cbfd8ebfa9e4add153ac9a6a71dab9ee8bafbe07d6"
+     },
+     {
+-      "bytes": 11250,
+-      "original_member": "checks/parametric/evidence/private/episode-002.audit.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/episode-002.audit.json",
+-      "sha256": "9ab426e408adbe8cea2c6efedb9870a24f921b2db37ba9c756d30263ec3dadeb"
++      "bytes": 3031,
++      "path": "generators/9971f3a5882c/workspace/parametric/evidence/current/summary.json",
++      "sha256": "25a6c9e1c1ffcf6274482b2dd063453c52a26e4a511b7e47f8f7e02d33a0a7b8"
+     },
+     {
+-      "bytes": 28480,
+-      "original_member": "checks/parametric/evidence/private/episode-002.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/episode-002.json",
+-      "sha256": "a13c29a275fc4e40a3d1bf1a39a9ae3af396d8d1ac0334445ae3140241c34957"
+-    },
+-    {
+-      "bytes": 11199,
+-      "original_member": "checks/parametric/evidence/private/episode-003.audit.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/episode-003.audit.json",
+-      "sha256": "3dd9b8401ebd9b29e737313abc2ca68fa53bffdbe370c0d1f807f0909c227233"
+-    },
+-    {
+-      "bytes": 28483,
+-      "original_member": "checks/parametric/evidence/private/episode-003.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/episode-003.json",
+-      "sha256": "18af6ad5a1a9979ca7cf900321020ae7e39e9bb1955c425bf91dc8c399137f3e"
+-    },
+-    {
+-      "bytes": 11182,
+-      "original_member": "checks/parametric/evidence/private/episode-004.audit.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/episode-004.audit.json",
+-      "sha256": "0d25b8e3be486fe666793ebe92bf4ee99dde963d6bf8f316a7f8bc4d23b6dc7d"
+-    },
+-    {
+-      "bytes": 28473,
+-      "original_member": "checks/parametric/evidence/private/episode-004.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/episode-004.json",
+-      "sha256": "0610bfbf389422aaabad90d71d6c78dab1fcd3632cbfc5079b55e44458ef9928"
+-    },
+-    {
+-      "bytes": 11568,
+-      "original_member": "checks/parametric/evidence/private/report.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/report.json",
+-      "sha256": "24771670e1736267419bace87c85585e9b566befc07b048c93eb5837a307c208"
++      "bytes": 17753,
++      "path": "generators/9971f3a5882c/workspace/parametric/native.py",
++      "sha256": "afe84e9fc16414f179d04f702386c3b46eff14848b8d26c9a35cdda1b5357383"
+     },
+     {
+       "bytes": 2455,
+-      "original_member": "checks/parametric/evidence/private/rules/farthest.rkt",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/rules/farthest.rkt",
+-      "sha256": "343fdaec34513f164d4031c9eba05a9f515965255ae4910c856ac25e7dd4ece1"
+-    },
+-    {
+-      "bytes": 2455,
+-      "original_member": "checks/parametric/evidence/private/rules/nearest.rkt",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/rules/nearest.rkt",
+-      "sha256": "b1b4ad49109b21cae627cbc9c0a39b3695abe47fa0ab44a4b4dc3c89b5028527"
+-    },
+-    {
+-      "bytes": 4889,
+-      "original_member": "checks/parametric/evidence/private/shared-witness.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/private/shared-witness.json",
+-      "sha256": "f9ae79db622c37cf778ea4a25158978d596065e681a31edb5b88342630729858"
+-    },
+-    {
+-      "bytes": 19154,
+-      "original_member": "checks/parametric/evidence/public/episode-001.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/public/episode-001.json",
+-      "sha256": "c33a890362fc373576d72f7fcf9fd1bb8bfd2486b5b767cd644a0546f3a019df"
+-    },
+-    {
+-      "bytes": 19154,
+-      "original_member": "checks/parametric/evidence/public/episode-002.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/public/episode-002.json",
+-      "sha256": "155c32ece8d804c1b17cb6bb4dcab0b7690c7fb2520e601402d8d2f7865df835"
+-    },
+-    {
+-      "bytes": 19154,
+-      "original_member": "checks/parametric/evidence/public/episode-003.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/public/episode-003.json",
+-      "sha256": "2006fe1d0f0df5a81e3b65004857eef946adf7bdb06ac1f14bc7fc7e960ea8fe"
+-    },
+-    {
+-      "bytes": 19154,
+-      "original_member": "checks/parametric/evidence/public/episode-004.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/evidence/public/episode-004.json",
+-      "sha256": "b2ed9f08c0d168f0549f140deb63e28b383e959039ad2bb1d15ae00af163646d"
+-    },
+-    {
+-      "bytes": 1778,
+-      "original_member": "checks/parametric/integrity.json",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/integrity.json",
+-      "sha256": "a861cad59fb3481c0d7eccf796f6d1f452e015d38c459f42a6319778d95b8196"
+-    },
+-    {
+-      "bytes": 253,
+-      "original_member": "checks/parametric/tests-final.log",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/tests-final.log",
+-      "sha256": "994363d7e3515bebaf2f5368e5714072ef782f4e042968a6b0d38d9b9065778a"
+-    },
+-    {
+-      "bytes": 3223,
+-      "original_member": "checks/parametric/tests-final.xml",
+-      "path": "generators/9971f3a5882c/workspace/parametric/evidence/tests-final.xml",
+-      "sha256": "207b2a01c5d9a7cc9488ca4f0acc59312f9f04fe352d19a1152bcc940983ddb0"
+-    },
+-    {
+-      "bytes": 6179,
+-      "original_member": "repo/generators/9971f3a5882c/workspace/parametric/README.md",
+-      "path": "generators/9971f3a5882c/workspace/parametric/README.md",
+-      "sha256": "af7f1defc519d85ac930caad482f32ef56dfd7428ed41e04906dcaaa646ecd8b"
+-    },
+-    {
+-      "bytes": 2455,
+-      "original_member": "repo/generators/9971f3a5882c/workspace/parametric/nearest.rkt",
+       "path": "generators/9971f3a5882c/workspace/parametric/nearest.rkt",
+       "sha256": "b1b4ad49109b21cae627cbc9c0a39b3695abe47fa0ab44a4b4dc3c89b5028527"
+     },
+     {
+-      "bytes": 22729,
+-      "original_member": "repo/generators/9971f3a5882c/workspace/parametric/prototype.py",
++      "bytes": 395,
++      "path": "generators/9971f3a5882c/workspace/parametric/promotion.json",
++      "sha256": "677d1650f85533dcf0e9955b8125fcc900b764977f63007efc7eada1fc4accab"
++    },
++    {
++      "bytes": 24009,
+       "path": "generators/9971f3a5882c/workspace/parametric/prototype.py",
+-      "sha256": "8534a7916eebe244e1787f94a87fc224ce87dc42c4dd36d0b972e0c4a1777d7e"
++      "sha256": "f9ab25b91f042481fbf0a8c5001249d7fbcbb785476e44246380e96cdc298ebe"
+     }
+   ],
+   "generator_sha256": "ac6f4a04bb8a7947d942a3eb5232eafd065956f1d1226a3190e727f75ac84e14",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
+   "parameters": {
+     "marker_selection": [
+       "nearest",
+@@ -184,10 +96,12 @@
+     ]
+   },
+   "production_parametric_api": false,
+-  "return_id": "review-8d5a080a5456928f:v0001",
+-  "return_zip_sha256": "e3a9af259da123856fd833704df5dd41fb609bbf36dd0242d537085ba94bc41e",
++  "reported_checks": "40 adapter/legacy parametric tests passed; audit orchestration test passed; protected-Racket self-audit passed 12 jobs, 53 distinct evaluations, 12 30x30 queries, zero survivors, and a 90-cell causal ablation.",
++  "rule_task_id": "9971f3a5882c",
+   "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
+   "task_id": "9971f3a5882c",
++  "training_admitted": false,
+   "variant_approved": false,
+   "verification_status": "reviewer_reported"
+ }
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/native.py b/repo/generators/9971f3a5882c/workspace/parametric/native.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/workspace/parametric/native.py
+@@ -0,0 +1,495 @@
++"""Native nearest/farthest parametric family for ARC task 9971f3a5882c.
++
++Input sampling is independent of the private setting.  Python outputs are
++deterministic claims; native qualification independently executes the exact
++Racket programs over every demonstration and query.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++import random
++
++from reviewer_support import find_root, load_selected_generator, public_challenge_bytes
++
++
++TASK_ID = "9971f3a5882c"
++VERSION = "native-2"
++SETTINGS = ("nearest", "farthest")
++HERE = Path(__file__).resolve().parent
++CANONICAL = (HERE / "nearest.rkt").read_text(encoding="utf-8")
++
++SUBSTITUTIONS = (
++    ("(max-of fst above)", "(min-of fst above)"),
++    ("(min-of fst below)", "(max-of fst below)"),
++    ("(max-of snd lefts)", "(min-of snd lefts)"),
++    ("(min-of snd rights)", "(max-of snd rights)"),
++)
++
++
++def _replace_once(text: str, before: str, after: str, label: str) -> str:
++    if text.count(before) != 1:
++        raise ValueError(f"pinned canonical source no longer has exactly one {label}")
++    return text.replace(before, after, 1)
++
++
++def _farthest_program() -> str:
++    result = CANONICAL
++    for before, after in SUBSTITUTIONS:
++        result = _replace_once(result, before, after, before)
++    return result
++
++
++FARTHEST = _farthest_program()
++PROGRAMS = {"nearest": CANONICAL, "farthest": FARTHEST}
++
++
++def _setting(settings) -> str:
++    if type(settings) is not dict or set(settings) != {"marker_selection"}:
++        raise ValueError("settings must contain exactly marker_selection")
++    value = settings["marker_selection"]
++    if type(value) is not str or value not in SETTINGS:
++        raise ValueError("marker_selection must be nearest or farthest")
++    return value
++
++
++def program(settings) -> str:
++    """Return the exact Racket program for one declared setting."""
++    return PROGRAMS[_setting(settings)]
++
++
++_GENERATOR = None
++
++
++def _generator():
++    global _GENERATOR
++    if _GENERATOR is None:
++        _GENERATOR, _, _ = load_selected_generator(TASK_ID, root=find_root(__file__))
++    return _GENERATOR
++
++
++def _classify_markers(bbox, marks):
++    r0, r1, c0, c1 = bbox
++    return {
++        "top": [(r, c) for r, c in marks if r < r0 and c0 <= c <= c1],
++        "bottom": [(r, c) for r, c in marks if r > r1 and c0 <= c <= c1],
++        "left": [(r, c) for r, c in marks if c < c0],
++        "right": [(r, c) for r, c in marks if c > c1],
++    }
++
++
++def _correct_bbox(grid):
++    cells = [
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == 3
++    ]
++    if not cells:
++        raise ValueError("input contains no color-3 lattice")
++    return (
++        min(r for r, _ in cells),
++        max(r for r, _ in cells),
++        min(c for _, c in cells),
++        max(c for _, c in cells),
++    )
++
++
++def native_analysis(grid):
++    """Return the input-dependent A-stage intermediate in JSON-friendly form."""
++    analysis = _generator()._analyze_lattice(deepcopy(grid))
++    markers = _classify_markers(analysis["bbox"], analysis["marks"])
++    return {
++        "bbox": tuple(analysis["bbox"]),
++        "markers_by_side": {key: tuple(value) for key, value in markers.items()},
++        "full_rows": tuple(analysis["full_rows"]),
++        "full_cols": tuple(analysis["full_cols"]),
++    }
++
++
++def _solve_from_bbox(
++    grid,
++    selection,
++    bbox,
++    *,
++    ignore_sides=(),
++    unit_expansion=False,
++    boundaries_only=False,
++):
++    if selection not in SETTINGS:
++        raise ValueError("selection must be nearest or farthest")
++    height, width = len(grid), len(grid[0])
++    r0, r1, c0, c1 = bbox
++    marks = [
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == 6
++    ]
++    markers = _classify_markers(bbox, marks)
++    for side in ignore_sides:
++        markers[side] = []
++
++    if markers["top"]:
++        nr0 = r0 - 1 if unit_expansion else (
++            max(r for r, _ in markers["top"]) + 1
++            if selection == "nearest"
++            else min(r for r, _ in markers["top"]) + 1
++        )
++    else:
++        nr0 = r0
++    if markers["bottom"]:
++        nr1 = r1 + 1 if unit_expansion else (
++            min(r for r, _ in markers["bottom"]) - 1
++            if selection == "nearest"
++            else max(r for r, _ in markers["bottom"]) - 1
++        )
++    else:
++        nr1 = r1
++    if markers["left"]:
++        nc0 = c0 - 1 if unit_expansion else (
++            max(c for _, c in markers["left"]) + 1
++            if selection == "nearest"
++            else min(c for _, c in markers["left"]) + 1
++        )
++    else:
++        nc0 = c0
++    if markers["right"]:
++        nc1 = c1 + 1 if unit_expansion else (
++            min(c for _, c in markers["right"]) - 1
++            if selection == "nearest"
++            else max(c for _, c in markers["right"]) - 1
++        )
++    else:
++        nc1 = c1
++
++    full_rows = [
++        row
++        for row in range(r0, r1 + 1)
++        if all(grid[row][column] == 3 for column in range(c0, c1 + 1))
++    ]
++    full_cols = [
++        column
++        for column in range(c0, c1 + 1)
++        if all(grid[row][column] == 3 for row in range(r0, r1 + 1))
++    ]
++    if boundaries_only:
++        full_rows = [r0, r1]
++        full_cols = [c0, c1]
++
++    result = [[0] * width for _ in range(height)]
++    for row in full_rows:
++        mapped = nr0 if row == r0 else nr1 if row == r1 else row
++        for column in range(nc0, nc1 + 1):
++            result[mapped][column] = 3
++    for column in full_cols:
++        mapped = nc0 if column == c0 else nc1 if column == c1 else column
++        for row in range(nr0, nr1 + 1):
++            result[row][mapped] = 3
++    for row, column in marks:
++        result[row][column] = 6
++    return result
++
++
++def native_transform(grid, settings):
++    """Independent deterministic label claim used by the native adapter."""
++    selection = _setting(settings)
++    errors = _generator().self_check(grid)
++    if errors:
++        raise ValueError(f"input is outside the selected sparse-lattice grammar: {errors}")
++    return _solve_from_bbox(grid, selection, _correct_bbox(grid))
++
++
++PLAUSIBLE_RIVALS = (
++    "ignore_top_nearest",
++    "ignore_top_farthest",
++    "unit_expansion",
++    "boundaries_only_nearest",
++    "boundaries_only_farthest",
++    "identity",
++)
++
++
++def rival_transform(grid, name):
++    bbox = _correct_bbox(grid)
++    if name == "ignore_top_nearest":
++        return _solve_from_bbox(grid, "nearest", bbox, ignore_sides=("top",))
++    if name == "ignore_top_farthest":
++        return _solve_from_bbox(grid, "farthest", bbox, ignore_sides=("top",))
++    if name == "unit_expansion":
++        return _solve_from_bbox(grid, "nearest", bbox, unit_expansion=True)
++    if name == "boundaries_only_nearest":
++        return _solve_from_bbox(grid, "nearest", bbox, boundaries_only=True)
++    if name == "boundaries_only_farthest":
++        return _solve_from_bbox(grid, "farthest", bbox, boundaries_only=True)
++    if name == "identity":
++        return deepcopy(grid)
++    raise ValueError(f"unknown plausible rival: {name}")
++
++
++# height, width, bbox-height, bbox-width, top/bottom/left/right padding,
++# full-row offsets, full-column offsets, marker counts (T,B,L,R), near/far/single.
++DEMO_PROFILES = (
++    (15, 19, 5, 7, 5, 5, 5, 7, (0, 2, 4), (0, 3, 6), (2, 1, 1, 2), 2, 4, 2),
++    (19, 15, 7, 5, 6, 6, 5, 5, (0, 2, 4, 6), (0, 2, 4), (1, 2, 2, 1), 1, 4, 2),
++    (21, 23, 7, 9, 7, 7, 7, 7, (0, 3, 6), (0, 2, 5, 8), (2, 2, 2, 2), 2, 5, 2),
++    (23, 21, 9, 7, 7, 7, 7, 7, (0, 2, 5, 8), (0, 3, 6), (2, 1, 2, 1), 3, 5, 2),
++    (25, 27, 11, 13, 7, 7, 7, 7, (0, 3, 7, 10), (0, 4, 8, 12), (1, 2, 1, 2), 2, 5, 3),
++    (27, 25, 13, 11, 7, 7, 7, 7, (0, 4, 8, 12), (0, 3, 7, 10), (2, 2, 2, 2), 1, 6, 2),
++)
++
++QUERY_PROFILES = (
++    (20, 26, 8, 12, 6, 6, 7, 7, (0, 2, 5, 7), (0, 3, 7, 11), (2, 2, 1, 1), 1, 5, 3),
++    (26, 20, 12, 8, 7, 7, 6, 6, (0, 3, 7, 11), (0, 2, 5, 7), (1, 1, 2, 2), 2, 5, 2),
++    (28, 29, 14, 15, 7, 7, 7, 7, (0, 3, 7, 10, 13), (0, 4, 8, 11, 14), (2, 2, 2, 2), 3, 6, 3),
++    (30, 30, 14, 16, 7, 9, 7, 7, (0, 3, 7, 10, 13), (0, 4, 8, 12, 15), (2, 2, 2, 2), 4, 6, 3),
++)
++
++
++def _rng(seed, label):
++    raw = f"{TASK_ID}:{VERSION}:{seed}:{label}".encode("utf-8")
++    return random.Random(int.from_bytes(hashlib.sha256(raw).digest(), "big"))
++
++
++def _sample_input(seed, label, profile):
++    (
++        height,
++        width,
++        lattice_h,
++        lattice_w,
++        pad_top,
++        pad_bottom,
++        pad_left,
++        pad_right,
++        row_offsets,
++        col_offsets,
++        counts,
++        near_expansion,
++        far_expansion,
++        single_expansion,
++    ) = profile
++    if pad_top + lattice_h + pad_bottom != height:
++        raise RuntimeError("invalid vertical profile geometry")
++    if pad_left + lattice_w + pad_right != width:
++        raise RuntimeError("invalid horizontal profile geometry")
++
++    r0, c0 = pad_top, pad_left
++    r1, c1 = r0 + lattice_h - 1, c0 + lattice_w - 1
++    grid = [[0] * width for _ in range(height)]
++    full_rows = {r0 + offset for offset in row_offsets}
++    full_cols = {c0 + offset for offset in col_offsets}
++    for row in range(r0, r1 + 1):
++        for column in range(c0, c1 + 1):
++            if row in full_rows or column in full_cols:
++                grid[row][column] = 3
++
++    rng = _rng(seed, label)
++    marker_counts = dict(zip(("top", "bottom", "left", "right"), counts))
++    marks = []
++    for side in ("top", "bottom", "left", "right"):
++        count = marker_counts[side]
++        if count == 0:
++            continue
++        expansions = [single_expansion] if count == 1 else [near_expansion, far_expansion]
++        if side in ("top", "bottom"):
++            choices = list(range(c0, c1 + 1))
++            coordinates = [c1, rng.choice(choices[:-1])] if count == 2 else [rng.choice(choices)]
++            for expansion, column in zip(expansions, coordinates):
++                row = r0 - expansion - 1 if side == "top" else r1 + expansion + 1
++                marks.append((row, column))
++        else:
++            choices = list(range(r0, r1 + 1))
++            coordinates = [r1, rng.choice(choices[:-1])] if count == 2 else [rng.choice(choices)]
++            for expansion, row in zip(expansions, coordinates):
++                column = c0 - expansion - 1 if side == "left" else c1 + expansion + 1
++                marks.append((row, column))
++
++    if len(marks) != len(set(marks)):
++        raise RuntimeError("constructed duplicate markers")
++    if any(not (0 <= row < height and 0 <= column < width) for row, column in marks):
++        raise RuntimeError("profile marker lies outside canvas")
++    for row, column in marks:
++        grid[row][column] = 6
++
++    errors = _generator().self_check(grid)
++    if errors:
++        raise RuntimeError(f"constructed invalid native input: {errors}")
++    bbox = (r0, r1, c0, c1)
++    if _solve_from_bbox(grid, "nearest", bbox) == _solve_from_bbox(grid, "farthest", bbox):
++        raise RuntimeError("constructed input failed to distinguish settings")
++    return grid
++
++
++def teaching_certificate(episode):
++    """Fit only demonstrations; query labels are deliberately ignored."""
++    train = episode.get("train") if isinstance(episode, dict) else None
++    if not isinstance(train, list) or not train:
++        raise ValueError("nonempty train demonstrations required")
++
++    setting_survivors = []
++    for setting in SETTINGS:
++        candidate = {"marker_selection": setting}
++        if all(native_transform(pair["input"], candidate) == pair["output"] for pair in train):
++            setting_survivors.append(setting)
++
++    rival_survivors = []
++    for rival in PLAUSIBLE_RIVALS:
++        if all(rival_transform(pair["input"], rival) == pair["output"] for pair in train):
++            rival_survivors.append(rival)
++
++    return {
++        "setting_survivors": setting_survivors,
++        "plausible_rival_survivors": rival_survivors,
++        "demonstrations_checked": len(train),
++    }
++
++
++def visible_turn(episode, query_index):
++    if type(query_index) is not int or not 0 <= query_index < len(episode["test"]):
++        raise ValueError("query_index must select one test pair")
++    return public_challenge_bytes(
++        {"train": episode["train"], "test": [episode["test"][query_index]]}
++    )
++
++
++def generate(seed, settings, demos, queries):
++    """Generate matched-input episodes with independent demo/query streams."""
++    if type(seed) is not int or not 0 <= seed <= 2**63 - 1:
++        raise ValueError("seed must be an exact integer in 0..2**63-1")
++    selection = _setting(settings)
++    if type(demos) is not int or not 2 <= demos <= 6:
++        raise ValueError("demos must be an exact integer in 2..6")
++    if type(queries) is not int or not 1 <= queries <= 4:
++        raise ValueError("queries must be an exact integer in 1..4")
++
++    train = []
++    for index in range(demos):
++        grid = _sample_input(seed, f"demo:{index}", DEMO_PROFILES[index])
++        train.append({"input": grid, "output": native_transform(grid, settings)})
++    test = []
++    for index in range(queries):
++        grid = _sample_input(seed, f"query:{index}", QUERY_PROFILES[index])
++        test.append({"input": grid, "output": native_transform(grid, settings)})
++
++    episode = {"train": train, "test": test, "program_solution": program(settings)}
++    certificate = teaching_certificate(episode)
++    if certificate["setting_survivors"] != [selection] or certificate["plausible_rival_survivors"]:
++        raise RuntimeError(
++            "demonstrations failed finite teaching certificate: "
++            + json.dumps(certificate, sort_keys=True)
++        )
++
++    inputs = [
++        json.dumps(pair["input"], separators=(",", ":"))
++        for split in (train, test)
++        for pair in split
++    ]
++    if len(inputs) != len(set(inputs)):
++        raise RuntimeError("episode inputs must be distinct")
++    return episode
++
++
++_NR0_NEAREST = "(nr0 (if (empty? above) r0 (+ 1 (max-of fst above))))"
++_NR0_FARTHEST = "(nr0 (if (empty? above) r0 (+ 1 (min-of fst above))))"
++_NR1_NEAREST = "(nr1 (if (empty? below) r1 (- (min-of fst below) 1)))"
++_NC0_NEAREST = "(nc0 (if (empty? lefts) c0 (+ 1 (max-of snd lefts))))"
++_NC1_NEAREST = "(nc1 (if (empty? rights) c1 (- (min-of snd rights) 1)))"
++_FULL_ROWS_BLOCK = """(full-rows (filter (lambda (r)
++                                       (all? (lambda (c) (= (at g r c) 3))
++                                             (range c0 (+ c1 1))))
++                                     (range r0 (+ r1 1))))"""
++_FULL_COLS_BLOCK = """(full-cols (filter (lambda (c)
++                                       (all? (lambda (r) (= (at g r c) 3))
++                                             (range r0 (+ r1 1))))
++                                     (range c0 (+ c1 1))))"""
++
++
++def plausible_programs():
++    """Return executable finite wrong rules for the protected self-audit."""
++    ignore_near = _replace_once(
++        CANONICAL, _NR0_NEAREST, "(nr0 r0)", "nearest top boundary"
++    )
++    ignore_far = _replace_once(
++        FARTHEST, _NR0_FARTHEST, "(nr0 r0)", "farthest top boundary"
++    )
++    unit = CANONICAL
++    for before, after, label in (
++        (_NR0_NEAREST, "(nr0 (if (empty? above) r0 (- r0 1)))", "unit top"),
++        (_NR1_NEAREST, "(nr1 (if (empty? below) r1 (+ r1 1)))", "unit bottom"),
++        (_NC0_NEAREST, "(nc0 (if (empty? lefts) c0 (- c0 1)))", "unit left"),
++        (_NC1_NEAREST, "(nc1 (if (empty? rights) c1 (+ c1 1)))", "unit right"),
++    ):
++        unit = _replace_once(unit, before, after, label)
++
++    boundaries_near = _replace_once(
++        _replace_once(
++            CANONICAL,
++            _FULL_ROWS_BLOCK,
++            "(full-rows (list r0 r1))",
++            "full rows",
++        ),
++        _FULL_COLS_BLOCK,
++        "(full-cols (list c0 c1))",
++        "full columns",
++    )
++    boundaries_far = _replace_once(
++        _replace_once(
++            FARTHEST,
++            _FULL_ROWS_BLOCK,
++            "(full-rows (list r0 r1))",
++            "full rows",
++        ),
++        _FULL_COLS_BLOCK,
++        "(full-cols (list c0 c1))",
++        "full columns",
++    )
++    return {
++        "ignore_top_nearest": ignore_near,
++        "ignore_top_farthest": ignore_far,
++        "unit_expansion": unit,
++        "boundaries_only_nearest": boundaries_near,
++        "boundaries_only_farthest": boundaries_far,
++        "identity": "(rule! (lambda (g) g))",
++    }
++
++
++def wrong_intermediate_program():
++    """Corrupt A's right bbox boundary before B classifies side markers."""
++    return _replace_once(
++        CANONICAL,
++        "(c1 (max-of snd cells))",
++        "(c1 (- (max-of snd cells) 1))",
++        "right bbox intermediate",
++    )
++
++
++def dependency_witness():
++    """Return a qualification-pair-compatible wrong-intermediate witness draft."""
++    settings = {"marker_selection": "nearest"}
++    episode = generate(0, settings, 3, 4)
++    pair = episode["test"][0]
++    analysis = native_analysis(pair["input"])
++    r0, r1, c0, c1 = analysis["bbox"]
++    wrong = _solve_from_bbox(pair["input"], "nearest", (r0, r1, c0, c1 - 1))
++    if wrong == pair["output"]:
++        raise RuntimeError("wrong bbox intermediate failed to change final output")
++    return {
++        "settings": settings,
++        "input": deepcopy(pair["input"]),
++        "program": program(settings),
++        "output": deepcopy(pair["output"]),
++        "counterfactual_program": wrong_intermediate_program(),
++        "counterfactual_output": wrong,
++        "ablation": "wrong_intermediate",
++        "intermediate_value": {
++            "bbox": list(analysis["bbox"]),
++            "markers_by_side": {
++                side: [list(point) for point in points]
++                for side, points in analysis["markers_by_side"].items()
++            },
++            "full_rows": list(analysis["full_rows"]),
++            "full_cols": list(analysis["full_cols"]),
++        },
++    }
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/promotion.json b/repo/generators/9971f3a5882c/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9971f3a5882c/workspace/parametric/promotion.json
+@@ -0,0 +1,17 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/9971f3a5882c/workspace/parametric/adapter.py",
++  "parameters": {
++    "marker_selection": ["nearest", "farthest"]
++  },
++  "default": {
++    "marker_selection": "nearest"
++  },
++  "limits": {
++    "demos": [2, 6],
++    "queries": [1, 4]
++  },
++  "resources": [
++    "generators/9971f3a5882c/workspace/parametric/nearest.rkt"
++  ]
++}
+diff --git a/repo/generators/9971f3a5882c/workspace/parametric/prototype.py b/repo/generators/9971f3a5882c/workspace/parametric/prototype.py
+--- a/repo/generators/9971f3a5882c/workspace/parametric/prototype.py
++++ b/repo/generators/9971f3a5882c/workspace/parametric/prototype.py
+@@ -382,6 +382,52 @@
+     return report
+ 
+ 
++
++# Native promotion delegates to the adjacent, source-bound family module.
++def _native_module():
++    import importlib.util
++    path = HERE / "native.py"
++    source = path.read_bytes()
++    name = "_9971_native_" + hashlib.sha256(str(path).encode() + source).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(f"cannot load native family {path}")
++    module = importlib.util.module_from_spec(spec)
++    exec(compile(source, str(path), "exec"), module.__dict__)
++    return module
++
++
++def program(settings):
++    return _native_module().program(settings)
++
++
++def generate(seed, settings, demos, queries):
++    return _native_module().generate(seed, settings, demos, queries)
++
++
++def native_analysis(grid):
++    return _native_module().native_analysis(grid)
++
++
++def native_transform(grid, settings):
++    return _native_module().native_transform(grid, settings)
++
++
++def teaching_certificate(episode):
++    return _native_module().teaching_certificate(episode)
++
++
++def plausible_programs():
++    return _native_module().plausible_programs()
++
++
++def dependency_witness():
++    return _native_module().dependency_witness()
++
++
++def wrong_intermediate_program():
++    return _native_module().wrong_intermediate_program()
++
+ def main(argv=None):
+     parser = argparse.ArgumentParser(description=__doc__)
+     commands = parser.add_subparsers(dest="command", required=True)
+diff --git a/repo/generators/9e47b59d6afc/notes.md b/repo/generators/9e47b59d6afc/notes.md
+--- a/repo/generators/9e47b59d6afc/notes.md
++++ b/repo/generators/9e47b59d6afc/notes.md
+@@ -66,3 +66,16 @@
+ ## Distribution limitations accepted
+ 
+ The rule itself allows more than the current fixed colors, opposite-corner presentation, and 3×3 normalized shape universe might suggest. I accepted that bounded domain because it is constructive, diverse enough for the repository gates, canonical-compatible, and semantically strong; I did not claim it covers the full lawful input space. A future expansion should vary legal spatial relations and larger normalized shapes while retaining explicit witnesses and avoiding search/fallback control flow.
++
++## Reviewer follow-up — position can masquerade as semantic role (2026-10-24)
++
++A source-pinned protected-Racket probe retained a three-demonstration lesson in
++which every visible example uses `placement=red_nw`.  The executable wrong rule
++`northwest_object_is_red_role` ignores colors and assigns output roles by object
++position; it fits all three demonstrations, the current `lesson_identifiable`
++checker returns no reasons, and a `red_se` query differs in 6 cells.  Evidence:
++`checks/9e47b59d6afc/position-role-witness.json`; reusable probe:
++`workspace/lesson_probe.py`.  Production bytes remain unchanged.  The concrete
++repair is to add this position-role rival to the lesson competitor inventory or
++require visible role-placement reversal before lesson admission.  This is one
++bounded witness, not a universal ambiguity claim.
+diff --git a/repo/generators/9e47b59d6afc/tests/test_reviewer_lesson_probe_9e47.py b/repo/generators/9e47b59d6afc/tests/test_reviewer_lesson_probe_9e47.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9e47b59d6afc/tests/test_reviewer_lesson_probe_9e47.py
+@@ -0,0 +1,33 @@
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++from reviewer_support import find_root, load_selected_generator
++
++
++TASK = "9e47b59d6afc"
++ROOT = find_root(__file__)
++GEN, _, _ = load_selected_generator(TASK, root=ROOT)
++PROBE_PATH = Path(__file__).resolve().parents[1] / "workspace" / "lesson_probe.py"
++
++
++def load_probe():
++    spec = importlib.util.spec_from_file_location("probe_9e47", PROBE_PATH)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_position_role_shortcut_survives_same_placement_demos_and_fails_query():
++    probe = load_probe()
++    witness = probe.build_witness(apply_program=lambda program, grid: GEN.expected_output(grid))
++    assert witness["status"] == "finding"
++    assert witness["shortcut"] == "northwest_object_is_red_role"
++    assert witness["lesson_checker_result"] == []
++    assert len(witness["demonstrations"]) == 3
++    assert all(row["placement"] == "red_nw" for row in witness["demonstrations"])
++    assert witness["query"]["placement"] == "red_se"
++    assert witness["rival_fits_all_demonstrations"] is True
++    assert witness["rival_changes_query"] is True
++    assert witness["changed_query_cells"] > 0
+diff --git a/repo/generators/9e47b59d6afc/workspace/lesson_probe.py b/repo/generators/9e47b59d6afc/workspace/lesson_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9e47b59d6afc/workspace/lesson_probe.py
+@@ -0,0 +1,206 @@
++#!/usr/bin/env python3
++"""Source-pinned lesson probe for a position-as-role shortcut.
++
++Three demonstrations keep the red object northwest.  A plausible wrong learner
++therefore treats the northwest object as the red role and ignores its color.
++The query flips placement, exposing the shortcut.  Correct labels are executed
++through protected Racket in CLI mode.
++"""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++
++from arcpuzzles.catalog import Catalog
++from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++from reviewer_support import find_root, load_selected_generator
++
++
++TASK_ID = "9e47b59d6afc"
++EXPECTED_SOURCE_SHA256 = "e350f01e1fbe0c029450c31a655409b0a995642a4812faa5a3c48eea8afcf07e"
++ROOT = find_root(__file__)
++GEN, SOURCE_PATH, SOURCE_SHA256 = load_selected_generator(TASK_ID, root=ROOT)
++if SOURCE_SHA256 != EXPECTED_SOURCE_SHA256:
++    raise ValueError(
++        f"assigned peer source changed: expected {EXPECTED_SOURCE_SHA256}, got {SOURCE_SHA256}"
++    )
++
++
++def _canonical_program() -> str:
++    programs = {
++        row.get("program_solution")
++        for row in Catalog(ROOT)._variants().get(TASK_ID, [])
++        if isinstance(row.get("program_solution"), str) and row["program_solution"].strip()
++    }
++    if len(programs) != 1:
++        raise ValueError("peer must have one exact canonical Racket program")
++    return next(iter(programs))
++
++
++def _normalize(cells: set[tuple[int, int]]) -> set[tuple[int, int]]:
++    top = min(row for row, _ in cells)
++    left = min(column for _, column in cells)
++    return {(row - top, column - left) for row, column in cells}
++
++
++def northwest_object_is_red_role(grid: list[list[int]]) -> list[list[int]]:
++    """Wrong rule: infer semantic roles from NW/SE position, not colors."""
++    objects = []
++    for color in (2, 3):
++        cells = {
++            (row, column)
++            for row, values in enumerate(grid)
++            for column, value in enumerate(values)
++            if value == color
++        }
++        if not cells:
++            raise ValueError(f"missing color-{color} object")
++        objects.append(cells)
++    objects.sort(key=lambda cells: (min(row for row, _ in cells), min(column for _, column in cells)))
++    red_role, green_role = map(_normalize, objects)
++    union = red_role | green_role
++    output = [
++        [0] * (max(column for _, column in union) + 1)
++        for _ in range(max(row for row, _ in union) + 1)
++    ]
++    for row, column in union:
++        if (row, column) in red_role and (row, column) in green_role:
++            output[row][column] = 8
++        elif (row, column) in red_role:
++            output[row][column] = 2
++        else:
++            output[row][column] = 3
++    return output
++
++
++def _changed_cells(left: list[list[int]], right: list[list[int]]) -> int:
++    height = max(len(left), len(right))
++    width = max(len(left[0]), len(right[0]))
++    return sum(
++        (left[row][column] if row < len(left) and column < len(left[0]) else None)
++        != (right[row][column] if row < len(right) and column < len(right[0]) else None)
++        for row in range(height)
++        for column in range(width)
++    )
++
++
++def build_witness(*, apply_program, runtime_identity: dict | None = None) -> dict:
++    program = _canonical_program()
++    demo_specs = (
++        (4101, 0, "easy"),
++        (4102, 17, "medium"),
++        (4103, 41, "hard"),
++    )
++    demonstrations = []
++    for seed, sample_index, difficulty in demo_specs:
++        grid = GEN.generate(
++            seed,
++            sample_index,
++            difficulty=difficulty,
++            placement="red_nw",
++        )
++        output = _grid(apply_program(program, deepcopy(grid)))
++        rival = northwest_object_is_red_role(grid)
++        demonstrations.append(
++            {
++                "seed": seed,
++                "sample_index": sample_index,
++                "difficulty": difficulty,
++                "placement": GEN.observe_overrides(grid)["placement"],
++                "input": grid,
++                "output": output,
++                "rival_output": rival,
++            }
++        )
++
++    query_grid = GEN.generate(
++        4201,
++        73,
++        difficulty="hard",
++        placement="red_se",
++    )
++    query_output = _grid(apply_program(program, deepcopy(query_grid)))
++    query_rival = northwest_object_is_red_role(query_grid)
++
++    fits = all(row["rival_output"] == row["output"] for row in demonstrations)
++    changes = query_rival != query_output
++    checker_demos = [
++        {"input": row["input"], "output": row["output"]}
++        for row in demonstrations
++    ]
++    checker_query = {"input": query_grid, "output": query_output}
++    checker_result = GEN.lesson_identifiable(checker_demos, checker_query)
++    if not fits or not changes:
++        raise RuntimeError("deterministic position-role witness no longer exposes the shortcut")
++
++    return {
++        "schema": "arcpuzzles-peer-lesson-probe-v1",
++        "status": "finding",
++        "task_id": TASK_ID,
++        "source_path": SOURCE_PATH.relative_to(ROOT).as_posix(),
++        "source_sha256": SOURCE_SHA256,
++        "canonical_program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++        "runtime_identity": runtime_identity or {"backend": "injected", "protected": False},
++        "shortcut": "northwest_object_is_red_role",
++        "explanation": (
++            "All visible demonstrations place red northwest, so a learner can ignore colors and "
++            "assign red/green semantic roles by object position. The southeast-red query swaps "
++            "those roles while preserving the intended color-based rule."
++        ),
++        "demonstrations": demonstrations,
++        "query": {
++            "seed": 4201,
++            "sample_index": 73,
++            "difficulty": "hard",
++            "placement": GEN.observe_overrides(query_grid)["placement"],
++            "input": query_grid,
++            "output": query_output,
++            "rival_output": query_rival,
++        },
++        "rival_fits_all_demonstrations": fits,
++        "rival_changes_query": changes,
++        "changed_query_cells": _changed_cells(query_output, query_rival),
++        "lesson_checker_result": checker_result,
++        "repair": (
++            "Add this position-role rival to LESSON_COMPETITORS or require visible demonstrations "
++            "that reverse red/green placement before admitting a lesson."
++        ),
++        "limits": "One deterministic three-demo witness; no universal ambiguity claim.",
++    }
++
++
++def _write(path: Path, value: dict) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++
++
++def main(argv=None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", required=True)
++    args = parser.parse_args(argv)
++    runtime = ROOT / "shared" / "runtime"
++    with _local_imports(runtime, Path(__file__).resolve().parent):
++        apply, identity, bridge = _real_evaluator(runtime)
++        try:
++            witness = build_witness(apply_program=apply, runtime_identity=identity)
++        finally:
++            bridge.close()
++    if identity.get("backend") != "racket" or identity.get("protected") is not True:
++        raise RuntimeError("peer witness requires protected Racket labels")
++    _write(Path(args.out).resolve(), witness)
++    print(json.dumps({
++        "status": witness["status"],
++        "task_id": TASK_ID,
++        "shortcut": witness["shortcut"],
++        "changed_query_cells": witness["changed_query_cells"],
++        "lesson_checker_result": witness["lesson_checker_result"],
++        "out": str(Path(args.out).resolve()),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/9f362acbf729/notes.md b/repo/generators/9f362acbf729/notes.md
+--- a/repo/generators/9f362acbf729/notes.md
++++ b/repo/generators/9f362acbf729/notes.md
+@@ -11,3 +11,15 @@
+ `numeric_rotation` is retained as an executable semantic rival (incorrectly treating keys as quarter-turn counts). Every generated scene is required to disagree with it, and `WITNESS_RIVALS` binds that claim for the semantic gate. The 24-value `key_order` axis is marked diagnostic only to avoid the generic 16-value probe cap; task tests explicitly force and observe every permutation.
+ 
+ Current evidence covers canonical-pair parity, staged Racket rule smoke, override behavior, sampler boundaries, malformed-input rejection, transformation drift, profile support, and semantic-rival disagreement. The Python mirror is supporting evidence only; the canonical Racket program remains output authority. No full all-stage battery was needed for this repair, and packaging does not itself grant approval or training admission.
++
++## Reviewer follow-up — fixed corner positions can hide key semantics (2026-10-24)
++
++A source-pinned protected-Racket probe retained three demonstrations whose key
++order is always `1-2-3-4`.  The executable wrong rule
++`fixed_corner_positions_ignore_key_values` maps transform semantics directly to
++corner position and ignores the numeric keys; it fits every demonstration and
++differs on a `4-3-2-1` query in 32 cells.  No lesson-level identifiability checker
++is currently exposed.  Evidence: `checks/9f362acbf729/fixed-position-witness.json`;
++reusable probe: `workspace/lesson_probe.py`.  Production bytes remain unchanged.
++The concrete repair is a lesson-level fixed-position rival plus required visible
++key-order variation.  This is one bounded witness, not a universal ambiguity claim.
+diff --git a/repo/generators/9f362acbf729/tests/test_reviewer_lesson_probe_9f36.py b/repo/generators/9f362acbf729/tests/test_reviewer_lesson_probe_9f36.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9f362acbf729/tests/test_reviewer_lesson_probe_9f36.py
+@@ -0,0 +1,32 @@
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++from reviewer_support import find_root, load_selected_generator
++
++
++TASK = "9f362acbf729"
++ROOT = find_root(__file__)
++GEN, _, _ = load_selected_generator(TASK, root=ROOT)
++PROBE_PATH = Path(__file__).resolve().parents[1] / "workspace" / "lesson_probe.py"
++
++
++def load_probe():
++    spec = importlib.util.spec_from_file_location("probe_9f36", PROBE_PATH)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_fixed_corner_position_shortcut_survives_constant_key_order_demos():
++    probe = load_probe()
++    witness = probe.build_witness(apply_program=lambda program, grid: GEN.rule_mirror(grid))
++    assert witness["status"] == "finding"
++    assert witness["shortcut"] == "fixed_corner_positions_ignore_key_values"
++    assert len(witness["demonstrations"]) == 3
++    assert all(row["key_order"] == "1-2-3-4" for row in witness["demonstrations"])
++    assert witness["query"]["key_order"] == "4-3-2-1"
++    assert witness["rival_fits_all_demonstrations"] is True
++    assert witness["rival_changes_query"] is True
++    assert witness["changed_query_cells"] > 0
+diff --git a/repo/generators/9f362acbf729/workspace/lesson_probe.py b/repo/generators/9f362acbf729/workspace/lesson_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9f362acbf729/workspace/lesson_probe.py
+@@ -0,0 +1,176 @@
++#!/usr/bin/env python3
++"""Source-pinned lesson probe for a fixed-corner transform shortcut.
++
++Three demonstrations use key order 1-2-3-4.  A plausible wrong learner maps
++corner position directly to those four transforms and ignores the key values.
++A reversed-key query exposes the shortcut.  Correct labels are executed through
++protected Racket in CLI mode.
++"""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++
++from arcpuzzles.catalog import Catalog
++from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++from reviewer_support import find_root, load_selected_generator
++
++
++TASK_ID = "9f362acbf729"
++EXPECTED_SOURCE_SHA256 = "80bc685311c0092f242c9500b79e8caeb502874d9f3ca93e2371cb9f6387d362"
++ROOT = find_root(__file__)
++GEN, SOURCE_PATH, SOURCE_SHA256 = load_selected_generator(TASK_ID, root=ROOT)
++if SOURCE_SHA256 != EXPECTED_SOURCE_SHA256:
++    raise ValueError(
++        f"assigned peer source changed: expected {EXPECTED_SOURCE_SHA256}, got {SOURCE_SHA256}"
++    )
++
++
++def _canonical_program() -> str:
++    programs = {
++        row.get("program_solution")
++        for row in Catalog(ROOT)._variants().get(TASK_ID, [])
++        if isinstance(row.get("program_solution"), str) and row["program_solution"].strip()
++    }
++    if len(programs) != 1:
++        raise ValueError("peer must have one exact canonical Racket program")
++    return next(iter(programs))
++
++
++def fixed_corner_positions_ignore_key_values(grid: list[list[int]]) -> list[list[int]]:
++    """Wrong rule: top-left/top-right/bottom-left/bottom-right mean keys 1/2/3/4."""
++    facts = GEN._rule_facts(grid)
++    transformed = tuple(GEN._transform_by_key(facts["shape"], key) for key in (1, 2, 3, 4))
++    return GEN._assemble_mosaic(transformed)
++
++
++def _changed_cells(left: list[list[int]], right: list[list[int]]) -> int:
++    height = max(len(left), len(right))
++    width = max(len(left[0]), len(right[0]))
++    return sum(
++        (left[row][column] if row < len(left) and column < len(left[0]) else None)
++        != (right[row][column] if row < len(right) and column < len(right[0]) else None)
++        for row in range(height)
++        for column in range(width)
++    )
++
++
++def build_witness(*, apply_program, runtime_identity: dict | None = None) -> dict:
++    program = _canonical_program()
++    demo_specs = (
++        (5101, 0, "easy", 2, 3, 2),
++        (5102, 19, "medium", 3, 2, 2),
++        (5103, 37, "hard", 4, 3, 3),
++    )
++    demonstrations = []
++    for seed, sample_index, difficulty, body_h, body_w, palette_size in demo_specs:
++        grid = GEN.generate(
++            seed,
++            sample_index,
++            difficulty=difficulty,
++            body_h=body_h,
++            body_w=body_w,
++            palette_size=palette_size,
++            key_order="1-2-3-4",
++        )
++        output = _grid(apply_program(program, deepcopy(grid)))
++        rival = fixed_corner_positions_ignore_key_values(grid)
++        demonstrations.append(
++            {
++                "seed": seed,
++                "sample_index": sample_index,
++                "difficulty": difficulty,
++                "key_order": GEN.observe_overrides(grid)["key_order"],
++                "input": grid,
++                "output": output,
++                "rival_output": rival,
++            }
++        )
++
++    query_grid = GEN.generate(
++        5201,
++        61,
++        difficulty="hard",
++        body_h=3,
++        body_w=4,
++        palette_size=3,
++        key_order="4-3-2-1",
++    )
++    query_output = _grid(apply_program(program, deepcopy(query_grid)))
++    query_rival = fixed_corner_positions_ignore_key_values(query_grid)
++    fits = all(row["rival_output"] == row["output"] for row in demonstrations)
++    changes = query_rival != query_output
++    if not fits or not changes:
++        raise RuntimeError("deterministic fixed-position witness no longer exposes the shortcut")
++
++    return {
++        "schema": "arcpuzzles-peer-lesson-probe-v1",
++        "status": "finding",
++        "task_id": TASK_ID,
++        "source_path": SOURCE_PATH.relative_to(ROOT).as_posix(),
++        "source_sha256": SOURCE_SHA256,
++        "canonical_program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++        "runtime_identity": runtime_identity or {"backend": "injected", "protected": False},
++        "shortcut": "fixed_corner_positions_ignore_key_values",
++        "explanation": (
++            "All visible demonstrations use key order 1-2-3-4, so a learner can map corner "
++            "position directly to transforms and ignore the numeric keys. Reversing the query "
++            "keys changes the intended mosaic but leaves that shortcut unchanged."
++        ),
++        "demonstrations": demonstrations,
++        "query": {
++            "seed": 5201,
++            "sample_index": 61,
++            "difficulty": "hard",
++            "key_order": GEN.observe_overrides(query_grid)["key_order"],
++            "input": query_grid,
++            "output": query_output,
++            "rival_output": query_rival,
++        },
++        "rival_fits_all_demonstrations": fits,
++        "rival_changes_query": changes,
++        "changed_query_cells": _changed_cells(query_output, query_rival),
++        "lesson_checker_present": callable(getattr(GEN, "lesson_identifiable", None)),
++        "repair": (
++            "Add a lesson-level fixed-position rival and require visible key-order variation "
++            "before admitting a lesson; per-pair numeric_rotation disagreement is insufficient."
++        ),
++        "limits": "One deterministic three-demo witness; no universal ambiguity claim.",
++    }
++
++
++def _write(path: Path, value: dict) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++
++
++def main(argv=None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", required=True)
++    args = parser.parse_args(argv)
++    runtime = ROOT / "shared" / "runtime"
++    with _local_imports(runtime, Path(__file__).resolve().parent):
++        apply, identity, bridge = _real_evaluator(runtime)
++        try:
++            witness = build_witness(apply_program=apply, runtime_identity=identity)
++        finally:
++            bridge.close()
++    if identity.get("backend") != "racket" or identity.get("protected") is not True:
++        raise RuntimeError("peer witness requires protected Racket labels")
++    _write(Path(args.out).resolve(), witness)
++    print(json.dumps({
++        "status": witness["status"],
++        "task_id": TASK_ID,
++        "shortcut": witness["shortcut"],
++        "changed_query_cells": witness["changed_query_cells"],
++        "lesson_checker_present": witness["lesson_checker_present"],
++        "out": str(Path(args.out).resolve()),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

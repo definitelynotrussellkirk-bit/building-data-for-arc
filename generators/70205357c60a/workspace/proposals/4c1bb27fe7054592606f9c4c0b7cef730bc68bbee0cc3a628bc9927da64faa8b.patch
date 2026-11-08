@@ -1,0 +1,2101 @@
+diff --git a/repo/generators/69cab6228fdc/notes.md b/repo/generators/69cab6228fdc/notes.md
+--- a/repo/generators/69cab6228fdc/notes.md
++++ b/repo/generators/69cab6228fdc/notes.md
+@@ -1,3 +1,16 @@
++## Native parametric promotion (review-adf929d968f3fb1a)
++
++A new `workspace/parametric` family preserves the exact two-row-legend rule as
++`mode=canonical` and adds `mode=mapped_region_relay`.  The alternate applies
++the legend, counts the resulting colour-2 regions, and uses that count to
++select one of three payloads.  All scenes retain three raw colour-1 components,
++so the protected raw-source counterfactual selects the wrong payload on the
++30×30 witness.  The first two demonstrations deliberately match on dimensions,
++legend placement, source area, and total occupancy while requiring different
++answers, after an initial adversarial pass exposed nuisance-feature shortcuts.
++Fresh task tests, bounded rival audit, native qualification, public projection,
++and causal replay are retained in the current assignment checks.
++
+ # Working notes: 69cab6228fdc
+ 
+ ## Current review decision
+diff --git a/repo/generators/69cab6228fdc/tests/test_parametric_region_relay.py b/repo/generators/69cab6228fdc/tests/test_parametric_region_relay.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/tests/test_parametric_region_relay.py
+@@ -0,0 +1,96 @@
++from __future__ import annotations
++
++from importlib.util import module_from_spec, spec_from_file_location
++import json
++from pathlib import Path
++
++import pytest
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import find_root
++
++TASK_ID = "69cab6228fdc"
++
++
++def _load(name: str):
++    root = Path(find_root(__file__))
++    path = root / "generators" / TASK_ID / "workspace" / "parametric" / name
++    spec = spec_from_file_location(f"_{TASK_ID}_{name.replace('.', '_')}", path)
++    module = module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture(scope="module")
++def racket():
++    bridge = RacketBridge()
++    assert bridge.runtime_identity["backend"] == "racket"
++    assert bridge.runtime_identity["protected"] is True
++
++    def run(program: str, grid: list[list[int]]) -> list[list[int]]:
++        literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++        return bridge.eval_text(f"({wrap_rule(program)} {literal})")
++
++    yield run
++    bridge.close()
++
++
++def test_default_program_is_exact_canonical_and_relay_is_distinct():
++    family = _load("family.py")
++    adapter = _load("adapter.py")
++    canonical = Path(family.__file__).with_name("canonical.rkt").read_text()
++    assert adapter.program({"mode": "canonical"}) == canonical
++    assert adapter.program({"mode": "mapped_region_relay"}) != canonical
++
++
++def test_counts_are_independent_inputs_are_matched_and_fourth_query_is_30x30():
++    adapter = _load("adapter.py")
++    small = adapter.generate(23, {"mode": "canonical"}, demos=2, queries=1)
++    large = adapter.generate(23, {"mode": "canonical"}, demos=6, queries=4)
++    relay = adapter.generate(23, {"mode": "mapped_region_relay"}, demos=6, queries=4)
++    assert len(small["train"]) == 2 and len(small["test"]) == 1
++    assert len(large["train"]) == 6 and len(large["test"]) == 4
++    assert [p["input"] for p in large["train"] + large["test"]] == [
++        p["input"] for p in relay["train"] + relay["test"]
++    ]
++    all_inputs = [json.dumps(p["input"], sort_keys=True) for p in large["train"] + large["test"]]
++    assert len(all_inputs) == len(set(all_inputs))
++    assert len(large["test"][3]["input"]) == 30
++    assert len(large["test"][3]["input"][0]) == 30
++
++
++def test_python_claims_match_protected_racket_and_demos_identify_mode(racket):
++    adapter = _load("adapter.py")
++    for mode in ("canonical", "mapped_region_relay"):
++        episode = adapter.generate(17, {"mode": mode}, demos=3, queries=4)
++        chosen_program = adapter.program({"mode": mode})
++        other_mode = "mapped_region_relay" if mode == "canonical" else "canonical"
++        other_program = adapter.program({"mode": other_mode})
++        for pair in episode["train"] + episode["test"]:
++            assert racket(chosen_program, pair["input"]) == pair["output"]
++        assert all(racket(other_program, pair["input"]) != pair["output"] for pair in episode["train"])
++
++
++def test_mapped_region_intermediate_covers_one_two_three_and_raw_source_counterfactual_changes_output(racket):
++    family = _load("family.py")
++    values = set()
++    for seed in range(9):
++        episode = family.build_episode(seed, "mapped_region_relay", 3, 4)
++        values.update(family.mapped_region_count(pair["input"]) for pair in episode["train"] + episode["test"])
++    assert values == {1, 2, 3}
++
++    episode = family.build_episode(0, "mapped_region_relay", 3, 4)
++    witness = next(pair for pair in episode["test"] if family.mapped_region_count(pair["input"]) != 3)
++    correct = racket(family.program_for("mapped_region_relay"), witness["input"])
++    wrong = racket(family.counterfactual_program(), witness["input"])
++    assert correct == witness["output"]
++    assert wrong != correct
++
++
++@pytest.mark.parametrize("bad", [True, 1.0, -1, 2**63])
++def test_seed_contract_is_strict(bad):
++    adapter = _load("adapter.py")
++    with pytest.raises((TypeError, ValueError)):
++        adapter.generate(bad, {"mode": "canonical"}, demos=3, queries=4)
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/README.md b/repo/generators/69cab6228fdc/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/README.md
+@@ -0,0 +1,26 @@
++# Native parametric family — mapped-region relay
++
++This family preserves the two-row-legend task as its exact default and adds one
++opt-in sequential setting:
++
++- `canonical` applies the selected canonical Racket program byte-for-byte.
++- `mapped_region_relay` applies that legend mapping, counts the resulting
++  colour-2 connected regions to the left of a colour-9 separator, and uses the
++  count (1, 2, or 3) to choose one of three ordered colour-6 payloads to recolour
++  to 8.
++
++The controller always contains three disconnected raw colour-1 components.
++Colour-2 bridges join them only after the legend maps 1→2, so a retained
++counterfactual that counts raw source components always chooses payload 3.  The
++qualified 30×30 witness has mapped count 2 and therefore changes under that
++ablation.
++
++Inputs are matched across settings.  The adapter independently accepts 2–6
++demonstrations and 1–4 prefix-stable queries.  The first two demonstrations
++have equal dimensions, legend placement, source area, and total occupancy but
++require different intermediate values, blocking nuisance lookup shortcuts.
++
++`verify.py` runs the bounded named-rival and protected-Racket audit;
++`promotion.json` is the native adapter contract; source-bound evidence is under
++`evidence/`.  Qualification and causal replay receipts are stored outside the
++source closure under `WORK/checks/69cab6228fdc/`.
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/adapter.py b/repo/generators/69cab6228fdc/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/adapter.py
+@@ -0,0 +1,24 @@
++"""Native promotion adapter for the mapped-region relay family."""
++from importlib.util import module_from_spec, spec_from_file_location
++from pathlib import Path
++
++_spec = spec_from_file_location(
++    "_family_69cab6228fdc", Path(__file__).with_name("family.py")
++)
++_family = module_from_spec(_spec)
++assert _spec.loader is not None
++_spec.loader.exec_module(_family)
++
++
++def _mode(settings):
++    if not isinstance(settings, dict) or set(settings) != {"mode"}:
++        raise ValueError("settings must contain exactly mode")
++    return _family._validate_mode(settings["mode"])
++
++
++def program(settings):
++    return _family.program_for(_mode(settings))
++
++
++def generate(seed, settings, demos, queries):
++    return _family.build_episode(seed, _mode(settings), demos, queries)
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/canonical.rkt b/repo/generators/69cab6228fdc/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (t10-alist-ref pairs key default) (let ((hits (filter (lambda (p) (= (first p) key)) pairs))) (if (empty? hits) default (second (first hits))))) (let ((pairs (filter (lambda (p) (and (not (= (first p) 0)) (not (= (second p) 0)))) (map list (row g 0) (row g 1))))) (grid-from-fn (- (rows g) 3) (cols g) (lambda (r c) (let ((v (at g (+ r 3) c))) (t10-alist-ref pairs v v)))))))
+\ No newline at end of file
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/evidence/current/authoring-report.json b/repo/generators/69cab6228fdc/workspace/parametric/evidence/current/authoring-report.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/evidence/current/authoring-report.json
+@@ -0,0 +1,97 @@
++{
++  "contains_30x30": true,
++  "counterfactual": {
++    "ablation": "wrong_intermediate",
++    "actual_intermediate": 2,
++    "changed_cells": 16,
++    "input_size": [
++      30,
++      30
++    ],
++    "wrong_intermediate": 3
++  },
++  "demo_counts": [
++    2,
++    3,
++    6
++  ],
++  "episodes": 96,
++  "failures": [],
++  "intermediate_histogram": {
++    "1": 224,
++    "2": 320,
++    "3": 192
++  },
++  "limits": "Finite named-rival and seed audit; not a proof of universal identifiability.",
++  "named_rivals": [
++    "always_first",
++    "always_second",
++    "always_third",
++    "canonical_only",
++    "grid_height_mod_three",
++    "grid_width_mod_three",
++    "legend_source_column_mod_three",
++    "raw_source_area_mod_three",
++    "raw_source_component_count",
++    "raw_target_cell_count_mod_three",
++    "raw_target_region_count_mod_three",
++    "total_nonzero_mod_three"
++  ],
++  "queries": 4,
++  "racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "racket_evaluations": 30,
++  "raw_source_component_histogram": {
++    "3": 736
++  },
++  "rival_checks": 1152,
++  "schema": "69cab6228fdc-parametric-authoring-audit-v1",
++  "seed_count": 32,
++  "sizes": [
++    [
++      15,
++      18
++    ],
++    [
++      16,
++      18
++    ],
++    [
++      17,
++      20
++    ],
++    [
++      19,
++      22
++    ],
++    [
++      20,
++      22
++    ],
++    [
++      22,
++      24
++    ],
++    [
++      24,
++      26
++    ],
++    [
++      26,
++      28
++    ],
++    [
++      30,
++      30
++    ]
++  ],
++  "status": "pass",
++  "surviving_query_changing_rivals": [],
++  "task_id": "69cab6228fdc"
++}
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/evidence/current/test-summary.json b/repo/generators/69cab6228fdc/workspace/parametric/evidence/current/test-summary.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/evidence/current/test-summary.json
+@@ -0,0 +1,27 @@
++{
++  "authoring_audit": {
++    "contains_30x30": true,
++    "episodes": 96,
++    "racket_evaluations": 30,
++    "rival_checks": 1152,
++    "seeds": 32,
++    "status": "pass"
++  },
++  "hashes": {
++    "adapter.py": "9ff0cd7398bd03d917fd384ad2cb2a6c4d59b108dd4bcfa4e352cfbb475106ed",
++    "canonical.rkt": "8fec6004f58803aff90f61170f6e39e07349502a2872e18ea3617b75fdfff584",
++    "family.py": "9c3b8a423aec5344cfe41b04c01f5a2131eba0143b2ad6fa71df74cdd336c573",
++    "generator.py": "e321c1876f90a5efb13c60f8eb3c32f4f89d9d74121695b1ce6c3fe9f1c801a2",
++    "relay.rkt": "68d693490f31ac30fad452b7776035b44f881c35eeadfd969344ce24629c3fb3",
++    "verify.py": "c3aa7c732193adbfc8c04b5e0b338c27da1f6727307f2eac46d648dac884f476",
++    "wrong_raw_source_components.rkt": "e09b86f3c0a788806d6d24b71728457e43f8bb27184c8dc0d66cc35d258dae34"
++  },
++  "limits": "Finite task-local and named-rival evidence; owner acceptance and training admission are not claimed.",
++  "schema": "69cab6228fdc-parametric-test-summary-v1",
++  "task_id": "69cab6228fdc",
++  "task_tests": {
++    "command": "python3 review.py task-tests 69cab6228fdc --phase after --out ../checks/69cab6228fdc-tests-final",
++    "failed": 0,
++    "passed": 20
++  }
++}
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/evidence/manifest.json b/repo/generators/69cab6228fdc/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,87 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "8fec6004f58803aff90f61170f6e39e07349502a2872e18ea3617b75fdfff584",
++  "canonical_rule_hash": "8fec6004f588",
++  "default": {
++    "mode": "canonical"
++  },
++  "evidence_root": "generators/69cab6228fdc/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 21369,
++      "path": "generators/69cab6228fdc/generator.py",
++      "sha256": "e321c1876f90a5efb13c60f8eb3c32f4f89d9d74121695b1ce6c3fe9f1c801a2"
++    },
++    {
++      "bytes": 762,
++      "path": "generators/69cab6228fdc/workspace/parametric/adapter.py",
++      "sha256": "9ff0cd7398bd03d917fd384ad2cb2a6c4d59b108dd4bcfa4e352cfbb475106ed"
++    },
++    {
++      "bytes": 407,
++      "path": "generators/69cab6228fdc/workspace/parametric/canonical.rkt",
++      "sha256": "8fec6004f58803aff90f61170f6e39e07349502a2872e18ea3617b75fdfff584"
++    },
++    {
++      "bytes": 1831,
++      "path": "generators/69cab6228fdc/workspace/parametric/evidence/current/authoring-report.json",
++      "sha256": "79262f7b44560c51ed84573e5fda773f84d5c341727a2dac65f94931b0e77bed"
++    },
++    {
++      "bytes": 1188,
++      "path": "generators/69cab6228fdc/workspace/parametric/evidence/current/test-summary.json",
++      "sha256": "f7d57f70e98a644a6d6f5c1105053b88b72f55383aec6e23828e804b481ba4a5"
++    },
++    {
++      "bytes": 12534,
++      "path": "generators/69cab6228fdc/workspace/parametric/family.py",
++      "sha256": "9c3b8a423aec5344cfe41b04c01f5a2131eba0143b2ad6fa71df74cdd336c573"
++    },
++    {
++      "bytes": 506,
++      "path": "generators/69cab6228fdc/workspace/parametric/promotion.json",
++      "sha256": "fd21213ed0d875e846409f8e4be4e6192ff207797624d2f7c67f1227a9ff961d"
++    },
++    {
++      "bytes": 1357,
++      "path": "generators/69cab6228fdc/workspace/parametric/relay.rkt",
++      "sha256": "68d693490f31ac30fad452b7776035b44f881c35eeadfd969344ce24629c3fb3"
++    },
++    {
++      "bytes": 7296,
++      "path": "generators/69cab6228fdc/workspace/parametric/verify.py",
++      "sha256": "c3aa7c732193adbfc8c04b5e0b338c27da1f6727307f2eac46d648dac884f476"
++    },
++    {
++      "bytes": 1475,
++      "path": "generators/69cab6228fdc/workspace/parametric/wrong_raw_source_components.rkt",
++      "sha256": "e09b86f3c0a788806d6d24b71728457e43f8bb27184c8dc0d66cc35d258dae34"
++    }
++  ],
++  "generator_sha256": "e321c1876f90a5efb13c60f8eb3c32f4f89d9d74121695b1ce6c3fe9f1c801a2",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "mode": [
++      "canonical",
++      "mapped_region_relay"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "Fresh task-local suite: 20 passed. Bounded self-review: 32 seeds x demo counts 2,3,6, four queries, 1,152 named-rival checks, 30 protected-Racket evaluations, exact 30x30 coverage, and a raw-source wrong-intermediate counterfactual; no retained failures.",
++  "rule_task_id": "69cab6228fdc",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "69cab6228fdc",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/family.py b/repo/generators/69cab6228fdc/workspace/parametric/family.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/family.py
+@@ -0,0 +1,324 @@
++"""Native parametric family for 69cab6228fdc.
++
++The canonical setting applies the two-row legend and removes the three header
++rows.  The alternate first performs that exact transform, counts the resulting
++colour-2 regions on the controller side, and uses that count to select one of
++three payload components on the other side.
++"""
++from __future__ import annotations
++
++from collections import deque
++import hashlib
++from pathlib import Path
++import random
++from typing import Any, Iterable
++
++TASK_ID = "69cab6228fdc"
++MODES = ("canonical", "mapped_region_relay")
++DEFAULT_MODE = "canonical"
++DIR4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
++HERE = Path(__file__).resolve().parent
++
++
++def _read(name: str) -> str:
++    return (HERE / name).read_text(encoding="utf-8")
++
++
++def program_for(mode: str) -> str:
++    mode = _validate_mode(mode)
++    return _read("canonical.rkt" if mode == "canonical" else "relay.rkt")
++
++
++def counterfactual_program() -> str:
++    return _read("wrong_raw_source_components.rkt")
++
++
++def _exact_int(value: Any, name: str, low: int, high: int) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be an exact integer")
++    if not low <= value <= high:
++        raise ValueError(f"{name} must be in {low}..{high}")
++    return value
++
++
++def _validate_mode(mode: Any) -> str:
++    if type(mode) is not str or mode not in MODES:
++        raise ValueError(f"mode must be one of {MODES}")
++    return mode
++
++
++def _blank(height: int, width: int) -> list[list[int]]:
++    return [[0 for _ in range(width)] for _ in range(height)]
++
++
++def _paint(grid: list[list[int]], cells: Iterable[tuple[int, int]], color: int) -> None:
++    h, w = len(grid), len(grid[0])
++    for r, c in cells:
++        if not (0 <= r < h and 0 <= c < w):
++            raise ValueError(f"paint cell {(r, c)} outside {h}x{w}")
++        if grid[r][c] != 0:
++            raise ValueError(f"paint overlap at {(r, c)}")
++        grid[r][c] = color
++
++
++def _components(grid: list[list[int]], color: int) -> list[list[tuple[int, int]]]:
++    h, w = len(grid), len(grid[0])
++    todo = {(r, c) for r in range(h) for c in range(w) if grid[r][c] == color}
++    result: list[list[tuple[int, int]]] = []
++    while todo:
++        start = min(todo)
++        todo.remove(start)
++        queue = deque([start])
++        cells = [start]
++        while queue:
++            r, c = queue.popleft()
++            for dr, dc in DIR4:
++                nxt = (r + dr, c + dc)
++                if nxt in todo:
++                    todo.remove(nxt)
++                    queue.append(nxt)
++                    cells.append(nxt)
++        result.append(sorted(cells))
++    return sorted(result, key=lambda cells: cells[0])
++
++
++def _legend_pairs(grid: list[list[int]]) -> list[tuple[int, int]]:
++    if len(grid) < 4:
++        raise ValueError("legend input needs at least four rows")
++    return [(a, b) for a, b in zip(grid[0], grid[1]) if a != 0 and b != 0]
++
++
++def canonical_transform(grid: list[list[int]]) -> list[list[int]]:
++    pairs = _legend_pairs(grid)
++    mapping: dict[int, int] = {}
++    for source, target in pairs:
++        mapping.setdefault(source, target)
++    return [[mapping.get(value, value) for value in row] for row in grid[3:]]
++
++
++def _separator_col(stage: list[list[int]]) -> int:
++    positions = [(r, c) for r, row in enumerate(stage) for c, value in enumerate(row) if value == 9]
++    columns = {c for _, c in positions}
++    if len(columns) != 1:
++        raise ValueError("expected one colour-9 separator column")
++    col = next(iter(columns))
++    if len(positions) != len(stage):
++        raise ValueError("separator must span the transformed canvas")
++    return col
++
++
++def mapped_region_count(grid: list[list[int]]) -> int:
++    stage = canonical_transform(grid)
++    sep = _separator_col(stage)
++    regions = [cells for cells in _components(stage, 2) if max(c for _, c in cells) < sep]
++    value = len(regions)
++    if value not in (1, 2, 3):
++        raise ValueError(f"mapped colour-2 region count must be 1..3, got {value}")
++    return value
++
++
++def raw_source_count(grid: list[list[int]]) -> int:
++    body = grid[3:]
++    stage = canonical_transform(grid)
++    sep = _separator_col(stage)
++    return len([cells for cells in _components(body, 1) if max(c for _, c in cells) < sep])
++
++
++def _payloads(stage: list[list[int]]) -> list[list[tuple[int, int]]]:
++    sep = _separator_col(stage)
++    payloads = [cells for cells in _components(stage, 6) if min(c for _, c in cells) > sep]
++    return sorted(payloads, key=lambda cells: cells[0])
++
++
++def relay_transform(grid: list[list[int]]) -> list[list[int]]:
++    stage = canonical_transform(grid)
++    payloads = _payloads(stage)
++    if len(payloads) != 3:
++        raise ValueError(f"expected three payloads, found {len(payloads)}")
++    target = payloads[mapped_region_count(grid) - 1]
++    out = [row[:] for row in stage]
++    for r, c in target:
++        out[r][c] = 8
++    return out
++
++
++def transform(grid: list[list[int]], mode: str) -> list[list[int]]:
++    mode = _validate_mode(mode)
++    return canonical_transform(grid) if mode == "canonical" else relay_transform(grid)
++
++
++def _profile(is_query: bool, index: int) -> tuple[int, int]:
++    demos = ((15, 18), (15, 18), (17, 20), (19, 22), (22, 24), (24, 26))
++    queries = ((16, 18), (20, 22), (26, 28), (30, 30))
++    return (queries if is_query else demos)[index]
++
++
++def _shape_cells(kind: int, r0: int, c0: int, scale: int) -> list[tuple[int, int]]:
++    if kind % 3 == 0:
++        return [(r, c) for r in range(r0, r0 + 2 + scale) for c in range(c0, c0 + 2)]
++    if kind % 3 == 1:
++        cells = [(r0, c0 + c) for c in range(3 + scale)]
++        cells += [(r0 + r, c0) for r in range(1, 2 + scale)]
++        return sorted(set(cells))
++    cells = [(r0 + r, c0 + 1) for r in range(2 + scale)]
++    cells += [(r0 + 1 + scale, c0 + c) for c in range(3 + scale)]
++    return sorted(set(cells))
++
++
++def _scene(seed: int, index: int, *, is_query: bool, attempt: int = 0) -> list[list[int]]:
++    height, width = _profile(is_query, index)
++    body_h = height - 3
++    token = hashlib.sha256(
++        f"69cab6228fdc-mapped-region-v1:{seed}:{is_query}:{index}:{attempt}".encode()
++    ).digest()
++    rng = random.Random(token)
++    grid = _blank(height, width)
++
++    legend = [(1, 2), (3, 4), (5, 7)]
++    legend_token = hashlib.sha256(f"69cab6228fdc-legend-v1:{seed}".encode()).digest()
++    legend_rng = random.Random(legend_token)
++    columns = legend_rng.sample(range(width), len(legend))
++    for column, (source, target) in zip(columns, legend):
++        grid[0][column] = source
++        grid[1][column] = target
++
++    sep = width // 2
++    for br in range(body_h):
++        grid[3 + br][sep] = 9
++
++    if is_query:
++        k = (1, 2, 3, 2)[index]
++    else:
++        leading = (1, 2) if seed % 2 == 0 else (2, 1)
++        k = (leading + (3, 1, 2, 3))[index]
++
++    # Three raw source-colour components.  Their shapes and attached target
++    # tails vary independently of k, while optional colour-2 bridges determine
++    # how many regions exist only after source 1 maps to target 2.
++    anchors = (1, body_h // 2, body_h - 2)
++    c0 = 1 + ((seed + index + attempt) % max(1, min(2, sep - 5)))
++    source_lengths = [2 + ((seed + j) % 2) for j in range(3)]
++    for j, (row, length) in enumerate(zip(anchors, source_lengths)):
++        cells = [(3 + row, c) for c in range(c0, c0 + length)]
++        _paint(grid, cells, 1)
++        tail_len = 1 + ((seed + index + j + attempt) % 2)
++        tails = [(3 + row, c) for c in range(c0 + length, c0 + length + tail_len)]
++        _paint(grid, tails, 2)
++
++    variant = (seed + index + attempt) % 2
++    connected_pairs: set[int]
++    if k == 1:
++        connected_pairs = {0, 1}
++    elif k == 2:
++        connected_pairs = {variant}
++    else:
++        connected_pairs = set()
++    for pair_index in connected_pairs:
++        top = anchors[pair_index]
++        bottom = anchors[pair_index + 1]
++        bridge = [(3 + row, c0) for row in range(top + 1, bottom)]
++        _paint(grid, bridge, 2)
++        if bridge:
++            spur_row, spur_col = bridge[len(bridge) // 2]
++            spur_len = 1 + ((seed + index + pair_index) % 2)
++            for dc in range(1, spur_len + 1):
++                if spur_col + dc < sep and grid[spur_row][spur_col + dc] == 0:
++                    grid[spur_row][spur_col + dc] = 2
++
++    # Mapped legend distractors demonstrate that the first transform applies
++    # to more than the controller colour.
++    distractor_positions = [
++        (3, max(0, sep - 2)),
++        (3 + body_h - 1, max(0, sep - 3)),
++    ]
++    for position, color in zip(distractor_positions, (3, 5)):
++        r, c = position
++        if grid[r][c] == 0:
++            grid[r][c] = color
++
++    right_start = sep + 1
++    right_width = width - right_start
++    bands = ((0, body_h // 3), (body_h // 3, 2 * body_h // 3), (2 * body_h // 3, body_h))
++    occupied: set[tuple[int, int]] = set()
++    for payload_index, (lo, hi) in enumerate(bands):
++        scale = 0 if body_h < 16 else 1 if body_h < 24 else 2
++        kind = payload_index + seed + index
++        for _ in range(128):
++            base = _shape_cells(kind, 0, 0, scale)
++            sh = max(r for r, _ in base) + 1
++            sw = max(c for _, c in base) + 1
++            if hi - lo < sh or right_width < sw:
++                scale = max(0, scale - 1)
++                continue
++            br = lo + rng.randrange(hi - lo - sh + 1)
++            bc = right_start + rng.randrange(right_width - sw + 1)
++            cells = {(3 + br + r, bc + c) for r, c in _shape_cells(kind, 0, 0, scale)}
++            halo = cells | {(r + dr, c + dc) for r, c in cells for dr, dc in DIR4}
++            if all(grid[r][c] == 0 for r, c in cells) and not (halo & occupied):
++                _paint(grid, sorted(cells), 6)
++                occupied |= cells
++                break
++        else:
++            raise RuntimeError(f"could not place payload {payload_index}")
++
++    # Normalize the total visible occupancy within each size profile using
++    # inert passthrough colour 8.  In particular, the first two demonstrations
++    # have the same size and nuisance statistics while requiring different
++    # intermediate values, defeating size/occupancy lookup shortcuts.
++    target_nonzero = (height * width) // 3
++    candidates = [(r, c) for r in range(3, height) for c in range(width)
++                  if c != sep and grid[r][c] == 0]
++    rng.shuffle(candidates)
++    current_nonzero = sum(value != 0 for row in grid for value in row)
++    needed = target_nonzero - current_nonzero
++    if needed < 0 or needed > len(candidates):
++        raise RuntimeError("occupancy normalization target is infeasible")
++    for r, c in candidates[:needed]:
++        grid[r][c] = 8
++
++    _validate_scene(grid)
++    return grid
++
++
++def _validate_scene(grid: list[list[int]]) -> None:
++    if not grid or not grid[0] or len(grid) > 30 or len(grid[0]) > 30:
++        raise ValueError("scene dimensions must be within 1..30")
++    if any(len(row) != len(grid[0]) for row in grid):
++        raise ValueError("scene must be rectangular")
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        raise ValueError("scene cells must be exact ARC integers")
++    if any(grid[2]):
++        raise ValueError("third legend row must remain blank")
++    if raw_source_count(grid) != 3:
++        raise ValueError("scene must contain exactly three raw source-colour components")
++    mapped_region_count(grid)
++    if len(_payloads(canonical_transform(grid))) != 3:
++        raise ValueError("scene must contain exactly three ordered payloads")
++
++
++def build_episode(seed: int, mode: str, demos: int, queries: int) -> dict[str, Any]:
++    _exact_int(seed, "seed", 0, 2**63 - 1)
++    _exact_int(demos, "demos", 2, 6)
++    _exact_int(queries, "queries", 1, 4)
++    mode = _validate_mode(mode)
++    seen: set[tuple[tuple[int, ...], ...]] = set()
++
++    def collect(count: int, is_query: bool) -> list[dict[str, list[list[int]]]]:
++        result = []
++        for index in range(count):
++            for attempt in range(32):
++                grid = _scene(seed, index, is_query=is_query, attempt=attempt)
++                key = tuple(tuple(row) for row in grid)
++                if key not in seen:
++                    seen.add(key)
++                    result.append({"input": grid, "output": transform(grid, mode)})
++                    break
++            else:
++                raise RuntimeError("bounded sampler exhausted without a distinct input")
++        return result
++
++    return {
++        "train": collect(demos, False),
++        "test": collect(queries, True),
++        "program_solution": program_for(mode),
++    }
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/promotion.json b/repo/generators/69cab6228fdc/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/promotion.json
+@@ -0,0 +1,12 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/69cab6228fdc/workspace/parametric/adapter.py",
++  "parameters": {"mode": ["canonical", "mapped_region_relay"]},
++  "default": {"mode": "canonical"},
++  "limits": {"demos": [2, 6], "queries": [1, 4]},
++  "resources": [
++    "generators/69cab6228fdc/workspace/parametric/canonical.rkt",
++    "generators/69cab6228fdc/workspace/parametric/relay.rkt",
++    "generators/69cab6228fdc/workspace/parametric/wrong_raw_source_components.rkt"
++  ]
++}
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/relay.rkt b/repo/generators/69cab6228fdc/workspace/parametric/relay.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/relay.rkt
+@@ -0,0 +1,33 @@
++(rule! (let ((dummy 0))
++  (define (t10-alist-ref pairs key default)
++    (let ((hits (filter (lambda (p) (= (first p) key)) pairs)))
++      (if (empty? hits) default (second (first hits)))))
++  (let* ((pairs
++           (filter (lambda (p)
++                     (and (not (= (first p) 0))
++                          (not (= (second p) 0))))
++                   (map list (row g 0) (row g 1))))
++         (stage
++           (grid-from-fn (- (rows g) 3) (cols g)
++             (lambda (r c)
++               (let ((v (at g (+ r 3) c)))
++                 (t10-alist-ref pairs v v)))))
++         (separator-col (second (first (find-color stage 9))))
++         (intermediate
++           (length
++             (filter (lambda (o)
++                       (and (= (obj-color o) 2)
++                            (< (obj-c2 o) separator-col)))
++                     (objects stage 0))))
++         (payloads
++           (sort
++             (filter (lambda (o)
++                       (and (= (obj-color o) 6)
++                            (> (obj-c1 o) separator-col)))
++                     (objects stage 0))
++             (lambda (a b)
++               (or (< (obj-r1 a) (obj-r1 b))
++                   (and (= (obj-r1 a) (obj-r1 b))
++                        (< (obj-c1 a) (obj-c1 b)))))))
++         (target (list-ref payloads (- intermediate 1))))
++    (recolor-cells stage (obj-cells target) 8))))
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/verify.py b/repo/generators/69cab6228fdc/workspace/parametric/verify.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/verify.py
+@@ -0,0 +1,185 @@
++#!/usr/bin/env python3
++"""Bounded source-bound audit for the 69cab6228fdc native family."""
++from __future__ import annotations
++
++import argparse
++from importlib.util import module_from_spec, spec_from_file_location
++import json
++from pathlib import Path
++from typing import Callable
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++
++HERE = Path(__file__).resolve().parent
++_spec = spec_from_file_location("_family_69cab6228fdc_verify", HERE / "family.py")
++family = module_from_spec(_spec)
++assert _spec.loader is not None
++_spec.loader.exec_module(family)
++
++
++def _rank(value: int) -> int:
++    return 1 + ((value - 1) % 3)
++
++
++def _paint_payload(grid, rank):
++    stage = family.canonical_transform(grid)
++    payloads = family._payloads(stage)
++    out = [row[:] for row in stage]
++    for r, c in payloads[_rank(rank) - 1]:
++        out[r][c] = 8
++    return out
++
++
++def _raw_body(grid):
++    return grid[3:]
++
++
++def _sep(grid):
++    return family._separator_col(family.canonical_transform(grid))
++
++
++def _raw_source_area(grid):
++    sep = _sep(grid)
++    return sum(value == 1 for row in _raw_body(grid) for value in row[:sep])
++
++
++def _raw_target_regions(grid):
++    sep = _sep(grid)
++    return len([cells for cells in family._components(_raw_body(grid), 2)
++                if max(c for _, c in cells) < sep])
++
++
++def _raw_target_cells(grid):
++    sep = _sep(grid)
++    return sum(value == 2 for row in _raw_body(grid) for value in row[:sep])
++
++
++def _legend_source_col(grid):
++    return grid[0].index(1) + 1
++
++
++def _nonzero_count(grid):
++    return sum(value != 0 for row in grid for value in row)
++
++
++RIVALS: dict[str, Callable] = {
++    "canonical_only": family.canonical_transform,
++    "always_first": lambda grid: _paint_payload(grid, 1),
++    "always_second": lambda grid: _paint_payload(grid, 2),
++    "always_third": lambda grid: _paint_payload(grid, 3),
++    "raw_source_component_count": lambda grid: _paint_payload(grid, family.raw_source_count(grid)),
++    "raw_source_area_mod_three": lambda grid: _paint_payload(grid, _raw_source_area(grid)),
++    "raw_target_region_count_mod_three": lambda grid: _paint_payload(grid, _raw_target_regions(grid)),
++    "raw_target_cell_count_mod_three": lambda grid: _paint_payload(grid, _raw_target_cells(grid)),
++    "grid_height_mod_three": lambda grid: _paint_payload(grid, len(grid)),
++    "grid_width_mod_three": lambda grid: _paint_payload(grid, len(grid[0])),
++    "legend_source_column_mod_three": lambda grid: _paint_payload(grid, _legend_source_col(grid)),
++    "total_nonzero_mod_three": lambda grid: _paint_payload(grid, _nonzero_count(grid)),
++}
++
++
++def _racket_apply(bridge, program, grid):
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return bridge.eval_text(f"({wrap_rule(program)} {literal})")
++
++
++def audit(seed_count: int = 32) -> dict:
++    failures = []
++    survivor_records = []
++    rival_checks = 0
++    intermediate_hist = {"1": 0, "2": 0, "3": 0}
++    sizes = set()
++    raw_source_hist = {}
++
++    for seed in range(seed_count):
++        for demos in (2, 3, 6):
++            episode = family.build_episode(seed, "mapped_region_relay", demos, 4)
++            for pair in episode["train"] + episode["test"]:
++                value = family.mapped_region_count(pair["input"])
++                intermediate_hist[str(value)] += 1
++                raw = family.raw_source_count(pair["input"])
++                raw_source_hist[str(raw)] = raw_source_hist.get(str(raw), 0) + 1
++                sizes.add((len(pair["input"]), len(pair["input"][0])))
++            for name, rival in RIVALS.items():
++                rival_checks += 1
++                fits = all(rival(pair["input"]) == pair["output"] for pair in episode["train"])
++                changes_query = any(rival(pair["input"]) != pair["output"] for pair in episode["test"])
++                if fits and changes_query:
++                    record = {"seed": seed, "demos": demos, "rival": name}
++                    failures.append(record)
++                    survivor_records.append(record)
++
++    racket_evaluations = 0
++    bridge = RacketBridge()
++    runtime = bridge.runtime_identity
++    try:
++        for seed in (0, 17):
++            for mode in family.MODES:
++                episode = family.build_episode(seed, mode, 3, 4)
++                program = family.program_for(mode)
++                for pair in episode["train"] + episode["test"]:
++                    racket_evaluations += 1
++                    actual = _racket_apply(bridge, program, pair["input"])
++                    if actual != pair["output"]:
++                        failures.append({"seed": seed, "mode": mode, "racket_mismatch": True})
++        witness_episode = family.build_episode(17, "mapped_region_relay", 3, 4)
++        witness = witness_episode["test"][3]
++        correct = _racket_apply(bridge, family.program_for("mapped_region_relay"), witness["input"])
++        wrong = _racket_apply(bridge, family.counterfactual_program(), witness["input"])
++        racket_evaluations += 2
++        if correct != witness["output"] or correct == wrong:
++            failures.append({"counterfactual": "did_not_change_output"})
++    finally:
++        bridge.close()
++
++    changed_cells = sum(
++        a != b for row_a, row_b in zip(correct, wrong) for a, b in zip(row_a, row_b)
++    )
++    return {
++        "schema": "69cab6228fdc-parametric-authoring-audit-v1",
++        "task_id": family.TASK_ID,
++        "seed_count": seed_count,
++        "demo_counts": [2, 3, 6],
++        "queries": 4,
++        "episodes": seed_count * 3,
++        "rival_checks": rival_checks,
++        "named_rivals": sorted(RIVALS),
++        "surviving_query_changing_rivals": survivor_records,
++        "intermediate_histogram": intermediate_hist,
++        "raw_source_component_histogram": raw_source_hist,
++        "sizes": [list(size) for size in sorted(sizes)],
++        "contains_30x30": (30, 30) in sizes,
++        "racket_evaluations": racket_evaluations,
++        "racket": {k: runtime[k] for k in (
++            "schema", "backend", "protected", "binary_sha256", "prelude_sha256", "bridge_sha256"
++        ) if k in runtime},
++        "counterfactual": {
++            "ablation": "wrong_intermediate",
++            "actual_intermediate": family.mapped_region_count(witness["input"]),
++            "wrong_intermediate": family.raw_source_count(witness["input"]),
++            "changed_cells": changed_cells,
++            "input_size": [len(witness["input"]), len(witness["input"][0])],
++        },
++        "failures": failures,
++        "status": "pass" if not failures else "fail",
++        "limits": "Finite named-rival and seed audit; not a proof of universal identifiability.",
++    }
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--seeds", type=int, default=32)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    report = audit(args.seeds)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({k: report[k] for k in (
++        "status", "episodes", "rival_checks", "racket_evaluations", "counterfactual", "failures"
++    )}, indent=2))
++    return 0 if report["status"] == "pass" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/69cab6228fdc/workspace/parametric/wrong_raw_source_components.rkt b/repo/generators/69cab6228fdc/workspace/parametric/wrong_raw_source_components.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/69cab6228fdc/workspace/parametric/wrong_raw_source_components.rkt
+@@ -0,0 +1,36 @@
++(rule! (let ((dummy 0))
++  (define (t10-alist-ref pairs key default)
++    (let ((hits (filter (lambda (p) (= (first p) key)) pairs)))
++      (if (empty? hits) default (second (first hits)))))
++  (let* ((pairs
++           (filter (lambda (p)
++                     (and (not (= (first p) 0))
++                          (not (= (second p) 0))))
++                   (map list (row g 0) (row g 1))))
++         (raw-body
++           (grid-from-fn (- (rows g) 3) (cols g)
++             (lambda (r c) (at g (+ r 3) c))))
++         (stage
++           (grid-from-fn (- (rows g) 3) (cols g)
++             (lambda (r c)
++               (let ((v (at g (+ r 3) c)))
++                 (t10-alist-ref pairs v v)))))
++         (separator-col (second (first (find-color stage 9))))
++         (intermediate
++           (length
++             (filter (lambda (o)
++                       (and (= (obj-color o) 1)
++                            (< (obj-c2 o) separator-col)))
++                     (objects raw-body 0))))
++         (payloads
++           (sort
++             (filter (lambda (o)
++                       (and (= (obj-color o) 6)
++                            (> (obj-c1 o) separator-col)))
++                     (objects stage 0))
++             (lambda (a b)
++               (or (< (obj-r1 a) (obj-r1 b))
++                   (and (= (obj-r1 a) (obj-r1 b))
++                        (< (obj-c1 a) (obj-c1 b)))))))
++         (target (list-ref payloads (- intermediate 1))))
++    (recolor-cells stage (obj-cells target) 8))))
+diff --git a/repo/generators/70205357c60a/notes.md b/repo/generators/70205357c60a/notes.md
+--- a/repo/generators/70205357c60a/notes.md
++++ b/repo/generators/70205357c60a/notes.md
+@@ -1,3 +1,15 @@
++## Native parametric promotion (review-adf929d968f3fb1a)
++
++A new `workspace/parametric` promotion path preserves the exact canonical
++cardinal-neighbour rule as `mode=canonical` and adds
++`mode=interior_count_relay`.  The alternate runs the canonical transform,
++counts produced colour-2 interior cells on the controller side, and uses that
++1–3 intermediate to select one of three payloads.  A raw-component-count
++counterfactual changes the retained 30×30 result.  The source-bound task suite,
++bounded shortcut audit, native qualification, public projection, and causal
++witness are recorded in the current assignment checks.  The older threshold
++prototype is retained only as historical evidence.
++
+ # Working notes: 70205357c60a
+ 
+ ## Current account
+diff --git a/repo/generators/70205357c60a/tests/test_generator_70205357c60a.py b/repo/generators/70205357c60a/tests/test_generator_70205357c60a.py
+--- a/repo/generators/70205357c60a/tests/test_generator_70205357c60a.py
++++ b/repo/generators/70205357c60a/tests/test_generator_70205357c60a.py
+@@ -10,14 +10,15 @@
+ import pytest
+ 
+ from puzzle_generators import base
++from reviewer_support import canonical_path, find_root
+ 
+ 
+ gen = importlib.import_module("puzzle_generators.per_puzzle.70205357c60a.generator")
+-ROOT = Path(__file__).resolve().parents[1]
++ROOT = Path(find_root(__file__))
+ 
+ 
+ def _canonical_row() -> dict:
+-    with (ROOT / "data/canonical/puzzles.jsonl").open(encoding="utf-8") as handle:
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
+         for line in handle:
+             row = json.loads(line)
+             if row.get("task_id") == gen.TASK_ID:
+diff --git a/repo/generators/70205357c60a/tests/test_parametric_interior_relay.py b/repo/generators/70205357c60a/tests/test_parametric_interior_relay.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/70205357c60a/tests/test_parametric_interior_relay.py
+@@ -0,0 +1,97 @@
++from __future__ import annotations
++
++from importlib.util import module_from_spec, spec_from_file_location
++import json
++from pathlib import Path
++
++import pytest
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import find_root
++
++TASK_ID = "70205357c60a"
++
++
++def _load(name: str):
++    root = Path(find_root(__file__))
++    path = root / "generators" / TASK_ID / "workspace" / "parametric" / name
++    spec = spec_from_file_location(f"_{TASK_ID}_{name.replace('.', '_')}", path)
++    module = module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture(scope="module")
++def racket():
++    bridge = RacketBridge()
++    assert bridge.runtime_identity["backend"] == "racket"
++    assert bridge.runtime_identity["protected"] is True
++
++    def run(program: str, grid: list[list[int]]) -> list[list[int]]:
++        literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++        return bridge.eval_text(f"({wrap_rule(program)} {literal})")
++
++    yield run
++    bridge.close()
++
++
++def test_default_program_is_exact_canonical_and_relay_is_distinct():
++    family = _load("family.py")
++    adapter = _load("adapter.py")
++    canonical = (Path(family.__file__).with_name("canonical.rkt")).read_text()
++    assert adapter.program({"mode": "canonical"}) == canonical
++    assert adapter.program({"mode": "interior_count_relay"}) != canonical
++    assert adapter.program({"mode": "interior_count_relay"}).startswith("(rule!")
++
++
++def test_counts_are_independent_inputs_are_matched_and_fourth_query_is_30x30():
++    adapter = _load("adapter.py")
++    small = adapter.generate(11, {"mode": "canonical"}, demos=2, queries=1)
++    large = adapter.generate(11, {"mode": "canonical"}, demos=6, queries=4)
++    relay = adapter.generate(11, {"mode": "interior_count_relay"}, demos=6, queries=4)
++    assert len(small["train"]) == 2 and len(small["test"]) == 1
++    assert len(large["train"]) == 6 and len(large["test"]) == 4
++    assert [p["input"] for p in large["train"] + large["test"]] == [
++        p["input"] for p in relay["train"] + relay["test"]
++    ]
++    all_inputs = [json.dumps(p["input"], sort_keys=True) for p in large["train"] + large["test"]]
++    assert len(all_inputs) == len(set(all_inputs))
++    assert len(large["test"][3]["input"]) == 30
++    assert len(large["test"][3]["input"][0]) == 30
++
++
++def test_python_claims_match_protected_racket_and_demos_identify_mode(racket):
++    adapter = _load("adapter.py")
++    for mode in ("canonical", "interior_count_relay"):
++        episode = adapter.generate(17, {"mode": mode}, demos=3, queries=4)
++        chosen_program = adapter.program({"mode": mode})
++        other_mode = "interior_count_relay" if mode == "canonical" else "canonical"
++        other_program = adapter.program({"mode": other_mode})
++        for pair in episode["train"] + episode["test"]:
++            assert racket(chosen_program, pair["input"]) == pair["output"]
++        assert all(racket(other_program, pair["input"]) != pair["output"] for pair in episode["train"])
++
++
++def test_relay_intermediate_covers_one_two_three_and_wrong_intermediate_changes_output(racket):
++    family = _load("family.py")
++    values = set()
++    for seed in range(9):
++        episode = family.build_episode(seed, "interior_count_relay", 3, 4)
++        values.update(family.interior_count(pair["input"]) for pair in episode["train"] + episode["test"])
++    assert values == {1, 2, 3}
++
++    episode = family.build_episode(0, "interior_count_relay", 3, 4)
++    witness = next(pair for pair in episode["test"] if family.interior_count(pair["input"]) != 1)
++    correct = racket(family.program_for("interior_count_relay"), witness["input"])
++    wrong = racket(family.counterfactual_program(), witness["input"])
++    assert correct == witness["output"]
++    assert wrong != correct
++
++
++@pytest.mark.parametrize("bad", [True, 1.0, -1, 2**63])
++def test_seed_contract_is_strict(bad):
++    adapter = _load("adapter.py")
++    with pytest.raises((TypeError, ValueError)):
++        adapter.generate(bad, {"mode": "canonical"}, demos=3, queries=4)
+diff --git a/repo/generators/70205357c60a/workspace/parametric/README.md b/repo/generators/70205357c60a/workspace/parametric/README.md
+--- a/repo/generators/70205357c60a/workspace/parametric/README.md
++++ b/repo/generators/70205357c60a/workspace/parametric/README.md
+@@ -1,43 +1,24 @@
+-# Parametric cardinal-neighbor threshold — proposed prototype
++# Native parametric family — cardinal interior-count relay
+ 
+-This task-local prototype varies one episode-level rule parameter while preserving
+-the canonical task's local-neighborhood reasoning structure.
++This promoted task-local family exposes one episode parameter, `mode`:
+ 
+-| Parameter | Allowed value | Executed rule | Original/default |
+-| --- | --- | --- | --- |
+-| `min_cardinal_neighbors` | `4` | recolor a `5` iff all four cardinal neighbors are `5` | yes |
+-| `min_cardinal_neighbors` | `3` | recolor a `5` iff at least three cardinal neighbors are `5` | no |
++- `canonical` materializes the selected canonical Racket program byte-for-byte.
++- `interior_count_relay` first runs that exact local-neighbour transform, counts
++  the produced colour-2 interior cells to the left of a colour-9 separator, and
++  uses the count (1, 2, or 3) to select one of three ordered colour-3 payloads
++  for recolouring to 8.
+ 
+-The input palette, output color, per-cell analysis, four-cardinal neighborhood,
+-and preservation branch remain unchanged. Threshold `3` additionally recolors
+-non-corner boundary cells of sufficiently thick components. Threshold `4`
+-materializes the selected canonical Racket program byte-for-byte.
++Inputs are identical across settings.  Demonstration and query counts are
++independent (`2..6` and `1..4`), the four private queries are prefix-stable, and
++the fourth query is 30×30.  The retained wrong-intermediate program counts the
++single large raw colour-5 component instead; it therefore selects payload 1 and
++changes the qualified 30×30 result when the true interior count is 3.
+ 
+-One setting is chosen deterministically from the episode seed and remains fixed
+-for all three demonstrations and the query. Controlled inputs come from the
+-selected production generator and each contains both exact-three-neighbor and
+-exact-four-neighbor witnesses. Thus every retained demonstration and query
+-separates the two declared settings. Labels and rival predictions are produced
+-by executing the exact materialized Racket programs through the included
+-protected bridge, not by a Python output mirror.
++`verify.py` performs a finite named-rival audit plus protected-Racket parity.
++`promotion.json` is the native adapter contract.  Evidence and exact source
++bindings live under `evidence/`; qualification and causal-witness receipts live
++under the packet's `WORK/checks/70205357c60a/` directory.
+ 
+-Run from the outer extracted packet directory:
+-
+-```sh
+-python3 review.py run python3 \
+-  generators/70205357c60a/workspace/parametric/prototype.py \
+-  --seed 7020 --out ../checks/parametric/neighbor-threshold-gallery
+-
+-python3 review.py run python3 -m pytest -q \
+-  generators/70205357c60a/tests/test_parametric_neighbor_threshold.py
+-```
+-
+-The gallery contains two complete private episodes, masked public challenges,
+-exact `.rkt` programs and hashes, a shared-input setting-difference witness, a
+-canonical-default replay check, generator/source hashes, runtime identity, and a
+-summary report.
+-
+-This is a **proposed prototype**, separate from the fixed-rule production
+-generator. It has no approval or training-admission claim. Evidence is finite:
+-two thresholds, two episode seeds, four controlled inputs per episode, and only
+-the opposite threshold as a parameter rival.
++The earlier threshold prototype remains in `prototype.py` as historical work,
++but it is not the promoted family because it did not establish the required
++A→intermediate→B dependency.
+diff --git a/repo/generators/70205357c60a/workspace/parametric/adapter.py b/repo/generators/70205357c60a/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/70205357c60a/workspace/parametric/adapter.py
+@@ -0,0 +1,24 @@
++"""Native promotion adapter for the interior-count relay family."""
++from importlib.util import module_from_spec, spec_from_file_location
++from pathlib import Path
++
++_spec = spec_from_file_location(
++    "_family_70205357c60a", Path(__file__).with_name("family.py")
++)
++_family = module_from_spec(_spec)
++assert _spec.loader is not None
++_spec.loader.exec_module(_family)
++
++
++def _mode(settings):
++    if not isinstance(settings, dict) or set(settings) != {"mode"}:
++        raise ValueError("settings must contain exactly mode")
++    return _family._validate_mode(settings["mode"])
++
++
++def program(settings):
++    return _family.program_for(_mode(settings))
++
++
++def generate(seed, settings, demos, queries):
++    return _family.build_episode(seed, _mode(settings), demos, queries)
+diff --git a/repo/generators/70205357c60a/workspace/parametric/canonical.rkt b/repo/generators/70205357c60a/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/70205357c60a/workspace/parametric/canonical.rkt
+@@ -0,0 +1,16 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (cellmap g
++                    (r c v)
++                    (if (!= 5 v)
++                        v
++                        (let ((l (if (and (> c 0) (= 5 (at g r (- c 1)))) 1 0))
++                              (ri (if (and (< c (- (cols g) 1)) (= 5 (at g r (+ c 1))))
++                                      1
++                                      0))
++                              (u (if (and (> r 0) (= 5 (at g (- r 1) c))) 1 0))
++                              (d (if (and (< r (- (rows g) 1)) (= 5 (at g (+ r 1) c)))
++                                     1
++                                     0)))
++                          (if (and (= 1 l) (= 1 ri) (= 1 u) (= 1 d)) 2 5)))))))
+\ No newline at end of file
+diff --git a/repo/generators/70205357c60a/workspace/parametric/evidence/current/authoring-report.json b/repo/generators/70205357c60a/workspace/parametric/evidence/current/authoring-report.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/70205357c60a/workspace/parametric/evidence/current/authoring-report.json
+@@ -0,0 +1,92 @@
++{
++  "contains_30x30": true,
++  "corner_boundary_contacts": 132,
++  "counterfactual": {
++    "ablation": "wrong_intermediate",
++    "actual_intermediate": 2,
++    "changed_cells": 13,
++    "wrong_intermediate": 1
++  },
++  "demo_counts": [
++    2,
++    3,
++    6
++  ],
++  "episodes": 96,
++  "failures": [],
++  "intermediate_histogram": {
++    "1": 225,
++    "2": 257,
++    "3": 254
++  },
++  "limits": "Finite named-rival and seed audit; not a proof of universal identifiability.",
++  "named_rivals": [
++    "all_raw_5_components",
++    "always_first",
++    "always_second",
++    "always_third",
++    "canonical_only",
++    "controller_height_minus_two",
++    "controller_width_minus_two",
++    "raw_5_cell_count_mod_three",
++    "raw_large_component_count"
++  ],
++  "queries": 4,
++  "racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "racket_evaluations": 30,
++  "rival_checks": 864,
++  "schema": "70205357c60a-parametric-authoring-audit-v1",
++  "seed_count": 32,
++  "sizes": [
++    [
++      11,
++      14
++    ],
++    [
++      13,
++      16
++    ],
++    [
++      14,
++      16
++    ],
++    [
++      15,
++      18
++    ],
++    [
++      17,
++      20
++    ],
++    [
++      18,
++      20
++    ],
++    [
++      19,
++      22
++    ],
++    [
++      21,
++      24
++    ],
++    [
++      24,
++      26
++    ],
++    [
++      30,
++      30
++    ]
++  ],
++  "status": "pass",
++  "surviving_query_changing_rivals": [],
++  "task_id": "70205357c60a"
++}
+diff --git a/repo/generators/70205357c60a/workspace/parametric/evidence/current/test-summary.json b/repo/generators/70205357c60a/workspace/parametric/evidence/current/test-summary.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/70205357c60a/workspace/parametric/evidence/current/test-summary.json
+@@ -0,0 +1,14 @@
++{
++  "authoring_audit": {
++    "report_sha256": "8008f4e8b7c4ff29758939bbd2f8e68e998a3b3b13450014d81e19236ce0f960",
++    "status": "pass"
++  },
++  "schema": "70205357c60a-parametric-check-summary-v1",
++  "scope": "Fresh changed-target and bounded authoring checks; owner still requalifies exact integrated sources.",
++  "task_tests": {
++    "command": "python3 review.py task-tests 70205357c60a --phase after --out ../checks/70205357c60a-tests",
++    "failed": 0,
++    "junit_sha256": "9ddabbfa35551cb010bc701a580c29f85013293cd964889ebe21a851f56117b8",
++    "passed": 40
++  }
++}
+diff --git a/repo/generators/70205357c60a/workspace/parametric/evidence/manifest.json b/repo/generators/70205357c60a/workspace/parametric/evidence/manifest.json
+--- a/repo/generators/70205357c60a/workspace/parametric/evidence/manifest.json
++++ b/repo/generators/70205357c60a/workspace/parametric/evidence/manifest.json
+@@ -1,75 +1,102 @@
+ {
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "99525ad6325994c076ffdf4c9285fce9d99329884a7d4a9e248ec76fffe3eb76",
+   "canonical_rule_hash": "24d0faa4acb9",
++  "default": {
++    "mode": "canonical"
++  },
++  "evidence_root": "generators/70205357c60a/workspace/parametric/evidence/current",
+   "files": [
+     {
+-      "bytes": 2181,
+-      "path": "generators/70205357c60a/workspace/parametric/README.md",
+-      "sha256": "de31fc31589dfaef21cdc2e536f740aa3176f4048b1150302b1ba95ecc814c77"
++      "bytes": 19733,
++      "path": "generators/70205357c60a/generator.py",
++      "sha256": "aa275438df6776e6e49b8f58dde1600e8fa2974fdc3257ac859375145a422475"
+     },
+     {
+-      "bytes": 1319,
+-      "path": "generators/70205357c60a/workspace/parametric/evidence/retained/private/canonical-default-check.json",
+-      "sha256": "06a55b9d597cf35a88735c0ed05b25fa422ec6f67c96546f8d4507c0a2800806"
++      "bytes": 6694,
++      "path": "generators/70205357c60a/tests/test_generator_70205357c60a.py",
++      "sha256": "a7ebe0b3e7ee51e499c4adea5d921765f45b409b6e7f34f38d2fb3032de3f9af"
+     },
+     {
+-      "bytes": 47258,
+-      "path": "generators/70205357c60a/workspace/parametric/evidence/retained/private/episode-0.json",
+-      "sha256": "3a25cc38f13e7ec09994a7e6735ee9a5942d1cfd1310ab0da5d48a4e2de94d63"
++      "bytes": 4133,
++      "path": "generators/70205357c60a/tests/test_parametric_interior_relay.py",
++      "sha256": "e2b9afbb4d919224d2dffeabcf81e91fe24624bf67fff5b4847503ffa57ed3ec"
+     },
+     {
+-      "bytes": 47239,
+-      "path": "generators/70205357c60a/workspace/parametric/evidence/retained/private/episode-1.json",
+-      "sha256": "259e0f45eded8068ad68c30cdbabcaffa35ab37dc9af6df05a33a6d72c126bff"
+-    },
+-    {
+-      "bytes": 745,
+-      "path": "generators/70205357c60a/workspace/parametric/evidence/retained/private/program-threshold-3.rkt",
+-      "sha256": "684f8361038b4978ec81f46b0b7d313ee8125983cd9dce2e481517c05c602e02"
++      "bytes": 763,
++      "path": "generators/70205357c60a/workspace/parametric/adapter.py",
++      "sha256": "9dd9355175f5f37e8c48c937a7a52bc47cdf6c0777a2210ce034ad8170d9abfc"
+     },
+     {
+       "bytes": 764,
+-      "path": "generators/70205357c60a/workspace/parametric/evidence/retained/private/program-threshold-4.rkt",
++      "path": "generators/70205357c60a/workspace/parametric/canonical.rkt",
+       "sha256": "99525ad6325994c076ffdf4c9285fce9d99329884a7d4a9e248ec76fffe3eb76"
+     },
+     {
+-      "bytes": 12052,
+-      "path": "generators/70205357c60a/workspace/parametric/evidence/retained/private/setting-difference-witness.json",
+-      "sha256": "fe0f90a2d42d8679189896421f2d98ee1d8a2d68bcbfbc2a4c97d8036122cb99"
++      "bytes": 1686,
++      "path": "generators/70205357c60a/workspace/parametric/evidence/current/authoring-report.json",
++      "sha256": "8008f4e8b7c4ff29758939bbd2f8e68e998a3b3b13450014d81e19236ce0f960"
+     },
+     {
+-      "bytes": 24799,
+-      "path": "generators/70205357c60a/workspace/parametric/evidence/retained/public/episode-0.json",
+-      "sha256": "58a46f35da56d3ae15b2d057b2a383c9ece088bb075e85617776e29bc428896b"
++      "bytes": 566,
++      "path": "generators/70205357c60a/workspace/parametric/evidence/current/test-summary.json",
++      "sha256": "7213a0060b9f09423283c2c2950437d35eadd5e36749c56f85c76fc187ab3daf"
+     },
+     {
+-      "bytes": 24799,
+-      "path": "generators/70205357c60a/workspace/parametric/evidence/retained/public/episode-1.json",
+-      "sha256": "745f4aa33f7950e5046af792a0baffe32eef7a6f420cf6497ea5d22d2cbe2d18"
++      "bytes": 10938,
++      "path": "generators/70205357c60a/workspace/parametric/family.py",
++      "sha256": "0aa5bf9dbfc787072f83b5b17151f77d75e2f5fa89bb09bbaefbcfc7e2eaa3ab"
+     },
+     {
+-      "bytes": 4976,
+-      "path": "generators/70205357c60a/workspace/parametric/evidence/retained/report.json",
+-      "sha256": "c7bef75b6c448ff611c0b55287b7755de1932605d0e23a1b90a3a658e9a14c45"
++      "bytes": 505,
++      "path": "generators/70205357c60a/workspace/parametric/promotion.json",
++      "sha256": "5d955b3e4a388bc1e52bb6d484673c790e811b0e14aba3a8a8de454489a5bf3e"
+     },
+     {
+       "bytes": 18870,
+       "path": "generators/70205357c60a/workspace/parametric/prototype.py",
+       "sha256": "fda10aaac1ac7a66ca3dc7ceb0729ada3cd85d9a99ba352b17954a6a1721093e"
++    },
++    {
++      "bytes": 1211,
++      "path": "generators/70205357c60a/workspace/parametric/relay.rkt",
++      "sha256": "d9eabf75c53219653caa732da101403dfbb2b4a7707022ca536ab4c7019ea6d6"
++    },
++    {
++      "bytes": 7095,
++      "path": "generators/70205357c60a/workspace/parametric/verify.py",
++      "sha256": "91e6b6f25023525b9f7b9092667337f680205dd1393f82ce214e993365e7dcb0"
++    },
++    {
++      "bytes": 1329,
++      "path": "generators/70205357c60a/workspace/parametric/wrong_raw_component_count.rkt",
++      "sha256": "360b7466c1137b6e6dc92847908cf1da5f9cd11e8e6ad8def9ada6da07e9189d"
+     }
+   ],
+   "generator_sha256": "aa275438df6776e6e49b8f58dde1600e8fa2974fdc3257ac859375145a422475",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
+   "parameters": {
+-    "min_cardinal_neighbors": [
+-      4,
+-      3
++    "mode": [
++      "canonical",
++      "interior_count_relay"
+     ]
+   },
+   "production_parametric_api": false,
+-  "return_id": "review-24c37bc1b0e2c645:v0001",
+-  "return_zip_sha256": "dd32afcdc408593d72b7efd7705b17b9ef9099c382a51f6e568b1021c131f1b3",
++  "reported_checks": "Fresh task-local suite: 40 passed. Bounded self-review: 32 seeds x demo counts 2,3,6, four queries, 864 named-rival checks, 30 protected-Racket evaluations, exact 30x30 coverage, and a wrong-intermediate counterfactual; no retained failures.",
++  "rule_task_id": "70205357c60a",
+   "schema": "arcpuzzles-parametric-prototype-evidence-v1",
+-  "scope": "Accept narrow strict-call/override repair and selected authority formatting sync; canonical rule/archival raw_code unchanged. Reviewer reports12/12 strict generator battery and25 focused tests repeated in fresh copy. Required aggregate portable task stage remains BLOCKED before pytest by unchanged inherited fixture. Ordered300 lessons/1200 pairs/961 unique inputs have zero ambiguity;1200 rotations have zero rival ambiguity but600 profile-coverage warnings. Arbitrary order remains unqualified; diagnostic rescore still reports require due retained tool limitation. Threshold4/3 prototype has two Racket episodes,all demos/query separate settings,three canonical default parity records. No fixture waiver,rotation-green claim,variant approval or training admission. Owner checks selected-source/file inventory and public/private structure statically; tests/labels remain reviewer-reported.",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
+   "task_id": "70205357c60a",
++  "training_admitted": false,
+   "variant_approved": false,
+   "verification_status": "reviewer_reported"
+ }
+diff --git a/repo/generators/70205357c60a/workspace/parametric/family.py b/repo/generators/70205357c60a/workspace/parametric/family.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/70205357c60a/workspace/parametric/family.py
+@@ -0,0 +1,289 @@
++"""Native parametric family for 70205357c60a.
++
++The default is the exact canonical local-neighbour rule.  The alternate first
++runs that rule, counts its newly produced red interior cells on the controller
++side, and uses the count to select a payload object on the other side.
++"""
++from __future__ import annotations
++
++from collections import deque
++import hashlib
++from pathlib import Path
++import random
++from typing import Any, Iterable
++
++TASK_ID = "70205357c60a"
++MODES = ("canonical", "interior_count_relay")
++DEFAULT_MODE = "canonical"
++DIR4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
++HERE = Path(__file__).resolve().parent
++
++
++def _read(name: str) -> str:
++    return (HERE / name).read_text(encoding="utf-8")
++
++
++def program_for(mode: str) -> str:
++    if mode == "canonical":
++        return _read("canonical.rkt")
++    if mode == "interior_count_relay":
++        return _read("relay.rkt")
++    raise ValueError(f"mode must be one of {MODES}")
++
++
++def counterfactual_program() -> str:
++    return _read("wrong_raw_component_count.rkt")
++
++
++def _exact_int(value: Any, name: str, low: int, high: int) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be an exact integer")
++    if not low <= value <= high:
++        raise ValueError(f"{name} must be in {low}..{high}")
++    return value
++
++
++def _validate_mode(mode: Any) -> str:
++    if type(mode) is not str or mode not in MODES:
++        raise ValueError(f"mode must be one of {MODES}")
++    return mode
++
++
++def _blank(height: int, width: int) -> list[list[int]]:
++    return [[0 for _ in range(width)] for _ in range(height)]
++
++
++def _paint(grid: list[list[int]], cells: Iterable[tuple[int, int]], color: int) -> None:
++    h, w = len(grid), len(grid[0])
++    for r, c in cells:
++        if not (0 <= r < h and 0 <= c < w):
++            raise ValueError(f"paint cell {(r, c)} outside {h}x{w}")
++        if grid[r][c] != 0:
++            raise ValueError(f"paint overlap at {(r, c)}")
++        grid[r][c] = color
++
++
++def _rect(r0: int, c0: int, height: int, width: int) -> list[tuple[int, int]]:
++    return [(r, c) for r in range(r0, r0 + height) for c in range(c0, c0 + width)]
++
++
++def _shape_cells(kind: int, r0: int, c0: int, scale: int) -> list[tuple[int, int]]:
++    if kind % 3 == 0:
++        return _rect(r0, c0, 2 + scale, 2 + scale)
++    if kind % 3 == 1:
++        cells = _rect(r0, c0, 2 + scale, 2)
++        cells += _rect(r0 + 1 + scale, c0, 1, 2 + scale)
++        return sorted(set(cells))
++    cells = _rect(r0, c0, 1, 3 + scale)
++    cells += _rect(r0 + 1, c0 + 1, 1 + scale, 1)
++    return sorted(set(cells))
++
++
++def _components(grid: list[list[int]], color: int) -> list[list[tuple[int, int]]]:
++    h, w = len(grid), len(grid[0])
++    todo = {(r, c) for r in range(h) for c in range(w) if grid[r][c] == color}
++    result: list[list[tuple[int, int]]] = []
++    while todo:
++        start = min(todo)
++        todo.remove(start)
++        queue = deque([start])
++        cells = [start]
++        while queue:
++            r, c = queue.popleft()
++            for dr, dc in DIR4:
++                nxt = (r + dr, c + dc)
++                if nxt in todo:
++                    todo.remove(nxt)
++                    queue.append(nxt)
++                    cells.append(nxt)
++        result.append(sorted(cells))
++    return sorted(result, key=lambda cells: cells[0])
++
++
++def canonical_transform(grid: list[list[int]]) -> list[list[int]]:
++    h, w = len(grid), len(grid[0])
++    out = [row[:] for row in grid]
++    for r in range(h):
++        for c in range(w):
++            if grid[r][c] != 5:
++                continue
++            if all(0 <= r + dr < h and 0 <= c + dc < w and grid[r + dr][c + dc] == 5
++                   for dr, dc in DIR4):
++                out[r][c] = 2
++    return out
++
++
++def _separator_col(grid: list[list[int]]) -> int:
++    positions = [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == 9]
++    cols = {c for _, c in positions}
++    if len(cols) != 1:
++        raise ValueError("expected one full color-9 separator column")
++    col = next(iter(cols))
++    if len(positions) != len(grid):
++        raise ValueError("separator must span the full height")
++    return col
++
++
++def interior_count(grid: list[list[int]]) -> int:
++    stage = canonical_transform(grid)
++    sep = _separator_col(grid)
++    value = sum(value == 2 for row in stage for value in row[:sep])
++    if value not in (1, 2, 3):
++        raise ValueError(f"intermediate interior count must be 1..3, got {value}")
++    return value
++
++
++def relay_transform(grid: list[list[int]]) -> list[list[int]]:
++    stage = canonical_transform(grid)
++    sep = _separator_col(grid)
++    payloads = [cells for cells in _components(stage, 3) if cells[0][1] > sep]
++    if len(payloads) != 3:
++        raise ValueError(f"expected three payloads, found {len(payloads)}")
++    target = payloads[interior_count(grid) - 1]
++    out = [row[:] for row in stage]
++    for r, c in target:
++        out[r][c] = 8
++    return out
++
++
++def transform(grid: list[list[int]], mode: str) -> list[list[int]]:
++    mode = _validate_mode(mode)
++    return canonical_transform(grid) if mode == "canonical" else relay_transform(grid)
++
++
++def _profile(is_query: bool, index: int) -> tuple[int, int]:
++    demos = ((11, 14), (13, 16), (15, 18), (17, 20), (19, 22), (21, 24))
++    queries = ((14, 16), (18, 20), (24, 26), (30, 30))
++    return (queries if is_query else demos)[index]
++
++
++def _scene(seed: int, index: int, *, is_query: bool, attempt: int = 0) -> list[list[int]]:
++    height, width = _profile(is_query, index)
++    token = hashlib.sha256(f"70205357c60a-scene-v2:{seed}:{is_query}:{index}:{attempt}".encode()).digest()
++    rng = random.Random(token)
++    grid = _blank(height, width)
++    sep = width // 2
++    for r in range(height):
++        grid[r][sep] = 9
++
++    if is_query:
++        query_schedule = (1, 2, 3, 1 + (seed % 3))
++        k = query_schedule[index]
++    else:
++        leading = (2, 3) if seed % 2 == 0 else (3, 2)
++        demo_schedule = leading + (1, 2, 3, 1)
++        k = demo_schedule[index]
++    vertical = (seed + index + attempt) % 2 == 1
++    if vertical:
++        rh, rw = k + 2, 3
++    else:
++        rh, rw = 3, k + 2
++    max_r = max(1, height - rh - 1)
++    max_c = max(1, sep - rw - 1)
++    r0 = 1 + rng.randrange(max_r)
++    c0 = rng.randrange(max_c + 1)
++    _paint(grid, _rect(r0, c0, rh, rw), 5)
++
++    # Smaller 5-shapes are deliberate distractors but never contain a fully
++    # surrounded cell and never reach the >=9-cell raw-component shortcut.
++    distractors = [
++        [(0, 0), (0, 1), (0, 2)],
++        [(0, 0), (1, 0), (1, 1), (2, 1)],
++        [(0, 0), (0, 1), (1, 0), (2, 0), (2, 1)],
++    ]
++    occupied = {(r, c) for r in range(height) for c in range(sep) if grid[r][c]}
++    for shape_index, offsets in enumerate(distractors[: 2 + int(height >= 20)]):
++        placed = False
++        for _ in range(128):
++            sr = rng.randrange(height)
++            sc = rng.randrange(max(1, sep - 2))
++            cells = {(sr + dr, sc + dc) for dr, dc in offsets}
++            halo = {(r + dr, c + dc) for r, c in cells for dr, dc in DIR4} | cells
++            if all(0 <= r < height and 0 <= c < sep for r, c in cells) and not (halo & occupied):
++                _paint(grid, sorted(cells), 5)
++                occupied |= cells
++                placed = True
++                break
++        if not placed:
++            raise RuntimeError(f"could not place controller distractor {shape_index}")
++
++    right_start = sep + 1
++    right_width = width - right_start
++    bands = [(0, height // 3), (height // 3, 2 * height // 3), (2 * height // 3, height)]
++    payload_occupied: set[tuple[int, int]] = set()
++    for payload_index, (lo, hi) in enumerate(bands):
++        scale = 0 if height < 18 else 1 if height < 27 else 2
++        kind = payload_index + seed + index
++        for _ in range(128):
++            cells0 = _shape_cells(kind, 0, 0, scale)
++            sh = max(r for r, _ in cells0) + 1
++            sw = max(c for _, c in cells0) + 1
++            if hi - lo < sh or right_width < sw:
++                scale = max(0, scale - 1)
++                continue
++            pr = lo + rng.randrange(hi - lo - sh + 1)
++            pc = right_start + rng.randrange(right_width - sw + 1)
++            cells = {(pr + r, pc + c) for r, c in _shape_cells(kind, 0, 0, scale)}
++            halo = cells | {(r + dr, c + dc) for r, c in cells for dr, dc in DIR4}
++            if all(grid[r][c] == 0 for r, c in cells) and not (halo & payload_occupied):
++                _paint(grid, sorted(cells), 3)
++                payload_occupied |= cells
++                break
++        else:
++            raise RuntimeError(f"could not place payload {payload_index}")
++
++    # Sparse non-rule distractors and a seed/index marker make episodes visibly
++    # varied without affecting the controller or payload semantics.
++    for color in (1, 4, 6):
++        for _ in range(64):
++            r = rng.randrange(height)
++            c = rng.randrange(width)
++            if c != sep and grid[r][c] == 0:
++                grid[r][c] = color
++                break
++
++    _validate_scene(grid)
++    return grid
++
++
++def _validate_scene(grid: list[list[int]]) -> None:
++    if not grid or not grid[0] or len(grid) > 30 or len(grid[0]) > 30:
++        raise ValueError("scene dimensions must be within 1..30")
++    if any(len(row) != len(grid[0]) for row in grid):
++        raise ValueError("scene must be rectangular")
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        raise ValueError("scene cells must be exact ARC integers")
++    sep = _separator_col(grid)
++    if len([cells for cells in _components(grid, 3) if cells[0][1] > sep]) != 3:
++        raise ValueError("scene must expose exactly three ordered payloads")
++    if len([cells for cells in _components(grid, 5) if max(c for _, c in cells) < sep and len(cells) >= 9]) != 1:
++        raise ValueError("scene must expose one large raw controller component")
++    interior_count(grid)
++
++
++def build_episode(seed: int, mode: str, demos: int, queries: int) -> dict[str, Any]:
++    _exact_int(seed, "seed", 0, 2**63 - 1)
++    _exact_int(demos, "demos", 2, 6)
++    _exact_int(queries, "queries", 1, 4)
++    mode = _validate_mode(mode)
++    seen: set[tuple[tuple[int, ...], ...]] = set()
++
++    def collect(count: int, is_query: bool) -> list[dict[str, list[list[int]]]]:
++        pairs = []
++        for index in range(count):
++            for attempt in range(32):
++                grid = _scene(seed, index, is_query=is_query, attempt=attempt)
++                key = tuple(tuple(row) for row in grid)
++                if key not in seen:
++                    seen.add(key)
++                    pairs.append({"input": grid, "output": transform(grid, mode)})
++                    break
++            else:
++                raise RuntimeError("bounded sampler exhausted without a distinct input")
++        return pairs
++
++    return {
++        "train": collect(demos, False),
++        "test": collect(queries, True),
++        "program_solution": program_for(mode),
++    }
+diff --git a/repo/generators/70205357c60a/workspace/parametric/promotion.json b/repo/generators/70205357c60a/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/70205357c60a/workspace/parametric/promotion.json
+@@ -0,0 +1,12 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/70205357c60a/workspace/parametric/adapter.py",
++  "parameters": {"mode": ["canonical", "interior_count_relay"]},
++  "default": {"mode": "canonical"},
++  "limits": {"demos": [2, 6], "queries": [1, 4]},
++  "resources": [
++    "generators/70205357c60a/workspace/parametric/canonical.rkt",
++    "generators/70205357c60a/workspace/parametric/relay.rkt",
++    "generators/70205357c60a/workspace/parametric/wrong_raw_component_count.rkt"
++  ]
++}
+diff --git a/repo/generators/70205357c60a/workspace/parametric/relay.rkt b/repo/generators/70205357c60a/workspace/parametric/relay.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/70205357c60a/workspace/parametric/relay.rkt
+@@ -0,0 +1,27 @@
++(rule! (lambda (g)
++  (let* ((stage
++           (cellmap g (r c v)
++             (if (!= 5 v)
++                 v
++                 (let ((l (if (and (> c 0) (= 5 (at g r (- c 1)))) 1 0))
++                       (ri (if (and (< c (- (cols g) 1)) (= 5 (at g r (+ c 1)))) 1 0))
++                       (u (if (and (> r 0) (= 5 (at g (- r 1) c))) 1 0))
++                       (d (if (and (< r (- (rows g) 1)) (= 5 (at g (+ r 1) c))) 1 0)))
++                   (if (and (= 1 l) (= 1 ri) (= 1 u) (= 1 d)) 2 5)))))
++         (separator-col (second (first (find-color g 9))))
++         (intermediate
++           (length
++             (filter (lambda (p) (< (second p) separator-col))
++                     (find-color stage 2))))
++         (payloads
++           (sort
++             (filter (lambda (o)
++                       (and (= (obj-color o) 3)
++                            (> (obj-c1 o) separator-col)))
++                     (objects stage 0))
++             (lambda (a b)
++               (or (< (obj-r1 a) (obj-r1 b))
++                   (and (= (obj-r1 a) (obj-r1 b))
++                        (< (obj-c1 a) (obj-c1 b)))))))
++         (target (list-ref payloads (- intermediate 1))))
++    (recolor-cells stage (obj-cells target) 8))))
+diff --git a/repo/generators/70205357c60a/workspace/parametric/verify.py b/repo/generators/70205357c60a/workspace/parametric/verify.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/70205357c60a/workspace/parametric/verify.py
+@@ -0,0 +1,172 @@
++#!/usr/bin/env python3
++"""Bounded authoring audit for the 70205357c60a native parametric family."""
++from __future__ import annotations
++
++import argparse
++from importlib.util import module_from_spec, spec_from_file_location
++import json
++from pathlib import Path
++from typing import Callable
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++
++HERE = Path(__file__).resolve().parent
++_spec = spec_from_file_location("_family_70205357c60a_verify", HERE / "family.py")
++family = module_from_spec(_spec)
++assert _spec.loader is not None
++_spec.loader.exec_module(family)
++
++
++def _paint_payload(grid, rank):
++    stage = family.canonical_transform(grid)
++    sep = family._separator_col(grid)
++    payloads = [cells for cells in family._components(stage, 3) if cells[0][1] > sep]
++    rank = max(1, min(3, rank))
++    out = [row[:] for row in stage]
++    for r, c in payloads[rank - 1]:
++        out[r][c] = 8
++    return out
++
++
++def _main_component(grid):
++    sep = family._separator_col(grid)
++    large = [cells for cells in family._components(grid, 5)
++             if max(c for _, c in cells) < sep and len(cells) >= 9]
++    if len(large) != 1:
++        raise ValueError("expected one large controller")
++    return large[0]
++
++
++def _bbox_rank(grid, axis):
++    cells = _main_component(grid)
++    if axis == "width":
++        rank = max(c for _, c in cells) - min(c for _, c in cells) - 1
++    else:
++        rank = max(r for r, _ in cells) - min(r for r, _ in cells) - 1
++    return _paint_payload(grid, rank)
++
++
++def _all_component_rank(grid):
++    sep = family._separator_col(grid)
++    count = len([cells for cells in family._components(grid, 5)
++                 if max(c for _, c in cells) < sep])
++    return _paint_payload(grid, count)
++
++
++def _raw_cell_mod(grid):
++    sep = family._separator_col(grid)
++    count = sum(value == 5 for row in grid for value in row[:sep])
++    return _paint_payload(grid, 1 + ((count - 1) % 3))
++
++
++RIVALS: dict[str, Callable] = {
++    "canonical_only": family.canonical_transform,
++    "always_first": lambda grid: _paint_payload(grid, 1),
++    "always_second": lambda grid: _paint_payload(grid, 2),
++    "always_third": lambda grid: _paint_payload(grid, 3),
++    "raw_large_component_count": lambda grid: _paint_payload(grid, 1),
++    "controller_width_minus_two": lambda grid: _bbox_rank(grid, "width"),
++    "controller_height_minus_two": lambda grid: _bbox_rank(grid, "height"),
++    "all_raw_5_components": _all_component_rank,
++    "raw_5_cell_count_mod_three": _raw_cell_mod,
++}
++
++
++def _racket_apply(bridge, program, grid):
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return bridge.eval_text(f"({wrap_rule(program)} {literal})")
++
++
++def audit(seed_count: int = 32) -> dict:
++    failures = []
++    rival_checks = 0
++    survivor_records = []
++    intermediate_hist = {"1": 0, "2": 0, "3": 0}
++    sizes = set()
++    boundary_contacts = 0
++
++    for seed in range(seed_count):
++        for demos in (2, 3, 6):
++            episode = family.build_episode(seed, "interior_count_relay", demos, 4)
++            for pair in episode["train"] + episode["test"]:
++                value = family.interior_count(pair["input"])
++                intermediate_hist[str(value)] += 1
++                h, w = len(pair["input"]), len(pair["input"][0])
++                sizes.add((h, w))
++                if any(pair["input"][r][c] for r, c in
++                       [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]):
++                    boundary_contacts += 1
++            for name, rival in RIVALS.items():
++                rival_checks += 1
++                fits = all(rival(pair["input"]) == pair["output"] for pair in episode["train"])
++                changes_query = any(rival(pair["input"]) != pair["output"] for pair in episode["test"])
++                if fits and changes_query:
++                    failures.append({"seed": seed, "demos": demos, "rival": name})
++                    survivor_records.append({"seed": seed, "demos": demos, "rival": name})
++
++    racket_evaluations = 0
++    bridge = RacketBridge()
++    try:
++        runtime = bridge.runtime_identity
++        for seed in (0, 17):
++            for mode in family.MODES:
++                episode = family.build_episode(seed, mode, 3, 4)
++                program = family.program_for(mode)
++                for pair in episode["train"] + episode["test"]:
++                    racket_evaluations += 1
++                    actual = _racket_apply(bridge, program, pair["input"])
++                    if actual != pair["output"]:
++                        failures.append({"seed": seed, "mode": mode, "racket_mismatch": True})
++        witness_episode = family.build_episode(0, "interior_count_relay", 3, 4)
++        witness = next(pair for pair in witness_episode["test"] if family.interior_count(pair["input"]) != 1)
++        correct = _racket_apply(bridge, family.program_for("interior_count_relay"), witness["input"])
++        wrong = _racket_apply(bridge, family.counterfactual_program(), witness["input"])
++        racket_evaluations += 2
++        if correct == wrong or correct != witness["output"]:
++            failures.append({"counterfactual": "did_not_change_output"})
++    finally:
++        bridge.close()
++
++    return {
++        "schema": "70205357c60a-parametric-authoring-audit-v1",
++        "task_id": family.TASK_ID,
++        "seed_count": seed_count,
++        "demo_counts": [2, 3, 6],
++        "queries": 4,
++        "episodes": seed_count * 3,
++        "rival_checks": rival_checks,
++        "named_rivals": sorted(RIVALS),
++        "surviving_query_changing_rivals": survivor_records,
++        "intermediate_histogram": intermediate_hist,
++        "sizes": [list(size) for size in sorted(sizes)],
++        "contains_30x30": (30, 30) in sizes,
++        "corner_boundary_contacts": boundary_contacts,
++        "racket_evaluations": racket_evaluations,
++        "racket": {k: runtime[k] for k in ("schema", "backend", "protected", "binary_sha256", "prelude_sha256", "bridge_sha256") if k in runtime},
++        "counterfactual": {
++            "ablation": "wrong_intermediate",
++            "actual_intermediate": family.interior_count(witness["input"]),
++            "wrong_intermediate": 1,
++            "changed_cells": sum(a != b for ra, rb in zip(correct, wrong) for a, b in zip(ra, rb)),
++        },
++        "failures": failures,
++        "status": "pass" if not failures else "fail",
++        "limits": "Finite named-rival and seed audit; not a proof of universal identifiability.",
++    }
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--seeds", type=int, default=32)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    report = audit(args.seeds)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({k: report[k] for k in ("status", "episodes", "rival_checks", "racket_evaluations", "failures")}, indent=2))
++    return 0 if report["status"] == "pass" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/70205357c60a/workspace/parametric/wrong_raw_component_count.rkt b/repo/generators/70205357c60a/workspace/parametric/wrong_raw_component_count.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/70205357c60a/workspace/parametric/wrong_raw_component_count.rkt
+@@ -0,0 +1,30 @@
++(rule! (lambda (g)
++  (let* ((stage
++           (cellmap g (r c v)
++             (if (!= 5 v)
++                 v
++                 (let ((l (if (and (> c 0) (= 5 (at g r (- c 1)))) 1 0))
++                       (ri (if (and (< c (- (cols g) 1)) (= 5 (at g r (+ c 1)))) 1 0))
++                       (u (if (and (> r 0) (= 5 (at g (- r 1) c))) 1 0))
++                       (d (if (and (< r (- (rows g) 1)) (= 5 (at g (+ r 1) c))) 1 0)))
++                   (if (and (= 1 l) (= 1 ri) (= 1 u) (= 1 d)) 2 5)))))
++         (separator-col (second (first (find-color g 9))))
++         (intermediate
++           (length
++             (filter (lambda (o)
++                       (and (= (obj-color o) 5)
++                            (< (obj-c2 o) separator-col)
++                            (>= (obj-size o) 9)))
++                     (objects g 0))))
++         (payloads
++           (sort
++             (filter (lambda (o)
++                       (and (= (obj-color o) 3)
++                            (> (obj-c1 o) separator-col)))
++                     (objects stage 0))
++             (lambda (a b)
++               (or (< (obj-r1 a) (obj-r1 b))
++                   (and (= (obj-r1 a) (obj-r1 b))
++                        (< (obj-c1 a) (obj-c1 b)))))))
++         (target (list-ref payloads (- intermediate 1))))
++    (recolor-cells stage (obj-cells target) 8))))

@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let* ((palette (filter (lambda (v) (not (= v 0))) (first g))) (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1)))) (for/fold ((out g)) ((obj (in-list (objects body 0)))) (if (= (obj-color obj) 7) (let ((color (list-ref palette (- (obj-size obj) 1)))) (paint-cells out (map (lambda (p) (list (+ 1 (first p)) (second p))) (obj-cells obj)) color)) out)))))

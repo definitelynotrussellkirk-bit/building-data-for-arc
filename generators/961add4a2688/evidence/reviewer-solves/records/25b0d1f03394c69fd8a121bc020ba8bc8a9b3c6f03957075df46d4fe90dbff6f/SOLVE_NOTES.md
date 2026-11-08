@@ -1,0 +1,3 @@
+# Visible-only blind solve
+
+Inspected only the four displayed training pairs and two masked inputs. Each input has a solid cyan frame. Within each column inside the frame, nonzero cells move upward until gaps disappear, preserving their vertical order; the frame and all exterior cells remain fixed. Example 2 distinguishes this from moving every object independently to the top because the order 3,7,5,4 remains vertical. The implementation detects a solid rectangular frame by geometry and performs stable column compaction. No generator, Racket rule, canonical answer or prior solve explanation was consulted. This is the first actual solve attempt; no artificial failed revision was created. Query accuracy remains withheld.

@@ -1,0 +1,21 @@
+(rule! (lambda (grid)
+  (let* ((height (rows grid))
+         (width (cols grid)))
+    (define (lr-mirror row col)
+      (cell-at grid row (- (- width 1) col)))
+    (define (ud-mirror row col)
+      (cell-at grid (- (- height 1) row) col))
+    (define lr-mismatches
+      (for/sum (row (range 0 height))
+        (for/sum (col (range 0 width))
+          (if (= (cell-at grid row col) (lr-mirror row col)) 0 1))))
+    (define ud-mismatches
+      (for/sum (row (range 0 height))
+        (for/sum (col (range 0 width))
+          (if (= (cell-at grid row col) (ud-mirror row col)) 0 1))))
+    (define use-lr (not (> lr-mismatches ud-mismatches)))
+    (grid-from-fn height width
+      (lambda (row col)
+        (let ((value (cell-at grid row col))
+              (mirror (if use-lr (lr-mirror row col) (ud-mirror row col))))
+          (if (and (!= value 0) (= mirror 0)) 0 value)))))))

@@ -1,0 +1,1 @@
+(rule! (vconcat (flip-ud g) g))

@@ -1,0 +1,1 @@
+(rule! (hconcat (flip-lr g) g))

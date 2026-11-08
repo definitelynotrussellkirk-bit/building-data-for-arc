@@ -1,0 +1,1616 @@
+diff --git a/repo/generators/0ae119475d57/generator.py b/repo/generators/0ae119475d57/generator.py
+--- a/repo/generators/0ae119475d57/generator.py
++++ b/repo/generators/0ae119475d57/generator.py
+@@ -320,6 +320,25 @@
+     return [[value if value else grid[5][0] for value in row] for row in output]
+ 
+ 
++def _competitor_nonzero_minimum(grid):
++    """Choose the numerically smaller nonzero aligned value, ignoring panel role."""
++    width = len(grid[0])
++    return [
++        [min([value for value in (grid[r][c], grid[r + 6][c]) if value] or [0])
++         for c in range(width)]
++        for r in range(5)
++    ]
++
++
++def _competitor_numeric_maximum(grid):
++    """Choose the numerically larger aligned value, ignoring panel role."""
++    width = len(grid[0])
++    return [
++        [max(grid[r][c], grid[r + 6][c]) for c in range(width)]
++        for r in range(5)
++    ]
++
++
+ # A feature-presence assertion is not yet evidence against an alternate rule.
+ # Bind each witness to a specific falsifiable rival; the shared semantic gate
+ # independently evaluates these functions against the real Racket authority.
+@@ -333,7 +352,11 @@
+     "lower_only_inserted": ["copy_upper_panel"],
+     "true_overlap_lower_wins": ["upper_wins_overlap"],
+ }
+-LESSON_COMPETITORS = SEMANTIC_RIVALS
++LESSON_COMPETITORS = {
++    **SEMANTIC_RIVALS,
++    "nonzero_minimum": _competitor_nonzero_minimum,
++    "numeric_maximum": _competitor_numeric_maximum,
++}
+ CANONICAL_SHORTCUTS = {"upper_wins_overlap": _competitor_upper_wins}
+ 
+ 
+@@ -362,7 +385,7 @@
+     truth = rule_mirror(query["input"])
+     if query.get("output") is not None and query["output"] != truth:
+         reasons.append("query: provided output does not match the task rule")
+-    for name, competitor in SEMANTIC_RIVALS.items():
++    for name, competitor in LESSON_COMPETITORS.items():
+         if all(competitor(d["input"]) == d["output"] for d in demos) and (
+             competitor(query["input"]) != truth
+         ):
+diff --git a/repo/generators/0ae119475d57/notes.md b/repo/generators/0ae119475d57/notes.md
+--- a/repo/generators/0ae119475d57/notes.md
++++ b/repo/generators/0ae119475d57/notes.md
+@@ -90,3 +90,14 @@
+ 
+ Current source-bound ticket observations: `generators/0ae119475d57/evidence/supplementary-current.json`. Results are reviewer-reported; blocked or unknown stays explicit. These observations do not approve a generator or variant, resolve audits, or admit data to training.
+ <!-- arcpuzzles-current-supplementary:end -->
++
++## Review 2026-10-24 — review-6449ae9dfaea35be
++
++Final generator version 3.1.0 has SHA-256 `42e6e496bc9f6ff8811eb3ccd6f9ee61bdd04f78122c9a6cc065d2a205455998`; canonical rule hash `c286c869b037` and canonical Racket authority remain unchanged.
++
++The existing visible-only palette checker already demonstrated two real lesson-level confounders, `nonzero_minimum` and `numeric_maximum`, but production `lesson_identifiable` iterated only `SEMANTIC_RIVALS`. A lesson could therefore pass the production gate while either shortcut fit every visible demonstration and changed the query answer. The repair adds both pure competitors to `LESSON_COMPETITORS` and makes `lesson_identifiable` enforce that complete set.
++
++Two regression tests construct literal lessons for the two shortcuts and fail if the production gate stops reporting them. A protected-Racket audit confirms that each rival matches both demonstration labels, disagrees on the query, and is now rejected. The portable test fixture was also repaired to locate canonical data through `reviewer_support.canonical_path`/`find_root` instead of a fixed parent depth. The isolated suite passed 84 tests.
++
++Limits: this proves rejection only for the two declared palette-order rivals and the existing semantic rivals, not universal lesson uniqueness. Owner integration remains separate; no training admission is claimed.
++
+diff --git a/repo/generators/0ae119475d57/tests/test_generator_0ae119475d57.py b/repo/generators/0ae119475d57/tests/test_generator_0ae119475d57.py
+--- a/repo/generators/0ae119475d57/tests/test_generator_0ae119475d57.py
++++ b/repo/generators/0ae119475d57/tests/test_generator_0ae119475d57.py
+@@ -4,9 +4,9 @@
+ import importlib
+ import json
+ import random
+-from pathlib import Path
+-
+ import pytest
++
++from reviewer_support import canonical_path, find_root
+ 
+ MODULE = importlib.import_module(
+     "puzzle_generators.per_puzzle.0ae119475d57.generator"
+@@ -17,12 +17,12 @@
+ self_check = MODULE.self_check
+ 
+ 
+-ROOT = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
+ TASK_ID = "0ae119475d57"
+ 
+ 
+ def _canonical_row() -> dict:
+-    with (ROOT / "data/canonical/puzzles.jsonl").open() as handle:
++    with canonical_path(ROOT).open() as handle:
+         for line in handle:
+             row = json.loads(line)
+             if row.get("task_id") == TASK_ID:
+@@ -199,7 +199,7 @@
+ 
+ 
+ def test_active_authority_text_is_exactly_canonical() -> None:
+-    selected = ROOT / "data/base/solutions/training/e98196ab__0ae119475d57.json"
++    selected = ROOT / "shared/data/base/solutions/training/e98196ab__0ae119475d57.json"
+     target = json.loads(selected.read_text())["racket_target"]
+     assert target["target_code"] == _canonical_row()["program_solution"]
+ 
+@@ -250,3 +250,35 @@
+     same = copy.deepcopy(grid)
+     MODULE._remove_false_separators(grid, random.Random(99))
+     assert grid == same
++
++
++def test_lesson_gate_rejects_nonzero_minimum_palette_confounding() -> None:
++    """A color-order shortcut must not survive every demo and flip the query."""
++    def pair(top: int, bottom: int) -> dict:
++        grid = [[0] * 4 for _ in range(11)]
++        grid[0] = [top, top, 0, 0]
++        grid[5] = [5, 5, 5, 5]
++        grid[6] = [bottom, 0, bottom, 0]
++        return {"input": grid, "output": rule_mirror(grid)}
++
++    demos = [pair(9, 4), pair(7, 1)]
++    query = pair(2, 7)
++    assert MODULE.lesson_identifiable(demos, query) == [
++        "competing rule 'nonzero_minimum' fits every demo but predicts a different query answer"
++    ]
++
++
++def test_lesson_gate_rejects_numeric_maximum_palette_confounding() -> None:
++    """The opposite color-order shortcut must also be tested explicitly."""
++    def pair(top: int, bottom: int) -> dict:
++        grid = [[0] * 4 for _ in range(11)]
++        grid[0] = [top, top, 0, 0]
++        grid[5] = [5, 5, 5, 5]
++        grid[6] = [bottom, 0, bottom, 0]
++        return {"input": grid, "output": rule_mirror(grid)}
++
++    demos = [pair(1, 9), pair(2, 7)]
++    query = pair(7, 2)
++    assert MODULE.lesson_identifiable(demos, query) == [
++        "competing rule 'numeric_maximum' fits every demo but predicts a different query answer"
++    ]
+diff --git a/repo/generators/d6607fc42bcc/notes.md b/repo/generators/d6607fc42bcc/notes.md
+--- a/repo/generators/d6607fc42bcc/notes.md
++++ b/repo/generators/d6607fc42bcc/notes.md
+@@ -2,3 +2,18 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Review 2026-10-24 — review-6449ae9dfaea35be
++
++Production generator version 3.0.0, SHA-256 `01bd9fe9646fea8b34ef2604e9bf8b162051b6c8ffd3ac89577fa96d55013402`, and canonical rule hash `30de93f65182` remain unchanged. This review adds a separate native parametric candidate under `workspace/parametric/` plus focused tests; it does not alter the accepted generator or canonical authority.
++
++The family exposes one episode-level parameter, `projection_depth`: canonical/default `one` and alternate `dot_offset`. Both settings receive identical inputs for a fixed seed and count request. Step A detects each color-1 notched rectangular frame, locates its single interior non-frame dot, and records the vertical dot-to-notch distance. Step B fills the interior/notch with the dot color and projects a full frame-width bar outward by either one row or the recorded distance. The alternate therefore uses an input-derived intermediate rather than a cosmetic branch.
++
++The adapter supports 2–6 demonstrations and 1–4 queries. Constructive demonstrations make every prefix of length 2–6 distinguish the two settings and reject six explicit finite shortcuts: fixed depth two, no exterior bar, bar only, opposite-edge distance, interior height, and nearest-edge distance. The fourth query is a distinct 30×30 two-frame case. Public one-query turns retain only demonstrations and the current query input.
++
++Native qualification passed for both settings at seeds 0 and 17 with three demonstrations and four queries. The protected-Racket causal witness selects a `dot_offset` query whose Step-A distance is 3; replacing that intermediate with the canonical constant 1 changes the final grid on the same input. Evidence is in `checks/d6607fc42bcc/qualification/` and `checks/d6607fc42bcc/causal/built/`.
++
++The focused suite passed 23 tests. The isolated task suite passed 31 tests and 11 subtests after replacing an inherited fixed-parent canonical-data path in the test with `reviewer_support.find_root`/`canonical_pairs`; the production generator was not changed. The bounded audit executed 32 sampler requests, 102 protected-Racket evaluations, all six executable shortcuts, and four actual 30×30 labels.
++
++Limits: shortcut coverage is finite, the causal interpretation is reviewer-authored metadata backed by one protected-Racket counterfactual, and `ready` is not owner acceptance. The next owner action is to integrate the exact source bytes, rerun native qualification and witness replay on the live tree, then perform fresh native acceptance. No training data is admitted by this review.
++
+diff --git a/repo/generators/d6607fc42bcc/tests/test_generator_d6607fc42bcc.py b/repo/generators/d6607fc42bcc/tests/test_generator_d6607fc42bcc.py
+--- a/repo/generators/d6607fc42bcc/tests/test_generator_d6607fc42bcc.py
++++ b/repo/generators/d6607fc42bcc/tests/test_generator_d6607fc42bcc.py
+@@ -1,46 +1,27 @@
+ from __future__ import annotations
+ 
+-import json
+ import random
+ import unittest
+-from pathlib import Path
+ 
+ from puzzle_generators import base
+ from puzzle_generators.per_puzzle.d6607fc42bcc import generator
+-
+-
+-ROOT = Path(__file__).resolve().parents[1]
+-
+-
+-def as_grid(value):
+-    return [
+-        [int(cell) for cell in row] if isinstance(row, str) else list(row)
+-        for row in value
+-    ]
++from reviewer_support import canonical_pairs as load_canonical_pairs, find_root
++
++
++ROOT = find_root(__file__)
+ 
+ 
+ def canonical_pairs():
+     seen = set()
+-    with (ROOT / "data" / "canonical" / "puzzles.jsonl").open() as handle:
+-        for line in handle:
+-            row = json.loads(line)
+-            if row.get("task_id") != generator.TASK_ID:
+-                continue
+-            for split in ("train", "test"):
+-                value = row.get(split)
+-                pairs = value if isinstance(value, list) else [value]
+-                for pair in pairs:
+-                    if not pair:
+-                        continue
+-                    grid = as_grid(pair["input"])
+-                    output = as_grid(pair["output"])
+-                    key = (
+-                        tuple(map(tuple, grid)),
+-                        tuple(map(tuple, output)),
+-                    )
+-                    if key not in seen:
+-                        seen.add(key)
+-                        yield grid, output
++    for pair in load_canonical_pairs(
++        generator.TASK_ID, root=ROOT, labeled_only=True
++    ):
++        grid = pair["input"]
++        output = pair["output"]
++        key = (tuple(map(tuple, grid)), tuple(map(tuple, output)))
++        if key not in seen:
++            seen.add(key)
++            yield grid, output
+ 
+ 
+ class D6607fc42bccGeneratorTests(unittest.TestCase):
+diff --git a/repo/generators/d6607fc42bcc/tests/test_parametric.py b/repo/generators/d6607fc42bcc/tests/test_parametric.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/tests/test_parametric.py
+@@ -0,0 +1,218 @@
++"""Behavioral contract for the separate projection-depth family."""
++from __future__ import annotations
++
++from copy import deepcopy
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from reviewer_support import canonical_path, find_root, public_challenge_bytes
++
++
++HOME = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
++PARAMETRIC = HOME / "workspace" / "parametric"
++
++
++def load(name: str = "adapter"):
++    path = PARAMETRIC / f"{name}.py"
++    assert path.is_file(), f"missing parametric {name}.py"
++    spec = importlib.util.spec_from_file_location(f"test_d660_{name}", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def episode_inputs(episode: dict) -> list[list[list[int]]]:
++    return [pair["input"] for split in ("train", "test") for pair in episode[split]]
++
++
++def test_default_program_is_exact_canonical_authority():
++    adapter = load()
++    canonical = {
++        row["program_solution"]
++        for row in map(json.loads, canonical_path(ROOT).read_text().splitlines())
++        if row.get("task_id") == "d6607fc42bcc"
++    }
++    assert canonical == {adapter.program({"projection_depth": "one"})}
++    assert adapter.program({"projection_depth": "dot_offset"}) not in canonical
++
++
++@pytest.mark.parametrize("demos,queries", [(2, 1), (2, 4), (3, 4), (6, 1), (6, 4)])
++def test_counts_prefix_distinctness_and_matched_setting_inputs(demos, queries):
++    adapter = load()
++    one = adapter.generate(17, {"projection_depth": "one"}, demos, queries)
++    dot = adapter.generate(17, {"projection_depth": "dot_offset"}, demos, queries)
++    full = adapter.generate(17, {"projection_depth": "one"}, demos, 4)
++
++    assert len(one["train"]) == demos
++    assert len(one["test"]) == queries
++    assert one["train"] == full["train"]
++    assert one["test"] == full["test"][:queries]
++    assert episode_inputs(one) == episode_inputs(dot)
++    serialized = [json.dumps(grid, separators=(",", ":")) for grid in episode_inputs(one)]
++    assert len(serialized) == len(set(serialized))
++    assert one["program_solution"] == adapter.program({"projection_depth": "one"})
++    assert dot["program_solution"] == adapter.program({"projection_depth": "dot_offset"})
++
++
++@pytest.mark.parametrize("setting", ["one", "dot_offset"])
++def test_every_supported_demo_prefix_identifies_setting_against_declared_rivals(setting):
++    prototype = load("prototype")
++    for demos in range(2, 7):
++        episode = prototype.generate(29, {"projection_depth": setting}, demos, 4)
++        certificate = prototype.teaching_certificate(episode)
++        assert certificate["survivors"] == [{"projection_depth": setting}]
++        assert certificate["query_answers_used"] is False
++        assert certificate["shortcut_survivors"] == []
++
++
++def test_dot_offset_rule_uses_dot_distance_to_choose_projection_depth():
++    prototype = load("prototype")
++    grid = [[0] * 9 for _ in range(10)]
++    # Frame rows 3..8, columns 2..6, top notch at (3,4), dot at (5,4).
++    # The dot is two rows from the notched edge, so the alternate must paint
++    # both exterior rows 1 and 2; the canonical default paints only row 2.
++    for c in range(2, 7):
++        grid[3][c] = 1
++        grid[8][c] = 1
++    for r in range(4, 8):
++        grid[r][2] = 1
++        grid[r][6] = 1
++    grid[3][4] = 0
++    grid[5][4] = 7
++
++    canonical = prototype.claimed_output(deepcopy(grid), {"projection_depth": "one"})
++    alternate = prototype.claimed_output(deepcopy(grid), {"projection_depth": "dot_offset"})
++
++    assert canonical[1][2:7] == [0, 0, 0, 0, 0]
++    assert canonical[2][2:7] == [7, 7, 7, 7, 7]
++    assert alternate[1][2:7] == [7, 7, 7, 7, 7]
++    assert alternate[2][2:7] == [7, 7, 7, 7, 7]
++    assert alternate[3][4] == 7
++    assert all(alternate[r][c] == 7 for r in range(4, 8) for c in range(3, 6))
++
++
++def test_fourth_query_is_substantive_30x30_and_settings_disagree():
++    adapter = load()
++    one = adapter.generate(91, {"projection_depth": "one"}, 3, 4)
++    dot = adapter.generate(91, {"projection_depth": "dot_offset"}, 3, 4)
++    pair_one = one["test"][3]
++    pair_dot = dot["test"][3]
++
++    assert (len(pair_one["input"]), len(pair_one["input"][0])) == (30, 30)
++    assert pair_one["input"] == pair_dot["input"]
++    assert pair_one["output"] != pair_dot["output"]
++    nonzero_input = sum(value != 0 for row in pair_one["input"] for value in row)
++    changed = sum(
++        a != b
++        for input_row, output_row in zip(pair_dot["input"], pair_dot["output"])
++        for a, b in zip(input_row, output_row)
++    )
++    assert nonzero_input >= 70
++    assert changed >= 120
++
++
++def test_visible_turn_has_no_future_queries_or_private_setting():
++    prototype = load("prototype")
++    episode = prototype.generate(7, {"projection_depth": "dot_offset"}, 3, 4)
++    first = prototype.generate(7, {"projection_depth": "dot_offset"}, 3, 1)
++    visible = prototype.visible_turn(episode, 0)
++
++    assert visible == public_challenge_bytes(first)
++    parsed = json.loads(visible)
++    assert len(parsed["test"]) == 1
++    assert "output" not in parsed["test"][0]
++    text = visible.decode("utf-8")
++    assert "projection_depth" not in text
++    assert "dot_offset" not in text
++
++
++@pytest.mark.parametrize(
++    "changes",
++    [
++        {"seed": True},
++        {"seed": -1},
++        {"seed": 2**63},
++        {"settings": {}},
++        {"settings": {"projection_depth": "two"}},
++        {"settings": {"projection_depth": "one", "extra": 1}},
++        {"demos": 1},
++        {"demos": 7},
++        {"queries": 0},
++        {"queries": 5},
++    ],
++)
++def test_invalid_controls_are_rejected(changes):
++    adapter = load()
++    kwargs = dict(seed=17, settings={"projection_depth": "one"}, demos=3, queries=4)
++    kwargs.update(changes)
++    with pytest.raises(ValueError):
++        adapter.generate(**kwargs)
++
++
++def test_executable_racket_shortcuts_match_independent_python_predictions_and_lose_on_demos():
++    """A wrong depth formula must be both executable and visibly rejected."""
++    prototype = load("prototype")
++    rivals = load("rivals")
++    from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++
++    expected_names = {
++        "fixed_two",
++        "no_exterior_bar",
++        "bar_only",
++        "opposite_edge_distance",
++        "interior_height",
++        "nearest_edge_distance",
++    }
++    episode = prototype.generate(0, {"projection_depth": "dot_offset"}, 2, 1)
++    materialized = rivals.programs(prototype.program({"projection_depth": "dot_offset"}))
++    assert set(materialized) == expected_names
++    assert len(set(materialized.values())) == len(expected_names)
++
++    runtime = ROOT / "shared" / "runtime"
++    bridge = None
++    try:
++        with _local_imports(runtime, PARAMETRIC):
++            apply, identity, bridge = _real_evaluator(runtime)
++            assert identity["backend"] == "racket"
++            assert identity["protected"] is True
++            for name, rival_program in materialized.items():
++                actual = [_grid(apply(rival_program, pair["input"])) for pair in episode["train"]]
++                expected = [prototype.shortcut_output(pair["input"], name) for pair in episode["train"]]
++                assert actual == expected
++                assert any(output != pair["output"] for output, pair in zip(actual, episode["train"]))
++    finally:
++        if bridge is not None:
++            bridge.close()
++
++
++def test_bounded_audit_executes_reference_and_rivals_without_using_query_answers():
++    """The reusable audit must prove its finite claims with protected Racket."""
++    audit = load("audit")
++    report = audit.run_bounded(
++        sampler_seeds=range(2), execution_seeds=(0,), demos=2, queries=1
++    )
++
++    assert report["status"] == "passed"
++    assert report["query_answers_used_for_rival_selection"] is False
++    assert report["runtime"]["backend"] == "racket"
++    assert report["runtime"]["protected"] is True
++    assert report["sampler_requests"] == 4
++    assert report["racket_evaluations"] >= 30
++    for mode in ("one", "dot_offset"):
++        assert set(report["rivals"][mode]) == {
++            "fixed_two",
++            "no_exterior_bar",
++            "bar_only",
++            "opposite_edge_distance",
++            "interior_height",
++            "nearest_edge_distance",
++        }
++        assert all(
++            item["mismatch_demo_indices"]
++            and item["python_prediction_matches_racket"] is True
++            for item in report["rivals"][mode].values()
++        )
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/README.md b/repo/generators/d6607fc42bcc/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/README.md
+@@ -0,0 +1,32 @@
++# Projection depth from the interior dot
++
++This is a separate native parametric candidate for `d6607fc42bcc`; it does not
++change the production generator or canonical authority.
++
++`projection_depth=one` is the exact canonical Racket program: fill each notched
++frame's interior and notch with its aligned dot color, then paint one full-width
++row outside the opening. `projection_depth=dot_offset` first locates the dot and
++computes its vertical distance from the notched edge, then paints that many
++full-width exterior rows. The input-dependent distance is the intermediate that
++controls the later projection operation.
++
++The adapter accepts 2–6 demonstrations and 1–4 queries independently. Inputs are
++identical across settings for the same seed/count request. The first two
++constructive demonstrations distinguish both settings and six finite shortcuts;
++the fourth query is a substantive 30×30 two-frame case. Public one-query turns
++contain only the demonstrations and current query input.
++
++From the packet root:
++
++```bash
++python3 review.py run python3 -m pytest -q \
++  generators/d6607fc42bcc/tests/test_parametric.py
++
++python3 review.py run python3 -m arcpuzzles parametric qualify d6607fc42bcc \
++  --seed 0 --seed 17 --demos 3 --queries 4 \
++  --out ../checks/d6607fc42bcc/qualification --summary
++```
++
++Qualification replays every label and finite setting rival through protected
++Racket. Exact-source owner acceptance remains a separate post-integration step;
++no data is training-admitted by these files.
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/adapter.py b/repo/generators/d6607fc42bcc/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/adapter.py
+@@ -0,0 +1,17 @@
++"""Thin native adapter for the d6607fc42bcc projection-depth family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_SPEC = importlib.util.spec_from_file_location(
++    "_d660_projection_parametric_" + hashlib.sha256(str(_PATH).encode()).hexdigest(),
++    _PATH,
++)
++_MODULE = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(_MODULE)
++
++program = _MODULE.program
++generate = _MODULE.generate
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/audit.py b/repo/generators/d6607fc42bcc/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/audit.py
+@@ -0,0 +1,354 @@
++"""Bounded sampler, protected-Racket label, and shortcut audit.
++
++Run from the repository root::
++
++    python3 generators/d6607fc42bcc/workspace/parametric/audit.py \
++        --out generators/d6607fc42bcc/workspace/parametric/evidence/current
++
++The finite rival set is deliberately explicit.  Passing this audit is evidence
++for the sampled contract, not an identifiability proof against arbitrary rules.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++import time
++from typing import Iterable
++
++HERE = Path(__file__).resolve().parent
++ROOT = HERE.parents[3]
++sys.path[:0] = [str(ROOT / "src"), str(ROOT / "shared" / "runtime")]
++
++from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++
++
++def _load(name: str):
++    path = HERE / f"{name}.py"
++    spec = importlib.util.spec_from_file_location(f"_d660_audit_{name}", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _sha_bytes(value: bytes) -> str:
++    return hashlib.sha256(value).hexdigest()
++
++
++def _sha_json(value) -> str:
++    return _sha_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
++
++
++def _check(condition: bool, message: str) -> None:
++    if not condition:
++        raise AssertionError(message)
++
++
++def _source_hashes() -> dict[str, str]:
++    paths = [
++        HERE / "adapter.py",
++        HERE / "prototype.py",
++        HERE / "rivals.py",
++        HERE / "audit.py",
++        HERE / "canonical.rkt",
++        HERE / "dot_offset.rkt",
++        HERE / "promotion.json",
++        HERE.parents[1] / "generator.py",
++        ROOT / "src" / "arcpuzzles" / "parametric_worker.py",
++    ]
++    return {
++        str(path.relative_to(ROOT)): _sha_bytes(path.read_bytes())
++        for path in paths
++    }
++
++
++def run_bounded(
++    *,
++    sampler_seeds: Iterable[int] = range(16),
++    execution_seeds: Iterable[int] = (0, 17),
++    demos: int = 3,
++    queries: int = 4,
++) -> dict:
++    """Execute the bounded audit and return a JSON-serializable report."""
++    prototype = _load("prototype")
++    rivals = _load("rivals")
++    sampler_seeds = tuple(sampler_seeds)
++    execution_seeds = tuple(execution_seeds)
++    started = time.perf_counter()
++    report = {
++        "schema": "d6607fc42bcc-projection-depth-audit-v1",
++        "task_id": prototype.TASK_ID,
++        "status": "running",
++        "scope": (
++            "Finite six-shortcut rejection on demonstrations, deterministic sampler "
++            "checks, and protected-Racket replay for the requested bounded seeds. "
++            "No universal identification claim."
++        ),
++        "query_answers_used_for_rival_selection": False,
++        "sources": _source_hashes(),
++        "request": {
++            "sampler_seeds": list(sampler_seeds),
++            "execution_seeds": list(execution_seeds),
++            "demos": demos,
++            "queries": queries,
++        },
++        "sampler": [],
++        "sampler_requests": 0,
++        "runtime": None,
++        "evaluations": [],
++        "rivals": {mode: {} for mode in prototype.DEPTH_MODES},
++        "sequential_cases": [],
++    }
++    bridge = None
++    try:
++        for seed in sampler_seeds:
++            episodes = {
++                mode: prototype.generate(
++                    seed, {"projection_depth": mode}, demos=demos, queries=queries
++                )
++                for mode in prototype.DEPTH_MODES
++            }
++            one_inputs = [
++                pair["input"]
++                for split in ("train", "test")
++                for pair in episodes["one"][split]
++            ]
++            dot_inputs = [
++                pair["input"]
++                for split in ("train", "test")
++                for pair in episodes["dot_offset"][split]
++            ]
++            _check(one_inputs == dot_inputs, f"setting-dependent inputs for seed {seed}")
++            for mode, episode in episodes.items():
++                all_pairs = episode["train"] + episode["test"]
++                serialized = [json.dumps(pair["input"], separators=(",", ":")) for pair in all_pairs]
++                _check(len(episode["train"]) == demos, "sampler demo count mismatch")
++                _check(len(episode["test"]) == queries, "sampler query count mismatch")
++                _check(len(serialized) == len(set(serialized)), "duplicate sampler input")
++                certificate = prototype.teaching_certificate(episode)
++                _check(
++                    certificate["survivors"] == [{"projection_depth": mode}],
++                    f"declared setting survived incorrectly: seed={seed} mode={mode}",
++                )
++                _check(
++                    certificate["shortcut_survivors"] == [],
++                    f"Python shortcut survived: seed={seed} mode={mode}",
++                )
++                sizes = [[len(pair["input"]), len(pair["input"][0])] for pair in all_pairs]
++                _check(all(1 <= h <= 30 and 1 <= w <= 30 for h, w in sizes), "invalid grid size")
++                report["sampler"].append(
++                    {
++                        "seed": seed,
++                        "settings": {"projection_depth": mode},
++                        "counts": {"demos": demos, "queries": queries},
++                        "input_sizes": sizes,
++                        "input_sha256": [_sha_json(pair["input"]) for pair in all_pairs],
++                        "certificate": certificate,
++                    }
++                )
++                report["sampler_requests"] += 1
++
++        runtime = ROOT / "shared" / "runtime"
++        with _local_imports(runtime, HERE):
++            apply, identity, bridge = _real_evaluator(runtime)
++            report["runtime"] = identity
++
++            def execute(program: str, grid, purpose: str):
++                begin = time.perf_counter()
++                output = _grid(apply(program, grid))
++                report["evaluations"].append(
++                    {
++                        "purpose": purpose,
++                        "program_sha256": _sha_bytes(program.encode()),
++                        "input_sha256": _sha_json(grid),
++                        "output_sha256": _sha_json(output),
++                        "input_size": [len(grid), len(grid[0])],
++                        "output_size": [len(output), len(output[0])],
++                        "seconds": time.perf_counter() - begin,
++                    }
++                )
++                return output
++
++            rival_programs = rivals.programs(
++                prototype.program({"projection_depth": "dot_offset"})
++            )
++            for mode in prototype.DEPTH_MODES:
++                report["rivals"][mode] = {
++                    name: {
++                        "program_sha256": _sha_bytes(program.encode()),
++                        "mismatch_demo_indices": [],
++                        "cases": [],
++                        "python_prediction_matches_racket": True,
++                    }
++                    for name, program in rival_programs.items()
++                }
++
++            first_episode = None
++            for seed in execution_seeds:
++                for mode in prototype.DEPTH_MODES:
++                    episode = prototype.generate(
++                        seed, {"projection_depth": mode}, demos=demos, queries=queries
++                    )
++                    if first_episode is None:
++                        first_episode = episode
++                    reference = episode["program_solution"]
++                    for split in ("train", "test"):
++                        for index, pair in enumerate(episode[split]):
++                            actual = execute(
++                                reference,
++                                pair["input"],
++                                f"reference/seed{seed}/{mode}/{split}/{index}",
++                            )
++                            _check(
++                                actual == pair["output"],
++                                f"Racket reference mismatch seed={seed} mode={mode} {split}[{index}]",
++                            )
++                    for name, rival_program in rival_programs.items():
++                        mismatches = []
++                        for index, pair in enumerate(episode["train"]):
++                            actual = execute(
++                                rival_program,
++                                pair["input"],
++                                f"rival/seed{seed}/{mode}/{name}/demo{index}",
++                            )
++                            predicted = prototype.shortcut_output(pair["input"], name)
++                            _check(
++                                actual == predicted,
++                                f"Racket/Python rival mismatch seed={seed} mode={mode} name={name} demo={index}",
++                            )
++                            if actual != pair["output"]:
++                                mismatches.append(index)
++                        _check(
++                            bool(mismatches),
++                            f"shortcut survived demos seed={seed} mode={mode} name={name}",
++                        )
++                        item = report["rivals"][mode][name]
++                        item["cases"].append(
++                            {"seed": seed, "mismatch_demo_indices": mismatches}
++                        )
++                        item["mismatch_demo_indices"] = sorted(
++                            set(item["mismatch_demo_indices"]) | set(mismatches)
++                        )
++
++            if execution_seeds:
++                witness_seed = execution_seeds[0]
++                one = prototype.generate(
++                    witness_seed, {"projection_depth": "one"}, demos=demos, queries=queries
++                )
++                dot = prototype.generate(
++                    witness_seed,
++                    {"projection_depth": "dot_offset"},
++                    demos=demos,
++                    queries=queries,
++                )
++                witness = next(
++                    pair["input"]
++                    for pair, alternate in zip(one["train"], dot["train"])
++                    if pair["output"] != alternate["output"]
++                )
++                ordinary = execute(
++                    dot["program_solution"], witness, "sequential/dot_offset/ordinary"
++                )
++                counterfactual = execute(
++                    one["program_solution"], witness, "sequential/dot_offset/wrong_intermediate"
++                )
++                _check(ordinary != counterfactual, "sequential ablation had no effect")
++                report["sequential_cases"].append(
++                    {
++                        "settings": {"projection_depth": "dot_offset"},
++                        "input_sha256": _sha_json(witness),
++                        "intermediate_value": prototype.frame_intermediates(witness),
++                        "ordinary_program_sha256": _sha_bytes(dot["program_solution"].encode()),
++                        "counterfactual_program_sha256": _sha_bytes(one["program_solution"].encode()),
++                        "ordinary_output_sha256": _sha_json(ordinary),
++                        "counterfactual_output_sha256": _sha_json(counterfactual),
++                        "outputs_differ": True,
++                        "ablation": "wrong_intermediate",
++                    }
++                )
++        report["status"] = "passed"
++    except Exception as exc:
++        report["status"] = "failed"
++        report["error"] = {"type": type(exc).__name__, "message": str(exc)}
++        raise
++    finally:
++        if bridge is not None:
++            bridge.close()
++        report["racket_evaluations"] = len(report["evaluations"])
++        report["actual_30x30_evaluations"] = [
++            item for item in report["evaluations"] if item["input_size"] == [30, 30]
++        ]
++        report["elapsed_seconds"] = time.perf_counter() - started
++    return report
++
++
++def _self_review(report: dict) -> dict:
++    return {
++        "schema": "d6607fc42bcc-self-review-v1",
++        "task_id": report["task_id"],
++        "status": report["status"],
++        "claims": [
++            "Inputs are identical across parameter settings for every sampled seed.",
++            "All sampled private labels were replayed by a live protected Racket backend.",
++            "Six independently predicted executable shortcut families were rejected by demonstrations.",
++            "A wrong-intermediate ablation changes the result on the same visible input.",
++            "The fourth query exercises an actual 30x30 canvas in the full audit request.",
++        ],
++        "limitations": [
++            "The shortcut set is finite and does not prove uniqueness against arbitrary programs.",
++            "Sampling is bounded to the recorded seeds and requested counts.",
++            "The alternate projection-depth rule is a new family member, not a claim about the original ARC intent.",
++        ],
++        "query_answers_used_for_rival_selection": False,
++        "sampler_requests": report["sampler_requests"],
++        "racket_evaluations": report["racket_evaluations"],
++        "actual_30x30_evaluation_count": len(report["actual_30x30_evaluations"]),
++    }
++
++
++def main(argv=None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--sampler-seeds", type=int, default=16)
++    parser.add_argument("--seed", type=int, action="append", default=[])
++    parser.add_argument("--demos", type=int, default=3)
++    parser.add_argument("--queries", type=int, default=4)
++    args = parser.parse_args(argv)
++    args.out.mkdir(parents=True, exist_ok=False)
++    execution_seeds = tuple(args.seed) if args.seed else (0, 17)
++    report = run_bounded(
++        sampler_seeds=range(args.sampler_seeds),
++        execution_seeds=execution_seeds,
++        demos=args.demos,
++        queries=args.queries,
++    )
++    (args.out / "focused-validation.json").write_text(
++        json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n",
++        encoding="utf-8",
++    )
++    self_review = _self_review(report)
++    (args.out / "self-review.json").write_text(
++        json.dumps(self_review, sort_keys=True, separators=(",", ":")) + "\n",
++        encoding="utf-8",
++    )
++    print(
++        json.dumps(
++            {
++                "status": report["status"],
++                "sampler_requests": report["sampler_requests"],
++                "racket_evaluations": report["racket_evaluations"],
++                "actual_30x30_evaluations": len(report["actual_30x30_evaluations"]),
++                "elapsed_seconds": report["elapsed_seconds"],
++                "out": str(args.out),
++            },
++            sort_keys=True,
++        )
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/canonical.rkt b/repo/generators/d6607fc42bcc/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/canonical.rkt
+@@ -0,0 +1,60 @@
++(rule! (lambda (g)
++         (let* ((objs (objects-multicolor g))
++                (blue-objs (filter (lambda (o)
++                                     (for/or ((cl (obj-cells o)))
++                                             (= 1 (at g (fst cl) (snd cl)))))
++                                   objs)))
++           (reduce (lambda (acc obj)
++                     (let* ((fr1 (obj-r1 obj))
++                            (fr2 (obj-r2 obj))
++                            (fc1 (obj-c1 obj))
++                            (fc2 (obj-c2 obj))
++                            (interior (positions-in-rect (+ fr1 1)
++                                                         (+ fc1 1)
++                                                         (- fr2 1)
++                                                         (- fc2 1)))
++                            (dot (find (lambda (p)
++                                         (let* ((v (at g (fst p) (snd p))))
++                                           (and (!= 0 v) (!= 1 v))))
++                                       interior))
++                            (dc (if dot (at g (fst dot) (snd dot)) 0)))
++                       (if (zero? dc)
++                           acc
++                           (let* ((top-open (not (all? (lambda (kc) (= 1 (at g fr1 kc)))
++                                                       (range (+ fc1 1) fc2)))))
++                             (cellmap g
++                                      (r kc v)
++                                      (cond
++                                        ((and
++                                           (> r fr1)
++                                           (< r fr2)
++                                           (> kc fc1)
++                                           (< kc fc2)
++                                           (zero? (at acc r kc))) dc)
++                                        ((and
++                                           top-open
++                                           (= r fr1)
++                                           (> kc fc1)
++                                           (< kc fc2)
++                                           (zero? v)) dc)
++                                        ((and
++                                           top-open
++                                           (= r (- fr1 1))
++                                           (>= (- fr1 1) 0)
++                                           (>= kc fc1)
++                                           (<= kc fc2)) dc)
++                                        ((and
++                                           (not top-open)
++                                           (= r fr2)
++                                           (> kc fc1)
++                                           (< kc fc2)
++                                           (zero? v)) dc)
++                                        ((and
++                                           (not top-open)
++                                           (= r (+ fr2 1))
++                                           (< (+ fr2 1) h)
++                                           (>= kc fc1)
++                                           (<= kc fc2)) dc)
++                                        (else (at acc r kc))))))))
++                   g
++                   blue-objs))))
+\ No newline at end of file
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/dot_offset.rkt b/repo/generators/d6607fc42bcc/workspace/parametric/dot_offset.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/dot_offset.rkt
+@@ -0,0 +1,63 @@
++(rule! (lambda (g)
++         (let* ((objs (objects-multicolor g))
++                (blue-objs (filter (lambda (o)
++                                     (for/or ((cl (obj-cells o)))
++                                             (= 1 (at g (fst cl) (snd cl)))))
++                                   objs)))
++           (reduce (lambda (acc obj)
++                     (let* ((fr1 (obj-r1 obj))
++                            (fr2 (obj-r2 obj))
++                            (fc1 (obj-c1 obj))
++                            (fc2 (obj-c2 obj))
++                            (interior (positions-in-rect (+ fr1 1)
++                                                         (+ fc1 1)
++                                                         (- fr2 1)
++                                                         (- fc2 1)))
++                            (dot (find (lambda (p)
++                                         (let* ((v (at g (fst p) (snd p))))
++                                           (and (!= 0 v) (!= 1 v))))
++                                       interior))
++                            (dc (if dot (at g (fst dot) (snd dot)) 0)))
++                       (if (zero? dc)
++                           acc
++                           (let* ((top-open (not (all? (lambda (kc) (= 1 (at g fr1 kc)))
++                                                       (range (+ fc1 1) fc2))))
++                                  (depth (if top-open
++                                             (- (fst dot) fr1)
++                                             (- fr2 (fst dot)))))
++                             (cellmap g
++                                      (r kc v)
++                                      (cond
++                                        ((and
++                                           (> r fr1)
++                                           (< r fr2)
++                                           (> kc fc1)
++                                           (< kc fc2)
++                                           (zero? (at acc r kc))) dc)
++                                        ((and
++                                           top-open
++                                           (= r fr1)
++                                           (> kc fc1)
++                                           (< kc fc2)
++                                           (zero? v)) dc)
++                                        ((and
++                                           top-open
++                                           (>= r (- fr1 depth))
++                                           (< r fr1)
++                                           (>= kc fc1)
++                                           (<= kc fc2)) dc)
++                                        ((and
++                                           (not top-open)
++                                           (= r fr2)
++                                           (> kc fc1)
++                                           (< kc fc2)
++                                           (zero? v)) dc)
++                                        ((and
++                                           (not top-open)
++                                           (> r fr2)
++                                           (<= r (+ fr2 depth))
++                                           (>= kc fc1)
++                                           (<= kc fc2)) dc)
++                                        (else (at acc r kc))))))))
++                   g
++                   blue-objs))))
+\ No newline at end of file
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/audit-command.txt b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/audit-command.txt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/audit-command.txt
+@@ -0,0 +1 @@
++{"actual_30x30_evaluations": 4, "elapsed_seconds": 3.6619249650000256, "out": "generators/d6607fc42bcc/workspace/parametric/evidence/current", "racket_evaluations": 102, "sampler_requests": 32, "status": "passed"}
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/focused-validation.json b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/focused-validation.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/focused-validation.json
+@@ -0,0 +1 @@
++{"actual_30x30_evaluations":[{"input_sha256":"729b587ae27a146817fef8ba4a4a9313a03990c8fb2d1efe8e4c74d3f2ae3fac","input_size":[30,30],"output_sha256":"7acdfd699c71be58438922004afe590d456385365e170a8dd761c24d5e2d52e7","output_size":[30,30],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed0/one/test/3","seconds":0.010920975000090039},{"input_sha256":"729b587ae27a146817fef8ba4a4a9313a03990c8fb2d1efe8e4c74d3f2ae3fac","input_size":[30,30],"output_sha256":"8440c49f539f8be3c1f08d3c121d01dee7c0c59cae2a73a8fe5ba7913c18082e","output_size":[30,30],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed0/dot_offset/test/3","seconds":0.011616892000006374},{"input_sha256":"be9fb26e7fb22289ee4dbad1c65d004d4b01d1e095996a2db764181f9e387f7e","input_size":[30,30],"output_sha256":"332b541cf5df0a48ae7eed6ab97a035c2e0aa0dfe65d43b26e6474cd0deae056","output_size":[30,30],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed17/one/test/3","seconds":0.010734862000049361},{"input_sha256":"be9fb26e7fb22289ee4dbad1c65d004d4b01d1e095996a2db764181f9e387f7e","input_size":[30,30],"output_sha256":"97b8129424d5e97eb4559f100ac5783aee511927bcaf786d379d586e40baec69","output_size":[30,30],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed17/dot_offset/test/3","seconds":0.011988685999995141}],"elapsed_seconds":3.6619249650000256,"evaluations":[{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"7ff55fdcf849bd6db00af7c2a7e2824174d4b1133e40e9a809e50c6e546f05b6","output_size":[12,14],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed0/one/train/0","seconds":0.02269410499991409},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"63b294f06cfd121b389e262de18d3a4fd841ee0302287a4936773daec78eaf0a","output_size":[16,18],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed0/one/train/1","seconds":0.009538012999996681},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"69ecc26d9cde1a8a356a85f5c6b64795fb12a3b8836572b6c9912d954b9a8883","output_size":[18,20],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed0/one/train/2","seconds":0.009881063999955586},{"input_sha256":"8a46208b2955f09a358df6c05a615e96b86222b8cd13cb5551857f23d555e1d5","input_size":[13,17],"output_sha256":"876a3250c472fbdfea5e047b92dbaf758098638ce0e82848793c962dfc1c2d9d","output_size":[13,17],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed0/one/test/0","seconds":0.009417536999990261},{"input_sha256":"108affedec2c4e7cabac692298ae42772af6bf679a149ee612fae02d29de34ef","input_size":[19,22],"output_sha256":"3161e2e5d2495d942e9e452e6a2f168a12e6230f74a27f56f1bf38233610cb38","output_size":[19,22],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed0/one/test/1","seconds":0.010037102000069353},{"input_sha256":"afc1294c47e5000560228ca80bd56348998b14529aa12fe10a369d4b7cec02fa","input_size":[26,28],"output_sha256":"3a533ef676fe64ec22d6ac3868500afb9da9f703e4b8b47ba80124004f62a516","output_size":[26,28],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed0/one/test/2","seconds":0.010920893999923464},{"input_sha256":"729b587ae27a146817fef8ba4a4a9313a03990c8fb2d1efe8e4c74d3f2ae3fac","input_size":[30,30],"output_sha256":"7acdfd699c71be58438922004afe590d456385365e170a8dd761c24d5e2d52e7","output_size":[30,30],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed0/one/test/3","seconds":0.010920975000090039},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"06c887939a1a7cc62205c8b52b26cea6400b58efa969561204165fd327d5d2b0","output_size":[12,14],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed0/one/fixed_two/demo0","seconds":0.012451312000052894},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"f2dcffbb5f3c17e16480d2c67b8ddb33db6226506dfc84ed93698b5ece290b27","output_size":[16,18],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed0/one/fixed_two/demo1","seconds":0.009448501999941072},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"749719286fe1eff9ea7b4ce582bf43b25f68a931c89aa78da794a8710c18a181","output_size":[18,20],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed0/one/fixed_two/demo2","seconds":0.010423276999972586},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"53bd7568fe69e65851022f16d88f6de074e2d4f5f28417cc60c55c9f8bd16936","output_size":[12,14],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed0/one/no_exterior_bar/demo0","seconds":0.011532347999946069},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"475d855958b720bc763928f5c05d864ed05654c4137ed41aad23ac6655949696","output_size":[16,18],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed0/one/no_exterior_bar/demo1","seconds":0.009663477000003695},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"c0d7b699cdca26977694432093b4b0d3a99b4a764c3f2477ddb8e5135f0574ce","output_size":[18,20],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed0/one/no_exterior_bar/demo2","seconds":0.011222343999975237},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"8db6ebd0d35d82a07ef24bb9ca2a4c060d22c60c4fdb141a83b24348181349ab","output_size":[12,14],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed0/one/bar_only/demo0","seconds":0.012348750999990443},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"39d5dcb65842369e1140dab0e467315486bec1c44521c499a00c2fb6c814d1b4","output_size":[16,18],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed0/one/bar_only/demo1","seconds":0.010875747999989471},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"26b2ff1a0c06838320d19112acc203881c9296562d64b98d5c1620f0dce5a4bd","output_size":[18,20],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed0/one/bar_only/demo2","seconds":0.012067119999983333},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"33b9f0a7699525bdd52d2e48782d03b6d3737223e89b0afa3ea8be1f6799cf35","output_size":[12,14],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed0/one/opposite_edge_distance/demo0","seconds":0.011305015999937496},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"f2dcffbb5f3c17e16480d2c67b8ddb33db6226506dfc84ed93698b5ece290b27","output_size":[16,18],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed0/one/opposite_edge_distance/demo1","seconds":0.010094436000031237},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"749719286fe1eff9ea7b4ce582bf43b25f68a931c89aa78da794a8710c18a181","output_size":[18,20],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed0/one/opposite_edge_distance/demo2","seconds":0.010040148000030058},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"33b9f0a7699525bdd52d2e48782d03b6d3737223e89b0afa3ea8be1f6799cf35","output_size":[12,14],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed0/one/interior_height/demo0","seconds":0.01003549999995812},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"a1001cd02d70889394a254e0792a6b30c4914e93b8689804a196cb0f8d373bc5","output_size":[16,18],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed0/one/interior_height/demo1","seconds":0.010096849999968072},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"b9a93a3cb383cda2dfc992e0255111ae1ddf23a48a54f4f529805ccf96422fd2","output_size":[18,20],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed0/one/interior_height/demo2","seconds":0.00942962500005251},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"06c887939a1a7cc62205c8b52b26cea6400b58efa969561204165fd327d5d2b0","output_size":[12,14],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed0/one/nearest_edge_distance/demo0","seconds":0.010699810999994952},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"f2dcffbb5f3c17e16480d2c67b8ddb33db6226506dfc84ed93698b5ece290b27","output_size":[16,18],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed0/one/nearest_edge_distance/demo1","seconds":0.009971216000053573},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"749719286fe1eff9ea7b4ce582bf43b25f68a931c89aa78da794a8710c18a181","output_size":[18,20],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed0/one/nearest_edge_distance/demo2","seconds":0.010220419999996011},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"06c887939a1a7cc62205c8b52b26cea6400b58efa969561204165fd327d5d2b0","output_size":[12,14],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed0/dot_offset/train/0","seconds":0.010805255000036595},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"a1001cd02d70889394a254e0792a6b30c4914e93b8689804a196cb0f8d373bc5","output_size":[16,18],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed0/dot_offset/train/1","seconds":0.010267118999990998},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"b9a93a3cb383cda2dfc992e0255111ae1ddf23a48a54f4f529805ccf96422fd2","output_size":[18,20],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed0/dot_offset/train/2","seconds":0.01051685400000224},{"input_sha256":"8a46208b2955f09a358df6c05a615e96b86222b8cd13cb5551857f23d555e1d5","input_size":[13,17],"output_sha256":"2203b5dcfcc1b6322ccd88fc2ee1df8d808e456c8bcb831d6a0e9da9dbebb86b","output_size":[13,17],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed0/dot_offset/test/0","seconds":0.009951718000024812},{"input_sha256":"108affedec2c4e7cabac692298ae42772af6bf679a149ee612fae02d29de34ef","input_size":[19,22],"output_sha256":"09ed446960d1666f567ca50801d3b2ce2fafea36212a312bc4d6e5a9cc32b89c","output_size":[19,22],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed0/dot_offset/test/1","seconds":0.010804183999994166},{"input_sha256":"afc1294c47e5000560228ca80bd56348998b14529aa12fe10a369d4b7cec02fa","input_size":[26,28],"output_sha256":"b780c930a6d41ce630283eba8f483ba62fd0598c59c38148adc09b104e0bc5d5","output_size":[26,28],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed0/dot_offset/test/2","seconds":0.01385458300001119},{"input_sha256":"729b587ae27a146817fef8ba4a4a9313a03990c8fb2d1efe8e4c74d3f2ae3fac","input_size":[30,30],"output_sha256":"8440c49f539f8be3c1f08d3c121d01dee7c0c59cae2a73a8fe5ba7913c18082e","output_size":[30,30],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed0/dot_offset/test/3","seconds":0.011616892000006374},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"06c887939a1a7cc62205c8b52b26cea6400b58efa969561204165fd327d5d2b0","output_size":[12,14],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed0/dot_offset/fixed_two/demo0","seconds":0.01193923299990729},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"f2dcffbb5f3c17e16480d2c67b8ddb33db6226506dfc84ed93698b5ece290b27","output_size":[16,18],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed0/dot_offset/fixed_two/demo1","seconds":0.010451808999960122},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"749719286fe1eff9ea7b4ce582bf43b25f68a931c89aa78da794a8710c18a181","output_size":[18,20],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed0/dot_offset/fixed_two/demo2","seconds":0.011489206000078411},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"53bd7568fe69e65851022f16d88f6de074e2d4f5f28417cc60c55c9f8bd16936","output_size":[12,14],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed0/dot_offset/no_exterior_bar/demo0","seconds":0.01028552499997204},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"475d855958b720bc763928f5c05d864ed05654c4137ed41aad23ac6655949696","output_size":[16,18],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed0/dot_offset/no_exterior_bar/demo1","seconds":0.01109872400002132},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"c0d7b699cdca26977694432093b4b0d3a99b4a764c3f2477ddb8e5135f0574ce","output_size":[18,20],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed0/dot_offset/no_exterior_bar/demo2","seconds":0.010868857999980719},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"8db6ebd0d35d82a07ef24bb9ca2a4c060d22c60c4fdb141a83b24348181349ab","output_size":[12,14],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed0/dot_offset/bar_only/demo0","seconds":0.010829001000047356},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"39d5dcb65842369e1140dab0e467315486bec1c44521c499a00c2fb6c814d1b4","output_size":[16,18],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed0/dot_offset/bar_only/demo1","seconds":0.01006412200001705},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"26b2ff1a0c06838320d19112acc203881c9296562d64b98d5c1620f0dce5a4bd","output_size":[18,20],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed0/dot_offset/bar_only/demo2","seconds":0.01235050399998272},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"33b9f0a7699525bdd52d2e48782d03b6d3737223e89b0afa3ea8be1f6799cf35","output_size":[12,14],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed0/dot_offset/opposite_edge_distance/demo0","seconds":0.011067719000038778},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"f2dcffbb5f3c17e16480d2c67b8ddb33db6226506dfc84ed93698b5ece290b27","output_size":[16,18],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed0/dot_offset/opposite_edge_distance/demo1","seconds":0.01086324000004879},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"749719286fe1eff9ea7b4ce582bf43b25f68a931c89aa78da794a8710c18a181","output_size":[18,20],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed0/dot_offset/opposite_edge_distance/demo2","seconds":0.010254460000055587},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"33b9f0a7699525bdd52d2e48782d03b6d3737223e89b0afa3ea8be1f6799cf35","output_size":[12,14],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed0/dot_offset/interior_height/demo0","seconds":0.009754619000091225},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"a1001cd02d70889394a254e0792a6b30c4914e93b8689804a196cb0f8d373bc5","output_size":[16,18],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed0/dot_offset/interior_height/demo1","seconds":0.010532625999985612},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"b9a93a3cb383cda2dfc992e0255111ae1ddf23a48a54f4f529805ccf96422fd2","output_size":[18,20],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed0/dot_offset/interior_height/demo2","seconds":0.010899083000026621},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"06c887939a1a7cc62205c8b52b26cea6400b58efa969561204165fd327d5d2b0","output_size":[12,14],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed0/dot_offset/nearest_edge_distance/demo0","seconds":0.010377680000033251},{"input_sha256":"597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","input_size":[16,18],"output_sha256":"f2dcffbb5f3c17e16480d2c67b8ddb33db6226506dfc84ed93698b5ece290b27","output_size":[16,18],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed0/dot_offset/nearest_edge_distance/demo1","seconds":0.010220459999914056},{"input_sha256":"19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","input_size":[18,20],"output_sha256":"749719286fe1eff9ea7b4ce582bf43b25f68a931c89aa78da794a8710c18a181","output_size":[18,20],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed0/dot_offset/nearest_edge_distance/demo2","seconds":0.010371871000074862},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"517f24fe985731984806b1691b8125e91750133c6f8cd899c73ac7a844665afb","output_size":[12,14],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed17/one/train/0","seconds":0.011917590999928507},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"eaec7fd3ee78c40f25999b9863e34f390d30a3ac199cb2a98a3b2608f1b6cc29","output_size":[16,18],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed17/one/train/1","seconds":0.010791205000032278},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"2cb2bc2336688291b97bcd876549719d8c803a853b58d572f2a78cb4b5b25d2e","output_size":[18,20],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed17/one/train/2","seconds":0.011582862000068417},{"input_sha256":"b2c8d163f435061ba0efc0c8cbb537b36c9cc07b4432786986ddebd66c20dd0c","input_size":[13,17],"output_sha256":"6365358bf02503b9b283475fc28f4fb979092ba7457d5a098aa579ca4e9d3dba","output_size":[13,17],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed17/one/test/0","seconds":0.010375026000019716},{"input_sha256":"b97117c9f8c480a22bc3d1ec5723a5698a6498f4652ac35cca2b32cc52d47998","input_size":[19,22],"output_sha256":"24c28d2e920d8acac739898cd8ff95a705a04cb964ec04d9d78b99732534c81d","output_size":[19,22],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed17/one/test/1","seconds":0.010330030999966766},{"input_sha256":"421862b83da49191fceb6b68297304a40ec30c366acaf7f8cf93d2d9ca684e78","input_size":[26,28],"output_sha256":"eec21a8dbfa500dabd61c9194692e8e4a316a591a72ac90ca20b5176b5f3b3d5","output_size":[26,28],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed17/one/test/2","seconds":0.01164922899999965},{"input_sha256":"be9fb26e7fb22289ee4dbad1c65d004d4b01d1e095996a2db764181f9e387f7e","input_size":[30,30],"output_sha256":"332b541cf5df0a48ae7eed6ab97a035c2e0aa0dfe65d43b26e6474cd0deae056","output_size":[30,30],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"reference/seed17/one/test/3","seconds":0.010734862000049361},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"575500a428f1d5b9e5d33a53388526d60a5bc9628d955eb6e9c1e9ba4f6e2da1","output_size":[12,14],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed17/one/fixed_two/demo0","seconds":0.01070800299999064},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"0ff1ecf0d84c7444e6353ed9d7f93f6626e13758a406ff821793dbb508125baf","output_size":[16,18],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed17/one/fixed_two/demo1","seconds":0.009756371999969815},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"1808a1770685700aeebd30307fc22681ff04908ff98c9b65d9284b7448f9621b","output_size":[18,20],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed17/one/fixed_two/demo2","seconds":0.010470185000031051},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"03cb6efaad248ff0e665c1f46c1098c382da9f5f7aed28fe58fb38ef5bfdf982","output_size":[12,14],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed17/one/no_exterior_bar/demo0","seconds":0.011672347999933663},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"541a62b383d26713fda55141ee55ac9957bb34d35d5558a9ae131df624548d97","output_size":[16,18],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed17/one/no_exterior_bar/demo1","seconds":0.01110118799999782},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"ce33f3cca2b63d054926fbe26191d000772662f4f433f57beb1850695e022280","output_size":[18,20],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed17/one/no_exterior_bar/demo2","seconds":0.01004925099994125},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"33c381ff4f31b643cefc1307fc0d2f533533f0ab4d504e91f1a3b3a6e63e1fd1","output_size":[12,14],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed17/one/bar_only/demo0","seconds":0.010821298999985629},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"e1f9c6293ab48ddaf31b3e3c19eded6b771f6a1f1414068d677fab16d3e3c58f","output_size":[16,18],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed17/one/bar_only/demo1","seconds":0.010604080999996768},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"c797943acaae4063b1404cfd486fa649db2c79ef768aec5081bb1d34d296f5d6","output_size":[18,20],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed17/one/bar_only/demo2","seconds":0.012354514999969979},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"817ac0309a1beaaad3b1979853e17cccb3791cc8fd7109ba722092d2311bec16","output_size":[12,14],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed17/one/opposite_edge_distance/demo0","seconds":0.012088505999940935},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"0ff1ecf0d84c7444e6353ed9d7f93f6626e13758a406ff821793dbb508125baf","output_size":[16,18],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed17/one/opposite_edge_distance/demo1","seconds":0.011113276000060068},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"1808a1770685700aeebd30307fc22681ff04908ff98c9b65d9284b7448f9621b","output_size":[18,20],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed17/one/opposite_edge_distance/demo2","seconds":0.011638023000045905},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"817ac0309a1beaaad3b1979853e17cccb3791cc8fd7109ba722092d2311bec16","output_size":[12,14],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed17/one/interior_height/demo0","seconds":0.01012032400001317},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"d898ad0d02c53a62e7f9db39a5500ee27b9340536db742629e1373b51048837f","output_size":[16,18],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed17/one/interior_height/demo1","seconds":0.011174695999898177},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"90ebe111bdb7afa1c4e2b0fdab2b6a23bf8b93b04662c85adfd8b9f385514566","output_size":[18,20],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed17/one/interior_height/demo2","seconds":0.011409399000058329},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"575500a428f1d5b9e5d33a53388526d60a5bc9628d955eb6e9c1e9ba4f6e2da1","output_size":[12,14],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed17/one/nearest_edge_distance/demo0","seconds":0.010261700999990353},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"0ff1ecf0d84c7444e6353ed9d7f93f6626e13758a406ff821793dbb508125baf","output_size":[16,18],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed17/one/nearest_edge_distance/demo1","seconds":0.011762189000023682},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"1808a1770685700aeebd30307fc22681ff04908ff98c9b65d9284b7448f9621b","output_size":[18,20],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed17/one/nearest_edge_distance/demo2","seconds":0.011556202999940979},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"575500a428f1d5b9e5d33a53388526d60a5bc9628d955eb6e9c1e9ba4f6e2da1","output_size":[12,14],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed17/dot_offset/train/0","seconds":0.011824315000012575},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"238788f8e4b85c27818bddd4de3cbb4984d7ddf2bcc8376aeeb18970ac9c3719","output_size":[16,18],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed17/dot_offset/train/1","seconds":0.01071925899998405},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"90ebe111bdb7afa1c4e2b0fdab2b6a23bf8b93b04662c85adfd8b9f385514566","output_size":[18,20],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed17/dot_offset/train/2","seconds":0.014174159999924996},{"input_sha256":"b2c8d163f435061ba0efc0c8cbb537b36c9cc07b4432786986ddebd66c20dd0c","input_size":[13,17],"output_sha256":"1de97d65c62e80200cda31fad4ce5bca8fd7c86bad9fc791b9e8898e5ed2e349","output_size":[13,17],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed17/dot_offset/test/0","seconds":0.012548514000059185},{"input_sha256":"b97117c9f8c480a22bc3d1ec5723a5698a6498f4652ac35cca2b32cc52d47998","input_size":[19,22],"output_sha256":"33b50b8b08870876ca71608fb2bdf0508165084f805b7254caa5da75eebb1e02","output_size":[19,22],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed17/dot_offset/test/1","seconds":0.010468924000065272},{"input_sha256":"421862b83da49191fceb6b68297304a40ec30c366acaf7f8cf93d2d9ca684e78","input_size":[26,28],"output_sha256":"98decb72f6e501291e577b2f1dba0fcbc063f7f56354eaf03d7367021bad9d77","output_size":[26,28],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed17/dot_offset/test/2","seconds":0.013312294999991536},{"input_sha256":"be9fb26e7fb22289ee4dbad1c65d004d4b01d1e095996a2db764181f9e387f7e","input_size":[30,30],"output_sha256":"97b8129424d5e97eb4559f100ac5783aee511927bcaf786d379d586e40baec69","output_size":[30,30],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"reference/seed17/dot_offset/test/3","seconds":0.011988685999995141},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"575500a428f1d5b9e5d33a53388526d60a5bc9628d955eb6e9c1e9ba4f6e2da1","output_size":[12,14],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed17/dot_offset/fixed_two/demo0","seconds":0.009758234999935667},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"0ff1ecf0d84c7444e6353ed9d7f93f6626e13758a406ff821793dbb508125baf","output_size":[16,18],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed17/dot_offset/fixed_two/demo1","seconds":0.01115261899997222},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"1808a1770685700aeebd30307fc22681ff04908ff98c9b65d9284b7448f9621b","output_size":[18,20],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","purpose":"rival/seed17/dot_offset/fixed_two/demo2","seconds":0.010911450000094192},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"03cb6efaad248ff0e665c1f46c1098c382da9f5f7aed28fe58fb38ef5bfdf982","output_size":[12,14],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed17/dot_offset/no_exterior_bar/demo0","seconds":0.012188858000058644},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"541a62b383d26713fda55141ee55ac9957bb34d35d5558a9ae131df624548d97","output_size":[16,18],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed17/dot_offset/no_exterior_bar/demo1","seconds":0.010218035999969288},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"ce33f3cca2b63d054926fbe26191d000772662f4f433f57beb1850695e022280","output_size":[18,20],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","purpose":"rival/seed17/dot_offset/no_exterior_bar/demo2","seconds":0.010163688000034199},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"33c381ff4f31b643cefc1307fc0d2f533533f0ab4d504e91f1a3b3a6e63e1fd1","output_size":[12,14],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed17/dot_offset/bar_only/demo0","seconds":0.010155966999946031},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"e1f9c6293ab48ddaf31b3e3c19eded6b771f6a1f1414068d677fab16d3e3c58f","output_size":[16,18],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed17/dot_offset/bar_only/demo1","seconds":0.01006357099993238},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"c797943acaae4063b1404cfd486fa649db2c79ef768aec5081bb1d34d296f5d6","output_size":[18,20],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","purpose":"rival/seed17/dot_offset/bar_only/demo2","seconds":0.011511156999972627},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"817ac0309a1beaaad3b1979853e17cccb3791cc8fd7109ba722092d2311bec16","output_size":[12,14],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed17/dot_offset/opposite_edge_distance/demo0","seconds":0.009833214999957818},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"0ff1ecf0d84c7444e6353ed9d7f93f6626e13758a406ff821793dbb508125baf","output_size":[16,18],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed17/dot_offset/opposite_edge_distance/demo1","seconds":0.010322770000016135},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"1808a1770685700aeebd30307fc22681ff04908ff98c9b65d9284b7448f9621b","output_size":[18,20],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","purpose":"rival/seed17/dot_offset/opposite_edge_distance/demo2","seconds":0.0100769409999657},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"817ac0309a1beaaad3b1979853e17cccb3791cc8fd7109ba722092d2311bec16","output_size":[12,14],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed17/dot_offset/interior_height/demo0","seconds":0.009760487999983525},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"d898ad0d02c53a62e7f9db39a5500ee27b9340536db742629e1373b51048837f","output_size":[16,18],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed17/dot_offset/interior_height/demo1","seconds":0.01019329000007474},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"90ebe111bdb7afa1c4e2b0fdab2b6a23bf8b93b04662c85adfd8b9f385514566","output_size":[18,20],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","purpose":"rival/seed17/dot_offset/interior_height/demo2","seconds":0.009753638000006504},{"input_sha256":"0c2b601e84394388288008239fb5c26aa0614d3d5922cac5e47b3a79c213373d","input_size":[12,14],"output_sha256":"575500a428f1d5b9e5d33a53388526d60a5bc9628d955eb6e9c1e9ba4f6e2da1","output_size":[12,14],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed17/dot_offset/nearest_edge_distance/demo0","seconds":0.009661062999953174},{"input_sha256":"6a553e0e576c3b87112051fe4a019b620721b655e5a16bd3798ca3cb5c6d72ab","input_size":[16,18],"output_sha256":"0ff1ecf0d84c7444e6353ed9d7f93f6626e13758a406ff821793dbb508125baf","output_size":[16,18],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed17/dot_offset/nearest_edge_distance/demo1","seconds":0.009727859999998145},{"input_sha256":"9c9dbef1b86d77f75498198418a02e58746fd65da2c179d8937b183eabb0df70","input_size":[18,20],"output_sha256":"1808a1770685700aeebd30307fc22681ff04908ff98c9b65d9284b7448f9621b","output_size":[18,20],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","purpose":"rival/seed17/dot_offset/nearest_edge_distance/demo2","seconds":0.00963800900001388},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"06c887939a1a7cc62205c8b52b26cea6400b58efa969561204165fd327d5d2b0","output_size":[12,14],"program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","purpose":"sequential/dot_offset/ordinary","seconds":0.01077739400000155},{"input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","input_size":[12,14],"output_sha256":"7ff55fdcf849bd6db00af7c2a7e2824174d4b1133e40e9a809e50c6e546f05b6","output_size":[12,14],"program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","purpose":"sequential/dot_offset/wrong_intermediate","seconds":0.00992749299996376}],"query_answers_used_for_rival_selection":false,"racket_evaluations":102,"request":{"demos":3,"execution_seeds":[0,17],"queries":4,"sampler_seeds":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]},"rivals":{"dot_offset":{"bar_only":{"cases":[{"mismatch_demo_indices":[0,1,2],"seed":0},{"mismatch_demo_indices":[0,1,2],"seed":17}],"mismatch_demo_indices":[0,1,2],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","python_prediction_matches_racket":true},"fixed_two":{"cases":[{"mismatch_demo_indices":[1,2],"seed":0},{"mismatch_demo_indices":[1,2],"seed":17}],"mismatch_demo_indices":[1,2],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","python_prediction_matches_racket":true},"interior_height":{"cases":[{"mismatch_demo_indices":[0],"seed":0},{"mismatch_demo_indices":[0,1],"seed":17}],"mismatch_demo_indices":[0,1],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","python_prediction_matches_racket":true},"nearest_edge_distance":{"cases":[{"mismatch_demo_indices":[1,2],"seed":0},{"mismatch_demo_indices":[1,2],"seed":17}],"mismatch_demo_indices":[1,2],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","python_prediction_matches_racket":true},"no_exterior_bar":{"cases":[{"mismatch_demo_indices":[0,1,2],"seed":0},{"mismatch_demo_indices":[0,1,2],"seed":17}],"mismatch_demo_indices":[0,1,2],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","python_prediction_matches_racket":true},"opposite_edge_distance":{"cases":[{"mismatch_demo_indices":[0,1,2],"seed":0},{"mismatch_demo_indices":[0,1,2],"seed":17}],"mismatch_demo_indices":[0,1,2],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","python_prediction_matches_racket":true}},"one":{"bar_only":{"cases":[{"mismatch_demo_indices":[0,1,2],"seed":0},{"mismatch_demo_indices":[0,1,2],"seed":17}],"mismatch_demo_indices":[0,1,2],"program_sha256":"5e11597213b2a508b1fff3b222ca6e867ed1c610c5bc06fe5d972c9aecb65586","python_prediction_matches_racket":true},"fixed_two":{"cases":[{"mismatch_demo_indices":[0,1,2],"seed":0},{"mismatch_demo_indices":[0,1,2],"seed":17}],"mismatch_demo_indices":[0,1,2],"program_sha256":"69045b68c27d55b85ebca678b561ee491b45557e49a126cc74301dabf22c48f3","python_prediction_matches_racket":true},"interior_height":{"cases":[{"mismatch_demo_indices":[0,1,2],"seed":0},{"mismatch_demo_indices":[0,1,2],"seed":17}],"mismatch_demo_indices":[0,1,2],"program_sha256":"5deecb4f602f4f404c3e6f3f6c940ec8edd97c1bf283b5fa53fcb9d4844ed2a8","python_prediction_matches_racket":true},"nearest_edge_distance":{"cases":[{"mismatch_demo_indices":[0,1,2],"seed":0},{"mismatch_demo_indices":[0,1,2],"seed":17}],"mismatch_demo_indices":[0,1,2],"program_sha256":"e0f05ad55fc94a773df0bf9f5f9810ff6f5e85d19c58c6342525d2adf482a303","python_prediction_matches_racket":true},"no_exterior_bar":{"cases":[{"mismatch_demo_indices":[0,1,2],"seed":0},{"mismatch_demo_indices":[0,1,2],"seed":17}],"mismatch_demo_indices":[0,1,2],"program_sha256":"2ecd6392032230511f62c94f9ecdb40f881d5e149508701358c3949d208d17e2","python_prediction_matches_racket":true},"opposite_edge_distance":{"cases":[{"mismatch_demo_indices":[0,1,2],"seed":0},{"mismatch_demo_indices":[0,1,2],"seed":17}],"mismatch_demo_indices":[0,1,2],"program_sha256":"c1af4f74efafa82d735d0dbfcd2f17ff87e81cad3420d9006faadadaedff499e","python_prediction_matches_racket":true}}},"runtime":{"backend":"racket","binary_sha256":"bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9","boot_script_sha256":"67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3","bridge_sha256":"4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323","candidate_symbol_policy_sha256":"509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8","prelude_sha256":"953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0","protected":true,"schema":"arc-protected-racket-runtime-v1"},"sampler":[{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","8a46208b2955f09a358df6c05a615e96b86222b8cd13cb5551857f23d555e1d5","108affedec2c4e7cabac692298ae42772af6bf679a149ee612fae02d29de34ef","afc1294c47e5000560228ca80bd56348998b14529aa12fe10a369d4b7cec02fa","729b587ae27a146817fef8ba4a4a9313a03990c8fb2d1efe8e4c74d3f2ae3fac"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":0,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":0,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","597bcd5e2ea6d15a94c65315044007dfed50d3f4c834a3a68cafc4820ac320dc","19f856f4a374c140e32126b3e86b0905381288798448e596a1ceb4386e515c43","8a46208b2955f09a358df6c05a615e96b86222b8cd13cb5551857f23d555e1d5","108affedec2c4e7cabac692298ae42772af6bf679a149ee612fae02d29de34ef","afc1294c47e5000560228ca80bd56348998b14529aa12fe10a369d4b7cec02fa","729b587ae27a146817fef8ba4a4a9313a03990c8fb2d1efe8e4c74d3f2ae3fac"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":0,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["2348b636997494c822aff25ea783ab6d29d30434a05e3563346e7c524583416c","c92913a981b62dffa09c66bbe23414086eea11b2705b72680260f337a0ee6d6f","7f0151fd11539d095e53660bb9ce69e134db4f914d2bff7b50d36ad4abcf6d61","c42051d315093741667454191af73a8701818b2f0440c44daa91b9386dbc7c39","b55b5cbee90200c3c609f59a496bda12a736cdce7e57bf6b1dcbf25e8dc4e513","32290113f25f19618451ff4d3ca04c6d704dbe6f28e9b55d5bafad86716695e4","20119517e8662dc7057ecbc3c4948b4656e71580b4cf61f16b537adfe46719f4"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":1,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":1,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":1},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["2348b636997494c822aff25ea783ab6d29d30434a05e3563346e7c524583416c","c92913a981b62dffa09c66bbe23414086eea11b2705b72680260f337a0ee6d6f","7f0151fd11539d095e53660bb9ce69e134db4f914d2bff7b50d36ad4abcf6d61","c42051d315093741667454191af73a8701818b2f0440c44daa91b9386dbc7c39","b55b5cbee90200c3c609f59a496bda12a736cdce7e57bf6b1dcbf25e8dc4e513","32290113f25f19618451ff4d3ca04c6d704dbe6f28e9b55d5bafad86716695e4","20119517e8662dc7057ecbc3c4948b4656e71580b4cf61f16b537adfe46719f4"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":1,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["bcda028fe2cbaa3b49c3a5b31d1351adc82f7a3adab7af0302203a4f9f7d3212","81b53170e36111a17e18c9fda6c4521b005232f4482440a4694913ae5cf8b112","8e682d6f1d86eeb0fa44e28d62e433b2168841bc6ed1841a348ac72c2ab8ccb8","04b0501c2aef97b32c8711166e4bf6fa738121f99d8eb2cce5e017f960d38d42","a2bd0f48610cb938222280f25126544e70b0d2a0053e069e29e5ab2d25205917","5cb553c715ae90342ac6a4baad8272cd89df8b6fb69984a51595ea32a1662996","11c2d741ed52e261d924cae42d20808822999391c0bd4b1dac125e06642028e9"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":2,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":0,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["bcda028fe2cbaa3b49c3a5b31d1351adc82f7a3adab7af0302203a4f9f7d3212","81b53170e36111a17e18c9fda6c4521b005232f4482440a4694913ae5cf8b112","8e682d6f1d86eeb0fa44e28d62e433b2168841bc6ed1841a348ac72c2ab8ccb8","04b0501c2aef97b32c8711166e4bf6fa738121f99d8eb2cce5e017f960d38d42","a2bd0f48610cb938222280f25126544e70b0d2a0053e069e29e5ab2d25205917","5cb553c715ae90342ac6a4baad8272cd89df8b6fb69984a51595ea32a1662996","11c2d741ed52e261d924cae42d20808822999391c0bd4b1dac125e06642028e9"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":2,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["8a491d7a13026bbf96fb621480e7f697f9d7f578623c835ac801aadd8922b5b4","652295a5fdda64f8203498c0d10167e1fc8fb95ed1abe362594e0ed8521552bb","42caba4966bab2c7d33ae01b19295fbfc3da9dcf3d56f24299c6c7d8c15d1f89","629c6611bc3379c83410c2a21741951370110931ee29607c3254292413fd9225","2d81999d2693af7681cd7871a41b9bace84c97401036676fd2fde56572975d3e","d784ecc7a386b1aacc6f50648f79c25d88dee0f65f57b99cafb13d329a495bee","46d707ae01c8876b9e9dd9c993d02393387827805b923cc31a1e01b13d92313b"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":3,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":0,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["8a491d7a13026bbf96fb621480e7f697f9d7f578623c835ac801aadd8922b5b4","652295a5fdda64f8203498c0d10167e1fc8fb95ed1abe362594e0ed8521552bb","42caba4966bab2c7d33ae01b19295fbfc3da9dcf3d56f24299c6c7d8c15d1f89","629c6611bc3379c83410c2a21741951370110931ee29607c3254292413fd9225","2d81999d2693af7681cd7871a41b9bace84c97401036676fd2fde56572975d3e","d784ecc7a386b1aacc6f50648f79c25d88dee0f65f57b99cafb13d329a495bee","46d707ae01c8876b9e9dd9c993d02393387827805b923cc31a1e01b13d92313b"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":3,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["66401863a8f61ec251491b31aaca35b18ff0277c07131c07e7f5275bcfe39d1e","2203a90a0d2edfba180cc2e5685a1d4119e2d862da1158f8c6170df300ddecf1","4a76dd6fb1c2cda6e7384d30407c94b63312cdca1872544208e825dd56e67abd","4fd2a0af699b4f40a128377f85461d53a23d9b9c6ea3f7891bb251b9489cdd03","da249156cf88a89ac66d054202fc53a9b85baf374298795d3c3d5d7fce8a4860","a3adc53d696473660365a6e54bb4514f266b3bfa31fcc92dffb553ef01b45154","225925dac9a8905e725921b3c47cd5cfaa0ee17d37d3f4d20fa1f8f0d0e102a8"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":4,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":1,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":1},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["66401863a8f61ec251491b31aaca35b18ff0277c07131c07e7f5275bcfe39d1e","2203a90a0d2edfba180cc2e5685a1d4119e2d862da1158f8c6170df300ddecf1","4a76dd6fb1c2cda6e7384d30407c94b63312cdca1872544208e825dd56e67abd","4fd2a0af699b4f40a128377f85461d53a23d9b9c6ea3f7891bb251b9489cdd03","da249156cf88a89ac66d054202fc53a9b85baf374298795d3c3d5d7fce8a4860","a3adc53d696473660365a6e54bb4514f266b3bfa31fcc92dffb553ef01b45154","225925dac9a8905e725921b3c47cd5cfaa0ee17d37d3f4d20fa1f8f0d0e102a8"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":4,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["25c2f9fd96164595e34e1615436b4d2fb5d082cf40b1a6a6767aab10c45119a7","b275ae78f7298847da20fd197611809c823f008b0f4621c44b06fb0e118ebbe0","788e526222862627103cce866f4738a04ab9aab3913d5263bf42eb3ebf0c619f","02a0ed8a5aec834e30783fe1436963411c7ce55a4a6de9276b2ca03eb2b9f5db","d15dfe748b5b71e9b341bbcd2d73214dd06245438c696a85828a913c433022dc","af949c049147bd596cc04351942341343e973fceb45c4732b8d5ea8c4eea8733","a2374b43d14a78562582bc5418e5707daf0a7101d65c2b49d28549325e9de194"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":5,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":0,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["25c2f9fd96164595e34e1615436b4d2fb5d082cf40b1a6a6767aab10c45119a7","b275ae78f7298847da20fd197611809c823f008b0f4621c44b06fb0e118ebbe0","788e526222862627103cce866f4738a04ab9aab3913d5263bf42eb3ebf0c619f","02a0ed8a5aec834e30783fe1436963411c7ce55a4a6de9276b2ca03eb2b9f5db","d15dfe748b5b71e9b341bbcd2d73214dd06245438c696a85828a913c433022dc","af949c049147bd596cc04351942341343e973fceb45c4732b8d5ea8c4eea8733","a2374b43d14a78562582bc5418e5707daf0a7101d65c2b49d28549325e9de194"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":5,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["523085e9a8e9b03d5186c4f9ea11edea4bce8d6bc2ab8bac52285120543028f6","91076f1115a1d8767352909b40bc27ea3fb839e4e2fe23fbcce5d08f1c776e0e","7a144f85ba902cdc01019e05c284fff6818b624df64b6a94813c88696e2cc12c","5615ac9d34b424089f5e67f5670e40ba5a19fd1db484320655ecc81a4af24d16","33f4ac713295cf987a213e588418485f28f190bd92a47949fd691ba358de1eff","68d0363cddb657c434f69ffc47469949126c6ced28a52038745ed8619b698ada","1cb271780be2cdb11d2d6883a10c78cd66afe8cc2d0f0985d566d2cbc2f3afb0"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":6,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":0,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["523085e9a8e9b03d5186c4f9ea11edea4bce8d6bc2ab8bac52285120543028f6","91076f1115a1d8767352909b40bc27ea3fb839e4e2fe23fbcce5d08f1c776e0e","7a144f85ba902cdc01019e05c284fff6818b624df64b6a94813c88696e2cc12c","5615ac9d34b424089f5e67f5670e40ba5a19fd1db484320655ecc81a4af24d16","33f4ac713295cf987a213e588418485f28f190bd92a47949fd691ba358de1eff","68d0363cddb657c434f69ffc47469949126c6ced28a52038745ed8619b698ada","1cb271780be2cdb11d2d6883a10c78cd66afe8cc2d0f0985d566d2cbc2f3afb0"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":6,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["01392780e9d9575d2b8f622c4e6c761af456453c4406158360c9c31d0b2235c3","2adf93c58600b8973ae9e69e9411429d232200796e32b8e4378683001920dbef","772d805ab837e180c76e75255bde15dd44a435fd5a997b3dedf077fa2bdc8ffa","f8f56d14ee575cf1d0a7a0caa7e6742fbde15c4e76d806d71251fc29251c9fce","a349641cbbfe088770630b85aa856d1e3f5ba062412e55c1d32cea4b5e523b4e","271ff142bf3570b5f8cdd6006e77221c1d6a0df810b619ef1fdf9f14f95d9be4","24f0e729327cb2b19155b4c9bb7242326cae344dcd9a74495968b598e4913ca5"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":7,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":0,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["01392780e9d9575d2b8f622c4e6c761af456453c4406158360c9c31d0b2235c3","2adf93c58600b8973ae9e69e9411429d232200796e32b8e4378683001920dbef","772d805ab837e180c76e75255bde15dd44a435fd5a997b3dedf077fa2bdc8ffa","f8f56d14ee575cf1d0a7a0caa7e6742fbde15c4e76d806d71251fc29251c9fce","a349641cbbfe088770630b85aa856d1e3f5ba062412e55c1d32cea4b5e523b4e","271ff142bf3570b5f8cdd6006e77221c1d6a0df810b619ef1fdf9f14f95d9be4","24f0e729327cb2b19155b4c9bb7242326cae344dcd9a74495968b598e4913ca5"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":7,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["edf38c99b9b6244c6b077592d877739ee147796c20a2ed5b6d4878d5b37563af","47021b03ebb22993f17f7ab2f4b20ff6c1382faf4824a2ebf6e8ea311e7c9d00","1e3e3caeeee222eeb136ea4cd2aefaa16d7e946a0054996873073a3f3d60480b","f956d30d761e25771fedbab6d73775e833a0876eef8c375e4846423d4dc57b38","aec130cf4c694fc96ca049f50e6f15d82a09fa4eae30b6c4390e669bef3d9325","88efcd71df438b8c05dafc38cd4263f114337e0ebf0d9184dcd5580bd617bb2d","985459a18fba028dbd091e8221304df128ecd005c732e00a955cbb161aa1852e"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":8,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":1,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":1},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["edf38c99b9b6244c6b077592d877739ee147796c20a2ed5b6d4878d5b37563af","47021b03ebb22993f17f7ab2f4b20ff6c1382faf4824a2ebf6e8ea311e7c9d00","1e3e3caeeee222eeb136ea4cd2aefaa16d7e946a0054996873073a3f3d60480b","f956d30d761e25771fedbab6d73775e833a0876eef8c375e4846423d4dc57b38","aec130cf4c694fc96ca049f50e6f15d82a09fa4eae30b6c4390e669bef3d9325","88efcd71df438b8c05dafc38cd4263f114337e0ebf0d9184dcd5580bd617bb2d","985459a18fba028dbd091e8221304df128ecd005c732e00a955cbb161aa1852e"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":8,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["879ec2709af1d5ea8a527f8b5261a69fc00cdbb0ad56237a20df8f87104f64cb","f6276a512ffbd3597553ff354bee71d9859502470aba5b233ad0394b16fa74a6","1f4e16153f9d1b63f3971f70b4227de5f3e61d7c5deb5857fd957937afab545b","2d0c8059427050d37cf53da742bb5939198c0964c5ae459a604d3678a7d60d39","d2dbc9ece50ab6db8088e6eeb85c6bfea927f2fd8a8374d6b96713c589d2e131","5a83c7bfea529d1270b2856772dc6df95caa8cb0ca0461d29041074df1f7ad64","a66b84c5fbc52fdfae73626b83dcb976f1a647529c0489889395153ad9837e54"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":9,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":0,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["879ec2709af1d5ea8a527f8b5261a69fc00cdbb0ad56237a20df8f87104f64cb","f6276a512ffbd3597553ff354bee71d9859502470aba5b233ad0394b16fa74a6","1f4e16153f9d1b63f3971f70b4227de5f3e61d7c5deb5857fd957937afab545b","2d0c8059427050d37cf53da742bb5939198c0964c5ae459a604d3678a7d60d39","d2dbc9ece50ab6db8088e6eeb85c6bfea927f2fd8a8374d6b96713c589d2e131","5a83c7bfea529d1270b2856772dc6df95caa8cb0ca0461d29041074df1f7ad64","a66b84c5fbc52fdfae73626b83dcb976f1a647529c0489889395153ad9837e54"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":9,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["fc99b87cb8b7a3523f2034c5a03e07be3451ba33cd98b231772e47fcfbf18ed1","977898d61041ee8de58d7e5d450450e890fcfc339a74e230ddb9e2b5e55d0dd8","76b9ce1a8d0f7782c3b0a22a8b5b6ec1c9c5fbf19beebe70d3ca6df09168adf8","7e18fb3fc63a3c40481022c9731c48fbb030e925e998201e8642e81fc789e327","8ff629f5d357371b5ca957133bf258d752e8bdf2dccc585b39c877e69922c476","e960cb305b2398deadda6fb2043dba8e5b8d13d6f5fcaf50eb29058a042b23f9","00b3b9707976afeef80e8adb1c289ef30a34debf48a213479ec574fdade67915"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":10,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":0,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["fc99b87cb8b7a3523f2034c5a03e07be3451ba33cd98b231772e47fcfbf18ed1","977898d61041ee8de58d7e5d450450e890fcfc339a74e230ddb9e2b5e55d0dd8","76b9ce1a8d0f7782c3b0a22a8b5b6ec1c9c5fbf19beebe70d3ca6df09168adf8","7e18fb3fc63a3c40481022c9731c48fbb030e925e998201e8642e81fc789e327","8ff629f5d357371b5ca957133bf258d752e8bdf2dccc585b39c877e69922c476","e960cb305b2398deadda6fb2043dba8e5b8d13d6f5fcaf50eb29058a042b23f9","00b3b9707976afeef80e8adb1c289ef30a34debf48a213479ec574fdade67915"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":10,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["3b99dc420ec605ad16a1382684e7625b5230655eeee26951c569fcf20597824c","81d0e95dd392c6a42747c062d6a483cb75e8fd02ff3cef58c203bf362dfad630","32d7c9faa6807172af7d131ff987f945952c429be33e3bddeb0955da2ede5b39","085d7fb4c11ee4905340c3494adb006e9a27db584a9a925f79aedba595c98ff9","daec65b3c961aab34a99b6cb81c43d335626c08b1c1bfa20d2f3db27eea89318","7f862ce7a85a256b49df0539bd6e9c6d4ca927a6de6394f32e9241fbf5c3763d","920818f988527b4841877eb4fc48f9edf3f7d451e78b35943dd9305f29d72f9e"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":11,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":1,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":1},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["3b99dc420ec605ad16a1382684e7625b5230655eeee26951c569fcf20597824c","81d0e95dd392c6a42747c062d6a483cb75e8fd02ff3cef58c203bf362dfad630","32d7c9faa6807172af7d131ff987f945952c429be33e3bddeb0955da2ede5b39","085d7fb4c11ee4905340c3494adb006e9a27db584a9a925f79aedba595c98ff9","daec65b3c961aab34a99b6cb81c43d335626c08b1c1bfa20d2f3db27eea89318","7f862ce7a85a256b49df0539bd6e9c6d4ca927a6de6394f32e9241fbf5c3763d","920818f988527b4841877eb4fc48f9edf3f7d451e78b35943dd9305f29d72f9e"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":11,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["b2bf464490d84feb37a818fd47b0ef202b8733f2bb08066c563672141b30a3d5","37b275784ffffe5e345f01937342b471ad489d2f82028d6b3651c5a4e56faf65","9580376303e2f630c521c216aab539424c6dab393d652a07d2f0601ca612e69a","8ef0891c996329727e660ac9100611637b3bdc9e1aee1680f451add5bf33a667","a02cdfc5e806f199f5947a89399f36d0350b37596b5081b4b83d2a5e1e7cc981","858c7007779e8aa82c90e174fc57bb86b8a9f47d4b404fd6c067649f1e79f63c","8a134846ec6a1ffdd7d2ade284b045140caa1f95d1bcc3e02c95996597180b8d"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":12,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":0,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["b2bf464490d84feb37a818fd47b0ef202b8733f2bb08066c563672141b30a3d5","37b275784ffffe5e345f01937342b471ad489d2f82028d6b3651c5a4e56faf65","9580376303e2f630c521c216aab539424c6dab393d652a07d2f0601ca612e69a","8ef0891c996329727e660ac9100611637b3bdc9e1aee1680f451add5bf33a667","a02cdfc5e806f199f5947a89399f36d0350b37596b5081b4b83d2a5e1e7cc981","858c7007779e8aa82c90e174fc57bb86b8a9f47d4b404fd6c067649f1e79f63c","8a134846ec6a1ffdd7d2ade284b045140caa1f95d1bcc3e02c95996597180b8d"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":12,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["712ec493c3cfdc2fdb1585eec144865829e7c0d3dd5fa77a091453e2ab42b869","31ee154e60d0501e3a3132e8962b8c5edebac8c46fac072c78392deb4991272c","90d8b2aea451ed3d03dea2a580fe99e04e64629841b744db216d99f11e54bf71","f78cd9c9f87d546866a7052510e2687c3e0dc859624c33692a11411a25f79c60","69896b84b1edf6f64bd10906111d6627534b6c2bc53f9a3fe241f77f3e8d087e","d842a7bea94bf9b2cb795b323c7abd244470dcf509755ad613d5cdfa608dc3e1","b67409a761ab797b98b9eb0f1ccabd99d6bb738477f27db217414f42bc147170"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":13,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":1,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":1},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["712ec493c3cfdc2fdb1585eec144865829e7c0d3dd5fa77a091453e2ab42b869","31ee154e60d0501e3a3132e8962b8c5edebac8c46fac072c78392deb4991272c","90d8b2aea451ed3d03dea2a580fe99e04e64629841b744db216d99f11e54bf71","f78cd9c9f87d546866a7052510e2687c3e0dc859624c33692a11411a25f79c60","69896b84b1edf6f64bd10906111d6627534b6c2bc53f9a3fe241f77f3e8d087e","d842a7bea94bf9b2cb795b323c7abd244470dcf509755ad613d5cdfa608dc3e1","b67409a761ab797b98b9eb0f1ccabd99d6bb738477f27db217414f42bc147170"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":13,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["9159b75848c803e615cd6820fe051a1d33a98f3c85b07b6e575e6cdea8bb5960","403b5b7e1ad0e983a24ebaea18ccc19c240daf9e5666bec1a92bfb1aaa3de60a","cfc6fcac002a7a0f6f3faef11e3d28b7a08694fdc328ca3fc038740a1d8ed6e3","2982f8694ad1d35f86af285d4ff2d025f59f4339e26ed1808b67c71678b731b6","17dc563cf15cecfc46add9c1dad10d324793e70c38695a4524360ded53c04324","20005df73011ad1d5f46dc7f86387b89ac25a3fc731125d47e7fde5a71a1ac82","5cb7a79bf9df11f9ba5729822a290cf0a34d1b0582dd3d0faf0d70b401785e2f"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":14,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":1,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":1},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["9159b75848c803e615cd6820fe051a1d33a98f3c85b07b6e575e6cdea8bb5960","403b5b7e1ad0e983a24ebaea18ccc19c240daf9e5666bec1a92bfb1aaa3de60a","cfc6fcac002a7a0f6f3faef11e3d28b7a08694fdc328ca3fc038740a1d8ed6e3","2982f8694ad1d35f86af285d4ff2d025f59f4339e26ed1808b67c71678b731b6","17dc563cf15cecfc46add9c1dad10d324793e70c38695a4524360ded53c04324","20005df73011ad1d5f46dc7f86387b89ac25a3fc731125d47e7fde5a71a1ac82","5cb7a79bf9df11f9ba5729822a290cf0a34d1b0582dd3d0faf0d70b401785e2f"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":14,"settings":{"projection_depth":"dot_offset"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"dot_offset":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":0,"interior_height":0,"nearest_edge_distance":0,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"one"}]},"counts":{"demos":3,"queries":4},"input_sha256":["659c7564bae35e4965891e9661271cf676446ee2ec0952dba1c3f5c0bcbd90f1","e8df0fe776bf495c7a61ab4c83c35cf8fc50c6f83c335f4a9867c16d15e8b023","3d31ca3f3c2d5b83896d8782a1c6fc0799c5ee9595826e373b7287431082bec7","38817b6e322f4891806717fd36c24d02678fb8489381ae41c3346da2bc19c395","30697f6bc5fa6832fb38729bc26daa7066b5181b395ff3f4984f78d78d28edd2","af1c9c2696ccc27247a63bf38e3d64acb2f668c4beb0ce7764fffc93ba5d0d91","4327db577eb12d583594a86c74a9539c1d0871732c9830a4ef87017284eb9c53"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":15,"settings":{"projection_depth":"one"}},{"certificate":{"query_answers_used":false,"rejected_by_demo":{"one":0},"shortcut_rejected_by_demo":{"bar_only":0,"fixed_two":1,"interior_height":0,"nearest_edge_distance":1,"no_exterior_bar":0,"opposite_edge_distance":0},"shortcut_survivors":[],"survivors":[{"projection_depth":"dot_offset"}]},"counts":{"demos":3,"queries":4},"input_sha256":["659c7564bae35e4965891e9661271cf676446ee2ec0952dba1c3f5c0bcbd90f1","e8df0fe776bf495c7a61ab4c83c35cf8fc50c6f83c335f4a9867c16d15e8b023","3d31ca3f3c2d5b83896d8782a1c6fc0799c5ee9595826e373b7287431082bec7","38817b6e322f4891806717fd36c24d02678fb8489381ae41c3346da2bc19c395","30697f6bc5fa6832fb38729bc26daa7066b5181b395ff3f4984f78d78d28edd2","af1c9c2696ccc27247a63bf38e3d64acb2f668c4beb0ce7764fffc93ba5d0d91","4327db577eb12d583594a86c74a9539c1d0871732c9830a4ef87017284eb9c53"],"input_sizes":[[12,14],[16,18],[18,20],[13,17],[19,22],[26,28],[30,30]],"seed":15,"settings":{"projection_depth":"dot_offset"}}],"sampler_requests":32,"schema":"d6607fc42bcc-projection-depth-audit-v1","scope":"Finite six-shortcut rejection on demonstrations, deterministic sampler checks, and protected-Racket replay for the requested bounded seeds. No universal identification claim.","sequential_cases":[{"ablation":"wrong_intermediate","counterfactual_output_sha256":"7ff55fdcf849bd6db00af7c2a7e2824174d4b1133e40e9a809e50c6e546f05b6","counterfactual_program_sha256":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","input_sha256":"c93fafde31e1f1cc60cdf65ed263dd2e1a3c4da457fa6d4aba776a1b1e13a156","intermediate_value":[{"bbox":[0,3,7,11],"dot":[5,8,7],"dot_to_notch_distance":2,"opening":"bottom"}],"ordinary_output_sha256":"06c887939a1a7cc62205c8b52b26cea6400b58efa969561204165fd327d5d2b0","ordinary_program_sha256":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","outputs_differ":true,"settings":{"projection_depth":"dot_offset"}}],"sources":{"generators/d6607fc42bcc/generator.py":"01bd9fe9646fea8b34ef2604e9bf8b162051b6c8ffd3ac89577fa96d55013402","generators/d6607fc42bcc/workspace/parametric/adapter.py":"652c20006afcad3abe7a051cbd4aa1f42c8f58299fbdb2ac7e06b378317cd948","generators/d6607fc42bcc/workspace/parametric/audit.py":"b42ceabb135b52336a8d5d0dbb0975a3aef58c9324fcaa6432694aa629721c01","generators/d6607fc42bcc/workspace/parametric/canonical.rkt":"fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e","generators/d6607fc42bcc/workspace/parametric/dot_offset.rkt":"1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea","generators/d6607fc42bcc/workspace/parametric/promotion.json":"12cd48d6b52b21461d0853f6b91fae46d7950c429627611df7ddd8a7c78640f7","generators/d6607fc42bcc/workspace/parametric/prototype.py":"525a373179b08121636d486de0cd3f8b355f1af4fbc84699d8e229b43d9bf9b2","generators/d6607fc42bcc/workspace/parametric/rivals.py":"898467ad7719513d49a2142ab805c990facaa77bb94d69a2042e387345d4e14f","src/arcpuzzles/parametric_worker.py":"2a6970eb5b6abf565044efdcc05364ea51f6ca8a200ab7619977bc321a95e275"},"status":"passed","task_id":"d6607fc42bcc"}
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/parametric-tests.txt b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/parametric-tests.txt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/parametric-tests.txt
+@@ -0,0 +1,2 @@
++.......................                                                  [100%]
++23 passed in 5.70s
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/portable-task-tests.log b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/portable-task-tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/portable-task-tests.log
+@@ -0,0 +1,8 @@
++...............................                               [100%]
++=============================== warnings summary ===============================
++generators/d6607fc42bcc/tests/test_generator_d6607fc42bcc.py::D6607fc42bccGeneratorTests::test_boundaries_textures_and_strict_controls
++  /tmp/arcpuzzles-check-ekbk0ca5/generators/d6607fc42bcc/tests/test_generator_d6607fc42bcc.py:149: DeprecationWarning: GenCtx._drawn is deprecated; use the public API (recorded_draws/draw_bounds/draw_options/axis_value). Private aliases will be removed after two review rounds.
++    self.assertEqual(captured[-1]._drawn["texture"], texture)
++
++-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
++31 passed, 1 warning, 11 subtests passed in 8.18s
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/portable-task-tests.xml b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/portable-task-tests.xml
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/portable-task-tests.xml
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="42" time="8.179" timestamp="2026-10-24T15:26:32.908653+00:00" hostname="cf19de2df63d"><testcase classname="generators.d6607fc42bcc.tests.test_generator_d6607fc42bcc.D6607fc42bccGeneratorTests" name="test_all_public_pairs_have_complete_profiles_and_match_rule" time="0.056" /><testcase classname="generators.d6607fc42bcc.tests.test_generator_d6607fc42bcc.D6607fc42bccGeneratorTests" name="test_boundaries_textures_and_strict_controls" time="0.068" /><testcase classname="generators.d6607fc42bcc.tests.test_generator_d6607fc42bcc.D6607fc42bccGeneratorTests" name="test_complete_profile_prior_is_substantive_and_stable" time="1.731" /><testcase classname="generators.d6607fc42bcc.tests.test_generator_d6607fc42bcc.D6607fc42bccGeneratorTests" name="test_deterministic_fresh_returns_and_global_rng_isolation" time="0.001" /><testcase classname="generators.d6607fc42bcc.tests.test_generator_d6607fc42bcc.D6607fc42bccGeneratorTests" name="test_general_path_witnesses_full_lawful_geometry" time="0.276" /><testcase classname="generators.d6607fc42bcc.tests.test_generator_d6607fc42bcc.D6607fc42bccGeneratorTests" name="test_lawful_notch_recombination_is_not_canonical" time="0.001" /><testcase classname="generators.d6607fc42bcc.tests.test_generator_d6607fc42bcc.D6607fc42bccGeneratorTests" name="test_profile_and_forced_paths_record_exact_provenance" time="0.433" /><testcase classname="generators.d6607fc42bcc.tests.test_generator_d6607fc42bcc.D6607fc42bccGeneratorTests" name="test_self_check_rejects_structural_impostors" time="0.002" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_default_program_is_exact_canonical_authority" time="0.046" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_counts_prefix_distinctness_and_matched_setting_inputs[2-1]" time="0.007" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_counts_prefix_distinctness_and_matched_setting_inputs[2-4]" time="0.009" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_counts_prefix_distinctness_and_matched_setting_inputs[3-4]" time="0.010" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_counts_prefix_distinctness_and_matched_setting_inputs[6-1]" time="0.010" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_counts_prefix_distinctness_and_matched_setting_inputs[6-4]" time="0.014" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_every_supported_demo_prefix_identifies_setting_against_declared_rivals[one]" time="0.024" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_every_supported_demo_prefix_identifies_setting_against_declared_rivals[dot_offset]" time="0.027" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_dot_offset_rule_uses_dot_distance_to_choose_projection_depth" time="0.003" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_fourth_query_is_substantive_30x30_and_settings_disagree" time="0.008" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_visible_turn_has_no_future_queries_or_private_setting" time="0.006" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_invalid_controls_are_rejected[changes0]" time="0.003" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_invalid_controls_are_rejected[changes1]" time="0.002" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_invalid_controls_are_rejected[changes2]" time="0.002" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_invalid_controls_are_rejected[changes3]" time="0.002" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_invalid_controls_are_rejected[changes4]" time="0.002" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_invalid_controls_are_rejected[changes5]" time="0.003" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_invalid_controls_are_rejected[changes6]" time="0.002" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_invalid_controls_are_rejected[changes7]" time="0.002" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_invalid_controls_are_rejected[changes8]" time="0.003" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_invalid_controls_are_rejected[changes9]" time="0.002" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_executable_racket_shortcuts_match_independent_python_predictions_and_lose_on_demos" time="2.798" /><testcase classname="generators.d6607fc42bcc.tests.test_parametric" name="test_bounded_audit_executes_reference_and_rivals_without_using_query_answers" time="2.539" /></testsuite></testsuites>
+\ No newline at end of file
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/self-review.json b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/self-review.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/current/self-review.json
+@@ -0,0 +1 @@
++{"actual_30x30_evaluation_count":4,"claims":["Inputs are identical across parameter settings for every sampled seed.","All sampled private labels were replayed by a live protected Racket backend.","Six independently predicted executable shortcut families were rejected by demonstrations.","A wrong-intermediate ablation changes the result on the same visible input.","The fourth query exercises an actual 30x30 canvas in the full audit request."],"limitations":["The shortcut set is finite and does not prove uniqueness against arbitrary programs.","Sampling is bounded to the recorded seeds and requested counts.","The alternate projection-depth rule is a new family member, not a claim about the original ARC intent."],"query_answers_used_for_rival_selection":false,"racket_evaluations":102,"sampler_requests":32,"schema":"d6607fc42bcc-self-review-v1","status":"passed","task_id":"d6607fc42bcc"}
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/evidence/manifest.json b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,117 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e",
++  "canonical_rule_hash": "30de93f65182",
++  "default": {
++    "projection_depth": "one"
++  },
++  "evidence_root": "generators/d6607fc42bcc/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 21576,
++      "path": "generators/d6607fc42bcc/generator.py",
++      "sha256": "01bd9fe9646fea8b34ef2604e9bf8b162051b6c8ffd3ac89577fa96d55013402"
++    },
++    {
++      "bytes": 12103,
++      "path": "generators/d6607fc42bcc/tests/test_generator_d6607fc42bcc.py",
++      "sha256": "8323f61c84775704c02cf36fb2b12be0cde561625e5cce0b1dc8c92a69417cf9"
++    },
++    {
++      "bytes": 8431,
++      "path": "generators/d6607fc42bcc/tests/test_parametric.py",
++      "sha256": "91b5f39b9bae7c682d80c7a5793fdbf0a8cd428d65bc3cd6bc89b60c9826a559"
++    },
++    {
++      "bytes": 515,
++      "path": "generators/d6607fc42bcc/workspace/parametric/adapter.py",
++      "sha256": "652c20006afcad3abe7a051cbd4aa1f42c8f58299fbdb2ac7e06b378317cd948"
++    },
++    {
++      "bytes": 14807,
++      "path": "generators/d6607fc42bcc/workspace/parametric/audit.py",
++      "sha256": "b42ceabb135b52336a8d5d0dbb0975a3aef58c9324fcaa6432694aa629721c01"
++    },
++    {
++      "bytes": 3241,
++      "path": "generators/d6607fc42bcc/workspace/parametric/canonical.rkt",
++      "sha256": "fec2390fdd34b38cd14cddf57ee170eb6a7f128424e109b85e4f1e323a8d494e"
++    },
++    {
++      "bytes": 3420,
++      "path": "generators/d6607fc42bcc/workspace/parametric/dot_offset.rkt",
++      "sha256": "1fd61343a9588d7726f2754d964e4e8806dcd7d7d48ea7a12949e7986edd51ea"
++    },
++    {
++      "bytes": 214,
++      "path": "generators/d6607fc42bcc/workspace/parametric/evidence/current/audit-command.txt",
++      "sha256": "e864f3eeee748019c9ead1bca6edf988a80d6ccea9a90a8e0615fdb603a1ebda"
++    },
++    {
++      "bytes": 76007,
++      "path": "generators/d6607fc42bcc/workspace/parametric/evidence/current/focused-validation.json",
++      "sha256": "1004b31f2edfe29fcbdc09c5d896e43deef4d3240ac5c5f6eb740e3d8eccbe11"
++    },
++    {
++      "bytes": 99,
++      "path": "generators/d6607fc42bcc/workspace/parametric/evidence/current/parametric-tests.txt",
++      "sha256": "6385370ece8fb1961cb36d0b351d15d3d7b6457ff140858b7ce86bc244af942d"
++    },
++    {
++      "bytes": 748,
++      "path": "generators/d6607fc42bcc/workspace/parametric/evidence/current/portable-task-tests.log",
++      "sha256": "32819dd678f86b6a28866870b1a1dfc6906da7fb37438b2dd13895562d4a1c29"
++    },
++    {
++      "bytes": 5105,
++      "path": "generators/d6607fc42bcc/workspace/parametric/evidence/current/portable-task-tests.xml",
++      "sha256": "1a3f20d9d1f5a871ff1dc301f3b1e4e965384d8ac2cd2d860654d2e0bde2add2"
++    },
++    {
++      "bytes": 898,
++      "path": "generators/d6607fc42bcc/workspace/parametric/evidence/current/self-review.json",
++      "sha256": "291742b32213d7b3a0647ac98af0fb8d8aacb0d8eeb53984cb7f559543806089"
++    },
++    {
++      "bytes": 495,
++      "path": "generators/d6607fc42bcc/workspace/parametric/promotion.json",
++      "sha256": "12cd48d6b52b21461d0853f6b91fae46d7950c429627611df7ddd8a7c78640f7"
++    },
++    {
++      "bytes": 10531,
++      "path": "generators/d6607fc42bcc/workspace/parametric/prototype.py",
++      "sha256": "525a373179b08121636d486de0cd3f8b355f1af4fbc84699d8e229b43d9bf9b2"
++    },
++    {
++      "bytes": 3742,
++      "path": "generators/d6607fc42bcc/workspace/parametric/rivals.py",
++      "sha256": "898467ad7719513d49a2142ab805c990facaa77bb94d69a2042e387345d4e14f"
++    }
++  ],
++  "generator_sha256": "01bd9fe9646fea8b34ef2604e9bf8b162051b6c8ffd3ac89577fa96d55013402",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "projection_depth": [
++      "one",
++      "dot_offset"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "23 parametric tests passed; portable task suite passed 31 tests and 11 subtests; bounded audit passed 32 deterministic sampler requests, 102 protected-Racket evaluations, six executable finite shortcuts per setting, one wrong-intermediate ablation, and four actual 30x30 evaluations; four-episode protected-Racket preflight also passed.",
++  "rule_task_id": "d6607fc42bcc",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "d6607fc42bcc",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/promotion.json b/repo/generators/d6607fc42bcc/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/promotion.json
+@@ -0,0 +1,12 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/d6607fc42bcc/workspace/parametric/adapter.py",
++  "parameters": {"projection_depth": ["one", "dot_offset"]},
++  "default": {"projection_depth": "one"},
++  "limits": {"demos": [2, 6], "queries": [1, 4]},
++  "resources": [
++    "generators/d6607fc42bcc/workspace/parametric/prototype.py",
++    "generators/d6607fc42bcc/workspace/parametric/canonical.rkt",
++    "generators/d6607fc42bcc/workspace/parametric/dot_offset.rkt"
++  ]
++}
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/prototype.py b/repo/generators/d6607fc42bcc/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/prototype.py
+@@ -0,0 +1,321 @@
++"""Projection-depth rule family for d6607fc42bcc.
++
++The canonical setting paints one exterior row.  The alternative first locates
++an interior dot, computes its distance from the notched edge, and uses that
++input-derived distance as the number of full-width exterior rows to paint.
++Inputs are setting-independent; Python labels are authoring claims until native
++qualification replays every pair through protected Racket.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import random
++
++from reviewer_support import public_challenge_bytes, public_challenge_id
++
++
++HERE = Path(__file__).resolve().parent
++HOME = HERE.parents[1]
++TASK_ID = "d6607fc42bcc"
++DEPTH_MODES = ("one", "dot_offset")
++
++# Each frame is (height, opening, dot-to-opening depth, min_width, max_width).
++# The occupied vertical interval includes the frame and its full dot-depth
++# projection, so every generated input is lawful under both settings.
++_DEMOS = (
++    (12, 14, ((8, "top", 2, 7, 9),)),
++    (16, 18, ((7, "bottom", 4, 8, 10),)),
++    (18, 20, ((6, "top", 3, 7, 9), (6, "bottom", 2, 8, 10))),
++    (21, 23, ((9, "bottom", 3, 9, 12),)),
++    (24, 26, ((7, "top", 2, 8, 11), (7, "top", 4, 10, 13))),
++    (27, 29, ((8, "bottom", 5, 11, 14), (6, "top", 3, 9, 12))),
++)
++_QUERIES = (
++    (13, 17, ((7, "top", 3, 8, 10),)),
++    (19, 22, ((7, "bottom", 2, 9, 11), (6, "top", 3, 8, 10))),
++    (26, 28, ((9, "top", 4, 11, 14), (8, "bottom", 3, 10, 13))),
++    (30, 30, ((9, "top", 5, 13, 16), (8, "bottom", 5, 12, 15))),
++)
++_SHORTCUTS = (
++    "fixed_two",
++    "no_exterior_bar",
++    "bar_only",
++    "opposite_edge_distance",
++    "interior_height",
++    "nearest_edge_distance",
++)
++
++
++def _load_generator():
++    path = HOME / "generator.py"
++    spec = importlib.util.spec_from_file_location(
++        "_d660_parametric_geometry_" + hashlib.sha256(str(path).encode()).hexdigest(),
++        path,
++    )
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++GEN = _load_generator()
++
++
++def _integer(value, low, high, name):
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++    return value
++
++
++def _mode(settings):
++    if (
++        type(settings) is not dict
++        or set(settings) != {"projection_depth"}
++        or type(settings["projection_depth"]) is not str
++        or settings["projection_depth"] not in DEPTH_MODES
++    ):
++        raise ValueError(
++            "settings must be exactly {'projection_depth': 'one'|'dot_offset'}"
++        )
++    return settings["projection_depth"]
++
++
++def program(settings):
++    mode = _mode(settings)
++    name = "canonical.rkt" if mode == "one" else "dot_offset.rkt"
++    return (HERE / name).read_text(encoding="utf-8")
++
++
++def _derived_seed(seed, split, index):
++    raw = json.dumps(
++        [TASK_ID, "projection-input-v1", seed, split, index],
++        separators=(",", ":"),
++    ).encode()
++    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big") & (2**63 - 1)
++
++
++def _slack_parts(total, count, rng):
++    parts = [0] * count
++    for _ in range(total):
++        parts[rng.randrange(count)] += 1
++    return parts
++
++
++def _flip(grid, *, vertical=False, horizontal=False):
++    out = [row[:] for row in grid]
++    if vertical:
++        out.reverse()
++    if horizontal:
++        out = [list(reversed(row)) for row in out]
++    return out
++
++
++def sample_input(seed, index, *, split):
++    _integer(seed, 0, 2**63 - 1, "seed")
++    profiles = _DEMOS if split == "train" else _QUERIES if split == "test" else None
++    if profiles is None:
++        raise ValueError("split must be train or test")
++    _integer(index, 0, len(profiles) - 1, "index")
++    h, w, frame_specs = profiles[index]
++    rng = random.Random(_derived_seed(seed, split, index))
++    ext_heights = [fh + depth for fh, _, depth, _, _ in frame_specs]
++    required = sum(ext_heights) + max(0, len(frame_specs) - 1)
++    if required > h:
++        raise AssertionError("profile does not fit its canvas")
++    margins = _slack_parts(h - required, len(frame_specs) + 1, rng)
++    starts = []
++    cursor = margins[0]
++    for frame_index, ext_height in enumerate(ext_heights):
++        starts.append(cursor)
++        cursor += ext_height
++        if frame_index + 1 < len(frame_specs):
++            cursor += 1 + margins[frame_index + 1]
++
++    grid = [[0] * w for _ in range(h)]
++    colors = rng.sample(range(2, 10), len(frame_specs))
++    for frame_index, ((fh, opening, depth, min_width, max_width), ext_start) in enumerate(
++        zip(frame_specs, starts)
++    ):
++        fw = rng.randint(min_width, min(max_width, w))
++        c0 = rng.randint(0, w - fw)
++        r0 = ext_start + depth if opening == "top" else ext_start
++        notch = rng.randint(1, fw - 2)
++        dot_rel_row = depth if opening == "top" else fh - 1 - depth
++        GEN._draw_notched_frame(
++            grid,
++            r0,
++            c0,
++            fh,
++            fw,
++            opening=opening,
++            notch_rel_col=notch,
++            dot_rel_row=dot_rel_row,
++            dot_rel_col=notch,
++            dot_color=colors[frame_index],
++        )
++
++    # Nuisance symmetries preserve the distance relation and source semantics.
++    return _flip(
++        grid,
++        vertical=bool(rng.randrange(2)),
++        horizontal=bool(rng.randrange(2)),
++    )
++
++
++def _depth(frame, dot_r, strategy, grid_h):
++    r0, _, r1, _ = frame["bbox"]
++    opening = frame["opening"]
++    toward_opening = dot_r - r0 if opening == "top" else r1 - dot_r
++    toward_closed = r1 - dot_r if opening == "top" else dot_r - r0
++    if strategy == "one":
++        return 1
++    if strategy == "dot_offset":
++        return toward_opening
++    if strategy == "fixed_two":
++        return 2
++    if strategy == "no_exterior_bar":
++        return 0
++    if strategy == "opposite_edge_distance":
++        return toward_closed
++    if strategy == "interior_height":
++        return r1 - r0 - 1
++    if strategy == "nearest_edge_distance":
++        return min(toward_opening, toward_closed)
++    raise ValueError(f"unknown depth strategy: {strategy}")
++
++
++def _render(grid, strategy, *, fill_interior=True):
++    g = deepcopy(grid)
++    out = deepcopy(g)
++    h = len(g)
++    frames = GEN._u_frame_records(g)
++    if not frames or any(len(frame["dots"]) != 1 for frame in frames):
++        raise ValueError("input must contain exact notched frames with one interior dot")
++    for frame in frames:
++        r0, c0, r1, c1 = frame["bbox"]
++        dot_r, _, color = frame["dots"][0]
++        if fill_interior:
++            for r in range(r0 + 1, r1):
++                for c in range(c0 + 1, c1):
++                    if out[r][c] == 0:
++                        out[r][c] = color
++            edge_r = r0 if frame["opening"] == "top" else r1
++            for c in range(c0 + 1, c1):
++                if g[edge_r][c] == 0:
++                    out[edge_r][c] = color
++        depth = _depth(frame, dot_r, strategy, h)
++        if frame["opening"] == "top":
++            rows = range(max(0, r0 - depth), r0)
++        else:
++            rows = range(r1 + 1, min(h, r1 + 1 + depth))
++        for r in rows:
++            for c in range(c0, c1 + 1):
++                out[r][c] = color
++    return out
++
++
++def claimed_output(grid, settings):
++    return _render(grid, _mode(settings))
++
++
++def shortcut_output(grid, name):
++    if name not in _SHORTCUTS:
++        raise ValueError(f"unknown shortcut: {name}")
++    if name == "bar_only":
++        return _render(grid, "dot_offset", fill_interior=False)
++    return _render(grid, name)
++
++
++def generate(seed, settings, demos=3, queries=4):
++    _integer(seed, 0, 2**63 - 1, "seed")
++    _mode(settings)
++    _integer(demos, 2, 6, "demos")
++    _integer(queries, 1, 4, "queries")
++    result = {"train": [], "test": [], "program_solution": program(settings)}
++    seen = set()
++    for split, count in (("train", demos), ("test", queries)):
++        for index in range(count):
++            grid = sample_input(seed, index, split=split)
++            key = json.dumps(grid, separators=(",", ":"))
++            if key in seen:
++                raise ValueError(f"duplicate input at {split}[{index}]")
++            seen.add(key)
++            result[split].append(
++                {"input": grid, "output": claimed_output(grid, settings)}
++            )
++    result["sampling"] = {"draws": demos + queries, "duplicate_rejections": 0}
++    return result
++
++
++def teaching_certificate(episode):
++    if type(episode) is not dict or type(episode.get("train")) is not list:
++        raise ValueError("episode must contain demonstrations")
++    survivors = []
++    rejected = {}
++    for mode in DEPTH_MODES:
++        settings = {"projection_depth": mode}
++        mismatch = next(
++            (
++                index
++                for index, pair in enumerate(episode["train"])
++                if claimed_output(pair["input"], settings) != pair["output"]
++            ),
++            None,
++        )
++        if mismatch is None:
++            survivors.append(settings)
++        else:
++            rejected[mode] = mismatch
++    shortcut_survivors = []
++    shortcut_rejected = {}
++    for name in _SHORTCUTS:
++        mismatch = next(
++            (
++                index
++                for index, pair in enumerate(episode["train"])
++                if shortcut_output(pair["input"], name) != pair["output"]
++            ),
++            None,
++        )
++        if mismatch is None:
++            shortcut_survivors.append(name)
++        else:
++            shortcut_rejected[name] = mismatch
++    return {
++        "survivors": survivors,
++        "rejected_by_demo": rejected,
++        "shortcut_survivors": shortcut_survivors,
++        "shortcut_rejected_by_demo": shortcut_rejected,
++        "query_answers_used": False,
++    }
++
++
++def frame_intermediates(grid):
++    rows = []
++    for frame in GEN._u_frame_records(grid):
++        r0, c0, r1, c1 = frame["bbox"]
++        dot_r, dot_c, color = frame["dots"][0]
++        depth = dot_r - r0 if frame["opening"] == "top" else r1 - dot_r
++        rows.append(
++            {
++                "bbox": [r0, c0, r1, c1],
++                "opening": frame["opening"],
++                "dot": [dot_r, dot_c, color],
++                "dot_to_notch_distance": depth,
++            }
++        )
++    return rows
++
++
++def visible_turn(episode, index):
++    _integer(index, 0, len(episode["test"]) - 1, "query index")
++    return public_challenge_bytes(
++        {"train": episode["train"], "test": [episode["test"][index]]}
++    )
++
++
++def public_identity(episode):
++    return public_challenge_id(episode)
+diff --git a/repo/generators/d6607fc42bcc/workspace/parametric/rivals.py b/repo/generators/d6607fc42bcc/workspace/parametric/rivals.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d6607fc42bcc/workspace/parametric/rivals.py
+@@ -0,0 +1,96 @@
++"""Executable finite shortcut rivals for the projection-depth family.
++
++Each returned value is a complete Racket rule derived from the independently
++qualified dot-offset program.  The Python oracle for each name lives in
++``prototype.shortcut_output``; the bounded audit executes both and requires
++exact agreement before using the rival as evidence.
++"""
++from __future__ import annotations
++
++NAMES = (
++    "fixed_two",
++    "no_exterior_bar",
++    "bar_only",
++    "opposite_edge_distance",
++    "interior_height",
++    "nearest_edge_distance",
++)
++
++_DEPTH = """(depth (if top-open
++                                             (- (fst dot) fr1)
++                                             (- fr2 (fst dot))))"""
++
++_INTERIOR_FILL = """((and
++                                           (> r fr1)
++                                           (< r fr2)
++                                           (> kc fc1)
++                                           (< kc fc2)
++                                           (zero? (at acc r kc))) dc)"""
++_TOP_NOTCH_FILL = """((and
++                                           top-open
++                                           (= r fr1)
++                                           (> kc fc1)
++                                           (< kc fc2)
++                                           (zero? v)) dc)"""
++_BOTTOM_NOTCH_FILL = """((and
++                                           (not top-open)
++                                           (= r fr2)
++                                           (> kc fc1)
++                                           (< kc fc2)
++                                           (zero? v)) dc)"""
++
++
++def _replace_once(program: str, old: str, new: str) -> str:
++    count = program.count(old)
++    if count != 1:
++        raise ValueError(
++            f"rival source guard expected one occurrence, found {count}: {old!r}"
++        )
++    return program.replace(old, new, 1)
++
++
++def _depth(program: str, expression: str) -> str:
++    return _replace_once(program, _DEPTH, f"(depth {expression})")
++
++
++def _bar_only(program: str) -> str:
++    # Preserve frame detection and projection, but replace each fill branch by
++    # the accumulator value it would otherwise overwrite.
++    result = _replace_once(
++        program,
++        _INTERIOR_FILL,
++        _INTERIOR_FILL[:-3] + " (at acc r kc))",
++    )
++    result = _replace_once(
++        result,
++        _TOP_NOTCH_FILL,
++        _TOP_NOTCH_FILL[:-3] + " (at acc r kc))",
++    )
++    return _replace_once(
++        result,
++        _BOTTOM_NOTCH_FILL,
++        _BOTTOM_NOTCH_FILL[:-3] + " (at acc r kc))",
++    )
++
++
++def programs(dot_offset_program: str) -> dict[str, str]:
++    """Materialize guarded Racket implementations of six plausible shortcuts."""
++    if type(dot_offset_program) is not str or not dot_offset_program.strip():
++        raise ValueError("dot_offset_program must be nonempty Racket source")
++    result = {
++        "fixed_two": _depth(dot_offset_program, "2"),
++        "no_exterior_bar": _depth(dot_offset_program, "0"),
++        "bar_only": _bar_only(dot_offset_program),
++        "opposite_edge_distance": _depth(
++            dot_offset_program,
++            "(if top-open\n                                             (- fr2 (fst dot))\n                                             (- (fst dot) fr1))",
++        ),
++        "interior_height": _depth(dot_offset_program, "(- fr2 fr1 1)"),
++        "nearest_edge_distance": _depth(
++            dot_offset_program,
++            "(min (- (fst dot) fr1)\n                                                  (- fr2 (fst dot)))",
++        ),
++    }
++    if set(result) != set(NAMES) or len(set(result.values())) != len(result):
++        raise AssertionError("rival construction did not produce six distinct programs")
++    return result

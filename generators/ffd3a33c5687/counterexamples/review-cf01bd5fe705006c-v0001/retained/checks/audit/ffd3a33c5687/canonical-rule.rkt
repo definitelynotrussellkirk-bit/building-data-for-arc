@@ -1,0 +1,16 @@
+(rule! (lambda (grid)
+  (define height (rows grid))
+  (define width (cols grid))
+  (define (mirror-col col) (- (- width 1) col))
+  (define (pair-color left-val right-val)
+    (if (!= left-val 0) left-val
+        (if (!= right-val 0) right-val 0)))
+  (define (repaired-color row col)
+    (let* ((other-col (mirror-col col))
+           (left-col (min col other-col))
+           (right-col (max col other-col))
+           (left-val (cell-at grid row left-col))
+           (right-val (cell-at grid row right-col)))
+      (pair-color left-val right-val)))
+  (grid-from-fn height width
+    (lambda (row col) (repaired-color row col)))))

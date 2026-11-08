@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (for*/fold ((out g)) ((r (in-range (- (rows g) 1))) (c (in-range (- (cols g) 1)))) (let ((v (at g r c))) (if (and (not (= v 0)) (= (at g r (+ c 1)) v)) (set-cell (set-cell out (+ r 1) c v) (+ r 1) (+ c 1) v) out)))))

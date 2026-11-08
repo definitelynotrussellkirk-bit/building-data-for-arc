@@ -1,0 +1,23 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (cellmap g
+                    (r c v)
+                    (let ((seed-color (if (zero? (mod r 2))
+                                          (if (and (>= c 0) (< c w) (!= 0 (at g 0 c)))
+                                              (at g 0 c)
+                                              0)
+                                          (let ((left (if (and
+                                                            (>= (+ c 1) 0)
+                                                            (< (+ c 1) w)
+                                                            (!= 0 (at g 0 (+ c 1))))
+                                                          (at g 0 (+ c 1))
+                                                          0))
+                                                (right (if (and
+                                                             (>= (- c 1) 0)
+                                                             (< (- c 1) w)
+                                                             (!= 0 (at g 0 (- c 1))))
+                                                           (at g 0 (- c 1))
+                                                           0)))
+                                            (if (!= 0 left) left right)))))
+                      seed-color)))))

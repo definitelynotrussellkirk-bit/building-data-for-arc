@@ -1,0 +1,1 @@
+F1: The per-target staged runner worked; the optional aggregate pytest command collided on common test_family.py module names. Document --import-mode=importlib for aggregate checks while retaining one-target-per-command as the default.

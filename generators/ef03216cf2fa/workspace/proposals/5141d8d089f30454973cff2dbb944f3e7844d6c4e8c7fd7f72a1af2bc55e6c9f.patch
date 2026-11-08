@@ -1,0 +1,1747 @@
+diff --git a/repo/generators/ec1c917f8de0/notes.md b/repo/generators/ec1c917f8de0/notes.md
+--- a/repo/generators/ec1c917f8de0/notes.md
++++ b/repo/generators/ec1c917f8de0/notes.md
+@@ -2,3 +2,33 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Current bounded teaching audit
++
++On 2026-10-24, `workspace/audit_d4_teaching.py` replayed two current
++four-demo/four-query lessons (seeds 0 and 17, medium difficulty) through
++protected Racket. Each lesson rejected all 28 alternatives obtained by changing
++one marker branch to a different D4 transform, using demonstrations only. All
++16 executed generated labels matched the current Python mirror, and the existing
++`lesson_identifiable` check accepted all eight queries. No current generated
++teaching defect was found within this finite scope.
++
++The same probe reproduced an inherited canonical teaching limitation: the three
++canonical demonstrations omit the bottom-right branch. A rival that leaves all
++other branches unchanged but uses identity at bottom-right fits those three
++demonstrations and disagrees on the canonical query. This is not a defect in the
++current four-corner generator schedule; retain its four-demo requirement rather
++than treating the original three-demo challenge as sufficient branch evidence.
++
++Evidence: `checks/ec1c917f8de0/d4-teaching.json` and sibling `command.json` in the
++reviewer return. The report contains exact programs, labels, demo-only fit tables,
++runtime identity, and 248 protected Racket evaluations. Generator SHA-256 is
++`b7a10072134900d44e2b37931de522bee700714853590d620813bc7175ca0e84`;
++selected rule hash is `3a8a12acc2b6`, exact program SHA-256
++`3a8a12acc2b69c12b3b95578037241d28c5f261901a974c7caf5dc2ca6c9a334`.
++
++This audit covers two aligned medium lessons and the named D4 alternatives,
++not arbitrary shortcuts, every seed/band, or alternative episode assembly.
++Generator and reference source are unchanged. The catalog remains
++`provisionally_safe`; this optional peer evidence does not promote approval,
++admit training data, or authorize a demonstration-count reduction.
+diff --git a/repo/generators/ec1c917f8de0/workspace/audit_d4_teaching.py b/repo/generators/ec1c917f8de0/workspace/audit_d4_teaching.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ec1c917f8de0/workspace/audit_d4_teaching.py
+@@ -0,0 +1,125 @@
++"""Bounded source-bound audit of corner-conditioned D4 teaching evidence."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++import sys
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    if args.out.exists():
++        parser.error("choose a new evidence path")
++    root = Path(__file__).resolve().parents[3]
++    sys.path[:0] = [str(root / "src"), str(root / "shared/runtime")]
++    from arcpuzzles.catalog import Catalog
++    from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++    from reviewer_support import load_selected_generator
++
++    tid = "ec1c917f8de0"
++    catalog = Catalog(root)
++    row = catalog.describe(tid)
++    canonical = catalog._variants()[row.get("rule_task_id", tid)][0]
++    program = canonical["program_solution"]
++    generator, source, source_hash = load_selected_generator(tid, root=root)
++    transforms = {"identity": "obj", "cw": "(rotate-cw obj)", "180": "(rotate-180 obj)",
++                  "ccw": "(rotate-cw (rotate-180 obj))", "lr": "(flip-lr obj)",
++                  "cw_lr": "(rotate-cw (flip-lr obj))", "180_lr": "(rotate-180 (flip-lr obj))",
++                  "ccw_lr": "(rotate-cw (rotate-180 (flip-lr obj)))"}
++    original = {"TL": "identity", "TR": "cw", "BL": "lr", "BR": "180"}
++    conditions = {"TL": "((and (= (first marker) 0) (= (second marker) 0)) ",
++                  "TR": "((and (= (first marker) 0) (= (second marker) (- w 1))) ",
++                  "BL": "((and (= (first marker) (- h 1)) (= (second marker) 0)) ", "BR": "(else "}
++    rivals = {}
++    for corner, intended in original.items():
++        old_action = "obj" if corner == "TL" else f"(crop-nz {transforms[intended]})"
++        old = conditions[corner] + old_action + ")"
++        if program.count(old) != 1:
++            raise ValueError("canonical branch syntax changed; review the audit before rerunning")
++        for name, expression in transforms.items():
++            if name != intended:
++                rivals[corner + ":" + name] = program.replace(old, conditions[corner] + f"(crop-nz {expression}))")
++    report = {"schema": "ec1c917f8de0-d4-teaching-audit-v1", "task_id": tid,
++              "source_binding": {"generator_path": source.relative_to(root).as_posix(),
++                  "generator_sha256": source_hash, "rule_hash": row["rule_hash"],
++                  "canonical_program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++                  "audit_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
++              "command": [sys.executable, *sys.argv], "canonical_program": program,
++              "rivals": {name: {"program": text, "sha256": hashlib.sha256(text.encode()).hexdigest()}
++                         for name, text in rivals.items()}, "generated_lessons": [], "findings": [],
++              "limits": "Two seeds, medium difficulty, aligned four-demo lessons and four queries; 28 one-branch D4 alternatives only. No universal uniqueness, non-D4 shortcut audit, generator approval, or training admission."}
++    evaluations = 0
++    with _local_imports(root / "shared/runtime", root / "shared/runtime"):
++        apply, identity, bridge = _real_evaluator(root / "shared/runtime")
++        report["racket"] = identity
++        cache = {}
++
++        def execute(text, grid):
++            nonlocal evaluations
++            key = (text, json.dumps(grid))
++            if key not in cache:
++                evaluations += 1
++                cache[key] = _grid(apply(text, _grid(grid)))
++            return cache[key]
++
++        try:
++            pairs = canonical["train"] + canonical["test"]
++            for pair in pairs:
++                if execute(program, pair["input"]) != pair["output"]:
++                    raise ValueError("canonical stored label differs from protected Racket")
++            counterfactual = rivals["BR:identity"]
++            matches = [execute(counterfactual, pair["input"]) == pair["output"] for pair in canonical["train"]]
++            query = canonical["test"][0]
++            alternative = execute(counterfactual, query["input"])
++            report["canonical_omitted_branch_witness"] = {
++                "status": "inherited_canonical_teaching_limit",
++                "description": "Canonical demonstrations omit BR; BR identity fits all three but disagrees on the canonical query. Current generated four-corner lessons are audited separately.",
++                "rival": "BR:identity", "demo_matches": matches,
++                "train": canonical["train"], "query_input": query["input"],
++                "canonical_output": query["output"], "rival_output": alternative,
++                "query_differs": alternative != query["output"]}
++            if not all(matches) or alternative == query["output"]:
++                raise ValueError("expected canonical omitted-branch witness was not reproduced")
++            for seed in (0, 17):
++                inputs = [generator.generate(seed, index, difficulty="medium") for index in range(8)]
++                labeled = [{"input": grid, "output": execute(program, grid)} for grid in inputs]
++                demos, queries = labeled[:4], labeled[4:]
++                lesson = {"seed": seed, "difficulty": "medium", "demos": 4, "queries": 4,
++                          "train": demos, "test": queries, "demo_only_rival_fits": {}, "findings": []}
++                for pair in labeled:
++                    if pair["output"] != generator.rule_mirror(pair["input"]):
++                        lesson["findings"].append("Python mirror disagrees with protected Racket")
++                lesson["lesson_identifiable"] = [generator.lesson_identifiable(demos, query) for query in queries]
++                for name, text in rivals.items():
++                    fits = [execute(text, pair["input"]) == pair["output"] for pair in demos]
++                    lesson["demo_only_rival_fits"][name] = fits
++                    if all(fits):
++                        differences = [execute(text, query["input"]) != query["output"] for query in queries]
++                        if any(differences):
++                            lesson["findings"].append({"rival": name, "query_disagreements": differences})
++                lesson["surviving_rivals"] = [name for name, fits in lesson["demo_only_rival_fits"].items() if all(fits)]
++                if any(lesson["lesson_identifiable"]):
++                    lesson["findings"].append("generator lesson_identifiable rejected a query")
++                report["generated_lessons"].append(lesson)
++                report["findings"].extend({"seed": seed, "finding": finding} for finding in lesson["findings"])
++        finally:
++            bridge.close()
++    if hashlib.sha256(source.read_bytes()).hexdigest() != source_hash:
++        raise ValueError("generator changed during audit")
++    report.update(status="finding" if report["findings"] else "bounded_no_current_generated_finding",
++                  racket_evaluations=evaluations, training_admitted=False,
++                  owner_next_action="Retain the four-corner demonstration requirement; this bounded audit alone does not establish reviewed_safe or justify reducing demo count.")
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
++    print(json.dumps({"status": report["status"], "generated_lessons": len(report["generated_lessons"]),
++                      "rivals_per_lesson": len(rivals), "racket_evaluations": evaluations,
++                      "output": str(args.out), "findings": report["findings"]}))
++    return 1 if report["findings"] else 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/ef03216cf2fa/notes.md b/repo/generators/ef03216cf2fa/notes.md
+--- a/repo/generators/ef03216cf2fa/notes.md
++++ b/repo/generators/ef03216cf2fa/notes.md
+@@ -1,4 +1,14 @@
+ # Working notes: ef03216cf2fa
++
++## Native parametric family — reviewer ready, owner acceptance pending
++
++- `workspace/parametric/adapter.py` preserves the exact canonical perimeter-ranking program and adds `ranking=normalized_top_edge`: count occupied top-edge cells after clockwise normalization, rank descending with source-position ties, and retain the canonical stacking operation.
++- Dependency: normalized crops -> their input-dependent edge counts -> object order. Protected witnesses keep displayed crops fixed and substitute original-top measurements; both a three-object and a six-object 30x30 query change order. Returned evidence: `checks/ef03216cf2fa/causal/witness.json` and sibling replay.
++- Supports 2–6 demonstrations and 1–4 independent queries; ordinary qualification uses three demos/four queries. Input streams are identical across settings. Two demos jointly refute 16 declared shortcuts under both settings; a bounded 48-candidate cover fails explicitly if unavailable.
++- Separate query grammar expands to 3–6 distinct-color objects on 10x12, 16x20, 24x25 and 30x30 canvases. Connected shapes include split-edge combs, bridges, crosses, frames and corner-Ls; large scenes contain six substantive objects and border contacts. Canonical production remains unchanged.
++- Fresh checks: 27 focused tests; 8/8 Racket-backed lessons at 2,3,6 demos, 60 labels, 32 query targets, 480 protected executions. Native qualification passed both settings on seeds 0 and 17; exact source inventory is `workspace/parametric/evidence/manifest.json`. Returned native receipts are `checks/ef03216cf2fa/qualification/{qualification,execution}.json`.
++- `workspace/parametric/check.py` replays chosen labels and demonstration-only rivals and writes hash-named single-query public projections. Private settings, programs, future queries and all query answers remain controller-side. This is a static export/check helper, not a turn controller.
++- Limits: finite rivals/seeds only, separated bounding boxes and distinct object colors, no measured learning gain. Wrong-rotation/no-rotation rivals are replayed on demonstration inputs, not large queries. Source is native-qualified reviewer evidence; the owner must freshly qualify and accept the exact integrated bytes. No training admission.
+ 
+ ## Current contract
+ 
+diff --git a/repo/generators/ef03216cf2fa/tests/test_parametric.py b/repo/generators/ef03216cf2fa/tests/test_parametric.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/tests/test_parametric.py
+@@ -0,0 +1,335 @@
++"""Independent semantic and boundary checks for the opt-in parametric family.
++
++This suite never uses the prototype's object or ranking helpers for expected
++labels. Native qualification separately executes every retained label in Racket.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import importlib.util
++from pathlib import Path
++import sys
++
++import pytest
++
++
++HOME = Path(__file__).resolve().parents[1]
++ROOT = HOME.parents[1]
++SOURCE = HOME / "workspace" / "parametric" / "prototype.py"
++TASK = "ef03216cf2fa"
++RANKINGS = ("perimeter", "normalized_top_edge")
++
++
++def _load_prototype():
++    assert SOURCE.is_file(), "the native parametric prototype is not implemented"
++    spec = importlib.util.spec_from_file_location("ef03216cf2fa_parametric_test", SOURCE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture(scope="module")
++def prototype():
++    return _load_prototype()
++
++
++def _objects(grid):
++    """Literal flood fill; source grammar keeps object bounding boxes disjoint."""
++    rows, cols = len(grid), len(grid[0])
++    seen = set()
++    objects = []
++    for row in range(rows):
++        for col in range(cols):
++            color = grid[row][col]
++            if color == 0 or (row, col) in seen:
++                continue
++            pending = [(row, col)]
++            seen.add((row, col))
++            cells = []
++            while pending:
++                r, c = pending.pop()
++                cells.append((r, c))
++                for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
++                    if (0 <= nr < rows and 0 <= nc < cols
++                            and (nr, nc) not in seen and grid[nr][nc] == color):
++                        seen.add((nr, nc))
++                        pending.append((nr, nc))
++            top, bottom = min(r for r, _ in cells), max(r for r, _ in cells)
++            left, right = min(c for _, c in cells), max(c for _, c in cells)
++            crop = [[0] * (right - left + 1) for _ in range(bottom - top + 1)]
++            for r, c in cells:
++                crop[r - top][c - left] = color
++            objects.append({"color": color, "top": top, "left": left,
++                            "crop": crop, "cells": cells})
++    return objects
++
++
++def _quarter_turn(crop, clockwise=True):
++    height, width = len(crop), len(crop[0])
++    turned = [[0] * height for _ in range(width)]
++    for row in range(height):
++        for col in range(width):
++            if clockwise:
++                turned[col][height - row - 1] = crop[row][col]
++            else:
++                turned[width - col - 1][row] = crop[row][col]
++    return turned
++
++
++def _oracle(grid, ranking="perimeter", rival=None):
++    objects = _objects(grid)
++    ordered = []
++    for obj in objects:
++        raw = obj["crop"]
++        height, width = len(raw), len(raw[0])
++        shape = deepcopy(raw)
++        if height > width and rival != "no_rotation":
++            shape = _quarter_turn(raw, clockwise=rival != "counterclockwise")
++        actual_ranking = ranking
++        if rival == "other_setting":
++            actual_ranking = RANKINGS[1 - RANKINGS.index(ranking)]
++        score = (2 * (height + width) if actual_ranking == "perimeter"
++                 else sum(value != 0 for value in shape[0]))
++        if rival == "bbox_area":
++            score = height * width
++        elif rival == "ink":
++            score = len(obj["cells"])
++        elif rival == "normalized_width":
++            score = len(shape[0])
++        elif rival == "normalized_height":
++            score = len(shape)
++        elif rival == "source_top_edge":
++            score = sum(value != 0 for value in raw[0])
++        elif rival == "normalized_bottom_edge":
++            score = sum(value != 0 for value in shape[-1])
++        elif rival == "top_span":
++            positions = [col for col, value in enumerate(shape[0]) if value != 0]
++            score = max(positions) - min(positions) + 1
++        top, left = obj["top"], obj["left"]
++        key = (-score, top, left)
++        if rival == "source_order":
++            key = (top, left)
++        elif rival == "reverse_source":
++            key = (-top, -left)
++        elif rival == "ascending":
++            key = (score, top, left)
++        elif rival == "reverse_ties":
++            key = (-score, -top, -left)
++        elif rival == "color_ascending":
++            key = (obj["color"], top, left)
++        elif rival == "color_descending":
++            key = (-obj["color"], top, left)
++        ordered.append((key, shape))
++    ordered.sort(key=lambda item: item[0])
++    shapes = [shape for _, shape in ordered]
++    height = sum(len(shape) for shape in shapes) + len(shapes) - 1
++    width = max(len(shape[0]) for shape in shapes)
++    output = [[0] * width for _ in range(height)]
++    offset = 0
++    for shape in shapes:
++        for row, values in enumerate(shape):
++            output[offset + row][:len(values)] = values
++        offset += len(shape) + 1
++    return output
++
++
++RIVALS = (
++    "other_setting", "source_order", "reverse_source", "bbox_area", "ink",
++    "normalized_width", "normalized_height", "source_top_edge",
++    "normalized_bottom_edge", "top_span", "ascending", "reverse_ties",
++    "counterclockwise", "no_rotation", "color_ascending", "color_descending",
++)
++
++
++def _scene(height, width, placed):
++    grid = [[0] * width for _ in range(height)]
++    for top, left, shape in placed:
++        for row, values in enumerate(shape):
++            for col, value in enumerate(values):
++                grid[top + row][left + col] = value
++    return grid
++
++
++TALL_A = [[2, 0, 0], [2, 2, 0], [2, 2, 0],
++          [0, 2, 2], [0, 2, 2], [2, 2, 2]]
++TALL_B = [[0, 3, 3], [0, 3, 3], [0, 3, 3], [0, 3, 3], [3, 3, 0]]
++WIDE_C = [[0, 7, 7, 0], [7, 7, 7, 7]]
++
++
++def _block_colors(output):
++    colors = []
++    in_block = False
++    for row in output:
++        ink = [value for value in row if value]
++        if ink and not in_block:
++            colors.append(ink[0])
++        in_block = bool(ink)
++    return colors
++
++
++def _inputs(episode):
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def test_default_program_is_exact_selected_canonical_source():
++    prototype = _load_prototype()
++    from arcpuzzles import Catalog
++
++    selected = Catalog(ROOT)._variants()[TASK][0]["program_solution"]
++    assert prototype.program({"ranking": "perimeter"}) == selected
++
++
++def test_canonical_pairs_agree_with_independent_oracle_and_default(prototype):
++    helper_path = ROOT / "shared" / "runtime" / "reviewer_support.py"
++    spec = importlib.util.spec_from_file_location("ef03216cf2fa_reviewer_support_test", helper_path)
++    helper = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(helper)
++    pairs = helper.canonical_pairs(TASK, root=ROOT, labeled_only=True)
++    assert pairs
++    for pair in pairs:
++        assert _oracle(pair["input"]) == pair["output"]
++        assert prototype.solve(pair["input"]) == pair["output"]
++
++
++def test_normalize_then_rank_has_literal_causal_output(prototype):
++    grid = _scene(10, 12, [(0, 0, TALL_B), (0, 5, WIDE_C), (4, 5, TALL_A)])
++    expected = [
++        [2, 0, 0, 2, 2, 2], [2, 2, 2, 2, 2, 0], [2, 2, 2, 0, 0, 0],
++        [0, 0, 0, 0, 0, 0], [0, 7, 7, 0, 0, 0], [7, 7, 7, 7, 0, 0],
++        [0, 0, 0, 0, 0, 0], [3, 0, 0, 0, 0, 0], [3, 3, 3, 3, 3, 0],
++        [0, 3, 3, 3, 3, 0],
++    ]
++    before = deepcopy(grid)
++    assert _oracle(grid, "normalized_top_edge") == expected
++    assert prototype.solve(grid, ranking="normalized_top_edge") == expected
++    assert _block_colors(_oracle(grid, "perimeter")) == [2, 3, 7]
++    assert _block_colors(_oracle(grid, "normalized_top_edge", "source_top_edge")) == [3, 7, 2]
++    assert grid == before
++
++
++def test_edge_score_ties_use_source_order_instead_of_perimeter_or_color(prototype):
++    wide_d = [[2, 0, 0, 0, 2, 0, 0], [2, 2, 2, 2, 2, 2, 2],
++              [0, 0, 0, 2, 0, 2, 0]]
++    grid = _scene(10, 15, [(0, 0, WIDE_C), (3, 0, wide_d), (4, 11, TALL_B)])
++    expected = _oracle(grid, "normalized_top_edge")
++    assert _block_colors(expected) == [7, 2, 3]
++    assert prototype.solve(grid, ranking="normalized_top_edge") == expected
++
++
++def test_canonical_perimeter_ties_use_original_row_major_position(prototype):
++    square = [[2, 2, 0], [2, 2, 2], [2, 0, 0]]
++    grid = _scene(10, 12, [(0, 0, square), (0, 7, WIDE_C), (4, 0, TALL_B)])
++    expected = _oracle(grid)
++    assert _block_colors(expected) == [3, 2, 7]
++    assert prototype.solve(grid) == expected
++
++
++@pytest.mark.parametrize("ranking", RANKINGS)
++def test_generated_labels_match_independent_oracle(prototype, ranking):
++    for seed in (0, 17):
++        episode = prototype.generate(seed, {"ranking": ranking}, 3, 4)
++        assert episode["program_solution"] == prototype.program({"ranking": ranking})
++        for pair in episode["train"] + episode["test"]:
++            assert pair["output"] == _oracle(pair["input"], ranking)
++            assert 1 <= len(pair["output"]) <= 30
++            assert 1 <= len(pair["output"][0]) <= 30
++            assert all(type(value) is int and 0 <= value <= 9
++                       for row in pair["output"] for value in row)
++
++
++@pytest.mark.parametrize("demos,queries", [(2, 4), (3, 1), (6, 4)])
++def test_demo_and_query_counts_are_independent(prototype, demos, queries):
++    episode = prototype.generate(101, {"ranking": "normalized_top_edge"}, demos, queries)
++    assert len(episode["train"]) == demos
++    assert len(episode["test"]) == queries
++
++
++def test_invalid_seed_types_and_bounds_are_rejected(prototype):
++    for seed in (True, -1, 2 ** 63, "0", 1.5, None):
++        with pytest.raises((TypeError, ValueError)):
++            prototype.generate(seed, {"ranking": "perimeter"}, 3, 4)
++    assert len(prototype.generate(2 ** 63 - 1, {"ranking": "perimeter"}, 2, 1)["test"]) == 1
++
++
++def test_invalid_demo_counts_are_rejected(prototype):
++    for demos in (True, 0, 1, 7, 3.0, "3"):
++        with pytest.raises((TypeError, ValueError)):
++            prototype.generate(0, {"ranking": "perimeter"}, demos, 4)
++
++
++def test_invalid_query_counts_are_rejected(prototype):
++    for queries in (True, 0, 5, 4.0, "4"):
++        with pytest.raises((TypeError, ValueError)):
++            prototype.generate(0, {"ranking": "perimeter"}, 3, queries)
++
++
++def test_unknown_and_malformed_settings_are_rejected(prototype):
++    for settings in ({}, {"ranking": "unknown"}, {"ranking": True},
++                     {"ranking": "perimeter", "extra": 1}, None):
++        with pytest.raises((TypeError, ValueError)):
++            prototype.program(settings)
++        with pytest.raises((TypeError, ValueError)):
++            prototype.generate(0, settings, 3, 4)
++
++
++def test_episode_generation_is_deterministic(prototype):
++    settings = {"ranking": "normalized_top_edge"}
++    assert prototype.generate(29, settings, 3, 4) == prototype.generate(29, settings, 3, 4)
++    assert settings == {"ranking": "normalized_top_edge"}
++
++
++def test_input_sampling_is_matched_across_private_settings(prototype):
++    canonical = prototype.generate(71, {"ranking": "perimeter"}, 2, 4)
++    alternate = prototype.generate(71, {"ranking": "normalized_top_edge"}, 2, 4)
++    assert _inputs(canonical) == _inputs(alternate)
++    assert any(a["output"] != b["output"]
++               for a, b in zip(canonical["train"], alternate["train"]))
++
++
++def test_first_query_and_demonstrations_are_stable_when_requesting_four_queries(prototype):
++    settings = {"ranking": "normalized_top_edge"}
++    single = prototype.generate(5, settings, 3, 1)
++    multiple = prototype.generate(5, settings, 3, 4)
++    assert single["train"] == multiple["train"]
++    assert single["test"][0] == multiple["test"][0]
++
++
++def test_four_queries_are_novel_and_have_distinct_grid_shapes(prototype):
++    episode = prototype.generate(5, {"ranking": "perimeter"}, 6, 4)
++    inputs = _inputs(episode)
++    frozen = [tuple(tuple(row) for row in grid) for grid in inputs]
++    assert len(frozen) == len(set(frozen))
++    sizes = {(len(pair["input"]), len(pair["input"][0])) for pair in episode["test"]}
++    assert len(sizes) == 4
++    assert (30, 30) in sizes
++
++
++def test_thirty_by_thirty_query_has_substantive_six_object_content(prototype):
++    episode = prototype.generate(17, {"ranking": "normalized_top_edge"}, 2, 4)
++    large = [pair for pair in episode["test"]
++             if (len(pair["input"]), len(pair["input"][0])) == (30, 30)]
++    assert len(large) == 1
++    grid = large[0]["input"]
++    objects = _objects(grid)
++    assert len(objects) == 6
++    occupied = [cell for obj in objects for cell in obj["cells"]]
++    assert len(occupied) >= 72
++    assert max(row for row, _ in occupied) - min(row for row, _ in occupied) >= 26
++    assert max(col for _, col in occupied) - min(col for _, col in occupied) >= 26
++    assert len({(row // 15, col // 15) for row, col in occupied}) == 4
++    assert large[0]["output"] == _oracle(grid, "normalized_top_edge")
++    assert len(large[0]["output"]) <= 30
++
++
++@pytest.mark.parametrize("ranking", RANKINGS)
++def test_two_demos_reject_query_relevant_finite_rivals(prototype, ranking):
++    for seed in (0, 17, 71):
++        episode = prototype.generate(seed, {"ranking": ranking}, 2, 4)
++        for rival in RIVALS:
++            changes_query = any(_oracle(pair["input"], ranking, rival) != pair["output"]
++                                for pair in episode["test"])
++            survives_demos = all(_oracle(pair["input"], ranking, rival) == pair["output"]
++                                 for pair in episode["train"])
++            assert not (changes_query and survives_demos), (seed, ranking, rival)
+diff --git a/repo/generators/ef03216cf2fa/tests/test_parametric_literal.py b/repo/generators/ef03216cf2fa/tests/test_parametric_literal.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/tests/test_parametric_literal.py
+@@ -0,0 +1,29 @@
++"""A literal causal regression: orient first, then measure the top edge."""
++import importlib.util
++from pathlib import Path
++
++
++def test_normalized_edge_ranking_changes_order_after_rotation():
++    path = Path(__file__).resolve().parents[1] / "workspace/parametric/prototype.py"
++    assert path.is_file(), "the parameterized object-ranker is missing"
++    spec = importlib.util.spec_from_file_location("ef03216cf2fa_literal", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    grid = [
++        [1,1,0,0,2,2,2,0,0,0],
++        [1,0,0,0,2,0,0,0,0,0],
++        [1,0,0,0,2,2,2,2,2,0],
++        [1,0,0,0,0,0,0,0,0,0],
++        [1,0,0,0,0,0,0,0,0,0],
++        [0,0,0,0,0,0,0,0,0,0],
++        [3,3,3,3,0,0,0,0,0,0],
++        [3,0,0,0,0,0,0,0,0,0],
++    ]
++    wanted = [
++        [1,1,1,1,1], [0,0,0,0,1], [0,0,0,0,0],
++        [3,3,3,3,0], [3,0,0,0,0], [0,0,0,0,0],
++        [2,2,2,0,0], [2,0,0,0,0], [2,2,2,2,2],
++    ]
++    assert module.solve(grid, "normalized_top_edge") == wanted
++    assert module.solve(grid, "perimeter") != wanted
++    assert module.solve(grid, "normalized_top_edge", "source_top_edge") != wanted
+diff --git a/repo/generators/ef03216cf2fa/tests/test_parametric_public.py b/repo/generators/ef03216cf2fa/tests/test_parametric_public.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/tests/test_parametric_public.py
+@@ -0,0 +1,83 @@
++"""Public projection is independent of all controller-only state."""
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++
++def tool():
++    path = Path(__file__).resolve().parents[1] / "workspace/parametric/check.py"
++    assert path.is_file(), "the runnable parametric check/export tool is missing"
++    spec = importlib.util.spec_from_file_location("ef03216cf2fa_public_check", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def episode():
++    return {
++        "train": [{"input": [[1, 0]], "output": [[1]]}],
++        "test": [{"input": [[2, 0]], "output": [[2]]},
++                 {"input": [[3, 0]], "output": [[3]]}],
++        "settings": {"ranking": "perimeter"},
++        "seed": 17,
++        "program_solution": "PRIVATE",
++    }
++
++
++def test_private_changes_cannot_change_first_public_turn():
++    check = tool()
++    before = episode()
++    after = copy.deepcopy(before)
++    after.update(seed=999, settings={"ranking": "normalized_top_edge"},
++                 program_solution="OTHER PRIVATE")
++    after["test"][0]["output"] = [[9]]
++    after["test"][1] = {"input": [[8, 8]], "output": [[7]]}
++    assert check.public_view_bytes(before, 0) == check.public_view_bytes(after, 0)
++    visible = json.loads(check.public_view_bytes(before, 0))
++    assert visible == {"train": before["train"], "test": [{"input": [[2, 0]]}]}
++    single = {**before, "test": before["test"][:1]}
++    assert check.public_view_bytes(single, 0) == check.public_view_bytes(before, 0)
++
++
++def test_public_view_rejects_bool_or_invalid_query_index():
++    check = tool()
++    for index in (True, -1, 2, "0", 0.0):
++        with pytest.raises((TypeError, ValueError)):
++            check.public_view_bytes(episode(), index)
++
++
++def test_writer_hashes_exact_visible_bytes_and_masks_all_answers(tmp_path):
++    check = tool()
++    destination = tmp_path / "public"
++    paths = check.write_public_views([episode()], destination)
++    assert len(paths) == 2
++    assert sorted(p.name for p in destination.iterdir()) == sorted(paths)
++    for filename in paths:
++        raw = (destination / filename).read_bytes()
++        assert filename == hashlib.sha256(raw).hexdigest() + ".json"
++        value = json.loads(raw)
++        assert set(value) == {"train", "test"}
++        assert len(value["test"]) == 1
++        assert set(value["test"][0]) == {"input"}
++
++
++def test_duplicate_public_payload_fails_before_publication(tmp_path):
++    check = tool()
++    destination = tmp_path / "public"
++    with pytest.raises(ValueError, match="duplicate"):
++        check.write_public_views([episode(), episode()], destination)
++    assert not destination.exists()
++
++
++def test_existing_public_destination_is_preserved(tmp_path):
++    check = tool()
++    destination = tmp_path / "public"
++    destination.mkdir()
++    (destination / "keep.txt").write_text("keep")
++    with pytest.raises(FileExistsError):
++        check.write_public_views([episode()], destination)
++    assert (destination / "keep.txt").read_text() == "keep"
+diff --git a/repo/generators/ef03216cf2fa/workspace/parametric/README.md b/repo/generators/ef03216cf2fa/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/workspace/parametric/README.md
+@@ -0,0 +1,79 @@
++# Orient, measure, rank, and stack
++
++This opt-in native adapter preserves the exact canonical `ranking=perimeter`
++program. Its alternative, `ranking=normalized_top_edge`, sorts by the number of
++occupied cells in each crop's top row **after** clockwise rotation of tall
++crops. Both settings use descending score, original row-major ties, left-aligned
++vertical stacking, and one blank separator row. Settings stay fixed per lesson.
++
++## Design and checks
++
++The alternative changes one existing decision: which object measurement supplies
++the ranking. A geometric chain of stack anchors was considered, but it would
++introduce additional positioning conventions and a larger output-width bound.
++Here orientation changes the measured edge, which can reverse the ordering of
++two objects. The causal ablation ranks the unrotated edge but displays the same
++normalized crops, isolating the intermediate measurement's effect on order.
++
++The implementation plan follows the packet's existing native contract: implement
++the rule and deterministic sampler against independent literal regressions;
++execute chosen labels and demo-only rivals in Racket; check public projection;
++build the source inventory; qualify the native adapter; retain a protected
++counterfactual witness and return the delta for owner acceptance.
++
++`prototype.py` supplies `program(settings)`, `generate(seed, settings, demos,
++queries)`, and finite-rival programs. `adapter.py` loads that exact adjacent
++module. `check.py` is the reusable protected-Racket check/export tool. The
++canonical generator, selected authority, and approval records are unchanged.
++
++## Supported grammar
++
++- Exact integer seeds in `0..2**63-1`; independently requested 2–6 demos and
++  1–4 queries. Ordinary qualification uses 3 demos and 4 queries.
++- Distinct nonzero colors identify separated same-color four-connected objects;
++  bounding boxes do not overlap. Shapes include sparse crosses, corner-Ls,
++  frames, combs, and dense bridges. Split top edges separate count from span.
++- The same seed/count request produces identical inputs under both settings.
++  A bounded search of at most 48 candidates chooses two demonstrations jointly
++  refuting 16 declared rivals for each setting. Queries play no part in that
++  selection; failure is explicit, never a shortened lesson.
++- Four query profiles: 10×12 with 3 objects, 16×20 with 4, 24×25 with 5, and
++  30×30 with 6. Large objects are spread across six slots and contact opposite
++  borders. Normalized object heights are at most four, so output height is at
++  most 29. Canonical production remains at its original 10–14 size limits.
++- The first query is identical for a one-query and four-query request. Additional
++  demonstrations do not alter query inputs. Input profiles vary shape, density,
++  palette, position, ties, and tall versus wide orientation across seeds.
++
++## Run from the packet's outer folder
++
++```sh
++WORK/.venv/bin/python review.py run python3 \
++  generators/ef03216cf2fa/workspace/parametric/check.py \
++  --out ../checks/ef03216cf2fa/focused --seed 0 --seed 17 --demos 3
++
++WORK/.venv/bin/python review.py run python3 -m pytest \
++  generators/ef03216cf2fa/tests/test_parametric.py \
++  generators/ef03216cf2fa/tests/test_parametric_literal.py \
++  generators/ef03216cf2fa/tests/test_parametric_public.py -q
++```
++
++Choose a fresh output directory. The check tool verifies Python claims against
++executed protected Racket, stores exact private programs and labeled episodes,
++and checks demonstration-only rejection of every listed rival within two demos.
++It writes one-query visible projections using the shared public-byte helper.
++
++Give the consumer one public challenge at a time, after the preceding answer.
++The four-query episode and all settings, programs, and answers remain private.
++Each projection has the original demos and only its selected query, without
++ordinals, total-count hints, or future inputs. Filenames hash exactly the visible
++bytes. This tool does not implement a turn controller or training loop.
++
++## Admission and limits
++
++The native source inventory and returned `qualification.json`/`execution.json`
++are reviewer evidence. Owner integration must freshly qualify and accept the
++exact live source. No training admission is granted. Native qualification checks
++the two parameter settings; the task-local check additionally attacks 16 finite
++shortcuts. These checks do not establish universal rule uniqueness or measured
++learning benefit. Unrelated canonical batteries are outside this prototype scope.
+diff --git a/repo/generators/ef03216cf2fa/workspace/parametric/adapter.py b/repo/generators/ef03216cf2fa/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/workspace/parametric/adapter.py
+@@ -0,0 +1,11 @@
++"""Native promotion entry point; load only the adjacent exact source path."""
++import importlib.util
++from pathlib import Path
++
++_path = Path(__file__).resolve().with_name("prototype.py")
++_spec = importlib.util.spec_from_file_location("_ef03216cf2fa_edge_prototype", _path)
++_module = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_module)
++
++program = _module.program
++generate = _module.generate
+diff --git a/repo/generators/ef03216cf2fa/workspace/parametric/canonical.rkt b/repo/generators/ef03216cf2fa/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/workspace/parametric/canonical.rkt
+@@ -0,0 +1,26 @@
++(rule!
++  (let* ((items (sort (map (lambda (obj)
++                             (let* ((sub0 (subgrid g (obj-r1 obj) (obj-c1 obj) (obj-r2 obj) (obj-c2 obj)))
++                                    (sub (if (> (rows sub0) (cols sub0)) (rotate-cw sub0) sub0))
++                                    (per (* 2 (+ (rows sub) (cols sub)))))
++                               (list per (obj-r1 obj) (obj-c1 obj) sub)))
++                           (objects g 0))
++                      (lambda (a b)
++                        (if (= (first a) (first b))
++                            (if (= (second a) (second b))
++                                (< (third a) (third b))
++                                (< (second a) (second b)))
++                            (> (first a) (first b))))))
++         (shapes (map fourth items))
++         (out-h (+ (apply + (map rows shapes)) (max 0 (- (length shapes) 1))))
++         (out-w (apply max (map cols shapes))))
++    (let pack ([remaining shapes] [top 0] [out (empty-grid out-h out-w 0)])
++      (if (empty? remaining)
++          out
++          (let* ((shape (first remaining))
++                 (next (for*/fold ([acc out])
++                                   ([r (in-range (rows shape))]
++                                    [c (in-range (cols shape))])
++                         (let ((v (at shape r c)))
++                           (if (not (= v 0)) (set-cell acc (+ top r) c v) acc)))))
++            (pack (rest remaining) (+ top (rows shape) 1) next))))))
+\ No newline at end of file
+diff --git a/repo/generators/ef03216cf2fa/workspace/parametric/check.py b/repo/generators/ef03216cf2fa/workspace/parametric/check.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/workspace/parametric/check.py
+@@ -0,0 +1,196 @@
++"""Replay bounded teaching evidence and export static one-query public views."""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++from functools import lru_cache
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++HOME = Path(__file__).resolve().parent
++ROOT = HOME.parents[3]
++RANKINGS = ("perimeter", "normalized_top_edge")
++
++
++def _load(path):
++    body = path.read_bytes()
++    name = "_ef03216cf2fa_" + path.stem + hashlib.sha256(body).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    exec(compile(body, str(path), "exec"), module.__dict__)
++    return module
++
++
++@lru_cache(maxsize=1)
++def _public_serializer():
++    return _load(ROOT / "shared/runtime/reviewer_support.py").public_challenge_bytes
++
++
++def public_view_bytes(episode, query_index):
++    """Project one selected query; future queries and all private fields vanish."""
++    if not isinstance(episode, dict) or type(episode.get("test")) is not list:
++        raise ValueError("episode needs a test list")
++    if type(query_index) is not int or not 0 <= query_index < len(episode["test"]):
++        raise ValueError("query_index must be an exact integer within the test list")
++    return _public_serializer()({"train": episode.get("train"),
++                                 "test": [episode["test"][query_index]]})
++
++
++def write_public_views(episodes, destination: Path) -> list[str]:
++    """Write unique visible payloads, named only by their exact byte hashes."""
++    destination = Path(destination)
++    if destination.exists() or destination.is_symlink():
++        raise FileExistsError(destination)
++    payloads = {}
++    for episode in episodes:
++        if not isinstance(episode, dict) or type(episode.get("test")) is not list or not episode["test"]:
++            raise ValueError("episode needs nonempty test pairs")
++        for index in range(len(episode["test"])):
++            raw = public_view_bytes(episode, index)
++            filename = hashlib.sha256(raw).hexdigest() + ".json"
++            if filename in payloads:
++                raise ValueError("duplicate public payload")
++            payloads[filename] = raw
++    if not payloads:
++        raise ValueError("at least one public view is required")
++    destination.mkdir(parents=True, exist_ok=False)
++    for filename in sorted(payloads):
++        with (destination / filename).open("xb") as handle:
++            handle.write(payloads[filename])
++    return sorted(payloads)
++
++
++def _write(path, value):
++    path.write_text(json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n")
++
++
++def _source_hashes():
++    return [{"path": (HOME / name).relative_to(ROOT).as_posix(),
++             "sha256": hashlib.sha256((HOME / name).read_bytes()).hexdigest()}
++            for name in ("prototype.py", "adapter.py", "promotion.json", "canonical.rkt", "check.py")]
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seed", type=int, action="append")
++    parser.add_argument("--demos", type=int, default=3)
++    args = parser.parse_args(argv)
++    seeds = args.seed if args.seed is not None else [0, 17]
++    if not 2 <= args.demos <= 6 or any(not 0 <= seed < 2**63 for seed in seeds) or len(set(seeds)) != len(seeds):
++        parser.error("use 2..6 demos and distinct seeds in 0..2**63-1")
++    if args.out.exists() or args.out.is_symlink():
++        parser.error("output already exists; choose a new path")
++    sys.path[:0] = [str(ROOT / "src"), str(ROOT / "shared/runtime")]
++    from arcpuzzles.parametric_worker import _grid
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++    prototype = _load(HOME / "prototype.py")
++    sources = _source_hashes()
++    programs = {ranking: prototype.program({"ranking": ranking}) for ranking in RANKINGS}
++    rivals = {ranking: {name: prototype.rival_program(ranking, name)
++                       for name in prototype.rival_names()} for ranking in RANKINGS}
++    report = {"schema": "ef03216cf2fa-parametric-check-v1", "task_id": "ef03216cf2fa",
++              "command": [sys.executable, str(Path(__file__).resolve()), *(sys.argv[1:] if argv is None else argv)],
++              "cwd": str(Path.cwd()), "sources": sources, "seeds": seeds,
++              "demos": args.demos, "queries": 4, "episodes": [], "failures": [],
++              "programs": {ranking: {"program": program, "sha256": hashlib.sha256(program.encode()).hexdigest(),
++                  "rivals": {name: {"program": text, "sha256": hashlib.sha256(text.encode()).hexdigest()}
++                             for name, text in rivals[ranking].items()}} for ranking, program in programs.items()},
++              "training_admitted": False, "owner_acceptance": "not_performed",
++              "limits": "Finite authored rivals and sampled seeds only; public views are static projections, not a turn controller."}
++    episodes, input_sets, cache, wrapped = [], {}, {}, {}
++    evaluations = 0
++    bridge = None
++    try:
++        bridge = RacketBridge()
++        report["racket"] = dict(bridge.runtime_identity)
++        if report["racket"].get("backend") != "racket" or report["racket"].get("protected") is not True:
++            raise ValueError("a live protected Racket runtime is required")
++
++        def execute(program, grid):
++            nonlocal evaluations
++            key = (program, json.dumps(_grid(grid), separators=(",", ":")))
++            if key not in cache:
++                if program not in wrapped:
++                    wrapped[program] = wrap_rule(program)
++                literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++                evaluations += 1
++                cache[key] = _grid(bridge.eval_text(f"({wrapped[program]} {literal})"))
++            return deepcopy(cache[key])
++
++        for seed in seeds:
++            for ranking in RANKINGS:
++                row = {"seed": seed, "settings": {"ranking": ranking}, "status": "failed", "rivals": []}
++                report["episodes"].append(row)
++                try:
++                    episode = deepcopy(prototype.generate(seed, row["settings"], args.demos, 4))
++                    if episode.get("program_solution") != programs[ranking]:
++                        raise ValueError("generated program differs from program(settings)")
++                    if any(type(episode.get(split)) is not list or len(episode[split]) != count
++                           for split, count in (("train", args.demos), ("test", 4))):
++                        raise ValueError("independent demo/query counts were not met")
++                    inputs = [json.dumps(_grid(pair["input"])) for split in ("train", "test") for pair in episode[split]]
++                    if len(inputs) != len(set(inputs)):
++                        raise ValueError("demonstration and query inputs must all be distinct")
++                    if input_sets.setdefault(seed, inputs) != inputs:
++                        raise ValueError("input sampling differs between settings for the same seed/counts")
++                    row["pairs"] = []
++                    for split in ("train", "test"):
++                        for index, pair in enumerate(episode[split]):
++                            actual = execute(programs[ranking], pair["input"])
++                            if actual != _grid(pair["output"]):
++                                raise ValueError(f"{split}[{index}] Python claim differs from protected Racket")
++                            pair["output"] = actual
++                            grid = pair["input"]
++                            row["pairs"].append({"split": split, "index": index,
++                                "input_shape": [len(grid), len(grid[0])], "output_shape": [len(actual), len(actual[0])],
++                                "components": len(prototype.components(grid)),
++                                "foreground_cells": sum(cell != 0 for line in grid for cell in line),
++                                "occupied_rows": sum(any(line) for line in grid),
++                                "occupied_columns": sum(any(line[c] for line in grid) for c in range(len(grid[0])))})
++                    candidates = [("setting:" + name, text, name == ranking) for name, text in programs.items()]
++                    candidates += [("rival:" + name, text, False) for name, text in rivals[ranking].items()]
++                    for name, text, intended in candidates:
++                        matches = [execute(text, pair["input"]) == pair["output"] for pair in episode["train"]]
++                        row["rivals"].append({"name": name, "demo_matches": matches, "survives": all(matches),
++                                              "first_refuting_demo": next((i for i, match in enumerate(matches) if not match), None)})
++                        if intended != all(matches) or (not intended and all(matches[:2])):
++                            raise ValueError(f"demonstrations do not distinguish {name} within their first two examples")
++                    episode.update(task_id="ef03216cf2fa", seed=seed, settings=row["settings"])
++                    episodes.append(episode)
++                    row.update(status="passed", distinct_inputs=len(inputs), labels_checked=len(inputs),
++                               selected_survivor=ranking, first_two_demos_refute_all_wrong_rivals=True)
++                except Exception as error:
++                    row["error"] = f"{type(error).__name__}: {error}"
++                    report["failures"].append({"seed": seed, "settings": row["settings"], "error": row["error"]})
++    except Exception as error:
++        report["failures"].append({"error": f"{type(error).__name__}: {error}"})
++    finally:
++        if bridge is not None:
++            bridge.close()
++    if _source_hashes() != sources:
++        report["failures"].append({"error": "source files changed during replay"})
++    args.out.mkdir(parents=True, exist_ok=False)
++    (args.out / "private").mkdir()
++    _write(args.out / "private/episodes.json", episodes)
++    if not report["failures"]:
++        try:
++            report["public_files"] = write_public_views(episodes, args.out / "public")
++        except Exception as error:
++            report["failures"].append({"error": f"public export: {type(error).__name__}: {error}"})
++    report.update(status="failed" if report["failures"] else "passed", racket_evaluations=evaluations,
++                  attempted_episodes=len(seeds) * len(RANKINGS), successful_episodes=len(episodes),
++                  failed_episodes=len(seeds) * len(RANKINGS) - len(episodes),
++                  success_rate=len(episodes) / (len(seeds) * len(RANKINGS)))
++    _write(args.out / "report.json", report)
++    print(json.dumps({key: report[key] for key in ("status", "attempted_episodes", "successful_episodes", "racket_evaluations", "failures")}))
++    return 0 if report["status"] == "passed" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/ef03216cf2fa/workspace/parametric/evidence/current/verification.json b/repo/generators/ef03216cf2fa/workspace/parametric/evidence/current/verification.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/workspace/parametric/evidence/current/verification.json
+@@ -0,0 +1,91 @@
++{
++  "independent_review": {
++    "probe_seeds": [
++      3,
++      271,
++      9223372036854775807
++    ],
++    "reported_passed": true,
++    "scope": "Independent read-only review plus Python boundary/teaching/geometry probes; protected Racket receipts remain separate.",
++    "status": "no_actionable_findings"
++  },
++  "limits": [
++    "Finite 16-rival set and bounded seeds, not universal uniqueness.",
++    "Generated grammar uses distinct colors and separated object bounding boxes.",
++    "Wrong-rotation/no-rotation rivals are replayed on demonstration inputs only.",
++    "Canonical production batteries not rerun because production source is unchanged."
++  ],
++  "owner_acceptance": "pending_exact_integrated_source",
++  "red_before_implementation": {
++    "default_program_test": "failed: missing prototype.py",
++    "literal_semantic_test": "failed: missing prototype.py",
++    "public_projection_tests": "5 failed: missing check.py"
++  },
++  "reports": [
++    {
++      "attempted_episodes": 4,
++      "demos": 3,
++      "labels": 28,
++      "path": "checks/ef03216cf2fa/focused/report.json",
++      "public_views": 16,
++      "queries": 4,
++      "racket_evaluations": 208,
++      "seeds": [
++        0,
++        17
++      ],
++      "sha256": "257e591cfbf5538e4503751ef5d8cd9746bd8c931b1c58d3957e88138fec6ef6",
++      "status": "passed",
++      "successful_episodes": 4
++    },
++    {
++      "attempted_episodes": 2,
++      "demos": 2,
++      "labels": 12,
++      "path": "checks/ef03216cf2fa/count-min/report.json",
++      "public_views": 8,
++      "queries": 4,
++      "racket_evaluations": 72,
++      "seeds": [
++        29
++      ],
++      "sha256": "dcc411f7cf6adbda83a0877a96e35dc614192380326194437889562df998f3b5",
++      "status": "passed",
++      "successful_episodes": 2
++    },
++    {
++      "attempted_episodes": 2,
++      "demos": 6,
++      "labels": 20,
++      "path": "checks/ef03216cf2fa/count-max/report.json",
++      "public_views": 8,
++      "queries": 4,
++      "racket_evaluations": 200,
++      "seeds": [
++        9223372036854775807
++      ],
++      "sha256": "874697b31bfbd05cd72b6ab07d01f49af18a793a132a2269dced8933750fe301",
++      "status": "passed",
++      "successful_episodes": 2
++    }
++  ],
++  "schema": "ef03216cf2fa-bounded-verification-v1",
++  "scope": "New opt-in prototype only; selected canonical generator and authority unchanged. All final source labels and finite rivals exercised by protected Racket; no owner acceptance or training admission.",
++  "summary": {
++    "episodes_attempted": 8,
++    "episodes_passed": 8,
++    "extra_rivals_per_setting": 16,
++    "focused_tests_passed": 27,
++    "labels_checked": 60,
++    "public_files_independently_checked": 16,
++    "query_targets": 32,
++    "racket_evaluations": 480,
++    "teaching_demos_required": 2
++  },
++  "task_id": "ef03216cf2fa",
++  "tests_receipt": {
++    "path": "checks/ef03216cf2fa/tests-command.json",
++    "sha256": "6b5faaf23adf7e769096c0978570bf3aae5628ab2e80a0604b9dbf58bb6f3805"
++  },
++  "training_admitted": false
++}
+diff --git a/repo/generators/ef03216cf2fa/workspace/parametric/evidence/manifest.json b/repo/generators/ef03216cf2fa/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,87 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "f04b67a7bdac756d5f59301247f2cc325b3236ff841140727008397de2d3e6d1",
++  "canonical_rule_hash": "455db4f731f0",
++  "default": {
++    "ranking": "perimeter"
++  },
++  "evidence_root": "generators/ef03216cf2fa/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 18244,
++      "path": "generators/ef03216cf2fa/generator.py",
++      "sha256": "b4a25d2fcfdf038eb6ce56eae11105ae452d7680d7358cd182bd9f6411b4332c"
++    },
++    {
++      "bytes": 13597,
++      "path": "generators/ef03216cf2fa/tests/test_parametric.py",
++      "sha256": "bca8404434b54336adc5fe248729f5735a5f8bdd93ecfc2eae2be6072d55b28e"
++    },
++    {
++      "bytes": 1141,
++      "path": "generators/ef03216cf2fa/tests/test_parametric_literal.py",
++      "sha256": "36ed4de365427fe9ce63f86248c2f4439611538d5d5e2967dd382744a55fa6df"
++    },
++    {
++      "bytes": 3055,
++      "path": "generators/ef03216cf2fa/tests/test_parametric_public.py",
++      "sha256": "2e68eb969505fdc404ac6bc3b993f9cf89daeac58992c6161de8ae6bf1b748f1"
++    },
++    {
++      "bytes": 409,
++      "path": "generators/ef03216cf2fa/workspace/parametric/adapter.py",
++      "sha256": "421b1b91d35e2dd44b0eecec69d434f3f6ea3e662a632f6ad5c6afb6a2ce93b2"
++    },
++    {
++      "bytes": 1463,
++      "path": "generators/ef03216cf2fa/workspace/parametric/canonical.rkt",
++      "sha256": "f04b67a7bdac756d5f59301247f2cc325b3236ff841140727008397de2d3e6d1"
++    },
++    {
++      "bytes": 11087,
++      "path": "generators/ef03216cf2fa/workspace/parametric/check.py",
++      "sha256": "50dc271be78002c12f2859fe9cb5f8558b434c409f1c26546905db168d009592"
++    },
++    {
++      "bytes": 2955,
++      "path": "generators/ef03216cf2fa/workspace/parametric/evidence/current/verification.json",
++      "sha256": "b1b8738eb130a85ac3446dc64d295838083f41070c0ff27f712412d2f459483d"
++    },
++    {
++      "bytes": 386,
++      "path": "generators/ef03216cf2fa/workspace/parametric/promotion.json",
++      "sha256": "1f3efddcb8e2f0bde6c61a5358ebcea928f597469c4cbb11152e31a06415d63d"
++    },
++    {
++      "bytes": 16464,
++      "path": "generators/ef03216cf2fa/workspace/parametric/prototype.py",
++      "sha256": "9c655011024715a7eec08d9d4294fc7439f5dc8b5c2f82a0326daa71cafcf818"
++    }
++  ],
++  "generator_sha256": "b4a25d2fcfdf038eb6ce56eae11105ae452d7680d7358cd182bd9f6411b4332c",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "ranking": [
++      "perimeter",
++      "normalized_top_edge"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "27 focused tests passed. Protected Racket: 8/8 episodes, 60 labeled pairs, 32 query targets, 480 executions across demos 2,3,6; first two demos reject 16 extra rivals per setting. Matched inputs, substantive 30x30 six-object queries, and 16 independently checked one-query public files. Finite seeds/rivals only; owner acceptance pending.",
++  "rule_task_id": "ef03216cf2fa",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "ef03216cf2fa",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/ef03216cf2fa/workspace/parametric/promotion.json b/repo/generators/ef03216cf2fa/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/workspace/parametric/promotion.json
+@@ -0,0 +1,9 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/ef03216cf2fa/workspace/parametric/adapter.py",
++  "parameters": {"ranking": ["perimeter", "normalized_top_edge"]},
++  "default": {"ranking": "perimeter"},
++  "limits": {"demos": [2, 6], "queries": [1, 4]},
++  "qualification_demos": 3,
++  "resources": ["generators/ef03216cf2fa/workspace/parametric/canonical.rkt"]
++}
+diff --git a/repo/generators/ef03216cf2fa/workspace/parametric/prototype.py b/repo/generators/ef03216cf2fa/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ef03216cf2fa/workspace/parametric/prototype.py
+@@ -0,0 +1,377 @@
++"""Opt-in crop/orient/rank/stack family; labels are verified by native Racket.
++
++The canonical program remains an exact resource. The alternate ranks the
++number of occupied cells on the TOP edge AFTER clockwise normalization.
++Inputs are sampled independently of the private ranking setting. A bounded
++two-demo set cover rejects the declared shortcuts for both settings together.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++from functools import lru_cache
++import hashlib
++from itertools import combinations
++import json
++from pathlib import Path
++import random
++
++
++RANKINGS = ("perimeter", "normalized_top_edge")
++_RIVALS = (
++    "other_setting", "source_order", "reverse_source", "bbox_area", "ink",
++    "normalized_width", "normalized_height", "source_top_edge",
++    "normalized_bottom_edge", "top_span", "ascending", "reverse_ties",
++    "counterclockwise", "no_rotation", "color_ascending", "color_descending",
++)
++_HOME = Path(__file__).resolve().parent
++_NEIGHBORS = ((-1, 0), (0, -1), (0, 1), (1, 0))
++
++
++def _integer(value, lo, hi, name):
++    if type(value) is not int or not lo <= value <= hi:
++        raise ValueError(f"{name} must be an exact integer in {lo}..{hi}")
++    return value
++
++
++def _ranking(settings):
++    if (type(settings) is not dict or set(settings) != {"ranking"}
++            or type(settings["ranking"]) is not str
++            or settings["ranking"] not in RANKINGS):
++        raise ValueError("settings must name ranking=perimeter|normalized_top_edge")
++    return settings["ranking"]
++
++
++def _grid(grid):
++    if (type(grid) is not list or not 1 <= len(grid) <= 30
++            or type(grid[0]) is not list or not 1 <= len(grid[0]) <= 30
++            or any(type(row) is not list or len(row) != len(grid[0])
++                   or any(type(v) is not int or not 0 <= v <= 9 for v in row)
++                   for row in grid)):
++        raise ValueError("grid must be rectangular 1..30 with exact colors 0..9")
++
++
++def components(grid):
++    """Same-color four-neighbor components in original row-major order."""
++    _grid(grid)
++    height, width = len(grid), len(grid[0])
++    seen, result = set(), []
++    for row in range(height):
++        for col in range(width):
++            color = grid[row][col]
++            if not color or (row, col) in seen:
++                continue
++            pending, cells = [(row, col)], []
++            seen.add((row, col))
++            while pending:
++                r, c = pending.pop()
++                cells.append((r, c))
++                for dr, dc in _NEIGHBORS:
++                    nr, nc = r + dr, c + dc
++                    if (0 <= nr < height and 0 <= nc < width
++                            and (nr, nc) not in seen and grid[nr][nc] == color):
++                        seen.add((nr, nc))
++                        pending.append((nr, nc))
++            top, bottom = min(r for r, _ in cells), max(r for r, _ in cells)
++            left, right = min(c for _, c in cells), max(c for _, c in cells)
++            result.append({
++                "color": color, "cells": sorted(cells), "top": top, "left": left,
++                "height": bottom - top + 1, "width": right - left + 1,
++                "bbox": [top, left, bottom, right],
++                "crop": [line[left:right + 1] for line in grid[top:bottom + 1]],
++            })
++    if not result:
++        raise ValueError("the input grammar requires at least one foreground object")
++    return result
++
++
++def _cw(shape):
++    return [list(row) for row in zip(*shape[::-1])]
++
++
++def _ccw(shape):
++    return [list(row) for row in zip(*shape)][::-1]
++
++
++def rival_names():
++    return _RIVALS
++
++
++def solve(grid, ranking="perimeter", rival=None):
++    """Sampler-side claim only; protected Racket is the labeling authority."""
++    _ranking({"ranking": ranking})
++    if rival is not None and rival not in _RIVALS:
++        raise ValueError("undeclared rival")
++    selected = RANKINGS[1 - RANKINGS.index(ranking)] if rival == "other_setting" else ranking
++    items = []
++    for obj in components(grid):
++        raw = obj["crop"]
++        shape = raw
++        if obj["height"] > obj["width"] and rival != "no_rotation":
++            shape = _ccw(raw) if rival == "counterclockwise" else _cw(raw)
++        score = (2 * (obj["height"] + obj["width"]) if selected == "perimeter"
++                 else sum(v != 0 for v in shape[0]))
++        if rival == "bbox_area":
++            score = obj["height"] * obj["width"]
++        elif rival == "ink":
++            score = len(obj["cells"])
++        elif rival == "normalized_width":
++            score = len(shape[0])
++        elif rival == "normalized_height":
++            score = len(shape)
++        elif rival == "source_top_edge":
++            score = sum(v != 0 for v in raw[0])
++        elif rival == "normalized_bottom_edge":
++            score = sum(v != 0 for v in shape[-1])
++        elif rival == "top_span":
++            positions = [c for c, value in enumerate(shape[0]) if value]
++            score = positions[-1] - positions[0] + 1
++        top, left = obj["top"], obj["left"]
++        key = (-score, top, left)
++        if rival == "ascending":
++            key = (score, top, left)
++        elif rival == "reverse_ties":
++            key = (-score, -top, -left)
++        elif rival == "source_order":
++            key = (top, left)
++        elif rival == "reverse_source":
++            key = (-top, -left)
++        elif rival == "color_ascending":
++            key = (obj["color"], top, left)
++        elif rival == "color_descending":
++            key = (-obj["color"], top, left)
++        items.append((key, shape))
++    shapes = [shape for _, shape in sorted(items, key=lambda item: item[0])]
++    height = sum(len(shape) for shape in shapes) + len(shapes) - 1
++    width = max(len(shape[0]) for shape in shapes)
++    output = [[0] * width for _ in range(height)]
++    top = 0
++    for shape in shapes:
++        for r, values in enumerate(shape):
++            output[top + r][:len(values)] = values
++        top += len(shape) + 1
++    return output
++
++
++def _racket_source(ranking, rival=None):
++    selected = RANKINGS[1 - RANKINGS.index(ranking)] if rival == "other_setting" else ranking
++    normalize = "(if (> (rows raw) (cols raw)) (rotate-cw raw) raw)"
++    if rival == "counterclockwise":
++        normalize = normalize.replace("rotate-cw", "rotate-ccw")
++    elif rival == "no_rotation":
++        normalize = "raw"
++    score = ("(* 2 (+ (rows sub) (cols sub)))" if selected == "perimeter"
++             else "(count-if (lambda (v) (not (= v 0))) (first sub))")
++    scores = {
++        "bbox_area": "(* (rows sub) (cols sub))",
++        "ink": "(obj-size obj)",
++        "normalized_width": "(cols sub)",
++        "normalized_height": "(rows sub)",
++        "source_top_edge": "(count-if (lambda (v) (not (= v 0))) (first raw))",
++        "normalized_bottom_edge": "(count-if (lambda (v) (not (= v 0))) (last sub))",
++        "top_span": "(let ((xs (filter (lambda (c) (not (= (at sub 0 c) 0))) (range 0 (cols sub))))) (+ 1 (- (apply max xs) (apply min xs))))",
++        "color_ascending": "(obj-color obj)",
++        "color_descending": "(obj-color obj)",
++    }
++    score = scores.get(rival, score)
++    primary = "<" if rival in ("ascending", "color_ascending") else ">"
++    tie = ">" if rival == "reverse_ties" else "<"
++    compare = f"""(if (= (first a) (first b))
++                     (if (= (second a) (second b))
++                         ({tie} (third a) (third b))
++                         ({tie} (second a) (second b)))
++                     ({primary} (first a) (first b)))"""
++    if rival in ("source_order", "reverse_source"):
++        direction = "<" if rival == "source_order" else ">"
++        compare = f"""(if (= (second a) (second b))
++                          ({direction} (third a) (third b))
++                          ({direction} (second a) (second b)))"""
++    return f"""(rule!
++  ;; Crop same-color objects and orient tall crops clockwise.
++  ;; Rank by {selected}; ties use original source position.
++  ;; Stack the normalized crops left-aligned with one zero row between them.
++  ;; Variant/rival: {rival or 'intended'}.
++  (lambda (g)
++    (let* ((items
++            (sort
++              (map (lambda (obj)
++                     (let* ((raw (subgrid g (obj-r1 obj) (obj-c1 obj) (obj-r2 obj) (obj-c2 obj)))
++                            (sub {normalize})
++                            (score {score}))
++                       (list score (obj-r1 obj) (obj-c1 obj) sub)))
++                   (objects g 0))
++              (lambda (a b) {compare})))
++           (shapes (map fourth items))
++           (out-h (+ (apply + (map rows shapes)) (- (length shapes) 1)))
++           (out-w (apply max (map cols shapes))))
++      (let pack ((remaining shapes) (top 0) (out (empty-grid out-h out-w 0)))
++        (if (empty? remaining)
++            out
++            (let* ((shape (first remaining))
++                   (next (for*/fold ((acc out))
++                                   ((r (in-range (rows shape))) (c (in-range (cols shape))))
++                           (let ((value (at shape r c)))
++                             (if (= value 0) acc (set-cell acc (+ top r) c value))))))
++              (pack (rest remaining) (+ top (rows shape) 1) next)))))))"""
++
++
++def program(settings):
++    ranking = _ranking(settings)
++    if ranking == "perimeter":
++        return (_HOME / "canonical.rkt").read_text(encoding="utf-8")
++    return _racket_source(ranking)
++
++
++def rival_program(ranking, rival):
++    _ranking({"ranking": ranking})
++    if rival not in _RIVALS:
++        raise ValueError("undeclared rival")
++    if rival == "other_setting":
++        return program({"ranking": RANKINGS[1 - RANKINGS.index(ranking)]})
++    return _racket_source(ranking, rival)
++
++
++def _rng(seed, label):
++    # This stream intentionally has no parameter settings or requested counts.
++    digest = hashlib.sha256(f"ef03216cf2fa-edge-v1:{seed}:{label}".encode()).digest()
++    return random.Random(int.from_bytes(digest, "big"))
++
++
++def _shape(rng, short, long):
++    """Connected shapes with independently varying edge occupancy and density."""
++    mode = rng.randrange(5)
++    shape = [[0] * long for _ in range(short)]
++    if mode == 0:  # hollow frame, sometimes with a single interior spur
++        for r in range(short):
++            for c in range(long):
++                if r in (0, short - 1) or c in (0, long - 1):
++                    shape[r][c] = 1
++        if short > 2 and long > 2 and rng.randrange(2):
++            shape[1][1] = 1
++    elif mode == 1:  # a sparse spanning cross plus connected detail
++        spine, bridge = rng.randrange(long), rng.randrange(short)
++        for r in range(short):
++            shape[r][spine] = 1
++        shape[bridge] = [1] * long
++        for _ in range(rng.randrange(long + 1)):
++            r, c = rng.randrange(short), rng.randrange(long)
++            if any(0 <= r + dr < short and 0 <= c + dc < long
++                   and shape[r + dr][c + dc] for dr, dc in _NEIGHBORS):
++                shape[r][c] = 1
++    elif mode == 2:  # asymmetric corner-L, retaining the original shape family
++        edge_r, edge_c = rng.choice((0, short - 1)), rng.choice((0, long - 1))
++        shape[edge_r] = [1] * long
++        for r in range(short):
++            shape[r][edge_c] = 1
++        if short > 2 and long > 2:
++            shape[1][1 if edge_c == 0 else long - 2] = 1
++            shape[1][edge_c] = 1
++    else:  # combs/dense bridges: split top edge count differs from span
++        for r in range(1, short - 1):
++            shape[r] = [1] * long
++        if short == 2:
++            shape[1] = [1] * long
++        for r in ([0] if short == 2 else [0, short - 1]):
++            count = rng.randint(1, long)
++            for c in rng.sample(range(long), count):
++                shape[r][c] = 1
++    return shape
++
++
++def _scene(seed, label, height, width, count):
++    rng = _rng(seed, label)
++    columns = 2 if count <= 4 else 3
++    slots = [(r, c) for r in range(2) for c in range(columns)]
++    if count < len(slots):
++        # Keep both distant corners represented even for the smallest scene.
++        middle = slots[1:-1]
++        rng.shuffle(middle)
++        slots = [slots[0], *middle[:count - 2], slots[-1]]
++    rng.shuffle(slots)
++    colors = rng.sample(range(1, 10), count)
++    tall_indices = set(rng.sample(range(count), max(1, count // 2)))
++    grid = [[0] * width for _ in range(height)]
++    for index, ((band_r, band_c), color) in enumerate(zip(slots, colors)):
++        r0, r1 = band_r * height // 2, (band_r + 1) * height // 2
++        c0, c1 = band_c * width // columns, (band_c + 1) * width // columns
++        available_h = r1 - r0 - (1 if band_r == 0 else 0)
++        available_w = c1 - c0 - (1 if band_c + 1 < columns else 0)
++        tall = index in tall_indices
++        short = rng.randint(2, min(4, available_w if tall else available_h))
++        max_long = available_h if tall else available_w
++        if max_long <= short:
++            short = max(2, max_long - 1)
++        min_long = max(short + 1, (max_long * 2 // 3) if height >= 24 else 3)
++        long = rng.randint(min_long, max_long)
++        normalized = _shape(rng, short, long)
++        source = _ccw(normalized) if tall else normalized
++        box_h, box_w = len(source), len(source[0])
++        top = rng.randint(r0, r0 + available_h - box_h)
++        left = rng.randint(c0, c0 + available_w - box_w)
++        # Actual object contact, not just a large blank canvas.
++        if (band_r, band_c) == (0, 0):
++            top, left = 0, 0
++        if (band_r, band_c) == (1, columns - 1):
++            top, left = height - box_h, width - box_w
++        for r, row in enumerate(source):
++            for c, occupied in enumerate(row):
++                if occupied:
++                    grid[top + r][left + c] = color
++    if len(components(grid)) != count:
++        raise RuntimeError("internal shape connectivity failure")
++    return grid
++
++
++@lru_cache(maxsize=32)
++def _teaching_inputs(seed):
++    """Choose a two-demo cover from at most 48 shared candidate scenes.
++
++    Coverage is computed before any query is sampled. Both settings' targets
++    share the same cover, so input selection cannot reveal the private choice.
++    """
++    universe = {(ranking, rival) for ranking in RANKINGS for rival in _RIVALS}
++    candidates, coverage = [], []
++    for index in range(48):
++        shape = (12, 14) if index % 2 == 0 else (16, 16)
++        grid = _scene(seed, f"teaching:{index}", *shape, 4)
++        covered = set()
++        for ranking in RANKINGS:
++            wanted = solve(grid, ranking)
++            for rival in _RIVALS:
++                if solve(grid, ranking, rival) != wanted:
++                    covered.add((ranking, rival))
++        candidates.append(grid)
++        coverage.append(covered)
++        for previous in range(index):
++            if coverage[previous] | covered == universe:
++                return (candidates[previous], grid, {
++                    "candidates_examined": index + 1,
++                    "selected_candidates": [previous, index],
++                    "rival_comparisons_covered": len(universe),
++                })
++    missing = universe - set().union(*coverage)
++    raise RuntimeError(f"bounded two-demo cover failed; missing={sorted(missing)}")
++
++
++def generate(seed, settings, demos=3, queries=4):
++    """Generate a deterministic lesson; native worker executes its claims."""
++    _integer(seed, 0, 2**63 - 1, "seed")
++    ranking = _ranking(settings)
++    _integer(demos, 2, 6, "demos")
++    _integer(queries, 1, 4, "queries")
++    first, second, teaching = _teaching_inputs(seed)
++    train_inputs = [deepcopy(first), deepcopy(second)]
++    for index in range(2, demos):
++        train_inputs.append(_scene(seed, f"extra-demo:{index}", 14, 16, 4))
++    profiles = ((10, 12, 3), (16, 20, 4), (24, 25, 5), (30, 30, 6))
++    test_inputs = [_scene(seed, f"query:{index}", *profiles[index]) for index in range(queries)]
++    serialized = [json.dumps(grid, separators=(",", ":")) for grid in train_inputs + test_inputs]
++    if len(set(serialized)) != len(serialized):
++        raise RuntimeError("duplicate demonstration/query input; no short episode emitted")
++    pairs = lambda grids: [{"input": grid, "output": solve(grid, ranking)} for grid in grids]
++    train, test = pairs(train_inputs), pairs(test_inputs)
++    for pair in train + test:
++        _grid(pair["output"])
++    return {"train": train, "test": test, "program_solution": program(settings),
++            "settings": deepcopy(settings), "seed": seed,
++            "teaching": deepcopy(teaching),
++            "label_status": "python_claims_require_protected_racket_execution"}
+diff --git a/repo/generators/f7c6c7bbc781/notes.md b/repo/generators/f7c6c7bbc781/notes.md
+--- a/repo/generators/f7c6c7bbc781/notes.md
++++ b/repo/generators/f7c6c7bbc781/notes.md
+@@ -1,4 +1,49 @@
+ # Working notes: f7c6c7bbc781
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Current rule and source
++
++The canonical rule reverses the complete outer-to-inner color sequence of clean
++even rectangular onions. Generator version `4.0.0` is unchanged, SHA-256
++`a5f730ae5454e6f7ff9d46e9aa7c3f2e99d9a8625d2b6529470ef55c70ad4a8b`.
++The selected rule hash is `d13744bc8c60`; exact program SHA-256 is
++`31b11022c133cb9ef294ae11bc7ba61a651d89cfce009b1beaad7b105df17c04`.
++
++## Open teaching finding: outer/inner-only swap
++
++A lawful easy lesson assembled from seed `2`, demonstration sample indices
++`0, 1, 2`, and query sample index `3` has ring counts `3, 2, 2, 4` and dimensions
++`6×8, 8×4, 4×6, 8×8`. The plausible rival “exchange only the outermost and
++innermost colors, leaving other rings fixed” matches all three demonstrations
++and disagrees on the query. Its input ring colors are `[4, 2, 7, 5]`; the
++canonical answer has `[5, 7, 2, 4]`, while the rival has `[5, 2, 7, 4]`.
++
++`workspace/review_learnability.py` replays the complete canonical and rival
++programs through the same-checkout protected Racket backend. The executed report
++is `checks/f7c6c7bbc781/learnability.json`: ten labels cover the original four
++pairs under both rules plus a distinct proposed replacement demonstration under
++both rules. The original visible lesson, both complete programs and both query
++predictions remain in that private evidence for possible alternative-answer
++research; no official answer or public export was changed.
++
++**Proposed repair, not applied:** replace one small-ring demonstration with a
++distinguishing four-ring demonstration, or add a lesson-level gate requiring
++such a demonstration whenever a query has four or more rings. The retained
++replacement is seed `2`, sample index `4`, with exact dimensions `8×8`; replacing
++demo index `2` with it keeps three demonstrations and refutes this rival without
++reusing the query. Retain lawful small-ring examples rather than narrowing the
++generator's whole domain.
++
++This is one explicit assembled lesson and one tested rival, not an estimate of
++production-lesson ambiguity frequency or proof of unique interpretation. No
++canonical generator, authority, approval or lesson assembly was modified.
++
++## Separate existing verification issue
++
++The existing `evidence/review_index.json` portability finding remains open.
++`tests/test_generator_f7c6c7bbc781.py` still derives the canonical-ledger path
++from `parents[1] / "data/canonical/puzzles.jsonl"`; this audit inspected that
++expression but did not rerun the inherited task-test stage. Its future repair
++should use `reviewer_support.find_root` and `canonical_pairs`. The new teaching
++witness neither resolves nor duplicates this verification issue.
+diff --git a/repo/generators/f7c6c7bbc781/workspace/review_learnability.py b/repo/generators/f7c6c7bbc781/workspace/review_learnability.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f7c6c7bbc781/workspace/review_learnability.py
+@@ -0,0 +1,124 @@
++"""Replay one finite outer/inner-swap ambiguity through protected Racket.
++
++Run from the packet root:
++WORK/.venv/bin/python review.py run python3 \
++  generators/f7c6c7bbc781/workspace/review_learnability.py \
++  --out ../checks/f7c6c7bbc781/learnability.json
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++from arcpuzzles import Catalog
++from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++
++
++TASK = "f7c6c7bbc781"
++ROOT = Path(__file__).resolve().parents[3]
++
++
++def _sha(data):
++    return hashlib.sha256(data).hexdigest()
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    if args.out.exists():
++        raise FileExistsError(args.out)
++    helper_path = ROOT / "shared/runtime/reviewer_support.py"
++    spec = importlib.util.spec_from_file_location("selected_peer_support", helper_path)
++    helper = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(helper)
++    generator, source, source_sha = helper.load_selected_generator(TASK, root=ROOT)
++    canonical = Catalog(ROOT)._variants()[TASK][0]["program_solution"]
++    fragment = "(nth colors (- max-d d))"
++    assert canonical.count(fragment) == 1
++    rival = canonical.replace(
++        fragment,
++        "(nth colors (if (= d 0) max-d (if (= d max-d) 0 d)))",
++    )
++
++    # This is a lawful directly assembled lesson, not a measured export census.
++    grids = [generator.generate(2, index, difficulty="easy") for index in range(4)]
++    repair = generator.generate(2, 4, difficulty="easy", grid_h=8, grid_w=8)
++    assert all(not generator.self_check(grid) for grid in grids + [repair])
++    assert all(repair != grid for grid in grids)
++    counts = [min(len(grid), len(grid[0])) // 2 for grid in grids]
++    assert counts == [3, 2, 2, 4]
++    records = []
++    runtime = ROOT / "shared/runtime"
++    with _local_imports(runtime, runtime):
++        apply, identity, bridge = _real_evaluator(runtime)
++        try:
++            for index, grid in enumerate(grids + [repair]):
++                intended = _grid(apply(canonical, grid))
++                alternative = _grid(apply(rival, grid))
++                assert intended == generator.rule_mirror(grid)
++                records.append({
++                    "role": "demo" if index < 3 else "query" if index == 3 else "replacement_demo",
++                    "sample_index": index,
++                    "overrides": {"grid_h": 8, "grid_w": 8} if index == 4 else {},
++                    "input": grid,
++                    "canonical_output": intended,
++                    "rival_output": alternative,
++                    "outputs_equal": intended == alternative,
++                })
++        finally:
++            bridge.close()
++    assert all(record["outputs_equal"] for record in records[:3])
++    assert records[3]["outputs_equal"] is False
++    assert records[4]["outputs_equal"] is False
++    report = {
++        "schema": "arcpuzzles-peer-learnability-audit-v1",
++        "task_id": TASK,
++        "outcome": "unchanged",
++        "finding": "outer_inner_only_rival_survives_three_easy_demos",
++        "generator_source": source.relative_to(ROOT).as_posix(),
++        "generator_sha256": source_sha,
++        "generator_version": generator.VERSION,
++        "canonical_rule_hash": generator.RULE_HASH,
++        "canonical_program_sha256": _sha(canonical.encode()),
++        "rival_program_sha256": _sha(rival.encode()),
++        "audit_source_sha256": _sha(Path(__file__).read_bytes()),
++        "canonical_program": canonical,
++        "rival_program": rival,
++        "rival_description": "Exchange only the outermost and innermost ring colors; retain every other ring.",
++        "seed": 2,
++        "difficulty": "easy",
++        "assembly": "Consecutive generator samples 0,1,2 are demonstrations; sample3 is the query.",
++        "ring_counts": counts,
++        "racket": identity,
++        "evaluations": 10,
++        "cases": records,
++        "original_rival_survives_demos": True,
++        "original_rival_changes_query": True,
++        "proposed_same_count_repair": {
++            "demo_sample_indices": [0, 1, 4],
++            "query_sample_index": 3,
++            "rival_survives_demos": False,
++            "status": "Racket-labeled teaching proposal; production assembly unchanged",
++        },
++        "limits": [
++            "One lawful assembled lesson and one rival; no production-lesson prevalence estimate.",
++            "Replacement demonstration refutes this rival only, not every possible ARC interpretation.",
++            "Canonical generator, task tests, authority, approval and lesson assembly were not modified.",
++            "Existing task-test portability finding was inspected statically but not re-executed.",
++        ],
++    }
++    assert _sha(source.read_bytes()) == source_sha
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2) + "\n")
++    print(json.dumps({"out": str(args.out), "finding": report["finding"],
++                      "protected": identity["protected"], "evaluations": 10,
++                      "original_demo_matches": 3, "query_disagrees": True,
++                      "same_count_replacement_refutes": True}))
++
++
++if __name__ == "__main__":
++    main()

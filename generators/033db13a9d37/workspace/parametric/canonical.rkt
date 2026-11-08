@@ -1,0 +1,16 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((cell (find (lambda (p) p)
+                              (for*/list ((r (range 0 h)) (c (range 0 w)))
+                                (and (!= (at g r c) 0) (list r c (at g r c))))))
+                  (cr (first cell))
+                  (cc (second cell))
+                  (cv (third cell))
+                  (parity (remainder cc 2)))
+             (cellmap g
+                      (r c v)
+                      (cond
+                        ((and (= r (+ cr 1)) (= c cc)) cv)
+                        ((and (<= r cr) (= (remainder c 2) parity)) 4)
+                        (else 0)))))))

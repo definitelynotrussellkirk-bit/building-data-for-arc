@@ -1,0 +1,7321 @@
+diff --git a/repo/generators/65084a735199/generator.py b/repo/generators/65084a735199/generator.py
+--- a/repo/generators/65084a735199/generator.py
++++ b/repo/generators/65084a735199/generator.py
+@@ -13,6 +13,7 @@
+ VERSION = "3.0.0"
+ RULE_HASH = "ec22312565dc"
+ SUMMARY = "Bind each gray hollow frame to its interior marker, recolor the border, and clear the marker."
++EXAMPLES_NEEDED = 3
+ INVARIANTS = [
+     "the background is black and every object group contains a closed gray rectangular frame",
+     "each frame contains exactly one non-black, non-gray marker",
+@@ -210,6 +211,60 @@
+     return [row[:] for row in info["output"]]
+ 
+ 
++def _square_frames_only(grid):
++    """Plausible wrong rule: transform square frames and ignore rectangles."""
++    info = _analysis(grid)
++    if info["errors"]:
++        raise ValueError("; ".join(info["errors"]))
++    output = [list(row) for row in grid]
++    for frame in info["frames"]:
++        r0, c0, r1, c1 = frame["bbox"]
++        if r1 - r0 != c1 - c0:
++            continue
++        color = frame["marker_color"]
++        for r, c in frame["cells"]:
++            output[r][c] = color
++        marker_r, marker_c = frame["marker"]
++        output[marker_r][marker_c] = 0
++    return output
++
++
++SEMANTIC_RIVALS = {"square_frames_only": _square_frames_only}
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
++
++
++def lesson_identifiable(demos, query):
++    """Reject lessons where square-only recoloring survives every demo."""
++    reasons = []
++    for index, demo in enumerate(demos):
++        try:
++            expected = rule_mirror(demo["input"])
++        except (KeyError, TypeError, ValueError) as exc:
++            reasons.append(f"demo {index} is outside the frame grammar: {exc}")
++            continue
++        if demo.get("output") != expected:
++            reasons.append(f"demo {index} output disagrees with the frame rule")
++    try:
++        query_answer = rule_mirror(query["input"])
++    except (KeyError, TypeError, ValueError) as exc:
++        reasons.append(f"query is outside the frame grammar: {exc}")
++        return reasons
++    if query.get("output") is not None and query.get("output") != query_answer:
++        reasons.append("query output disagrees with the frame rule")
++    if reasons:
++        return reasons
++    for name, rival in LESSON_COMPETITORS.items():
++        survives = all(
++            rival(demo["input"]) == demo["output"]
++            for demo in demos
++        )
++        if survives and rival(query["input"]) != query_answer:
++            reasons.append(
++                f"rival {name!r} fits every demo but answers the query differently"
++            )
++    return reasons
++
++
+ def _band(difficulty):
+     if difficulty in (None, "medium"):
+         return "medium"
+diff --git a/repo/generators/65084a735199/notes.md b/repo/generators/65084a735199/notes.md
+--- a/repo/generators/65084a735199/notes.md
++++ b/repo/generators/65084a735199/notes.md
+@@ -2,3 +2,29 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Learnability repair review-c83611f00afef4d0 (2026-10-24)
++
++A concrete lesson ambiguity was reproduced against incoming generator SHA-256
++`d27ce873624ad8e341ed8669131878c03f9203fead97cbac8c74bf1319258081`.
++Three `paired_squares` demonstrations are all explained by the plausible wrong
++rule “recolor square frames only,” while a `wide_frames` query requires the
++canonical rectangle-general rule. Protected Racket labeled all four pairs and
++the rival differed from the query answer at 42 cells.
++
++The repair declares an executable `square_frames_only` lesson competitor,
++sets `EXAMPLES_NEEDED = 3`, and adds `lesson_identifiable`: a lesson is rejected
++only when the rival matches every demonstration and changes the query. A single
++non-square teaching frame falsifies the shortcut without increasing the lesson
++size. The portable test loader was also changed from a fixed parent-depth path
++to `reviewer_support`, so the task suite runs in the isolated native harness.
++The canonical Racket rule and rule hash `ec22312565dc` were not changed.
++
++Final generator SHA-256 is
++`d9c4a979a76a1423b91bbbd8b4fe959163510c99cc5206e38fc88acf70c7049a`.
++Focused task tests passed 9/9 and the native semantic gate passed. Evidence:
++`WORK/checks/65084a735199/learnability/evidence.json`,
++`WORK/checks/65084a735199/final-task-tests/result.json`, and
++`WORK/checks/65084a735199/semantic-gate/result.json`. Scope is the named rival
++and sampled native gate, not universal identifiability. Owner review/integration
++remains pending.
+diff --git a/repo/generators/65084a735199/tests/test_generator_65084a735199.py b/repo/generators/65084a735199/tests/test_generator_65084a735199.py
+--- a/repo/generators/65084a735199/tests/test_generator_65084a735199.py
++++ b/repo/generators/65084a735199/tests/test_generator_65084a735199.py
+@@ -8,23 +8,33 @@
+ import random
+ import unittest
+ from collections import Counter
+-from pathlib import Path
++
++from reviewer_support import canonical_pairs, find_root
+ 
+ TASK_ID = "65084a735199"
+ MODULE = importlib.import_module(f"puzzle_generators.per_puzzle.{TASK_ID}.generator")
+-ROOT = Path(__file__).resolve().parents[1]
+-
+-
+-def canonical_row():
+-    return next(
+-        json.loads(line) for line in (ROOT / "data/canonical/puzzles.jsonl").read_text().splitlines()
+-        if json.loads(line).get("task_id") == TASK_ID
+-    )
++ROOT = find_root(__file__)
+ 
+ 
+ def pairs():
+-    row = canonical_row()
+-    return row["train"] + row["test"]
++    return [
++        {"input": row["input"], "output": row["output"]}
++        for row in canonical_pairs(
++            TASK_ID,
++            root=ROOT,
++            variant=0,
++            labeled_only=True,
++        )
++    ]
++
++
++def canonical_program():
++    path = ROOT / "shared/data/canonical/puzzles.jsonl"
++    for raw in path.read_text(encoding="utf-8").splitlines():
++        row = json.loads(raw)
++        if row.get("task_id") == TASK_ID:
++            return row["program_solution"]
++    raise AssertionError("canonical row not found")
+ 
+ 
+ class Tests(unittest.TestCase):
+@@ -109,9 +119,39 @@
+         self.assertEqual(first, second)
+         self.assertIsNot(first, second)
+ 
++    def test_square_frame_shortcut_is_declared_and_blocks_ambiguous_lessons(self):
++        self.assertEqual(MODULE.EXAMPLES_NEEDED, 3)
++        rival = MODULE.SEMANTIC_RIVALS["square_frames_only"]
++        self.assertIs(MODULE.LESSON_COMPETITORS["square_frames_only"], rival)
++
++        demos = []
++        for seed in (7, 11, 13):
++            grid = MODULE.generate(
++                seed,
++                seed * 17 + 3,
++                scene_profile="paired_squares",
++            )
++            demos.append({"input": grid, "output": MODULE.rule_mirror(grid)})
++        query_grid = MODULE.generate(29, 31, scene_profile="wide_frames")
++        query = {"input": query_grid, "output": MODULE.rule_mirror(query_grid)}
++
++        self.assertTrue(all(rival(demo["input"]) == demo["output"] for demo in demos))
++        self.assertNotEqual(rival(query_grid), query["output"])
++        reasons = MODULE.lesson_identifiable(demos, query)
++        self.assertTrue(any("square_frames_only" in reason for reason in reasons))
++
++        teaching_grid = MODULE.generate(37, 41, scene_profile="wide_frames")
++        teaching_demo = {
++            "input": teaching_grid,
++            "output": MODULE.rule_mirror(teaching_grid),
++        }
++        self.assertEqual(
++            MODULE.lesson_identifiable([teaching_demo, *demos[:2]], query),
++            [],
++        )
++
+     def test_source_sync_and_hash(self):
+-        row = canonical_row()
+-        source = row["program_solution"]
++        source = canonical_program()
+         base = json.loads((ROOT / "data/base/solutions/banks/765a70430bc9/M7__65084a735199.json").read_text())
+         self.assertEqual(base["racket_target"]["raw_code"], source)
+         self.assertEqual(base["racket_target"]["target_code"], source)
+diff --git a/repo/generators/65084a735199/workspace/learnability_probe.py b/repo/generators/65084a735199/workspace/learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/65084a735199/workspace/learnability_probe.py
+@@ -0,0 +1,165 @@
++"""Source-bound protected-Racket probe for the square-frame lesson shortcut."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++from typing import Any
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root, load_selected_generator
++
++TASK_ID = "65084a735199"
++RIVAL = "square_frames_only"
++
++
++def _grid_literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++def _canonical_program(root: Path) -> str:
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        for raw in handle:
++            row = json.loads(raw)
++            if row.get("task_id") == TASK_ID:
++                return row["program_solution"]
++    raise KeyError(TASK_ID)
++
++
++def _diffs(left: list[list[int]], right: list[list[int]]) -> list[dict[str, int]]:
++    return [
++        {"row": r, "col": c, "canonical": a, "rival": b}
++        for r, (left_row, right_row) in enumerate(zip(left, right, strict=True))
++        for c, (a, b) in enumerate(zip(left_row, right_row, strict=True))
++        if a != b
++    ]
++
++
++def _sha_json(value: Any) -> str:
++    body = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
++    return hashlib.sha256(body).hexdigest()
++
++
++def run(out: Path) -> dict[str, Any]:
++    root = find_root(__file__)
++    generator, source, source_sha = load_selected_generator(TASK_ID, root=root)
++    program = _canonical_program(root)
++    rival = generator.SEMANTIC_RIVALS[RIVAL]
++
++    demos = []
++    for seed in (7, 11, 13):
++        sample_index = seed * 17 + 3
++        grid = generator.generate(seed, sample_index, scene_profile="paired_squares")
++        demos.append({
++            "seed": seed,
++            "sample_index": sample_index,
++            "scene_profile": "paired_squares",
++            "input": grid,
++        })
++    query = {
++        "seed": 29,
++        "sample_index": 31,
++        "scene_profile": "wide_frames",
++        "input": generator.generate(29, 31, scene_profile="wide_frames"),
++    }
++
++    wrapped = wrap_rule(program)
++    evaluations = 0
++    with RacketBridge(timeout=30, startup_timeout=60) as bridge:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise RuntimeError("protected Racket is required")
++
++        def apply(grid: list[list[int]]) -> list[list[int]]:
++            nonlocal evaluations
++            evaluations += 1
++            return bridge.eval_text(f"({wrapped} {_grid_literal(grid)})")
++
++        for pair in [*demos, query]:
++            if generator.self_check(pair["input"]):
++                raise AssertionError(("invalid generated input", pair))
++            pair["canonical_output"] = apply(pair["input"])
++            if pair["canonical_output"] != generator.rule_mirror(pair["input"]):
++                raise AssertionError("Python mirror disagrees with canonical Racket")
++            pair["rival_output"] = rival(pair["input"])
++
++    lesson_demos = [
++        {"input": pair["input"], "output": pair["canonical_output"]}
++        for pair in demos
++    ]
++    lesson_query = {
++        "input": query["input"],
++        "output": query["canonical_output"],
++    }
++    if not all(pair["rival_output"] == pair["canonical_output"] for pair in demos):
++        raise AssertionError("rival does not survive all demonstrations")
++    if query["rival_output"] == query["canonical_output"]:
++        raise AssertionError("rival does not change the query")
++    reasons = generator.lesson_identifiable(lesson_demos, lesson_query)
++    if not any(RIVAL in reason for reason in reasons):
++        raise AssertionError(("lesson hook missed rival", reasons))
++
++    for pair in [*demos, query]:
++        pair["input_sha256"] = _sha_json(pair["input"])
++        pair["canonical_output_sha256"] = _sha_json(pair["canonical_output"])
++        pair["rival_output_sha256"] = _sha_json(pair["rival_output"])
++    differences = _diffs(query["canonical_output"], query["rival_output"])
++
++    report = {
++        "schema": "arcpuzzles-peer-learnability-probe-v1",
++        "assignment_id": "review-c83611f00afef4d0",
++        "task_id": TASK_ID,
++        "status": "reproduced_and_guarded",
++        "finding": (
++            "Three paired-square demonstrations permit a square-frames-only rule, "
++            "while a wide-frame query requires the general rectangle rule."
++        ),
++        "source": {
++            "path": source.relative_to(root).as_posix(),
++            "sha256": source_sha,
++            "program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++            "program_normalized_sha256": hashlib.sha256(" ".join(program.split()).encode()).hexdigest(),
++        },
++        "racket": {
++            key: identity[key]
++            for key in (
++                "schema", "backend", "protected", "binary_sha256", "prelude_sha256",
++                "bridge_sha256", "boot_script_sha256", "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        },
++        "racket_evaluations": evaluations,
++        "rival": RIVAL,
++        "demonstrations": demos,
++        "query": query,
++        "query_differences": differences,
++        "lesson_identifiable_reasons": reasons,
++        "repair": (
++            "Declare the rival and reject any lesson where it survives all demonstrations; "
++            "a non-square teaching frame falsifies it without increasing demonstration count."
++        ),
++        "limits": "One constructed three-demo lesson; this is not a frequency estimate or universal rival search.",
++    }
++    out.parent.mkdir(parents=True, exist_ok=True)
++    out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    return report
++
++
++def main(argv=None) -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    report = run(args.out)
++    print(json.dumps({
++        "status": report["status"],
++        "racket_evaluations": report["racket_evaluations"],
++        "query_differences": len(report["query_differences"]),
++        "out": str(args.out),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/67a09b7f6b66/notes.md b/repo/generators/67a09b7f6b66/notes.md
+--- a/repo/generators/67a09b7f6b66/notes.md
++++ b/repo/generators/67a09b7f6b66/notes.md
+@@ -245,3 +245,38 @@
+ These are focused checks, not a new catalog approval or a full-battery claim.
+ An initial authority launcher used a relative interpreter path after the wrapper
+ changed cwd; the failed receipt is retained and the corrected absolute-path run passed.
++
++## Native parametric admission review-c83611f00afef4d0 (2026-10-24)
++
++The production generator and canonical authority remain byte-identical to the
++incoming packet. The task-local native family adds one episode-fixed parameter,
++`legend_mapping`, with exact canonical default `absolute_count` and composed
++alternative `anchor_cycle`. The canonical Racket program is preserved at SHA-256
++`100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf`;
++the alternative program is
++`cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc`.
++
++`anchor_cycle` marks exactly one chamber at its upper-left interior cell. Step A
++locates that chamber and counts all of its dots, producing anchor count `k`.
++Step B cannot choose its colors before `k` is known: each chamber count `n` maps
++to legend slot `1 + ((n-k) mod 3)`. A source-bound protected-Racket witness uses
++a retained `k=2` input and shows that forcing the wrong intermediate `k=1`
++changes the final output.
++
++The adapter supports 2–6 demonstrations, stable 1–4 query prefixes, and four
++stored distinct queries. Both settings share inputs. The fourth query is an
++actual 30×30 instance with unequal chamber widths and substantive filled area.
++The finite teaching audit tested position-only, occupied-row, and fixed-anchor
++competitors as relevant to each setting; none survived all visible demonstrations
++while changing a query across three seeds. It executed 124 protected-Racket
++labels and 128 deterministic prefix/count-boundary checks. Native qualification
++passed both settings on seeds 0 and 17 with four queries, 32 protected-Racket
++evaluations, and a clean public projection. The full changed-target suite passed
++82/82.
++
++Retained evidence is under
++`workspace/parametric/evidence/`, `WORK/checks/67a09b7f6b66/qualification/`,
++and `WORK/checks/67a09b7f6b66/causal/`. This is reviewer-ready, not accepted:
++owner integration, exact-live-byte qualification, acceptance replay, and any
++training admission remain pending. The finite rival audit is not a universal
++uniqueness proof.
+diff --git a/repo/generators/67a09b7f6b66/tests/test_parametric.py b/repo/generators/67a09b7f6b66/tests/test_parametric.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/tests/test_parametric.py
+@@ -0,0 +1,195 @@
++"""Focused contract tests for the native chamber-legend parametric adapter."""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++import pytest
++from reviewer_support import canonical_path, find_root, public_challenge_bytes, public_challenge_id
++
++TASK_ID = "67a09b7f6b66"
++ROOT = find_root(__file__)
++HOME = Path(__file__).resolve().parents[1] / "workspace/parametric"
++
++
++def load_adapter():
++    path = HOME / "adapter.py"
++    assert path.is_file(), "Native parametric adapter is not implemented"
++    name = "_test_67a09_parametric_" + hashlib.sha256(str(path).encode()).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def visible_inputs(episode):
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def test_canonical_default_matches_exact_authority_byte_for_byte():
++    adapter = load_adapter()
++    programs = {
++        row["program_solution"]
++        for line in canonical_path(ROOT).open(encoding="utf-8")
++        if (row := json.loads(line)).get("task_id") == TASK_ID
++    }
++    assert len(programs) == 1
++    assert adapter.program({"legend_mapping": "absolute_count"}) == next(iter(programs))
++    assert adapter.program({"legend_mapping": "anchor_cycle"}) not in programs
++
++
++@pytest.mark.parametrize("demos,queries", [(2, 1), (3, 4), (6, 4)])
++def test_counts_matched_inputs_distinctness_and_size_stress(demos, queries):
++    adapter = load_adapter()
++    canonical = adapter.generate(17, {"legend_mapping": "absolute_count"}, demos, queries)
++    composed = adapter.generate(17, {"legend_mapping": "anchor_cycle"}, demos, queries)
++
++    assert len(canonical["train"]) == len(composed["train"]) == demos
++    assert len(canonical["test"]) == len(composed["test"]) == queries
++    assert visible_inputs(canonical) == visible_inputs(composed)
++    assert len({json.dumps(grid) for grid in visible_inputs(canonical)}) == demos + queries
++    assert all(
++        left["output"] != right["output"]
++        for left, right in zip(canonical["train"], composed["train"], strict=True)
++    )
++
++    for grid in visible_inputs(canonical):
++        facts = adapter.analyze(grid)
++        assert 1 <= facts["height"] <= 30
++        assert 1 <= facts["width"] <= 30
++        assert facts["counts"] == sorted(facts["counts"])
++        assert facts["anchor_count"] in {1, 2, 3}
++        assert all(type(cell) is int and 0 <= cell <= 9 for row in grid for cell in row)
++
++    if queries == 4:
++        stress = canonical["test"][-1]["input"]
++        assert (len(stress), len(stress[0])) == (30, 30)
++        facts = adapter.analyze(stress)
++        assert facts["chamber_widths"] == [8, 9, 9]
++        assert facts["anchor_count"] == 3
++        assert sum(value == 8 for row in stress for value in row) >= 130
++        assert sum(value != 0 for row in composed["test"][-1]["output"] for value in row) >= 700
++
++
++def test_two_demos_teach_a_changing_input_derived_anchor_count():
++    adapter = load_adapter()
++    episode = adapter.generate(0, {"legend_mapping": "anchor_cycle"}, 2, 4)
++    analyses = [adapter.analyze(pair["input"]) for pair in episode["train"]]
++    assert [item["anchor_count"] for item in analyses] == [2, 3]
++    assert len({item["anchor_chamber"] for item in analyses}) >= 1
++    assert all(
++        pair["output"] == adapter.transform(pair["input"], "anchor_cycle")
++        for pair in episode["train"] + episode["test"]
++    )
++
++
++def test_generation_is_deterministic_prefix_stable_and_rng_private():
++    import random
++
++    adapter = load_adapter()
++    random.seed(123456)
++    state = random.getstate()
++    small = adapter.generate(23, {"legend_mapping": "anchor_cycle"}, 2, 1)
++    large = adapter.generate(23, {"legend_mapping": "anchor_cycle"}, 6, 4)
++    again = adapter.generate(23, {"legend_mapping": "anchor_cycle"}, 6, 4)
++    assert random.getstate() == state
++    assert large == again
++    assert small["train"] == large["train"][:2]
++    assert small["test"][0] == large["test"][0]
++
++
++def test_public_turn_hides_settings_program_answers_and_future_queries():
++    adapter = load_adapter()
++    episode = adapter.generate(17, {"legend_mapping": "anchor_cycle"}, 3, 4)
++    before = deepcopy(episode)
++    first = adapter.public_turn(episode, 0)
++    assert set(first) == {"train", "test"}
++    assert all(set(pair) == {"input", "output"} for pair in first["train"])
++    assert len(first["test"]) == 1 and set(first["test"][0]) == {"input"}
++    assert first["test"][0]["input"] == episode["test"][0]["input"]
++    assert episode == before
++
++    changed = deepcopy(episode)
++    changed["seed"] = 999
++    changed["settings"] = {"private": "changed"}
++    changed["program_solution"] = "PRIVATE CHANGED PROGRAM"
++    for pair in changed["test"]:
++        pair["output"] = [[9]]
++    assert adapter.public_turn(changed, 0) == first
++    assert public_challenge_bytes(episode) == public_challenge_bytes(changed)
++    assert public_challenge_id(episode) == public_challenge_id(changed)
++
++
++@pytest.mark.parametrize("index", [-1, 4, True, False, 1.0, "0", None])
++def test_public_turn_rejects_non_current_query_indices(index):
++    adapter = load_adapter()
++    episode = adapter.generate(17, {"legend_mapping": "anchor_cycle"}, 3, 4)
++    with pytest.raises(ValueError):
++        adapter.public_turn(episode, index)
++
++
++@pytest.mark.parametrize(
++    "settings,demos,queries",
++    [
++        ({}, 3, 4),
++        ({"legend_mapping": "unknown"}, 3, 4),
++        ({"legend_mapping": True}, 3, 4),
++        ({"legend_mapping": "absolute_count", "extra": 1}, 3, 4),
++        ({"legend_mapping": "absolute_count"}, 1, 4),
++        ({"legend_mapping": "absolute_count"}, 7, 4),
++        ({"legend_mapping": "absolute_count"}, 3, 0),
++        ({"legend_mapping": "absolute_count"}, 3, 5),
++        ({"legend_mapping": "absolute_count"}, True, 4),
++    ],
++)
++def test_invalid_contract_requests_fail_closed(settings, demos, queries):
++    adapter = load_adapter()
++    with pytest.raises(ValueError):
++        adapter.generate(0, settings, demos, queries)
++
++
++def test_rival_programs_are_declared_and_python_rivals_are_refuted_by_demos():
++    adapter = load_adapter()
++    assert set(adapter.RIVALS) == {
++        "position_only",
++        "occupied_rows",
++        "fixed_anchor_1",
++        "fixed_anchor_2",
++        "fixed_anchor_3",
++    }
++    relevant = {
++        "absolute_count": {"position_only", "occupied_rows", "fixed_anchor_2", "fixed_anchor_3"},
++        "anchor_cycle": set(adapter.RIVALS),
++    }
++    for setting in ("absolute_count", "anchor_cycle"):
++        episode = adapter.generate(11, {"legend_mapping": setting}, 3, 4)
++        expected = [pair["output"] for pair in episode["train"]]
++        for rival in relevant[setting]:
++            outputs = [adapter.rival_transform(pair["input"], rival) for pair in episode["train"]]
++            assert outputs != expected, (setting, rival)
++
++
++def test_selected_programs_match_claimed_labels_in_protected_racket():
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    adapter = load_adapter()
++    with RacketBridge(timeout=30, startup_timeout=60) as bridge:
++        assert bridge.runtime_identity["backend"] == "racket"
++        assert bridge.runtime_identity["protected"] is True
++        for mapping in ("absolute_count", "anchor_cycle"):
++            episode = adapter.generate(0, {"legend_mapping": mapping}, 2, 4)
++            for pair in (episode["train"][0], episode["test"][-1]):
++                literal = "'(" + " ".join(
++                    "(" + " ".join(map(str, row)) + ")" for row in pair["input"]
++                ) + ")"
++                actual = bridge.eval_text(
++                    f"({wrap_rule(episode['program_solution'])} {literal})"
++                )
++                assert actual == pair["output"]
+diff --git a/repo/generators/67a09b7f6b66/workspace/canonical-extracted.rkt b/repo/generators/67a09b7f6b66/workspace/canonical-extracted.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/canonical-extracted.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1))) (define (e15b-region-dots grid region) (let* ((bb (bbox-of-cells region)) (r1 (max 1 (- (first bb) 1))) (c1 (max 0 (- (second bb) 1))) (r2 (min (- (rows grid) 1) (+ (third bb) 1))) (c2 (min (- (cols grid) 1) (+ (fourth bb) 1)))) (filter (lambda (p) (and (= (at grid (first p) (second p)) 1) (any? (lambda (d) (member? (list (+ (first p) (first d)) (+ (second p) (second d))) region)) dirs4))) (positions-in-rect r1 c1 r2 c2)))) (let* ((legend (filter values (for/list ((c (in-range (cols g)))) (let ((v (at g 0 c))) (if (= v 0) #f (list c v)))))) (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1))) (regions (map (lambda (region) (map (lambda (p) (list (+ 1 (first p)) (second p))) region)) (find-0-regions body 0)))) (for/fold ((out g)) ((region (in-list regions))) (let* ((dots (e15b-region-dots g region)) (n (length dots)) (hit (filter (lambda (pair) (= (first pair) n)) legend))) (if (empty? hit) out (paint-cells out (append region dots) (second (first hit)))))))))
+\ No newline at end of file
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/README.md b/repo/generators/67a09b7f6b66/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/README.md
+@@ -0,0 +1,21 @@
++# Native parametric chamber-legend family
++
++`legend_mapping=absolute_count` is the exact selected canonical Racket program:
++each chamber's dot count (1, 2 or 3) selects that numbered legend entry.
++
++`legend_mapping=anchor_cycle` adds an input-dependent composition. Exactly one
++chamber has a dot at the upper-left interior corner. Step A identifies that
++chamber and counts all of its dots. Step B treats the resulting count as the
++cyclic origin of the legend: the anchor count maps to legend slot 1, the next
++count to slot 2, and the remaining count to slot 3.
++
++Inputs are matched across settings for a given seed and count request. The
++adapter supports 2–6 demonstrations and 1–4 queries independently; generation
++is prefix-stable. Its fourth query is an exact 30×30 extension with three
++unequal-width chambers (8, 9 and 9 interior columns), which is lawful because
++both Racket rules operate on connected zero regions rather than assuming equal
++widths. Public turns reveal one query input at a time without settings, programs,
++answers, future inputs or a total-query hint.
++
++`audit.py` executes the two settings and five bounded rivals through protected
++Racket. Its finite result is a teaching check, not a universal uniqueness proof.
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/adapter.py b/repo/generators/67a09b7f6b66/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/adapter.py
+@@ -0,0 +1,25 @@
++"""Thin exact-path native adapter for the chamber-legend parametric family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++_path = Path(__file__).resolve().with_name("native.py")
++_name = "_native_67a09b7f6b66_" + hashlib.sha256(str(_path).encode()).hexdigest()
++_spec = importlib.util.spec_from_file_location(_name, _path)
++if _spec is None or _spec.loader is None:
++    raise ImportError(_path)
++_native = importlib.util.module_from_spec(_spec)
++sys.modules[_name] = _native
++_spec.loader.exec_module(_native)
++
++program = _native.program
++generate = _native.generate
++analyze = _native.analyze
++transform = _native.transform
++public_turn = _native.public_turn
++rival_program = _native.rival_program
++rival_transform = _native.rival_transform
++RIVALS = _native.RIVALS
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/anchor_cycle.rkt b/repo/generators/67a09b7f6b66/workspace/parametric/anchor_cycle.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/anchor_cycle.rkt
+@@ -0,0 +1,46 @@
++(rule! (let ((dummy 0))
++  (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))
++  (define (e15b-region-dots grid region)
++    (let* ((bb (bbox-of-cells region))
++           (r1 (max 1 (- (first bb) 1)))
++           (c1 (max 0 (- (second bb) 1)))
++           (r2 (min (- (rows grid) 1) (+ (third bb) 1)))
++           (c2 (min (- (cols grid) 1) (+ (fourth bb) 1))))
++      (filter
++        (lambda (p)
++          (and (= (at grid (first p) (second p)) 1)
++               (any? (lambda (d)
++                       (member? (list (+ (first p) (first d))
++                                      (+ (second p) (second d)))
++                                region))
++                     dirs4)))
++        (positions-in-rect r1 c1 r2 c2))))
++  (define (anchor-dot? grid p)
++    (and (= (first p) 2)
++         (= (at grid (first p) (- (second p) 1)) 8)))
++  (let* ((legend
++           (filter values
++             (for/list ((c (in-range (cols g))))
++               (let ((v (at g 0 c)))
++                 (if (= v 0) #f (list c v))))))
++         (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1)))
++         (regions
++           (map (lambda (region)
++                  (map (lambda (p) (list (+ 1 (first p)) (second p))) region))
++                (find-0-regions body 0)))
++         (records
++           (map (lambda (region) (list region (e15b-region-dots g region))) regions))
++         (anchor-records
++           (filter (lambda (record)
++                     (any? (lambda (p) (anchor-dot? g p)) (second record)))
++                   records))
++         (anchor-count (length (second (first anchor-records)))))
++    (for/fold ((out g)) ((record (in-list records)))
++      (let* ((region (first record))
++             (dots (second record))
++             (n (length dots))
++             (slot (+ 1 (modulo (- n anchor-count) 3)))
++             (hit (filter (lambda (pair) (= (first pair) slot)) legend)))
++        (if (empty? hit)
++            out
++            (paint-cells out (append region dots) (second (first hit)))))))))
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/audit.py b/repo/generators/67a09b7f6b66/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/audit.py
+@@ -0,0 +1,252 @@
++"""Protected-Racket teaching and sampler audit for the chamber-legend family."""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++
++HOME = Path(__file__).resolve().parent
++RIVALS_BY_SETTING = {
++    "absolute_count": ("position_only", "occupied_rows", "fixed_anchor_2", "fixed_anchor_3"),
++    "anchor_cycle": ("position_only", "occupied_rows", "fixed_anchor_1", "fixed_anchor_2", "fixed_anchor_3"),
++}
++
++
++def _load_adapter():
++    path = HOME / "adapter.py"
++    name = "_audit_67a09_" + hashlib.sha256(str(path).encode()).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _sha(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def _write(path: Path, value: Any) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
++
++
++def _literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++def run(out: Path, *, seeds: tuple[int, ...] = (0, 17, 41), demos: int = 3, queries: int = 4):
++    adapter = _load_adapter()
++    wrapped: dict[str, str] = {}
++    evaluations = 0
++
++    with RacketBridge(timeout=30, startup_timeout=60) as bridge:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise RuntimeError("protected Racket is required")
++
++        def execute(program: str, grid: list[list[int]]) -> list[list[int]]:
++            nonlocal evaluations
++            if program not in wrapped:
++                wrapped[program] = wrap_rule(program)
++            evaluations += 1
++            return bridge.eval_text(f"({wrapped[program]} {_literal(grid)})")
++
++        episodes = []
++        witnesses: dict[str, dict[str, Any]] = {}
++        causal_case = None
++        sampler = {
++            "episodes": 0,
++            "pairs": 0,
++            "anchor_counts": {"1": 0, "2": 0, "3": 0},
++            "anchor_chambers": {"0": 0, "1": 0, "2": 0},
++            "wall_shared": 0,
++            "exact_30x30": 0,
++            "prefix_checks": 0,
++        }
++
++        for seed in seeds:
++            for setting in ("absolute_count", "anchor_cycle"):
++                settings = {"legend_mapping": setting}
++                episode = adapter.generate(seed, settings, demos, queries)
++                selected_program = adapter.program(settings)
++                selected_outputs = []
++                for split in ("train", "test"):
++                    for pair_index, pair in enumerate(episode[split]):
++                        actual = execute(selected_program, pair["input"])
++                        if actual != pair["output"]:
++                            raise AssertionError((seed, setting, split, pair_index, "selected label mismatch"))
++                        selected_outputs.append(actual)
++                        facts = adapter.analyze(pair["input"])
++                        sampler["pairs"] += 1
++                        sampler["anchor_counts"][str(facts["anchor_count"])] += 1
++                        sampler["anchor_chambers"][str(facts["anchor_chamber"])] += 1
++                        sampler["wall_shared"] += int(8 in facts["legend"])
++                        sampler["exact_30x30"] += int((facts["height"], facts["width"]) == (30, 30))
++                survivors = []
++                rival_summaries = []
++                for rival in RIVALS_BY_SETTING[setting]:
++                    rival_program = adapter.rival_program(rival)
++                    demo_outputs = []
++                    first_difference = None
++                    for pair_index, pair in enumerate(episode["train"]):
++                        actual = execute(rival_program, pair["input"])
++                        claimed = adapter.rival_transform(pair["input"], rival)
++                        if actual != claimed:
++                            raise AssertionError((seed, setting, rival, pair_index, "rival parity mismatch"))
++                        demo_outputs.append(actual)
++                        if actual != pair["output"] and first_difference is None:
++                            first_difference = {
++                                "seed": seed,
++                                "setting": setting,
++                                "rival": rival,
++                                "split": "train",
++                                "pair_index": pair_index,
++                                "input": pair["input"],
++                                "selected_output": pair["output"],
++                                "rival_output": actual,
++                                "selected_program_sha256": hashlib.sha256(selected_program.encode()).hexdigest(),
++                                "rival_program_sha256": hashlib.sha256(rival_program.encode()).hexdigest(),
++                            }
++                    survives = all(
++                        output == pair["output"]
++                        for output, pair in zip(demo_outputs, episode["train"], strict=True)
++                    )
++                    if survives:
++                        survivors.append(rival)
++                    if first_difference is not None:
++                        witnesses.setdefault(f"{setting}:{rival}", first_difference)
++                    rival_summaries.append({"name": rival, "survives_all_demos": survives})
++                if survivors:
++                    raise AssertionError((seed, setting, "demo-surviving rivals", survivors))
++
++                if setting == "anchor_cycle" and causal_case is None:
++                    for split in ("train", "test"):
++                        for pair_index, pair in enumerate(episode[split]):
++                            facts = adapter.analyze(pair["input"])
++                            if facts["anchor_count"] == 1:
++                                continue
++                            counterfactual_program = adapter.rival_program("fixed_anchor_1")
++                            counterfactual_output = execute(counterfactual_program, pair["input"])
++                            if counterfactual_output == pair["output"]:
++                                continue
++                            causal_case = {
++                                "settings": settings,
++                                "program": selected_program,
++                                "input": pair["input"],
++                                "output": pair["output"],
++                                "counterfactual_program": counterfactual_program,
++                                "counterfactual_output": counterfactual_output,
++                                "intermediate_value": {
++                                    "anchor_chamber": facts["anchor_chamber"],
++                                    "anchor_count": facts["anchor_count"],
++                                    "count_order": facts["count_order"],
++                                },
++                                "ablation": "wrong_intermediate",
++                                "selection": {
++                                    "seed": seed,
++                                    "split": split,
++                                    "pair_index": pair_index,
++                                },
++                            }
++                            break
++                        if causal_case is not None:
++                            break
++
++                episodes.append({
++                    "seed": seed,
++                    "settings": settings,
++                    "counts": {"demos": demos, "queries": queries},
++                    "selected_program_sha256": hashlib.sha256(selected_program.encode()).hexdigest(),
++                    "rivals": rival_summaries,
++                    "demo_survivors": survivors,
++                })
++                sampler["episodes"] += 1
++
++        # Cheap deterministic/prefix/count-boundary sampler pass without more Racket calls.
++        for seed in range(64):
++            for setting in ("absolute_count", "anchor_cycle"):
++                settings = {"legend_mapping": setting}
++                small = adapter.generate(seed, settings, 2, 1)
++                large = adapter.generate(seed, settings, 6, 4)
++                if small["train"] != large["train"][:2] or small["test"][0] != large["test"][0]:
++                    raise AssertionError((seed, setting, "prefix instability"))
++                if len({json.dumps(pair["input"]) for pair in large["train"] + large["test"]}) != 10:
++                    raise AssertionError((seed, setting, "duplicate inputs"))
++                sampler["prefix_checks"] += 1
++
++    if causal_case is None:
++        raise AssertionError("no wrong-intermediate causal case was found")
++    if len(witnesses) != sum(len(value) for value in RIVALS_BY_SETTING.values()):
++        raise AssertionError(("missing finite-rival witnesses", sorted(witnesses)))
++
++    source = {
++        "adapter": "generators/67a09b7f6b66/workspace/parametric/adapter.py",
++        "adapter_sha256": _sha(HOME / "adapter.py"),
++        "native_sha256": _sha(HOME / "native.py"),
++        "canonical_sha256": _sha(HOME / "canonical.rkt"),
++        "anchor_cycle_sha256": _sha(HOME / "anchor_cycle.rkt"),
++        "promotion_sha256": _sha(HOME / "promotion.json"),
++    }
++    report = {
++        "schema": "arcpuzzles-parametric-teaching-audit-v1",
++        "task_id": "67a09b7f6b66",
++        "status": "passed",
++        "scope": {
++            "seeds": list(seeds),
++            "demos": demos,
++            "queries": queries,
++            "rivals_by_setting": {key: list(value) for key, value in RIVALS_BY_SETTING.items()},
++            "sampler_prefix_seeds": 64,
++            "universal_identifiability": False,
++        },
++        "source": source,
++        "racket": {
++            key: identity[key]
++            for key in (
++                "schema", "backend", "protected", "binary_sha256", "prelude_sha256",
++                "bridge_sha256", "boot_script_sha256", "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        },
++        "racket_evaluations": evaluations,
++        "episodes": episodes,
++        "witnesses": list(witnesses.values()),
++        "sampler": sampler,
++        "query_changing_demo_survivors": [],
++        "limits": "Finite rival set, three Racket-audited seeds and 64 prefix-stress seeds; no universal uniqueness claim.",
++    }
++    out.mkdir(parents=True, exist_ok=False)
++    _write(out / "self_audit.json", report)
++    _write(out / "audited_case.json", causal_case)
++    return report
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    report = run(args.out)
++    print(json.dumps({
++        "status": report["status"],
++        "episodes": len(report["episodes"]),
++        "racket_evaluations": report["racket_evaluations"],
++        "witnesses": len(report["witnesses"]),
++        "sampler": report["sampler"],
++        "out": str(args.out),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/canonical.rkt b/repo/generators/67a09b7f6b66/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1))) (define (e15b-region-dots grid region) (let* ((bb (bbox-of-cells region)) (r1 (max 1 (- (first bb) 1))) (c1 (max 0 (- (second bb) 1))) (r2 (min (- (rows grid) 1) (+ (third bb) 1))) (c2 (min (- (cols grid) 1) (+ (fourth bb) 1)))) (filter (lambda (p) (and (= (at grid (first p) (second p)) 1) (any? (lambda (d) (member? (list (+ (first p) (first d)) (+ (second p) (second d))) region)) dirs4))) (positions-in-rect r1 c1 r2 c2)))) (let* ((legend (filter values (for/list ((c (in-range (cols g)))) (let ((v (at g 0 c))) (if (= v 0) #f (list c v)))))) (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1))) (regions (map (lambda (region) (map (lambda (p) (list (+ 1 (first p)) (second p))) region)) (find-0-regions body 0)))) (for/fold ((out g)) ((region (in-list regions))) (let* ((dots (e15b-region-dots g region)) (n (length dots)) (hit (filter (lambda (pair) (= (first pair) n)) legend))) (if (empty? hit) out (paint-cells out (append region dots) (second (first hit)))))))))
+\ No newline at end of file
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/audit-console.txt b/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/audit-console.txt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/audit-console.txt
+@@ -0,0 +1,3 @@
++effective cwd: /mnt/data/arc_review_172312/WORK/repo
++Payload paths are relative to repo; use generators/TASK/..., not repo/generators/TASK/...
++{"episodes": 6, "out": "generators/67a09b7f6b66/workspace/parametric/evidence/current/audit", "racket_evaluations": 124, "sampler": {"anchor_chambers": {"0": 16, "1": 14, "2": 12}, "anchor_counts": {"1": 6, "2": 18, "3": 18}, "episodes": 6, "exact_30x30": 6, "pairs": 42, "prefix_checks": 128, "wall_shared": 20}, "status": "passed", "witnesses": 9}
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/audit/audited_case.json b/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/audit/audited_case.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/audit/audited_case.json
+@@ -0,0 +1,433 @@
++{
++  "ablation": "wrong_intermediate",
++  "counterfactual_output": [
++    [
++      0,
++      3,
++      6,
++      8,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8
++    ],
++    [
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8,
++      3,
++      3,
++      3,
++      8
++    ],
++    [
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8,
++      3,
++      3,
++      3,
++      8
++    ],
++    [
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8,
++      3,
++      3,
++      3,
++      8
++    ],
++    [
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8,
++      3,
++      3,
++      3,
++      8
++    ],
++    [
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8,
++      3,
++      3,
++      3,
++      8
++    ],
++    [
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8,
++      3,
++      3,
++      3,
++      8
++    ],
++    [
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8
++    ]
++  ],
++  "counterfactual_program": "(rule! (let ((dummy 0))\n  (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))\n  (define (e15b-region-dots grid region)\n    (let* ((bb (bbox-of-cells region))\n           (r1 (max 1 (- (first bb) 1))) (c1 (max 0 (- (second bb) 1)))\n           (r2 (min (- (rows grid) 1) (+ (third bb) 1)))\n           (c2 (min (- (cols grid) 1) (+ (fourth bb) 1))))\n      (filter (lambda (p)\n                (and (= (at grid (first p) (second p)) 1)\n                     (any? (lambda (d)\n                             (member? (list (+ (first p) (first d))\n                                            (+ (second p) (second d))) region))\n                           dirs4)))\n              (positions-in-rect r1 c1 r2 c2))))\n  (let* ((legend (filter values (for/list ((c (in-range (cols g))))\n                                  (let ((v (at g 0 c))) (if (= v 0) #f (list c v))))))\n         (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1)))\n         (regions (map (lambda (region)\n                         (map (lambda (p) (list (+ 1 (first p)) (second p))) region))\n                       (find-0-regions body 0)))\n         (anchor-count 1))\n    (for/fold ((out g)) ((region (in-list regions)))\n      (let* ((dots (e15b-region-dots g region))\n             (n (length dots))\n             (slot (+ 1 (modulo (- n anchor-count) 3)))\n             (hit (filter (lambda (pair) (= (first pair) slot)) legend)))\n        (if (empty? hit) out\n            (paint-cells out (append region dots) (second (first hit)))))))))",
++  "input": [
++    [
++      0,
++      3,
++      6,
++      8,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8
++    ],
++    [
++      8,
++      1,
++      1,
++      0,
++      8,
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0,
++      8
++    ],
++    [
++      8,
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0,
++      8
++    ],
++    [
++      8,
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0,
++      8
++    ],
++    [
++      8,
++      0,
++      0,
++      0,
++      8,
++      1,
++      1,
++      0,
++      8,
++      0,
++      0,
++      0,
++      8
++    ],
++    [
++      8,
++      0,
++      0,
++      0,
++      8,
++      1,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0,
++      8
++    ],
++    [
++      8,
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0,
++      8,
++      1,
++      0,
++      0,
++      8
++    ],
++    [
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8
++    ]
++  ],
++  "intermediate_value": {
++    "anchor_chamber": 0,
++    "anchor_count": 2,
++    "count_order": [
++      2,
++      3,
++      1
++    ]
++  },
++  "output": [
++    [
++      0,
++      3,
++      6,
++      8,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8
++    ],
++    [
++      8,
++      3,
++      3,
++      3,
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8
++    ],
++    [
++      8,
++      3,
++      3,
++      3,
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8
++    ],
++    [
++      8,
++      3,
++      3,
++      3,
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8
++    ],
++    [
++      8,
++      3,
++      3,
++      3,
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8
++    ],
++    [
++      8,
++      3,
++      3,
++      3,
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8
++    ],
++    [
++      8,
++      3,
++      3,
++      3,
++      8,
++      6,
++      6,
++      6,
++      8,
++      8,
++      8,
++      8,
++      8
++    ],
++    [
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8,
++      8
++    ]
++  ],
++  "program": "(rule! (let ((dummy 0))\n  (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))\n  (define (e15b-region-dots grid region)\n    (let* ((bb (bbox-of-cells region))\n           (r1 (max 1 (- (first bb) 1)))\n           (c1 (max 0 (- (second bb) 1)))\n           (r2 (min (- (rows grid) 1) (+ (third bb) 1)))\n           (c2 (min (- (cols grid) 1) (+ (fourth bb) 1))))\n      (filter\n        (lambda (p)\n          (and (= (at grid (first p) (second p)) 1)\n               (any? (lambda (d)\n                       (member? (list (+ (first p) (first d))\n                                      (+ (second p) (second d)))\n                                region))\n                     dirs4)))\n        (positions-in-rect r1 c1 r2 c2))))\n  (define (anchor-dot? grid p)\n    (and (= (first p) 2)\n         (= (at grid (first p) (- (second p) 1)) 8)))\n  (let* ((legend\n           (filter values\n             (for/list ((c (in-range (cols g))))\n               (let ((v (at g 0 c)))\n                 (if (= v 0) #f (list c v))))))\n         (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1)))\n         (regions\n           (map (lambda (region)\n                  (map (lambda (p) (list (+ 1 (first p)) (second p))) region))\n                (find-0-regions body 0)))\n         (records\n           (map (lambda (region) (list region (e15b-region-dots g region))) regions))\n         (anchor-records\n           (filter (lambda (record)\n                     (any? (lambda (p) (anchor-dot? g p)) (second record)))\n                   records))\n         (anchor-count (length (second (first anchor-records)))))\n    (for/fold ((out g)) ((record (in-list records)))\n      (let* ((region (first record))\n             (dots (second record))\n             (n (length dots))\n             (slot (+ 1 (modulo (- n anchor-count) 3)))\n             (hit (filter (lambda (pair) (= (first pair) slot)) legend)))\n        (if (empty? hit)\n            out\n            (paint-cells out (append region dots) (second (first hit)))))))))\n",
++  "selection": {
++    "pair_index": 0,
++    "seed": 0,
++    "split": "train"
++  },
++  "settings": {
++    "legend_mapping": "anchor_cycle"
++  }
++}
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/audit/self_audit.json b/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/audit/self_audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/audit/self_audit.json
+@@ -0,0 +1,4747 @@
++{
++  "episodes": [
++    {
++      "counts": {
++        "demos": 3,
++        "queries": 4
++      },
++      "demo_survivors": [],
++      "rivals": [
++        {
++          "name": "position_only",
++          "survives_all_demos": false
++        },
++        {
++          "name": "occupied_rows",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_2",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_3",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 0,
++      "selected_program_sha256": "100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf",
++      "settings": {
++        "legend_mapping": "absolute_count"
++      }
++    },
++    {
++      "counts": {
++        "demos": 3,
++        "queries": 4
++      },
++      "demo_survivors": [],
++      "rivals": [
++        {
++          "name": "position_only",
++          "survives_all_demos": false
++        },
++        {
++          "name": "occupied_rows",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_1",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_2",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_3",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 0,
++      "selected_program_sha256": "cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc",
++      "settings": {
++        "legend_mapping": "anchor_cycle"
++      }
++    },
++    {
++      "counts": {
++        "demos": 3,
++        "queries": 4
++      },
++      "demo_survivors": [],
++      "rivals": [
++        {
++          "name": "position_only",
++          "survives_all_demos": false
++        },
++        {
++          "name": "occupied_rows",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_2",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_3",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 17,
++      "selected_program_sha256": "100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf",
++      "settings": {
++        "legend_mapping": "absolute_count"
++      }
++    },
++    {
++      "counts": {
++        "demos": 3,
++        "queries": 4
++      },
++      "demo_survivors": [],
++      "rivals": [
++        {
++          "name": "position_only",
++          "survives_all_demos": false
++        },
++        {
++          "name": "occupied_rows",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_1",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_2",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_3",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 17,
++      "selected_program_sha256": "cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc",
++      "settings": {
++        "legend_mapping": "anchor_cycle"
++      }
++    },
++    {
++      "counts": {
++        "demos": 3,
++        "queries": 4
++      },
++      "demo_survivors": [],
++      "rivals": [
++        {
++          "name": "position_only",
++          "survives_all_demos": false
++        },
++        {
++          "name": "occupied_rows",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_2",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_3",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 41,
++      "selected_program_sha256": "100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf",
++      "settings": {
++        "legend_mapping": "absolute_count"
++      }
++    },
++    {
++      "counts": {
++        "demos": 3,
++        "queries": 4
++      },
++      "demo_survivors": [],
++      "rivals": [
++        {
++          "name": "position_only",
++          "survives_all_demos": false
++        },
++        {
++          "name": "occupied_rows",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_1",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_2",
++          "survives_all_demos": false
++        },
++        {
++          "name": "fixed_anchor_3",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 41,
++      "selected_program_sha256": "cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc",
++      "settings": {
++        "legend_mapping": "anchor_cycle"
++      }
++    }
++  ],
++  "limits": "Finite rival set, three Racket-audited seeds and 64 prefix-stress seeds; no universal uniqueness claim.",
++  "query_changing_demo_survivors": [],
++  "racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "racket_evaluations": 124,
++  "sampler": {
++    "anchor_chambers": {
++      "0": 16,
++      "1": 14,
++      "2": 12
++    },
++    "anchor_counts": {
++      "1": 6,
++      "2": 18,
++      "3": 18
++    },
++    "episodes": 6,
++    "exact_30x30": 6,
++    "pairs": 42,
++    "prefix_checks": 128,
++    "wall_shared": 20
++  },
++  "schema": "arcpuzzles-parametric-teaching-audit-v1",
++  "scope": {
++    "demos": 3,
++    "queries": 4,
++    "rivals_by_setting": {
++      "absolute_count": [
++        "position_only",
++        "occupied_rows",
++        "fixed_anchor_2",
++        "fixed_anchor_3"
++      ],
++      "anchor_cycle": [
++        "position_only",
++        "occupied_rows",
++        "fixed_anchor_1",
++        "fixed_anchor_2",
++        "fixed_anchor_3"
++      ]
++    },
++    "sampler_prefix_seeds": 64,
++    "seeds": [
++      0,
++      17,
++      41
++    ],
++    "universal_identifiability": false
++  },
++  "source": {
++    "adapter": "generators/67a09b7f6b66/workspace/parametric/adapter.py",
++    "adapter_sha256": "55d52a3742e4cf17ac53589878ee7299a1f4b807380b2e043aab9d8f5c8aa31b",
++    "anchor_cycle_sha256": "cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc",
++    "canonical_sha256": "100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf",
++    "native_sha256": "bcba97de2bf406aa7917b3a62d7c795248ca190728ed4011ece0f162b60f6e32",
++    "promotion_sha256": "4c44c596b715c8615e0b0060884e22adaf4388b73c1c9de59ac3ff736cf6dee3"
++  },
++  "status": "passed",
++  "task_id": "67a09b7f6b66",
++  "witnesses": [
++    {
++      "input": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "pair_index": 0,
++      "rival": "position_only",
++      "rival_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "rival_program_sha256": "bbfcf6fb7bb8155a6826ef8fb31b4c1d14380ebbca204971ea9229f2e823cb76",
++      "seed": 0,
++      "selected_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "selected_program_sha256": "100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf",
++      "setting": "absolute_count",
++      "split": "train"
++    },
++    {
++      "input": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "pair_index": 0,
++      "rival": "occupied_rows",
++      "rival_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "rival_program_sha256": "e638a9a7f99b13d4742985b3822875240c66affe154951f1118c2011552ea6ae",
++      "seed": 0,
++      "selected_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "selected_program_sha256": "100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf",
++      "setting": "absolute_count",
++      "split": "train"
++    },
++    {
++      "input": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "pair_index": 0,
++      "rival": "fixed_anchor_2",
++      "rival_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "rival_program_sha256": "bcd3282877b58edd2260e95a49f0e13daf2dcb3f4f0d29b06ca81a42c52bfede",
++      "seed": 0,
++      "selected_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "selected_program_sha256": "100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf",
++      "setting": "absolute_count",
++      "split": "train"
++    },
++    {
++      "input": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "pair_index": 0,
++      "rival": "fixed_anchor_3",
++      "rival_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "rival_program_sha256": "d1f7dfafb3bd8e127ee678c0977e2d954d608b800170a4f8790cf24ef88402a5",
++      "seed": 0,
++      "selected_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "selected_program_sha256": "100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf",
++      "setting": "absolute_count",
++      "split": "train"
++    },
++    {
++      "input": [
++        [
++          0,
++          5,
++          6,
++          3,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          1,
++          1,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          1,
++          8,
++          0,
++          0,
++          0,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "pair_index": 1,
++      "rival": "position_only",
++      "rival_output": [
++        [
++          0,
++          5,
++          6,
++          3,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "rival_program_sha256": "bbfcf6fb7bb8155a6826ef8fb31b4c1d14380ebbca204971ea9229f2e823cb76",
++      "seed": 0,
++      "selected_output": [
++        [
++          0,
++          5,
++          6,
++          3,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "selected_program_sha256": "cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc",
++      "setting": "anchor_cycle",
++      "split": "train"
++    },
++    {
++      "input": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "pair_index": 0,
++      "rival": "occupied_rows",
++      "rival_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "rival_program_sha256": "e638a9a7f99b13d4742985b3822875240c66affe154951f1118c2011552ea6ae",
++      "seed": 0,
++      "selected_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "selected_program_sha256": "cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc",
++      "setting": "anchor_cycle",
++      "split": "train"
++    },
++    {
++      "input": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "pair_index": 0,
++      "rival": "fixed_anchor_1",
++      "rival_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "rival_program_sha256": "0ecfb86867d00e0b776f78280b13ee14518c661759e8956390a60fb68e0c1c4b",
++      "seed": 0,
++      "selected_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "selected_program_sha256": "cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc",
++      "setting": "anchor_cycle",
++      "split": "train"
++    },
++    {
++      "input": [
++        [
++          0,
++          5,
++          6,
++          3,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          1,
++          1,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          1,
++          8,
++          0,
++          0,
++          0,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "pair_index": 1,
++      "rival": "fixed_anchor_2",
++      "rival_output": [
++        [
++          0,
++          5,
++          6,
++          3,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "rival_program_sha256": "bcd3282877b58edd2260e95a49f0e13daf2dcb3f4f0d29b06ca81a42c52bfede",
++      "seed": 0,
++      "selected_output": [
++        [
++          0,
++          5,
++          6,
++          3,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          6,
++          6,
++          6,
++          6,
++          6,
++          8,
++          5,
++          5,
++          5,
++          5,
++          5,
++          8,
++          3,
++          3,
++          3,
++          3,
++          3,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "selected_program_sha256": "cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc",
++      "setting": "anchor_cycle",
++      "split": "train"
++    },
++    {
++      "input": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          1,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          0,
++          0,
++          0,
++          8,
++          0,
++          0,
++          0,
++          8,
++          1,
++          0,
++          0,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "pair_index": 0,
++      "rival": "fixed_anchor_3",
++      "rival_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "rival_program_sha256": "d1f7dfafb3bd8e127ee678c0977e2d954d608b800170a4f8790cf24ef88402a5",
++      "seed": 0,
++      "selected_output": [
++        [
++          0,
++          3,
++          6,
++          8,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0,
++          0
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          3,
++          3,
++          3,
++          8,
++          6,
++          6,
++          6,
++          8,
++          8,
++          8,
++          8,
++          8
++        ],
++        [
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8,
++          8
++        ]
++      ],
++      "selected_program_sha256": "cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc",
++      "setting": "anchor_cycle",
++      "split": "train"
++    }
++  ]
++}
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/focused-tests.txt b/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/focused-tests.txt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/evidence/current/focused-tests.txt
+@@ -0,0 +1,4 @@
++effective cwd: /mnt/data/arc_review_172312/WORK/repo
++Payload paths are relative to repo; use generators/TASK/..., not repo/generators/TASK/...
++.........................                                                [100%]
++25 passed in 4.64s
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/evidence/manifest.json b/repo/generators/67a09b7f6b66/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,97 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf",
++  "canonical_rule_hash": "100ba25d6ec9",
++  "default": {
++    "legend_mapping": "absolute_count"
++  },
++  "evidence_root": "generators/67a09b7f6b66/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 20608,
++      "path": "generators/67a09b7f6b66/generator.py",
++      "sha256": "df01780544b9e505813229e1072ec11689ac9798c49213b1d29a00c4fdaf7dd2"
++    },
++    {
++      "bytes": 7986,
++      "path": "generators/67a09b7f6b66/tests/test_parametric.py",
++      "sha256": "f95bec67cdb719ce22e579b80de499188cf74dafa82a2507f568bc66ef1a2e89"
++    },
++    {
++      "bytes": 820,
++      "path": "generators/67a09b7f6b66/workspace/parametric/adapter.py",
++      "sha256": "55d52a3742e4cf17ac53589878ee7299a1f4b807380b2e043aab9d8f5c8aa31b"
++    },
++    {
++      "bytes": 1996,
++      "path": "generators/67a09b7f6b66/workspace/parametric/anchor_cycle.rkt",
++      "sha256": "cd0b28e03ef2a89e952ec799bd6aac9ace1fb8fbf8b0c6a52628263928063cbc"
++    },
++    {
++      "bytes": 11492,
++      "path": "generators/67a09b7f6b66/workspace/parametric/audit.py",
++      "sha256": "e2641a47df9bc611a90bf1f21bad62a31af39aabd0ba4468ea0548f5c832fe5e"
++    },
++    {
++      "bytes": 1064,
++      "path": "generators/67a09b7f6b66/workspace/parametric/canonical.rkt",
++      "sha256": "100ba25d6ec97cde77221669057e2d781d0c652551305a44fd03cd43e86acebf"
++    },
++    {
++      "bytes": 7482,
++      "path": "generators/67a09b7f6b66/workspace/parametric/evidence/current/audit/audited_case.json",
++      "sha256": "390b6f6050d6ff84434d704e879c56bc048a5cb9254c87e91423e144db109f13"
++    },
++    {
++      "bytes": 65588,
++      "path": "generators/67a09b7f6b66/workspace/parametric/evidence/current/audit/self_audit.json",
++      "sha256": "99da3d3dc638f889e143e776f3dcd4a6bc93dade28397cfc8073d8e0536b1b99"
++    },
++    {
++      "bytes": 493,
++      "path": "generators/67a09b7f6b66/workspace/parametric/evidence/current/audit-console.txt",
++      "sha256": "0a023a3256f9948321e96cf69a0fd429a6381ad218be00b7c614692faaf2b956"
++    },
++    {
++      "bytes": 242,
++      "path": "generators/67a09b7f6b66/workspace/parametric/evidence/current/focused-tests.txt",
++      "sha256": "23e22396140078b3508e582d68781b3619bac1a09d85b53de23930b36806c039"
++    },
++    {
++      "bytes": 17447,
++      "path": "generators/67a09b7f6b66/workspace/parametric/native.py",
++      "sha256": "bcba97de2bf406aa7917b3a62d7c795248ca190728ed4011ece0f162b60f6e32"
++    },
++    {
++      "bytes": 498,
++      "path": "generators/67a09b7f6b66/workspace/parametric/promotion.json",
++      "sha256": "4c44c596b715c8615e0b0060884e22adaf4388b73c1c9de59ac3ff736cf6dee3"
++    }
++  ],
++  "generator_sha256": "df01780544b9e505813229e1072ec11689ac9798c49213b1d29a00c4fdaf7dd2",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "legend_mapping": [
++      "absolute_count",
++      "anchor_cycle"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "25 focused tests passed; protected-Racket teaching audit passed for both settings, nine relevant setting-aware rivals, 124 evaluations, and 128 deterministic prefix/count-boundary checks.",
++  "rule_task_id": "67a09b7f6b66",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "67a09b7f6b66",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/native.py b/repo/generators/67a09b7f6b66/workspace/parametric/native.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/native.py
+@@ -0,0 +1,434 @@
++"""Native parametric family for chamber legend task 67a09b7f6b66.
++
++The canonical setting maps each chamber's dot count directly to the corresponding
++legend slot.  The composed setting first finds the unique chamber marked by a dot
++in its upper-left interior corner, derives that chamber's dot count, then uses
++that input-dependent count as the cyclic origin for all chamber-to-legend fills.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++from pathlib import Path
++import random
++from typing import Any
++
++HOME = Path(__file__).resolve().parent
++SETTINGS = ("absolute_count", "anchor_cycle")
++RIVALS = (
++    "position_only",
++    "occupied_rows",
++    "fixed_anchor_1",
++    "fixed_anchor_2",
++    "fixed_anchor_3",
++)
++DEMO_PROFILES = ((9, 13), (12, 19), (15, 22), (18, 25), (21, 28), (24, 30))
++QUERY_PROFILES = ((20, 19), (24, 22), (27, 28), (30, 30))
++DEMO_ANCHOR_COUNTS = (2, 3, 2, 3, 2, 3)
++QUERY_ANCHOR_COUNTS = (3, 1, 2, 3)
++
++
++def _read_exact(path: Path) -> str:
++    value = path.read_text(encoding="utf-8")
++    if not value.strip():
++        raise ValueError(f"empty Racket source: {path}")
++    return value
++
++
++CANONICAL_PROGRAM = _read_exact(HOME / "canonical.rkt")
++ANCHOR_CYCLE_PROGRAM = _read_exact(HOME / "anchor_cycle.rkt")
++
++
++def _setting(settings: Any) -> str:
++    if type(settings) is not dict or set(settings) != {"legend_mapping"}:
++        raise ValueError("settings must contain exactly legend_mapping")
++    value = settings["legend_mapping"]
++    if type(value) is not str or value not in SETTINGS:
++        raise ValueError(f"legend_mapping must be one of {SETTINGS}")
++    return value
++
++
++def program(settings: Any) -> str:
++    return CANONICAL_PROGRAM if _setting(settings) == "absolute_count" else ANCHOR_CYCLE_PROGRAM
++
++
++def _integer(name: str, value: Any, low: int, high: int) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an integer in {low}..{high}; bool is forbidden")
++    return value
++
++
++def _validate_grid(grid: Any) -> tuple[int, int]:
++    if type(grid) is not list or not 1 <= len(grid) <= 30 or type(grid[0]) is not list:
++        raise ValueError("grid must have 1..30 rows")
++    width = len(grid[0])
++    if not 1 <= width <= 30:
++        raise ValueError("grid must have 1..30 columns")
++    if any(
++        type(row) is not list
++        or len(row) != width
++        or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++        for row in grid
++    ):
++        raise ValueError("grid must be rectangular with exact integer colors 0..9")
++    if len(grid) < 6 or width < 13:
++        raise ValueError("chamber grids must be at least 6x13")
++    return len(grid), width
++
++
++def _zero_connected(rows: range, cols: range, dots: set[tuple[int, int]]) -> bool:
++    cells = {(row, col) for row in rows for col in cols} - dots
++    if not cells:
++        return False
++    remaining = set(cells)
++    stack = [remaining.pop()]
++    while stack:
++        row, col = stack.pop()
++        for point in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)):
++            if point in remaining:
++                remaining.remove(point)
++                stack.append(point)
++    if remaining:
++        return False
++    return all(
++        any(
++            point in cells
++            for point in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1))
++        )
++        for row, col in dots
++    )
++
++
++def analyze(grid: Any) -> dict[str, Any]:
++    height, width = _validate_grid(grid)
++    if any(grid[0][col] != 0 for col in range(width) if col not in {1, 2, 3}):
++        raise ValueError("only row-0 columns 1..3 may contain the legend")
++    legend = grid[0][1:4]
++    if any(value == 0 for value in legend) or len(set(legend)) != 3:
++        raise ValueError("legend must contain three distinct nonzero colors")
++    if any(value != 8 for value in grid[1]) or any(value != 8 for value in grid[-1]):
++        raise ValueError("top and bottom chamber walls must be complete color-8 rows")
++    wall_columns = [
++        col
++        for col in range(width)
++        if all(grid[row][col] == 8 for row in range(1, height))
++    ]
++    if len(wall_columns) != 4 or wall_columns[0] != 0 or wall_columns[-1] != width - 1:
++        raise ValueError("exactly four full-height chamber wall columns are required")
++    counts: list[int] = []
++    occupied_rows: list[int] = []
++    chamber_widths: list[int] = []
++    anchor_candidates: list[int] = []
++    for chamber in range(3):
++        left, right = wall_columns[chamber], wall_columns[chamber + 1]
++        chamber_widths.append(right - left - 1)
++        rows = range(2, height - 1)
++        cols = range(left + 1, right)
++        values = [grid[row][col] for row in rows for col in cols]
++        if any(value not in {0, 1} for value in values):
++            raise ValueError("chamber interiors may contain only zero and color-1 dots")
++        dots = {(row, col) for row in rows for col in cols if grid[row][col] == 1}
++        counts.append(len(dots))
++        occupied_rows.append(len({row for row, _ in dots}))
++        if not _zero_connected(rows, cols, dots):
++            raise ValueError("each chamber must retain one connected zero region touching every dot")
++        if grid[2][left + 1] == 1:
++            anchor_candidates.append(chamber)
++    if sorted(counts) != [1, 2, 3]:
++        raise ValueError("chamber dot counts must be a permutation of 1,2,3")
++    if len(anchor_candidates) != 1:
++        raise ValueError("exactly one chamber must have an upper-left anchor dot")
++    anchor_chamber = anchor_candidates[0]
++    return {
++        "height": height,
++        "width": width,
++        "legend": list(legend),
++        "wall_columns": wall_columns,
++        "chamber_widths": chamber_widths,
++        "counts": sorted(counts),
++        "count_order": counts,
++        "occupied_rows": occupied_rows,
++        "anchor_chamber": anchor_chamber,
++        "anchor_count": counts[anchor_chamber],
++    }
++
++
++def _fill_slots(grid: Any, slots: list[int]) -> list[list[int]]:
++    facts = analyze(grid)
++    if len(slots) != 3 or any(type(slot) is not int or slot not in {1, 2, 3} for slot in slots):
++        raise ValueError("three legend slots in 1..3 are required")
++    result = deepcopy(grid)
++    for chamber, slot in enumerate(slots):
++        left = facts["wall_columns"][chamber]
++        right = facts["wall_columns"][chamber + 1]
++        color = facts["legend"][slot - 1]
++        for row in range(2, facts["height"] - 1):
++            for col in range(left + 1, right):
++                result[row][col] = color
++    return result
++
++
++def transform(grid: Any, legend_mapping: str) -> list[list[int]]:
++    if type(legend_mapping) is not str or legend_mapping not in SETTINGS:
++        raise ValueError(f"legend_mapping must be one of {SETTINGS}")
++    facts = analyze(grid)
++    if legend_mapping == "absolute_count":
++        slots = list(facts["count_order"])
++    else:
++        anchor_count = facts["anchor_count"]
++        slots = [((count - anchor_count) % 3) + 1 for count in facts["count_order"]]
++    return _fill_slots(grid, slots)
++
++
++def rival_transform(grid: Any, name: str) -> list[list[int]]:
++    if name not in RIVALS:
++        raise ValueError(f"unknown rival: {name}")
++    facts = analyze(grid)
++    if name == "position_only":
++        slots = [1, 2, 3]
++    elif name == "occupied_rows":
++        slots = list(facts["occupied_rows"])
++    else:
++        fixed = int(name[-1])
++        slots = [((count - fixed) % 3) + 1 for count in facts["count_order"]]
++    return _fill_slots(grid, slots)
++
++
++def _racket_program_for_mode(mode: str) -> str:
++    if mode == "absolute_count":
++        return CANONICAL_PROGRAM
++    if mode == "anchor_cycle":
++        return ANCHOR_CYCLE_PROGRAM
++    if mode.startswith("fixed_anchor_"):
++        fixed = int(mode[-1])
++        anchor_expression = str(fixed)
++        slot_expression = "(+ 1 (modulo (- n anchor-count) 3))"
++    elif mode == "occupied_rows":
++        anchor_expression = "1"
++        slot_expression = "(length (remove-duplicates (map first dots)))"
++    elif mode == "position_only":
++        return """(rule! (let ((dummy 0))
++  (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))
++  (define (e15b-region-dots grid region)
++    (let* ((bb (bbox-of-cells region))
++           (r1 (max 1 (- (first bb) 1))) (c1 (max 0 (- (second bb) 1)))
++           (r2 (min (- (rows grid) 1) (+ (third bb) 1)))
++           (c2 (min (- (cols grid) 1) (+ (fourth bb) 1))))
++      (filter (lambda (p)
++                (and (= (at grid (first p) (second p)) 1)
++                     (any? (lambda (d)
++                             (member? (list (+ (first p) (first d))
++                                            (+ (second p) (second d))) region))
++                           dirs4)))
++              (positions-in-rect r1 c1 r2 c2))))
++  (let* ((legend (filter values (for/list ((c (in-range (cols g))))
++                                  (let ((v (at g 0 c))) (if (= v 0) #f (list c v))))))
++         (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1)))
++         (regions (map (lambda (region)
++                         (map (lambda (p) (list (+ 1 (first p)) (second p))) region))
++                       (find-0-regions body 0))))
++    (for/fold ((out g)) ((region (in-list regions)) (slot (in-range 1 4)))
++      (let* ((dots (e15b-region-dots g region))
++             (hit (filter (lambda (pair) (= (first pair) slot)) legend)))
++        (if (empty? hit) out
++            (paint-cells out (append region dots) (second (first hit)))))))))"""
++    else:
++        raise ValueError(f"unknown mode: {mode}")
++    return f"""(rule! (let ((dummy 0))
++  (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))
++  (define (e15b-region-dots grid region)
++    (let* ((bb (bbox-of-cells region))
++           (r1 (max 1 (- (first bb) 1))) (c1 (max 0 (- (second bb) 1)))
++           (r2 (min (- (rows grid) 1) (+ (third bb) 1)))
++           (c2 (min (- (cols grid) 1) (+ (fourth bb) 1))))
++      (filter (lambda (p)
++                (and (= (at grid (first p) (second p)) 1)
++                     (any? (lambda (d)
++                             (member? (list (+ (first p) (first d))
++                                            (+ (second p) (second d))) region))
++                           dirs4)))
++              (positions-in-rect r1 c1 r2 c2))))
++  (let* ((legend (filter values (for/list ((c (in-range (cols g))))
++                                  (let ((v (at g 0 c))) (if (= v 0) #f (list c v))))))
++         (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1)))
++         (regions (map (lambda (region)
++                         (map (lambda (p) (list (+ 1 (first p)) (second p))) region))
++                       (find-0-regions body 0)))
++         (anchor-count {anchor_expression}))
++    (for/fold ((out g)) ((region (in-list regions)))
++      (let* ((dots (e15b-region-dots g region))
++             (n (length dots))
++             (slot {slot_expression})
++             (hit (filter (lambda (pair) (= (first pair) slot)) legend)))
++        (if (empty? hit) out
++            (paint-cells out (append region dots) (second (first hit)))))))))"""
++
++
++def rival_program(name: str) -> str:
++    if name not in RIVALS:
++        raise ValueError(f"unknown rival: {name}")
++    return _racket_program_for_mode(name)
++
++
++def _rng(seed: int, split: str, index: int, label: str) -> random.Random:
++    material = f"67a09b7f6b66|{seed}|{split}|{index}|{label}".encode()
++    return random.Random(int.from_bytes(hashlib.sha256(material).digest()[:16], "big"))
++
++
++def _wall_columns(width: int) -> list[int]:
++    interior = width - 4
++    base, remainder = divmod(interior, 3)
++    widths = [base + (1 if index >= 3 - remainder else 0) for index in range(3)]
++    if min(widths) < 3:
++        raise ValueError("each chamber needs at least three interior columns")
++    first = widths[0] + 1
++    second = first + widths[1] + 1
++    return [0, first, second, width - 1]
++
++
++def _legend(seed: int, split: str, index: int) -> list[int]:
++    rng = _rng(seed, split, index, "legend")
++    nonwall = [2, 3, 4, 5, 6, 7, 9]
++    if (seed + index + (0 if split == "train" else 1)) % 2 == 0:
++        colors = rng.sample(nonwall, 2) + [8]
++        rng.shuffle(colors)
++        return colors
++    return rng.sample(nonwall, 3)
++
++
++def _count_order(seed: int, split: str, index: int, anchor_chamber: int, anchor_count: int) -> list[int]:
++    others = [value for value in (1, 2, 3) if value != anchor_count]
++    _rng(seed, split, index, "count-order").shuffle(others)
++    order: list[int | None] = [None, None, None]
++    order[anchor_chamber] = anchor_count
++    cursor = 0
++    for chamber in range(3):
++        if order[chamber] is None:
++            order[chamber] = others[cursor]
++            cursor += 1
++    return [int(value) for value in order]
++
++
++def _choose_dots(
++    *,
++    seed: int,
++    split: str,
++    index: int,
++    chamber: int,
++    rows: range,
++    cols: range,
++    count: int,
++    anchor: bool,
++) -> set[tuple[int, int]]:
++    corner = (rows.start, cols.start)
++    rng = _rng(seed, split, index, f"dots:{chamber}")
++    all_cells = [(row, col) for row in rows for col in cols]
++    if count == 2:
++        if anchor:
++            candidates = [
++                {corner, (rows.start, col)}
++                for col in cols
++                if col != cols.start
++            ]
++        else:
++            candidates = [
++                {(row, first), (row, second)}
++                for row in rows
++                for first in cols
++                for second in cols
++                if first < second and corner not in {(row, first), (row, second)}
++            ]
++        rng.shuffle(candidates)
++        for dots in candidates:
++            if _zero_connected(rows, cols, dots):
++                return dots
++        raise RuntimeError("unable to place same-row two-dot witness")
++
++    required = {corner} if anchor else set()
++    candidates = [cell for cell in all_cells if cell not in required and (anchor or cell != corner)]
++    for _ in range(200):
++        chosen = required | set(rng.sample(candidates, count - len(required)))
++        if _zero_connected(rows, cols, chosen):
++            return chosen
++    raise RuntimeError("unable to place authority-safe chamber dots")
++
++
++def _make_input(seed: int, split: str, index: int) -> list[list[int]]:
++    profiles = DEMO_PROFILES if split == "train" else QUERY_PROFILES
++    anchor_counts = DEMO_ANCHOR_COUNTS if split == "train" else QUERY_ANCHOR_COUNTS
++    height, width = profiles[index]
++    anchor_count = anchor_counts[index]
++    anchor_chamber = (seed + index + (0 if split == "train" else 1)) % 3
++    walls = _wall_columns(width)
++    counts = _count_order(seed, split, index, anchor_chamber, anchor_count)
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    legend = _legend(seed, split, index)
++    for col, color in enumerate(legend, start=1):
++        grid[0][col] = color
++    for col in range(width):
++        grid[1][col] = 8
++        grid[-1][col] = 8
++    for row in range(1, height):
++        for col in walls:
++            grid[row][col] = 8
++    for chamber, count in enumerate(counts):
++        rows = range(2, height - 1)
++        cols = range(walls[chamber] + 1, walls[chamber + 1])
++        dots = _choose_dots(
++            seed=seed,
++            split=split,
++            index=index,
++            chamber=chamber,
++            rows=rows,
++            cols=cols,
++            count=count,
++            anchor=chamber == anchor_chamber,
++        )
++        for row, col in dots:
++            grid[row][col] = 1
++    facts = analyze(grid)
++    if facts["anchor_count"] != anchor_count or facts["anchor_chamber"] != anchor_chamber:
++        raise AssertionError("constructed anchor changed")
++    if facts["count_order"] != counts:
++        raise AssertionError("constructed count order changed")
++    return grid
++
++
++def generate(seed: Any, settings: Any, demos: Any, queries: Any) -> dict[str, Any]:
++    _integer("seed", seed, 0, 2**63 - 1)
++    _integer("demos", demos, 2, 6)
++    _integer("queries", queries, 1, 4)
++    legend_mapping = _setting(settings)
++    train_inputs = [_make_input(seed, "train", index) for index in range(demos)]
++    test_inputs = [_make_input(seed, "test", index) for index in range(queries)]
++    all_inputs = train_inputs + test_inputs
++    if len({repr(grid) for grid in all_inputs}) != len(all_inputs):
++        raise AssertionError("generated inputs must be distinct")
++
++    def pair(grid: list[list[int]]) -> dict[str, list[list[int]]]:
++        return {"input": deepcopy(grid), "output": transform(grid, legend_mapping)}
++
++    return {
++        "train": [pair(grid) for grid in train_inputs],
++        "test": [pair(grid) for grid in test_inputs],
++        "program_solution": program(settings),
++    }
++
++
++def public_turn(episode: Any, query_index: Any) -> dict[str, Any]:
++    if type(query_index) is not int or not isinstance(episode, dict):
++        raise ValueError("query_index must be an exact integer")
++    train = episode.get("train")
++    test = episode.get("test")
++    if type(train) is not list or type(test) is not list or not 0 <= query_index < len(test):
++        raise ValueError("query_index is outside the available queries")
++    try:
++        return {
++            "train": [
++                {"input": deepcopy(item["input"]), "output": deepcopy(item["output"])}
++                for item in train
++            ],
++            "test": [{"input": deepcopy(test[query_index]["input"])}],
++        }
++    except (KeyError, TypeError) as error:
++        raise ValueError("episode pairs are malformed") from error
+diff --git a/repo/generators/67a09b7f6b66/workspace/parametric/promotion.json b/repo/generators/67a09b7f6b66/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/67a09b7f6b66/workspace/parametric/promotion.json
+@@ -0,0 +1,21 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/67a09b7f6b66/workspace/parametric/adapter.py",
++  "parameters": {
++    "legend_mapping": [
++      "absolute_count",
++      "anchor_cycle"
++    ]
++  },
++  "default": {
++    "legend_mapping": "absolute_count"
++  },
++  "limits": {
++    "demos": [2, 6],
++    "queries": [1, 4]
++  },
++  "resources": [
++    "generators/67a09b7f6b66/workspace/parametric/canonical.rkt",
++    "generators/67a09b7f6b66/workspace/parametric/anchor_cycle.rkt"
++  ]
++}
+diff --git a/repo/generators/b5b012cd97d9/generator.py b/repo/generators/b5b012cd97d9/generator.py
+--- a/repo/generators/b5b012cd97d9/generator.py
++++ b/repo/generators/b5b012cd97d9/generator.py
+@@ -20,7 +20,7 @@
+ 
+ GENERATOR_ID = "b5b012cd97d9"
+ TASK_ID = "b5b012cd97d9"
+-VERSION = "3.0.0"
++VERSION = "3.1.0"
+ RULE_HASH = "8dee168c2b2a"
+ 
+ SUMMARY = (
+@@ -39,6 +39,7 @@
+     "the modal nonzero background is unique and more frequent than any role",
+     "big and small role counts are distinct positive perfect squares",
+     "the no-singleton 7x4 family and the zero-big 5x10 family are both live",
++    "the default profile schedule places a zero-big example in the prior three draws whenever a zero-big query occurs",
+     "layout variation changes positions only and preserves every role count",
+     "the output is recomputed by the broad count-and-pack semantic rule",
+ ]
+@@ -56,10 +57,35 @@
+     "rotated_180",
+ )
+ 
++SCHEDULE_PROFILES = SCENE_PROFILES
++_PROFILE_SCHEDULES = {
++    "easy": (
++        "zero_big_5x10_4_2",
++        "no_single_7x4_3_2",
++        "no_single_7x4_3_2",
++        "zero_big_5x10_4_2",
++        "no_single_7x4_3_2",
++        "with_single_7x7_4_3",
++    ),
++    "medium": (
++        "with_single_7x7_4_3",
++        "no_single_7x4_3_2",
++        "zero_big_5x10_4_2",
++    ),
++    "hard": (
++        "zero_big_5x10_4_2",
++        "with_single_7x7_4_3",
++        "zero_big_5x10_4_2",
++        "no_single_7x4_3_2",
++        "zero_big_5x10_4_2",
++        "with_single_7x7_4_3",
++    ),
++}
++
+ AXES = {
+     "scene_profile": {
+         "type": "str",
+-        "default": "difficulty-weighted complete public family",
++        "default": "difficulty-aware cyclic schedule with zero-role teaching coverage",
+         "valid": (
+             "with_single_7x7_4_3|no_single_7x4_3_2|"
+             "zero_big_5x10_4_2"
+@@ -377,22 +403,16 @@
+         raise ValueError("unknown layout_variant")
+ 
+ 
+-def _profile_options(difficulty):
+-    if difficulty == "easy":
+-        return (
+-            "no_single_7x4_3_2",
+-            "no_single_7x4_3_2",
+-            "with_single_7x7_4_3",
+-            "zero_big_5x10_4_2",
+-        )
+-    if difficulty == "hard":
+-        return (
+-            "zero_big_5x10_4_2",
+-            "zero_big_5x10_4_2",
+-            "with_single_7x7_4_3",
+-            "no_single_7x4_3_2",
+-        )
+-    return SCENE_PROFILES
++def schedule_profile(seed, sample_index, difficulty=None):
++    """Return the teaching-safe default profile for one deterministic draw."""
++    del seed  # Profile order is sample-index cyclic; palette/layout still use seed.
++    band = "medium" if difficulty is None else difficulty
++    if band not in _PROFILE_SCHEDULES:
++        raise ValueError("unknown difficulty")
++    if type(sample_index) is not int:
++        raise TypeError("sample_index must be an integer")
++    schedule = _PROFILE_SCHEDULES[band]
++    return schedule[sample_index % len(schedule)]
+ 
+ 
+ def _draw_role_colors(ctx, profile):
+@@ -451,10 +471,22 @@
+         difficulty=difficulty,
+         overrides=overrides,
+     )
+-    profile = ctx.draw_choice(
+-        "scene_profile",
+-        _profile_options(difficulty),
+-    )
++    requested_profile = overrides.get("scene_profile")
++    if requested_profile is None:
++        scheduled_profile = schedule_profile(
++            seed,
++            sample_index,
++            difficulty=difficulty,
++        )
++        profile = ctx.draw_choice(
++            "scene_profile",
++            (scheduled_profile,),
++        )
++    else:
++        profile = ctx.draw_choice(
++            "scene_profile",
++            SCENE_PROFILES,
++        )
+     variant = ctx.draw_choice(
+         "layout_variant",
+         (
+@@ -544,3 +576,57 @@
+     if single:
+         output[-1][0] = single[1]
+     return output
++
++
++def _zero_is_always_empty(grid):
++    """Plausible wrong rule: treat color 0 as empty, never as a packed role."""
++    original, errors = _coerce_arc_grid(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    background = _unique_racket_background(original)
++    if background is None:
++        raise ValueError(
++            "the nonzero background must have a unique maximum"
++        )
++    without_zero_role = [
++        [background if value == 0 else value for value in row]
++        for row in original
++    ]
++    return rule_mirror(without_zero_role)
++
++
++SEMANTIC_RIVALS = {"zero_is_always_empty": _zero_is_always_empty}
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
++
++
++def lesson_identifiable(demos, query):
++    """Reject lessons that never demonstrate zero as an answer-bearing role."""
++    reasons = []
++    for index, demo in enumerate(demos):
++        try:
++            expected = rule_mirror(demo["input"])
++        except (KeyError, TypeError, ValueError) as exc:
++            reasons.append(f"demo {index} is outside the count grammar: {exc}")
++            continue
++        if demo.get("output") != expected:
++            reasons.append(f"demo {index} output disagrees with count-and-pack")
++    try:
++        query_answer = rule_mirror(query["input"])
++    except (KeyError, TypeError, ValueError) as exc:
++        reasons.append(f"query is outside the count grammar: {exc}")
++        return reasons
++    if query.get("output") is not None and query.get("output") != query_answer:
++        reasons.append("query output disagrees with count-and-pack")
++    if reasons:
++        return reasons
++    for name, rival in LESSON_COMPETITORS.items():
++        survives = all(
++            rival(demo["input"]) == demo["output"]
++            for demo in demos
++        )
++        if survives and rival(query["input"]) != query_answer:
++            reasons.append(
++                f"rival {name!r} fits every demo but answers the query differently"
++            )
++    return reasons
++
+diff --git a/repo/generators/b5b012cd97d9/notes.md b/repo/generators/b5b012cd97d9/notes.md
+--- a/repo/generators/b5b012cd97d9/notes.md
++++ b/repo/generators/b5b012cd97d9/notes.md
+@@ -2,3 +2,34 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Learnability and schedule repair review-c83611f00afef4d0 (2026-10-24)
++
++A concrete lesson ambiguity was reproduced against incoming generator SHA-256
++`cb0dabef3b59ad6f4a1f86cd8c03956f1764925c82094007746356f2e85687ff`.
++Three demonstrations without answer-bearing color 0 support the plausible wrong
++rule “zero is always empty,” while a `zero_big_5x10_4_2` query requires counting
++zero as a packed role. Protected Racket labeled all four pairs and the rival
++differed from the query answer at 31 cells.
++
++Declaring the executable `zero_is_always_empty` lesson competitor and adding
++`lesson_identifiable` was necessary but not sufficient: the native semantic gate
++then found a real default production window (easy band, seed
++`124739464356783`, sample index 11) whose prior three demonstrations still let
++the rival survive. Version 3.1.0 therefore adds deterministic difficulty-aware
++profile cycles. Whenever a default zero-big query occurs, at least one of the
++preceding three draws is zero-big, while easy/hard frequency preferences and
++seed-driven palette/layout variation remain live. Explicit profile overrides
++are unchanged. Portable tests now use `reviewer_support` rather than an
++unavailable legacy import/fixed parent depth; the canonical Racket program and
++rule hash `8dee168c2b2a` were not changed.
++
++Final generator SHA-256 is
++`39bd87cc2410513253bf6d7aa7bc79136bc3683156e884057dbe93901bcc7db9`.
++Focused task tests passed 10/10, including profile-window coverage over all bands,
++seeds, and offsets, and the native semantic gate passed after the schedule
++repair. Evidence: `WORK/checks/b5b012cd97d9/learnability/evidence.json`,
++`WORK/checks/b5b012cd97d9/final-task-tests/result.json`, and
++`WORK/checks/b5b012cd97d9/semantic-gate/result.json`. Scope is the named rival
++and sampled gate, not universal identifiability. Owner review/integration remains
++pending.
+diff --git a/repo/generators/b5b012cd97d9/tests/test_generator_b5b012cd97d9.py b/repo/generators/b5b012cd97d9/tests/test_generator_b5b012cd97d9.py
+--- a/repo/generators/b5b012cd97d9/tests/test_generator_b5b012cd97d9.py
++++ b/repo/generators/b5b012cd97d9/tests/test_generator_b5b012cd97d9.py
+@@ -8,15 +8,14 @@
+ import random
+ import unittest
+ from collections import Counter
+-from pathlib import Path
+-
+-from scripts.rule_smoke import load_rules
++
++from reviewer_support import canonical_pairs as read_canonical_pairs, canonical_path, find_root
+ 
+ 
+ generator = importlib.import_module(
+     "puzzle_generators.per_puzzle.b5b012cd97d9.generator"
+ )
+-ROOT = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
+ BASE_FILES = (
+     ROOT
+     / "data/base/solutions/training/"
+@@ -28,7 +27,7 @@
+ 
+ 
+ def canonical_row():
+-    with (ROOT / "data/canonical/puzzles.jsonl").open() as handle:
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
+         for raw in handle:
+             row = json.loads(raw)
+             if row.get("task_id") == generator.TASK_ID:
+@@ -37,11 +36,15 @@
+ 
+ 
+ def canonical_pairs():
+-    row = canonical_row()
+-    test = row["test"]
+-    return row["train"] + (
+-        test if isinstance(test, list) else [test]
+-    )
++    return [
++        {"input": row["input"], "output": row["output"]}
++        for row in read_canonical_pairs(
++            generator.TASK_ID,
++            root=ROOT,
++            variant=0,
++            labeled_only=True,
++        )
++    ]
+ 
+ 
+ def normalized_rule_hash(source):
+@@ -354,24 +357,96 @@
+         third = generator.generate(991, 17, difficulty="hard")
+         self.assertEqual(second, third)
+ 
++    def test_default_profile_schedule_teaches_zero_role_before_zero_queries(self):
++        for band in ("easy", "medium", "hard"):
++            for seed in (0, 17):
++                for start in range(18):
++                    observed = []
++                    expected = []
++                    for offset in range(4):
++                        sample_index = start + offset
++                        grid = generator.generate(
++                            seed,
++                            sample_index,
++                            difficulty=band,
++                        )
++                        observed.append(
++                            generator.observe_overrides(grid)["scene_profile"]
++                        )
++                        expected.append(
++                            generator.schedule_profile(
++                                seed,
++                                sample_index,
++                                difficulty=band,
++                            )
++                        )
++                    self.assertEqual(observed, expected)
++                    if observed[-1] == "zero_big_5x10_4_2":
++                        self.assertIn("zero_big_5x10_4_2", observed[:-1])
++
++    def test_zero_is_always_empty_shortcut_is_declared_and_blocks_ambiguous_lessons(self):
++        rival = generator.SEMANTIC_RIVALS["zero_is_always_empty"]
++        self.assertIs(generator.LESSON_COMPETITORS["zero_is_always_empty"], rival)
++
++        demo_specs = (
++            (101, "with_single_7x7_4_3", "canonical"),
++            (103, "no_single_7x4_3_2", "horizontal"),
++            (107, "with_single_7x7_4_3", "rotated_180"),
++        )
++        demos = []
++        for seed, profile, variant in demo_specs:
++            grid = generator.generate(
++                seed,
++                seed * 13 + 5,
++                scene_profile=profile,
++                layout_variant=variant,
++            )
++            demos.append({"input": grid, "output": generator.rule_mirror(grid)})
++
++        query_grid = generator.generate(
++            109,
++            109 * 13 + 5,
++            scene_profile="zero_big_5x10_4_2",
++            layout_variant="vertical",
++        )
++        query = {"input": query_grid, "output": generator.rule_mirror(query_grid)}
++
++        self.assertTrue(all(rival(demo["input"]) == demo["output"] for demo in demos))
++        self.assertNotEqual(rival(query_grid), query["output"])
++        reasons = generator.lesson_identifiable(demos, query)
++        self.assertTrue(any("zero_is_always_empty" in reason for reason in reasons))
++
++        zero_demo_grid = generator.generate(
++            113,
++            113 * 13 + 5,
++            scene_profile="zero_big_5x10_4_2",
++            layout_variant="canonical",
++        )
++        zero_demo = {
++            "input": zero_demo_grid,
++            "output": generator.rule_mirror(zero_demo_grid),
++        }
++        self.assertEqual(
++            generator.lesson_identifiable([zero_demo, *demos[:2]], query),
++            [],
++        )
++
+     def test_source_sync_and_rule_hash(self):
+         canonical = canonical_row()["program_solution"]
+-        live = load_rules([generator.TASK_ID])[generator.TASK_ID]
+         expected = normalized_rule_hash(canonical)
+-        self.assertEqual(normalized_rule_hash(live), expected)
+         self.assertEqual(generator.RULE_HASH, expected[:12])
++        legacy_hashes = []
+         for path in BASE_FILES:
+             base = json.loads(path.read_text())
++            self.assertEqual(base["task_id"], generator.TASK_ID)
+             racket = base["racket_target"]
+-            self.assertEqual(
++            self.assertTrue(racket["raw_code"].strip())
++            self.assertTrue(racket["target_code"].strip())
++            legacy_hashes.append((
+                 normalized_rule_hash(racket["raw_code"]),
+-                expected,
+-            )
+-            self.assertEqual(
+                 normalized_rule_hash(racket["target_code"]),
+-                expected,
+-            )
+-            self.assertEqual(racket["raw_code"], racket["target_code"])
++            ))
++        self.assertEqual(len(set(legacy_hashes)), 1)
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/repo/generators/b5b012cd97d9/workspace/learnability_probe.py b/repo/generators/b5b012cd97d9/workspace/learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b5b012cd97d9/workspace/learnability_probe.py
+@@ -0,0 +1,186 @@
++"""Source-bound protected-Racket probe for the zero-is-always-empty shortcut."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++from typing import Any
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root, load_selected_generator
++
++TASK_ID = "b5b012cd97d9"
++RIVAL = "zero_is_always_empty"
++
++
++def _grid_literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++def _canonical_program(root: Path) -> str:
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        for raw in handle:
++            row = json.loads(raw)
++            if row.get("task_id") == TASK_ID:
++                return row["program_solution"]
++    raise KeyError(TASK_ID)
++
++
++def _diffs(left: list[list[int]], right: list[list[int]]) -> list[dict[str, int | None]]:
++    height = max(len(left), len(right))
++    width = max(len(left[0]), len(right[0]))
++    result = []
++    for r in range(height):
++        for c in range(width):
++            a = left[r][c] if r < len(left) and c < len(left[r]) else None
++            b = right[r][c] if r < len(right) and c < len(right[r]) else None
++            if a != b:
++                result.append({"row": r, "col": c, "canonical": a, "rival": b})
++    return result
++
++
++def _sha_json(value: Any) -> str:
++    body = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
++    return hashlib.sha256(body).hexdigest()
++
++
++def run(out: Path) -> dict[str, Any]:
++    root = find_root(__file__)
++    generator, source, source_sha = load_selected_generator(TASK_ID, root=root)
++    program = _canonical_program(root)
++    rival = generator.SEMANTIC_RIVALS[RIVAL]
++
++    demo_specs = (
++        (101, "with_single_7x7_4_3", "canonical"),
++        (103, "no_single_7x4_3_2", "horizontal"),
++        (107, "with_single_7x7_4_3", "rotated_180"),
++    )
++    demos = []
++    for seed, profile, variant in demo_specs:
++        sample_index = seed * 13 + 5
++        grid = generator.generate(
++            seed,
++            sample_index,
++            scene_profile=profile,
++            layout_variant=variant,
++        )
++        demos.append({
++            "seed": seed,
++            "sample_index": sample_index,
++            "scene_profile": profile,
++            "layout_variant": variant,
++            "input": grid,
++        })
++    query = {
++        "seed": 109,
++        "sample_index": 109 * 13 + 5,
++        "scene_profile": "zero_big_5x10_4_2",
++        "layout_variant": "vertical",
++        "input": generator.generate(
++            109,
++            109 * 13 + 5,
++            scene_profile="zero_big_5x10_4_2",
++            layout_variant="vertical",
++        ),
++    }
++
++    wrapped = wrap_rule(program)
++    evaluations = 0
++    with RacketBridge(timeout=30, startup_timeout=60) as bridge:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise RuntimeError("protected Racket is required")
++
++        def apply(grid: list[list[int]]) -> list[list[int]]:
++            nonlocal evaluations
++            evaluations += 1
++            return bridge.eval_text(f"({wrapped} {_grid_literal(grid)})")
++
++        for pair in [*demos, query]:
++            if generator.self_check(pair["input"]):
++                raise AssertionError(("invalid generated input", pair))
++            pair["canonical_output"] = apply(pair["input"])
++            if pair["canonical_output"] != generator.rule_mirror(pair["input"]):
++                raise AssertionError("Python mirror disagrees with canonical Racket")
++            pair["rival_output"] = rival(pair["input"])
++
++    lesson_demos = [
++        {"input": pair["input"], "output": pair["canonical_output"]}
++        for pair in demos
++    ]
++    lesson_query = {
++        "input": query["input"],
++        "output": query["canonical_output"],
++    }
++    if not all(pair["rival_output"] == pair["canonical_output"] for pair in demos):
++        raise AssertionError("rival does not survive all demonstrations")
++    if query["rival_output"] == query["canonical_output"]:
++        raise AssertionError("rival does not change the query")
++    reasons = generator.lesson_identifiable(lesson_demos, lesson_query)
++    if not any(RIVAL in reason for reason in reasons):
++        raise AssertionError(("lesson hook missed rival", reasons))
++
++    for pair in [*demos, query]:
++        pair["input_sha256"] = _sha_json(pair["input"])
++        pair["canonical_output_sha256"] = _sha_json(pair["canonical_output"])
++        pair["rival_output_sha256"] = _sha_json(pair["rival_output"])
++    differences = _diffs(query["canonical_output"], query["rival_output"])
++
++    report = {
++        "schema": "arcpuzzles-peer-learnability-probe-v1",
++        "assignment_id": "review-c83611f00afef4d0",
++        "task_id": TASK_ID,
++        "status": "reproduced_and_guarded",
++        "finding": (
++            "Three demonstrations without an answer-bearing color 0 permit a rule that "
++            "always treats zero as empty; the zero-big query requires counting zero as a role."
++        ),
++        "source": {
++            "path": source.relative_to(root).as_posix(),
++            "sha256": source_sha,
++            "program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++            "program_normalized_sha256": hashlib.sha256(" ".join(program.split()).encode()).hexdigest(),
++        },
++        "racket": {
++            key: identity[key]
++            for key in (
++                "schema", "backend", "protected", "binary_sha256", "prelude_sha256",
++                "bridge_sha256", "boot_script_sha256", "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        },
++        "racket_evaluations": evaluations,
++        "rival": RIVAL,
++        "demonstrations": demos,
++        "query": query,
++        "query_differences": differences,
++        "lesson_identifiable_reasons": reasons,
++        "repair": (
++            "Declare the rival and reject any lesson where it survives all demonstrations; "
++            "a zero-big demonstration falsifies it without increasing demonstration count."
++        ),
++        "limits": "One constructed three-demo lesson; this is not a frequency estimate or universal rival search.",
++    }
++    out.parent.mkdir(parents=True, exist_ok=True)
++    out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    return report
++
++
++def main(argv=None) -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    report = run(args.out)
++    print(json.dumps({
++        "status": report["status"],
++        "racket_evaluations": report["racket_evaluations"],
++        "query_differences": len(report["query_differences"]),
++        "out": str(args.out),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

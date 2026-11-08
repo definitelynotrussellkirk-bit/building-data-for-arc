@@ -1,0 +1,6 @@
+# 5fbb6efffb19
+
+0-bg grid (h ∈ 6-10, w ∈ 8-13) with: (a) ONE COLOR-2 RED MARKER placed at a random interior position; (b) ONE NON-BRANCHING BLUE (COLOR 1) WIRE drawn from _PATHS bank (5 snake-like paths of length 4-8 cells), attached to the red marker via cell (0, 1) of the path anchoring next to the marker; (c) STRAY_COUNT ∈ 0-2 ISOLATED BLUE COMPONENTS — small 2-4 cell color-1 distractor blocks placed non-adjacent to the marker or its wire (1-cell padding). Rule (LOCATE THE RED MARKER, FIND THE BLUE WIRE ATTACHED TO IT, MEASURE ITS LENGTH, OUTPUT A COLOR-6 STRIP OF THAT LENGTH): FIND the unique COLOR-2 marker cell. WALK from the marker into the orthogonally adjacent COLOR-1 cell; follow the non-branching blue wire (each step picks the unique next-cell that isn't where we came from). COUNT the wire's TOTAL LENGTH L. STRAY BLUE components (not attached to marker) are IGNORED. OUTPUT a FRESH 1×L GRID painted uniformly in COLOR 6 (magenta). Net: the red marker selects which wire to measure; output is a magenta strip of that wire's length. Flagged intrinsic-low (uniq_out=5): wire lengths 4-8 × single color = ~5 canonical outputs.
+
+Kind: `per_puzzle`. Imported version: `3.0.0`.
+Approval is derived by the catalog from current code and retained evidence.

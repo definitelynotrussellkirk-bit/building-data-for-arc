@@ -1,0 +1,1 @@
+F1: The packet recommends catalog task-tests for new public IDs, but they fail with “Unknown puzzle” before owner registration. Offer a preflight-aware direct/relocated test command for these IDs; the returned checks/verify_relocation.py demonstrates that route without altering catalog authority.

@@ -1,0 +1,38 @@
+(rule! (lambda (g)
+  (let* ((h (rows g)) (w (cols g))
+         ;; Positions of every gray(5) cell
+         (gray-cells (find-color g 5))
+         ;; Top edge of the gray bbox
+         (fr1 (apply min (map first gray-cells)))
+         ;; Left edge of the gray bbox
+         (fc1 (apply min (map second gray-cells)))
+         ;; Bottom edge of the gray bbox
+         (fr2 (apply max (map first gray-cells)))
+         ;; Right edge of the gray bbox
+         (fc2 (apply max (map second gray-cells)))
+         (ir1 (+ fr1 1)) (ic1 (+ fc1 1))
+         (ir2 (- fr2 1)) (ic2 (- fc2 1))
+         ;; Positions matching a per-cell condition
+         (markers (for*/list ((r (range 0 h)) (c (range 0 w))
+                    #:when (and (not (= (cell-at g r c) 0)) (not (= (cell-at g r c) 5))))
+                   (list r c (cell-at g r c))))
+         (m1 (first markers)) (m2 (second markers))
+         (cr (quotient (+ fr1 fr2) 2))
+         (cc (quotient (+ fc1 fc2) 2))
+         (m1qr (if (< (first m1) cr) 0 1))
+         (m1qc (if (< (second m1) cc) 0 1))
+         (m1p (remainder (+ m1qr m1qc) 2))
+         ;; Mutable lookup table for result
+         (result (make-hash)))
+    (for* ((r (range 0 h)) (c (range 0 w)))
+      (hash-set! result (list r c) (cell-at g r c)))
+    (let ((hmid (quotient (+ ir1 ir2) 2))
+          (wmid (quotient (+ ic1 ic2) 2)))
+      (for* ((r (range ir1 (+ ir2 1))) (c (range ic1 (+ ic2 1))))
+        (let* ((qr (if (< r (+ hmid 1)) 0 1))
+               (qc (if (< c (+ wmid 1)) 0 1))
+               (p (remainder (+ qr qc) 2))
+               (color (if (= p m1p) (third m1) (third m2))))
+          (hash-set! result (list r c) color))))
+    (grid-from-fn h w
+      (lambda (r c) (hash-ref result (list r c) 0))))))

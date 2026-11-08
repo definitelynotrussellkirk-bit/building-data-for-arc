@@ -1,0 +1,202 @@
+"""Run ownership must not depend on the observer's numeric /proc namespace."""
+from pathlib import Path
+import errno
+import fcntl
+import json
+import os
+import select
+import subprocess
+import sys
+
+import pytest
+
+from arcpuzzles import check_jobs as jobs
+
+
+RUN_ID = 'c' * 32
+
+
+def write_state(root, **values):
+    directory = root / 'var/check-runs' / RUN_ID
+    directory.mkdir(parents=True, exist_ok=True)
+    state = {'status': 'running', 'pid': os.getpid(), 'pid_birth': 'recorded',
+             'attempt': 1, 'resumable': False, **values}
+    (directory / 'state.json').write_text(json.dumps(state))
+    return directory
+
+
+@pytest.fixture
+def locked_run(tmp_path):
+    directory = tmp_path / 'var/check-runs' / RUN_ID
+    directory.mkdir(parents=True)
+    code = '''
+import fcntl, json, os, pathlib, sys
+directory = pathlib.Path(sys.argv[1])
+with (directory / 'worker.lock').open('a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    (directory / 'state.json').write_text(json.dumps({
+        'status': 'running', 'pid': os.getpid(), 'pid_birth': 'recorded',
+        'attempt': 1, 'resumable': False}))
+    print('ready', flush=True)
+    sys.stdin.read()
+'''
+    process = subprocess.Popen([sys.executable, '-I', '-c', code, str(directory)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True)
+    try:
+        assert select.select([process.stdout], [], [], 5)[0], 'lock helper did not become ready'
+        assert process.stdout.readline().strip() == 'ready'
+        yield tmp_path, directory, process
+    finally:
+        if process.poll() is None:
+            try:
+                process.communicate(input='', timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
+
+
+@pytest.mark.parametrize('proc_mode', ['missing', 'incompatible'])
+def test_running_worker_without_compatible_proc_stays_running(locked_run, monkeypatch, proc_mode):
+    root, _, process = locked_run
+    original = Path.read_text
+
+    def without_proc(path, *args, **kwargs):
+        if str(path).startswith('/proc/'):
+            if proc_mode == 'missing':
+                raise FileNotFoundError(str(path))
+            if str(path) == '/proc/self/stat':
+                return proc_stat(os.getpid() + 100000, 'unrelated')
+            return proc_stat(process.pid, 'unrelated')
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', without_proc)
+    assert process.poll() is None
+    assert jobs.status(root, RUN_ID)['status'] == 'running'
+
+
+@pytest.mark.parametrize('recorded', [None, 'current', 'different'])
+def test_live_run_lock_outweighs_diagnostic_birth(locked_run, monkeypatch, recorded):
+    root, directory, process = locked_run
+    state = json.loads((directory / 'state.json').read_text())
+    state['pid_birth'] = recorded
+    (directory / 'state.json').write_text(json.dumps(state))
+    monkeypatch.setattr(jobs, '_birth', lambda pid: 'current')
+    assert process.poll() is None
+    result = jobs.status(root, RUN_ID)
+    assert result['status'] == 'running'
+    assert result['pid_birth'] == recorded
+    assert result['resumable'] is False
+
+
+def test_exited_worker_is_unclean_without_final_state(locked_run):
+    root, _, process = locked_run
+    process.communicate(input='', timeout=5)
+    assert process.returncode == 0
+    result = jobs.status(root, RUN_ID)
+    assert result['status'] == 'parent_interrupted_unclean'
+    assert result['resumable'] is False
+
+
+@pytest.mark.parametrize('observed', ['recorded', 'recycled'])
+def test_live_unrelated_pid_cannot_replace_run_ownership(tmp_path, monkeypatch, observed):
+    directory = write_state(tmp_path)
+    (directory / 'worker.lock').touch()
+    monkeypatch.setattr(jobs, '_birth', lambda pid: observed)
+    result = jobs.status(tmp_path, RUN_ID)
+    assert result['status'] == 'parent_interrupted_unclean'
+    assert result['resumable'] is False
+
+
+def test_missing_worker_lock_does_not_trust_matching_pid(tmp_path, monkeypatch):
+    write_state(tmp_path)
+    monkeypatch.setattr(jobs, '_birth', lambda pid: 'recorded')
+    result = jobs.status(tmp_path, RUN_ID)
+    assert result['status'] == 'parent_interrupted_unclean'
+    assert result['resumable'] is False
+
+
+def test_completion_between_read_and_lock_probe_retains_terminal_state(tmp_path, monkeypatch):
+    directory = write_state(tmp_path)
+    (directory / 'worker.lock').touch()
+    original = fcntl.flock
+
+    def finish_before_probe(fd, operation):
+        if operation & fcntl.LOCK_NB:
+            write_state(tmp_path, status='stage_failed', stage_exit_code=1, resumable=True)
+        return original(fd, operation)
+
+    monkeypatch.setattr(jobs, '_birth', lambda pid: None)
+    monkeypatch.setattr(fcntl, 'flock', finish_before_probe)
+    result = jobs.status(tmp_path, RUN_ID)
+    assert result['status'] == 'stage_failed'
+    assert result['stage_exit_code'] == 1
+    assert result['resumable'] is True
+
+
+def test_another_shared_status_reader_does_not_look_like_a_worker(tmp_path, monkeypatch):
+    directory = write_state(tmp_path)
+    monkeypatch.setattr(jobs, '_birth', lambda pid: 'recorded')
+    with (directory / 'worker.lock').open('a') as reader:
+        fcntl.flock(reader, fcntl.LOCK_SH)
+        result = jobs.status(tmp_path, RUN_ID)
+    assert result['status'] == 'parent_interrupted_unclean'
+    assert result['resumable'] is False
+
+
+def test_unexpected_lock_errors_are_not_reported_as_process_death(tmp_path, monkeypatch):
+    directory = write_state(tmp_path)
+    (directory / 'worker.lock').touch()
+
+    def broken_lock(fd, operation):
+        raise OSError(errno.EIO, 'lock storage failed')
+
+    monkeypatch.setattr(fcntl, 'flock', broken_lock)
+    with pytest.raises(OSError, match='lock storage failed'):
+        jobs.status(tmp_path, RUN_ID)
+
+
+@pytest.mark.parametrize('code', [errno.EACCES, errno.EAGAIN])
+def test_portable_lock_contention_preserves_running(tmp_path, monkeypatch, code):
+    directory = write_state(tmp_path)
+    (directory / 'worker.lock').touch()
+
+    def busy_lock(fd, operation):
+        raise OSError(code, 'lock is held')
+
+    monkeypatch.setattr(jobs, '_birth', lambda pid: None)
+    monkeypatch.setattr(fcntl, 'flock', busy_lock)
+    assert jobs.status(tmp_path, RUN_ID)['status'] == 'running'
+
+
+def test_starting_before_worker_publishes_pid_is_preserved(tmp_path):
+    write_state(tmp_path, status='starting', pid=None, attempt=0)
+    assert jobs.status(tmp_path, RUN_ID)['status'] == 'starting'
+
+
+def proc_stat(pid, birth):
+    return f'{pid} (test worker) S ' + '0 ' * 18 + birth
+
+
+@pytest.mark.parametrize('compatible', [True, False])
+def test_birth_is_only_recorded_for_a_compatible_proc_namespace(monkeypatch, compatible):
+    this_pid = os.getpid()
+    other_pid = this_pid + 100000
+    files = {
+        '/proc/self/stat': proc_stat(this_pid if compatible else other_pid, 'self-birth'),
+        f'/proc/{other_pid}/stat': proc_stat(other_pid, 'other-birth'),
+    }
+
+    def read_proc(path, *args, **kwargs):
+        return files[str(path)]
+
+    monkeypatch.setattr(Path, 'read_text', read_proc)
+    assert jobs._birth(other_pid) == ('other-birth' if compatible else None)
+
+
+def test_birth_without_proc_is_unavailable(monkeypatch):
+    def missing_proc(path, *args, **kwargs):
+        raise FileNotFoundError(str(path))
+
+    monkeypatch.setattr(Path, 'read_text', missing_proc)
+    assert jobs._birth(os.getpid()) is None

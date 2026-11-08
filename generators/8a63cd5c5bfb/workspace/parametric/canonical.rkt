@@ -1,0 +1,11 @@
+(rule!
+  (let ((pts (find-color g 3)))
+    (if (= (length pts) 2)
+        (let* ((a (first pts)) (b (second pts))
+               (r0 (min (first a) (first b))) (r1 (max (first a) (first b)))
+               (c0 (min (second a) (second b))) (c1 (max (second a) (second b))))
+          (for*/fold ([out g]) ([r (in-range r0 (+ r1 1))] [c (in-range c0 (+ c1 1))])
+            (if (and (or (= r r0) (= r r1) (= c c0) (= c c1)) (= (at out r c) 0))
+                (set-cell out r c 8)
+                out)))
+        g)))

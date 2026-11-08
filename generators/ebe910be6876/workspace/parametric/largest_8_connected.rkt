@@ -1,0 +1,23 @@
+(rule! (lambda (g)
+  (let* ((oh (* h 2))
+         (ow (* w 2))
+         (pixels (filter (lambda (p) (!= (at g (fst p) (snd p)) 0))
+                         (grid-positions g)))
+         (expanded
+          (reduce (lambda (acc p)
+                    (let* ((color (at g (fst p) (snd p)))
+                           (sr (- (* 2 (fst p)) 2))
+                           (sc (- (* 2 (snd p)) 2)))
+                      (reduce (lambda (gg q)
+                                (let ((nr (fst q)) (nc (snd q)))
+                                  (if (in-bounds? nr nc oh ow)
+                                      (set-cell gg nr nc color)
+                                      gg)))
+                              acc
+                              (positions-in-rect sr sc (+ sr 3) (+ sc 3)))))
+                  (empty-grid oh ow 0)
+                  pixels))
+         (mask (grid-from-fn oh ow
+                 (lambda (r c) (if (= (at expanded r c) 0) 0 1))))
+         (target (pick-max (objects-8 mask 0) obj-size)))
+    (recolor-cells expanded (obj-cells target) 9))))

@@ -1,0 +1,1 @@
+Visible examples: output is N×N comparing bounding box widths, with objects sorted by topmost/leftmost cell. Equal 1, larger row-object width 2, smaller 3. This is a post-repair exposed attempt; no reference was consulted during the solve episode.

@@ -1,0 +1,6 @@
+# a53fa114c4a9
+
+0-bg grid (h~8-13, w~10-17) with STRUCTURED LAYOUT: (a) ROWS 0 and 1 — LEGEND: at n_pairs (2-4) DISTINCT COLUMNS, row 0 holds a SOURCE COLOR and row 1 holds the corresponding TARGET COLOR (aligned src→dst pairs). Source/target colors are drawn from {2..9} as 2 * n_pairs distinct values. Other cells in rows 0-1 are bg-0; (b) ROW 2 — COLUMN-KEEP MASK: at n_keep (2-8) DISTINCT COLUMNS, paint cells with COLOR 1 (the mask marker). Other cells in row 2 are bg-0; (c) ROWS 3..h-1 — BODY: each body cell is INDEPENDENTLY filled with a random SRC color (from the legend) at density 0.42, plus guaranteed source cells at each (keep_col[i], 3 + (i % (h-3))) position. Rule (RECOLOR BODY VIA LEGEND THEN CROP TO MASK-MARKED COLUMNS): READ the LEGEND (rows 0-1) to build a SRC→DST color map. APPLY the map to every cell in the BODY (rows 3..h-1): each SRC-color cell becomes its DST. READ the MASK (row 2) — get the LIST of KEEP COLUMNS (cells where g[2][c]=1). CROP the recolored body to only those columns. OUTPUT is (h-3) rows × n_keep cols (legend and mask rows are discarded). Net: a recoloring filter applied to the body, then a column-subset crop.
+
+Kind: `per_puzzle`. Imported version: `2.1.1`.
+Approval is derived by the catalog from current code and retained evidence.

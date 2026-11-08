@@ -1,0 +1,1620 @@
+diff --git a/repo/generators/0f801939eff6/notes.md b/repo/generators/0f801939eff6/notes.md
+--- a/repo/generators/0f801939eff6/notes.md
++++ b/repo/generators/0f801939eff6/notes.md
+@@ -3,6 +3,25 @@
+ ## Current rule and authority
+ 
+ The intended transformation is component-based, not color-frequency based: find every nonzero same-color 4-connected component, sort components by `(-area, color)`, and concatenate one run per component. The canonical Racket authority was not changed. `RULE_HASH = "cbb04236ecda"` pins the selected generator to that authority.
++
++## Current native parametric proposal
++
++`workspace/parametric/` adds `merge=none|2_into_1`; `none` preserves the exact
++canonical program. The alternative recolors every 2 to 1 before recomputing
++components, areas and rank. A protected-Racket wrong-order witness shows why
++ranking the original components then recoloring is insufficient. Counts are
++independent (2–6 demos, 1–4 queries), with matched inputs across settings and a
++substantive 30×30/four-corner case under the inherent 30-cell output limit.
++The initial two-demo lesson admitted local-cluster-only recoloring; an isolated
++color-2 component in demo two now refutes it without increasing demo count.
++The exporter pre-serializes exact private bytes before publishing any public file.
++Current evidence: 80 focused tests; 72/72 bounded Python samples; native
++qualification over both settings and seeds 0/17; 90 protected-Racket audit calls
++plus a 10-call before/after teaching replay. See the prototype README and returned
++`checks/0f801939eff6/{qualification-v3,audit-v3}/`, `teaching-repair.json`.
++The next action is owner native qualification and fresh acceptance after source
++integration. This proposal does not change canonical approval, add production
++size overrides, establish universal identifiability, or activate training.
+ 
+ ## Reversed baseline decisions
+ 
+diff --git a/repo/generators/0f801939eff6/tests/test_parametric.py b/repo/generators/0f801939eff6/tests/test_parametric.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0f801939eff6/tests/test_parametric.py
+@@ -0,0 +1,449 @@
++"""Focused MAIN prototype tests; protected Racket qualification is separate."""
++from __future__ import annotations
++
++from copy import deepcopy
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++import pytest
++
++
++TASK_ID = "0f801939eff6"
++TASK_HOME = Path(__file__).resolve().parents[1]
++ROOT = TASK_HOME.parents[1]
++SOURCE = TASK_HOME / "workspace/parametric/prototype.py"
++SETTINGS = ({"merge": "none"}, {"merge": "2_into_1"})
++
++
++def _load_exact(path: Path, name: str):
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture(scope="module")
++def prototype():
++    if not SOURCE.is_file():
++        pytest.skip("the dedicated existence assertion diagnoses the missing prototype")
++    return _load_exact(SOURCE, "_test_area_sorted_parametric_prototype")
++
++
++@pytest.fixture(scope="module")
++def support():
++    return _load_exact(
++        ROOT / "shared/runtime/reviewer_support.py",
++        "_test_area_sorted_reviewer_support",
++    )
++
++
++def test_parametric_prototype_exists():
++    assert SOURCE.is_file(), "MAIN merge-before-ranking prototype is missing"
++
++
++def _cluster_local_recolor(grid):
++    """Independent rival: recolor only foreground clusters that contain 1."""
++    remaining = {(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value}
++    result = deepcopy(grid)
++    while remaining:
++        start = min(remaining)
++        remaining.remove(start)
++        cells, todo = {start}, [start]
++        while todo:
++            r, c = todo.pop()
++            for dr in (-1, 0, 1):
++                for dc in (-1, 0, 1):
++                    position = (r+dr, c+dc)
++                    if position in remaining:
++                        remaining.remove(position)
++                        cells.add(position)
++                        todo.append(position)
++        if any(grid[r][c] == 1 for r, c in cells):
++            for r, c in cells:
++                if result[r][c] == 2:
++                    result[r][c] = 1
++    return _expected(result, SETTINGS[0])
++
++
++@pytest.mark.parametrize("seed", [17, 34, 813])
++def test_two_demos_teach_recoloring_an_isolated_source_color(prototype, seed):
++    episode = prototype.generate(seed, SETTINGS[1], demos=2, queries=4)
++    assert any(_cluster_local_recolor(pair["input"]) != pair["output"]
++               for pair in episode["train"]), "local-only recoloring survives all demonstrations"
++    assert _cluster_local_recolor(episode["test"][2]["input"]) != episode["test"][2]["output"]
++
++
++def test_unserializable_private_metadata_fails_before_publication(prototype, tmp_path):
++    episode = prototype.generate(17, SETTINGS[1], demos=2, queries=4)
++    episode["private_metadata"] = {1: "integer key", "x": "string key"}
++    target = tmp_path / "bad-metadata"
++    with pytest.raises((ValueError, TypeError)):
++        prototype.export_batch([episode], target)
++    assert not target.exists(), "failed private serialization must not leave a public challenge"
++
++
++def _components(grid):
++    """An independent pixel flood-fill for the expected component-area rule."""
++    remaining = {
++        (r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value
++    }
++    parts = []
++    while remaining:
++        first = min(remaining)
++        color = grid[first[0]][first[1]]
++        cells, pending = {first}, [first]
++        remaining.remove(first)
++        while pending:
++            r, c = pending.pop()
++            for neighbor in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
++                if neighbor in remaining and grid[neighbor[0]][neighbor[1]] == color:
++                    remaining.remove(neighbor)
++                    cells.add(neighbor)
++                    pending.append(neighbor)
++        parts.append((len(cells), color))
++    return parts
++
++
++def _expected(grid, settings):
++    recolored = [
++        [1 if value == 2 and settings["merge"] == "2_into_1" else value for value in row]
++        for row in grid
++    ]
++    row = [
++        color
++        for size, color in sorted(_components(recolored), key=lambda item: (-item[0], item[1]))
++        for _ in range(size)
++    ]
++    return [row or [0]]
++
++
++def _assert_grid(grid):
++    assert type(grid) is list and 1 <= len(grid) <= 30
++    assert type(grid[0]) is list and 1 <= len(grid[0]) <= 30
++    assert all(type(row) is list and len(row) == len(grid[0]) for row in grid)
++    assert all(type(cell) is int and 0 <= cell <= 9 for row in grid for cell in row)
++
++
++def _dicts(value):
++    if isinstance(value, dict):
++        yield value
++        for child in value.values():
++            yield from _dicts(child)
++    elif isinstance(value, list):
++        for child in value:
++            yield from _dicts(child)
++
++
++def test_settings_and_default_program_preserve_exact_canonical_authority(prototype, support):
++    assert list(prototype.SETTINGS) == list(SETTINGS)
++    with support.canonical_path(ROOT).open(encoding="utf-8") as stream:
++        programs = {
++            row["program_solution"]
++            for row in map(json.loads, stream)
++            if row.get("task_id") == TASK_ID
++        }
++    assert len(programs) == 1
++    canonical = programs.pop()
++    assert prototype.program(SETTINGS[0]) == canonical
++    alternative = prototype.program(SETTINGS[1])
++    assert isinstance(alternative, str) and alternative.strip() and alternative != canonical
++    pairs = support.canonical_pairs(TASK_ID, root=ROOT, labeled_only=True)
++    assert pairs
++    for pair in pairs:
++        assert prototype.rule_mirror(pair["input"], SETTINGS[0]) == pair["output"]
++        assert _expected(pair["input"], SETTINGS[0]) == pair["output"]
++
++
++def test_recoloring_changes_connectivity_before_area_ranking(prototype):
++    # Two singleton 1s join the size-three 2 component, overtaking size-four 3.
++    grid = [[1, 2, 1, 0, 0, 0], [0, 2, 0, 0, 3, 3], [0, 2, 0, 0, 3, 3]]
++    untouched = deepcopy(grid)
++    assert prototype.rule_mirror(grid, SETTINGS[0]) == [[3, 3, 3, 3, 2, 2, 2, 1, 1]]
++    assert prototype.rule_mirror(grid, SETTINGS[1]) == [[1, 1, 1, 1, 1, 3, 3, 3, 3]]
++    assert prototype.rival_outputs(grid, SETTINGS[1])["rank_then_recolor"] == [
++        [3, 3, 3, 3, 1, 1, 1, 1, 1]
++    ]
++    assert grid == untouched
++
++
++@pytest.mark.parametrize(
++    "name,grid,expected",
++    [
++        ("color_frequency", [[1, 1, 0, 2, 2, 2, 0, 1, 1]], [[1, 1, 1, 1, 2, 2, 2]]),
++        ("position_tie", [[3, 3, 0, 1, 1]], [[3, 3, 1, 1]]),
++        (
++            "eight_connected",
++            [[1, 0, 0, 2, 2, 2], [0, 1, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0], [0, 0, 0, 1, 0, 0]],
++            [[1, 1, 1, 1, 2, 2, 2]],
++        ),
++        (
++            "bbox_rank",
++            [[1, 1, 1, 0, 0, 0, 0], [1, 0, 0, 0, 2, 2, 2], [1, 0, 0, 0, 2, 2, 2]],
++            [[1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2]],
++        ),
++    ],
++)
++def test_named_rivals_are_real_semantically_distinct_shortcuts(prototype, name, grid, expected):
++    assert prototype.rival_outputs(grid, SETTINGS[0])[name] == expected
++    assert expected != _expected(grid, SETTINGS[0])
++
++
++@pytest.mark.parametrize(
++    "settings",
++    [None, {}, "none", {"merge": True}, {"merge": 0}, {"merge": "NONE"},
++     {"merge": "unknown"}, {"merge": "none", "extra": 0}, {"MERGE": "none"}],
++)
++def test_invalid_settings_are_rejected_at_rule_and_generation_boundaries(prototype, settings):
++    with pytest.raises((TypeError, ValueError)):
++        prototype.program(settings)
++    with pytest.raises((TypeError, ValueError)):
++        prototype.generate(0, settings)
++    with pytest.raises((TypeError, ValueError)):
++        prototype.rule_mirror([[1]], settings)
++
++
++@pytest.mark.parametrize("seed", [None, True, False, 1.0, "1", -1, 2**63])
++def test_seed_must_be_a_bounded_literal_integer(prototype, seed):
++    with pytest.raises((TypeError, ValueError)):
++        prototype.generate(seed, SETTINGS[0])
++
++
++@pytest.mark.parametrize(
++    "control,value",
++    [("demos", value) for value in (True, False, 1, 7, 2.0, "3")]
++    + [("queries", value) for value in (True, False, 0, 5, 1.0, "1")],
++)
++def test_demo_and_query_counts_are_separately_strict(prototype, control, value):
++    with pytest.raises((TypeError, ValueError)):
++        prototype.generate(17, SETTINGS[0], **{control: value})
++
++
++@pytest.mark.parametrize(
++    "grid", [None, [], [[]], [[0], [0, 1]], [[True]], [[1.0]], [[-1]], [[10]], [[0] * 31], [[0]] * 31],
++)
++def test_malformed_and_boolean_grids_cannot_cross_rule_or_public_boundaries(prototype, grid):
++    with pytest.raises((TypeError, ValueError)):
++        prototype.rule_mirror(grid, SETTINGS[0])
++    baseline = {
++        "train": [{"input": [[1]], "output": [[1]]}, {"input": [[1, 1]], "output": [[1, 1]]}],
++        "test": [{"input": [[2]], "output": [[2]]}],
++    }
++    for split, field in (("train", "input"), ("train", "output"), ("test", "input")):
++        malformed = deepcopy(baseline)
++        malformed[split][0][field] = grid
++        with pytest.raises((TypeError, ValueError)):
++            prototype.public_challenge(malformed)
++
++
++@pytest.mark.parametrize("settings", SETTINGS)
++@pytest.mark.parametrize("seed,demos,queries", [(0, 2, 1), (2**63 - 1, 6, 4)])
++def test_valid_count_and_seed_boundaries_produce_complete_distinct_labeled_pairs(
++    prototype, settings, seed, demos, queries
++):
++    episode = prototype.generate(seed, settings, demos=demos, queries=queries)
++    assert len(episode["train"]) == demos and len(episode["test"]) == queries
++    assert episode["program_solution"] == prototype.program(settings)
++    pairs = episode["train"] + episode["test"]
++    assert len({json.dumps(pair["input"]) for pair in pairs}) == len(pairs)
++    for pair in pairs:
++        _assert_grid(pair["input"])
++        _assert_grid(pair["output"])
++        assert pair["output"] == _expected(pair["input"], settings)
++        assert len(pair["output"]) == 1
++
++
++@pytest.mark.parametrize("settings", SETTINGS)
++def test_generation_is_deterministic_without_mutating_caller_settings(prototype, settings):
++    request = deepcopy(settings)
++    episode = prototype.generate(173, request)
++    assert request == settings
++    assert len(episode["train"]) == 3 and len(episode["test"]) == 4
++    repeated = prototype.generate(173, request)
++    assert episode == repeated
++    episode["train"][0]["input"][0][0] = 99
++    assert repeated["train"][0]["input"][0][0] != 99
++
++
++@pytest.mark.parametrize("seed", [17, 813])
++def test_input_sampling_is_matched_across_settings_and_demos_teach_the_difference(prototype, seed):
++    episodes = [prototype.generate(seed, setting, demos=2, queries=4) for setting in SETTINGS]
++    for split in ("train", "test"):
++        assert [pair["input"] for pair in episodes[0][split]] == [
++            pair["input"] for pair in episodes[1][split]
++        ]
++    assert any(a["output"] != b["output"] for a, b in zip(episodes[0]["train"], episodes[1]["train"]))
++
++
++@pytest.mark.parametrize("settings", SETTINGS)
++def test_query_stream_and_first_turn_do_not_depend_on_requested_counts(prototype, settings):
++    episodes = {
++        (demos, queries): prototype.generate(31, settings, demos=demos, queries=queries)
++        for demos in (2, 6)
++        for queries in (1, 4)
++    }
++    for demos in (2, 6):
++        short, full = episodes[demos, 1], episodes[demos, 4]
++        assert short["train"] == full["train"]
++        assert short["test"] == full["test"][:1]
++        assert prototype.public_challenge(short) == prototype.public_challenge(full)
++    assert episodes[2, 4]["test"] == episodes[6, 4]["test"]
++    assert episodes[2, 1]["test"] == episodes[6, 1]["test"]
++
++
++@pytest.mark.parametrize("settings", SETTINGS)
++def test_four_query_bank_contains_substantive_full_canvas_thirty_square_stress(prototype, settings):
++    episode = prototype.generate(409, settings, demos=2, queries=4)
++    stress = [pair for pair in episode["test"] if (len(pair["input"]), len(pair["input"][0])) == (30, 30)]
++    assert stress, "four-query requests must contain a 30x30 input"
++    for pair in episode["train"] + episode["test"]:
++        assert 1 <= sum(value != 0 for row in pair["input"] for value in row) <= 30
++    for pair in stress:
++        occupied = [(r, c) for r, row in enumerate(pair["input"]) for c, value in enumerate(row) if value]
++        assert (min(r for r, _ in occupied), max(r for r, _ in occupied)) == (0, 29)
++        assert (min(c for _, c in occupied), max(c for _, c in occupied)) == (0, 29)
++        assert pair["output"] == _expected(pair["input"], settings)
++
++
++@pytest.mark.parametrize("settings", SETTINGS)
++@pytest.mark.parametrize("seed", [17, 34])
++def test_two_visible_demos_refute_every_declared_rival_without_query_labels(prototype, settings, seed):
++    episode = prototype.generate(seed, settings, demos=2, queries=4)
++    predictions = [prototype.rival_outputs(pair["input"], settings) for pair in episode["train"]]
++    required = {"color_frequency", "position_tie", "eight_connected", "bbox_rank"}
++    if settings["merge"] != "none":
++        required.add("rank_then_recolor")
++    assert required <= predictions[0].keys()
++    assert predictions[0].keys() == predictions[1].keys()
++    report = prototype.teaching_check(episode)
++    assert report["status"] == "identified"
++    assert report["surviving_rivals"] == []
++    assert set(report["refuted_by"]) == set(predictions[0])
++    for name in predictions[0]:
++        witnesses = [
++            index for index, pair in enumerate(episode["train"])
++            if predictions[index][name] != pair["output"]
++        ]
++        assert witnesses, f"{name} fits every visible demo"
++        assert report["refuted_by"][name] == witnesses[0]
++
++
++@pytest.mark.parametrize("settings", SETTINGS)
++def test_teaching_certificate_does_not_consult_private_query_answers(prototype, settings):
++    episode = prototype.generate(67, settings, demos=2, queries=4)
++    expected = prototype.teaching_check(episode)
++    changed, stripped = deepcopy(episode), deepcopy(episode)
++    for pair in changed["test"]:
++        pair["output"] = [[9]]
++    for pair in stripped["test"]:
++        pair.pop("output")
++    assert prototype.teaching_check(changed) == expected
++    assert prototype.teaching_check(stripped) == expected
++
++
++@pytest.mark.parametrize("settings", SETTINGS)
++def test_teaching_check_reports_ambiguous_demos_instead_of_certifying_the_query(prototype, settings):
++    episode = prototype.generate(83, settings, demos=2, queries=4)
++    episode["train"] = [
++        {"input": [[1, 1]], "output": [[1, 1]]},
++        {"input": [[1], [1], [1]], "output": [[1, 1, 1]]},
++    ]
++    predictions = [prototype.rival_outputs(pair["input"], settings) for pair in episode["train"]]
++    survivors = sorted(
++        name for name in predictions[0]
++        if all(prediction[name] == pair["output"] for prediction, pair in zip(predictions, episode["train"]))
++    )
++    assert survivors
++    report = prototype.teaching_check(episode)
++    assert report["status"] == "ambiguous"
++    assert sorted(report["surviving_rivals"]) == survivors
++
++
++@pytest.mark.parametrize("settings", SETTINGS)
++def test_one_query_projection_is_pure_and_private_metadata_cannot_change_visible_identity(
++    prototype, support, settings
++):
++    episode = prototype.generate(97, settings, demos=2, queries=4)
++    untouched = deepcopy(episode)
++    for index, pair in enumerate(episode["test"]):
++        public = prototype.public_challenge(episode, query_index=index)
++        expected = {
++            "train": [{"input": item["input"], "output": item["output"]} for item in episode["train"]],
++            "test": [{"input": pair["input"]}],
++        }
++        assert public == expected
++        support.public_challenge_bytes(public)
++    first = prototype.public_challenge(episode)
++    changed = deepcopy(episode)
++    changed.update(seed=2**63 - 1, settings={"merge": "private sentinel"}, program_solution="private rule")
++    changed["private"] = {"query_count": 4, "last_turn": True}
++    for pair in changed["test"]:
++        pair["output"] = [[9]]
++    for pair in changed["test"][1:]:
++        pair["input"] = [[8]]
++    changed["train"][0]["private_note"] = "must not be projected"
++    assert prototype.public_challenge(changed) == first
++    assert support.public_challenge_id(prototype.public_challenge(changed)) == support.public_challenge_id(first)
++    first["train"][0]["input"][0][0] = 99
++    first["test"][0]["input"][0][0] = 99
++    assert episode == untouched
++
++
++@pytest.mark.parametrize("index", [True, False, 0.0, "0", None, -1, 4])
++def test_query_projection_index_is_strict_and_bounded(prototype, index):
++    episode = prototype.generate(101, SETTINGS[0])
++    with pytest.raises((TypeError, ValueError, IndexError)):
++        prototype.public_challenge(episode, query_index=index)
++
++
++def test_export_publishes_exact_visible_hashes_and_retains_full_private_query_banks(prototype, support, tmp_path):
++    episodes = [prototype.generate(109, setting) for setting in SETTINGS]
++    destination = tmp_path / "publication"
++    prototype.export_batch(episodes, destination)
++    expected = {
++        support.public_challenge_id(prototype.public_challenge(episode)): support.public_challenge_bytes(
++            prototype.public_challenge(episode)
++        )
++        for episode in episodes
++    }
++    public_files = [path for path in (destination / "public").rglob("*") if path.is_file()]
++    assert {path.relative_to(destination / "public").as_posix() for path in public_files} == {
++        digest + ".json" for digest in expected
++    }
++    assert {path.stem: path.read_bytes() for path in public_files} == expected
++    private_nodes = []
++    for path in (destination / "private").rglob("*"):
++        if path.is_file() and path.suffix in {".json", ".jsonl"}:
++            text = path.read_text(encoding="utf-8")
++            values = [json.loads(line) for line in text.splitlines() if line.strip()] if path.suffix == ".jsonl" else [json.loads(text)]
++            for value in values:
++                private_nodes.extend(_dicts(value))
++    for episode in episodes:
++        assert any(
++            all(key in node and node[key] == value for key, value in episode.items())
++            for node in private_nodes
++        ), "private export must retain the complete labeled episode and exact program"
++
++
++def test_export_refuses_overwrites_and_duplicate_visibility_before_creating_destination(prototype, tmp_path):
++    episode = prototype.generate(127, SETTINGS[0])
++    existing = tmp_path / "existing"
++    existing.mkdir()
++    sentinel = existing / "keep.txt"
++    sentinel.write_bytes(b"preserve existing data\n")
++    with pytest.raises((FileExistsError, ValueError)):
++        prototype.export_batch([episode], existing)
++    assert list(existing.iterdir()) == [sentinel]
++    assert sentinel.read_bytes() == b"preserve existing data\n"
++    duplicate = deepcopy(episode)
++    duplicate["seed"] = 999
++    duplicate["private_note"] = "different private record, same visible puzzle"
++    for pair in duplicate["test"]:
++        pair["output"] = [[9]]
++    destination = tmp_path / "duplicate_publication"
++    with pytest.raises(ValueError, match="(?i)duplicate"):
++        prototype.export_batch([episode, duplicate], destination)
++    assert not destination.exists()
+diff --git a/repo/generators/0f801939eff6/workspace/parametric/README.md b/repo/generators/0f801939eff6/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0f801939eff6/workspace/parametric/README.md
+@@ -0,0 +1,88 @@
++# Merge before area ranking
++
++This task-local family has two episode-fixed settings:
++
++| Setting | Executed rule |
++| --- | --- |
++| `{"merge":"none"}` | Exact canonical Racket program: extract same-color four-connected components, rank by descending area and ascending color, and emit area-length color runs. |
++| `{"merge":"2_into_1"}` | Recolor every 2 to 1, recompute the component partition and areas, then apply the same ranking and encoding. |
++
++The original `generator.py`, canonical rule and approval are unchanged. The
++default program is byte-identical to the selected canonical authority. This is
++a native-qualified proposal; owner acceptance after integration remains required.
++No training admission or activation is claimed.
++
++## Run in the review packet
++
++Use the Python interpreter that passes `review.py python-check`. From the outer
++directory containing `review.py`, create a new output directory:
++
++```bash
++python3 review.py run python3 generators/0f801939eff6/workspace/parametric/prototype.py \
++  --seed 17 --demos 3 --queries 4 --merge both --out ../checks/new-component-episodes
++```
++
++This writes two episodes, one per setting, with matched input draws. The writer
++uses Python label claims. Verify labels through native qualification and the
++protected-Racket audit before using a newly generated batch as evidence:
++
++```bash
++python3 review.py run python3 -m arcpuzzles parametric qualify 0f801939eff6 \
++  --out ../checks/new-component-qualification --summary
++python3 review.py run python3 generators/0f801939eff6/workspace/parametric/audit.py \
++  --qualification ../checks/new-component-qualification/qualification.json \
++  --out ../checks/new-component-audit --export ../checks/new-component-verified
++```
++
++The audit exports the native qualification's four verified episodes, checks count
++boundaries, executes the finite rivals, and saves a protected-Racket causal
++witness. It can be reused after changes; regenerate the native manifest first
++when any bound source or declared evidence changes. Existing output directories
++are refused deliberately. See `docs/parametric-promotion.md` for owner acceptance.
++
++## Teaching and supported requests
++
++`generate(seed, settings, demos=3, queries=4)` accepts exact integer seeds
++`0..2**63-1`, 2–6 demonstrations and 1–4 queries. Four queries are the training
++request. Counts and random streams are independent, inputs are matched across
++settings, and queries are distinct from all demonstrations and one another.
++
++The first two demonstrations deliberately show a merge that changes ranking,
++a merge that does not create the largest component, disconnected occurrences
++of the same color, a diagonal contact, conflicting position/color tie-breaks,
++and an isolated color-2 component. The isolated component repairs a concrete
++teaching hole: locally recoloring only the foreground cluster containing color 1
++otherwise fitted both demonstrations and failed a separated query.
++
++`teaching_check` fits named rivals using demonstration inputs and labels only:
++other setting, color aggregation, position tie-break, eight-connectivity,
++bounding-box ranking, color ranking, scan order, target-color-first, and, for
++the merge setting, rank-then-recolor and local-cluster-only recoloring. Passing
++means only these finite rivals are excluded, not universal rule uniqueness.
++
++Each four-query request includes an 8×11 lower-bound case, a 21–29-side case,
++a separated source/target case and a 30×30 case. The latter places 30 occupied
++cells across all four corners, with actual merges, repeated colors and ties.
++The task's single-row output is capped at 30 cells, so this is spatial-extent
++stress, not dense-grid stress. These are prototype sampling guarantees, not new
++production `grid_h`/`grid_w` overrides. The canonical controls remain unchanged.
++
++## Visibility and reuse
++
++`public/<sha256>.json` contains the demonstration pairs and the first query input
++only. IDs hash the exact visible bytes. Settings, seeds, programs, all query
++answers and future query inputs remain in `private/<same-id>.json`. The private
++record is the controller's complete query bank. `public_challenge(episode, i)`
++projects exactly one selected query; it includes no query count or final-turn
++hint. Asking for one query or four produces identical first-turn content.
++
++The writer validates and serializes all public and private bytes before creating
++the destination, rejects duplicate visible first turns, and refuses overwrite.
++It does not implement the consumer's conversation controller.
++
++Current qualification is `checks/0f801939eff6/qualification-v3/qualification.json`
++in the returned packet, with its sibling `execution.json`. The source-bound
++90-evaluation audit and causal witness are in `checks/0f801939eff6/audit-v3/`;
++the retained before/after teaching repair was separately replayed in 10 Racket
++evaluations. Focused tests cover 80 cases. The 72/72 sampling result is Python
++evidence over seeds 0–11 and demo counts 2/3/6, not an additional Racket census.
+diff --git a/repo/generators/0f801939eff6/workspace/parametric/adapter.py b/repo/generators/0f801939eff6/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0f801939eff6/workspace/parametric/adapter.py
+@@ -0,0 +1,13 @@
++"""Native API adapter; load this task's exact adjacent implementation."""
++import importlib.util
++import hashlib
++from pathlib import Path
++
++_path = Path(__file__).with_name("prototype.py").resolve()
++_name = "_area_merge_" + hashlib.sha256(str(_path).encode()).hexdigest()
++_spec = importlib.util.spec_from_file_location(_name, _path)
++_prototype = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_prototype)
++
++program = _prototype.program
++generate = _prototype.generate
+diff --git a/repo/generators/0f801939eff6/workspace/parametric/audit.py b/repo/generators/0f801939eff6/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0f801939eff6/workspace/parametric/audit.py
+@@ -0,0 +1,388 @@
++"""Bounded protected-Racket audit of the source-qualified parametric prototype.
++
++Run through the packet's review.py run wrapper. Qualification is an input to
++this tool; this tool neither qualifies nor accepts a generator. Every output
++directory must be new, and all retained rule programs and query banks are private.
++"""
++from __future__ import annotations
++
++import argparse
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import subprocess
++import sys
++
++from arcpuzzles import Catalog
++from arcpuzzles.parametric_promotion import _check_execution, _ready, settings_space
++from arcpuzzles.parametric_worker import _grid, _local_imports, _real_evaluator
++from arcpuzzles.review_parametric_admission import validate_sequential_witness
++
++
++HERE = Path(__file__).resolve().parent
++ROOT = HERE.parents[3]
++TASK_ID = "0f801939eff6"
++MAX_EVALUATIONS = 120
++BOUNDARY_SEED = 23
++
++
++def raw(value):
++    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
++                       ensure_ascii=False, allow_nan=False) + "\n").encode()
++
++
++def digest(value):
++    return hashlib.sha256(raw(value)).hexdigest()
++
++
++def file_hash(path):
++    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
++
++
++def program_hash(program):
++    if type(program) is not str or not program.strip():
++        raise ValueError("Expected nonempty exact Racket program text")
++    return hashlib.sha256(program.encode()).hexdigest()
++
++
++def require(condition, message):
++    if not condition:
++        raise ValueError(message)
++
++
++def write_json(path, value):
++    with Path(path).open("xb") as handle:
++        handle.write(raw(value))
++
++
++def load_prototype():
++    path = HERE / "prototype.py"
++    require(path.is_file() and not path.is_symlink() and path.resolve() == path,
++            "Prototype must be a regular file in this exact task home")
++    name = "_component_parametric_audit_" + hashlib.sha256(str(path).encode()).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    for name in ("generate", "program", "rule_mirror", "rival_programs",
++                 "rival_outputs", "teaching_check", "components", "export_batch"):
++        require(callable(getattr(module, name, None)), "Missing prototype API: " + name)
++    return module
++
++
++def pairs(episode, split, count):
++    values = episode.get(split)
++    require(type(values) is list and len(values) == count,
++            f"Expected exactly {count} {split} pairs")
++    return [{"input": _grid(pair["input"]), "output": _grid(pair["output"])}
++            for pair in values]
++
++
++def check_source(binding, contract):
++    for name in ("arcpuzzles.parametric_promotion", "arcpuzzles.parametric_worker"):
++        require(Path(sys.modules[name].__file__).resolve().is_relative_to(ROOT / "src/arcpuzzles"),
++                "Native verifier was imported from a different checkout")
++    live_contract, live_binding = _ready(Catalog(ROOT), TASK_ID)
++    require(live_binding == binding and live_contract == contract,
++            "Current source closure/contract differs from native qualification")
++
++
++def qualification_inputs(path):
++    path = Path(path).resolve()
++    qualification = json.loads(path.read_bytes())
++    require(qualification.get("schema") == "arcpuzzles-parametric-qualification-v1"
++            and qualification.get("status") == "qualified"
++            and qualification.get("task_id") == TASK_ID,
++            "A successful native qualification for this task is required")
++    binding, contract = qualification["source_binding"], qualification["contract"]
++    check_source(binding, contract)
++    require(qualification["execution"].get("path") == "execution.json",
++            "Expected native sibling execution.json")
++    execution_path = path.parent / "execution.json"
++    require(not execution_path.is_symlink()
++            and file_hash(execution_path) == qualification["execution"]["sha256"],
++            "Native execution receipt is missing or changed")
++    execution = json.loads(execution_path.read_bytes())
++    require(_check_execution(execution, qualification["jobs"], binding, contract)
++            == qualification["programs"], "Native program inventory differs")
++    episodes = copy.deepcopy(execution["episodes"])
++    require(len(episodes) == 4, "Audit expects four qualified episodes (two seeds per setting)")
++    for episode in episodes:
++        episode["train"] = pairs(episode, "train", 3)
++        episode["test"] = pairs(episode, "test", 4)
++        episode["program_solution"] = episode["program"]
++    return qualification, execution, episodes, execution_path
++
++
++def check_export(prototype, episodes, output):
++    output = Path(output).resolve()
++    require(not output.exists() and not output.is_symlink(), "Export directory must be new")
++    prototype.export_batch(copy.deepcopy(episodes), output)
++    from reviewer_support import public_challenge_bytes
++
++    expected = {}
++    for episode in episodes:
++        visible = {"train": episode["train"],
++                   "test": [{"input": episode["test"][0]["input"]}]}
++        payload = public_challenge_bytes(visible)
++        identifier = hashlib.sha256(payload).hexdigest()
++        require(identifier not in expected, "Duplicate first-turn public challenge")
++        expected[identifier] = (payload, episode)
++    for folder in ("public", "private"):
++        files = sorted((output / folder).iterdir())
++        require(all(p.is_file() and not p.is_symlink() for p in files)
++                and {p.name for p in files} == {key + ".json" for key in expected},
++                "Export must contain exactly one matching public/private file per episode")
++    for identifier, (payload, episode) in expected.items():
++        require((output / "public" / (identifier + ".json")).read_bytes() == payload,
++                "Public file differs from the canonical first-query projection")
++        private = json.loads((output / "private" / (identifier + ".json")).read_bytes())
++        require(pairs(private, "train", 3) == episode["train"]
++                and pairs(private, "test", 4) == episode["test"],
++                "Private export must preserve every Racket-labeled query in order")
++        require(private.get("settings") == episode["settings"],
++                "Private export lost its fixed episode setting")
++        exported_program = private.get("program_solution", private.get("program"))
++        require(exported_program == episode["program"], "Private export program changed")
++    checker = ROOT.parent / "check_public_exports.py"
++    completed = subprocess.run(
++        [sys.executable, str(checker), str(output / "public"), "--queries", "1", "--demos", "3"],
++        capture_output=True, text=True, timeout=60,
++    )
++    require(completed.returncode == 0,
++            "Public-file checker failed: " + completed.stdout[-1500:] + completed.stderr[-500:])
++    receipt = json.loads(completed.stdout)
++    require(receipt.get("status") == "passed" and receipt.get("files_checked") == 4,
++            "Public-file checker did not verify all four projections")
++    return {"path": str(output), "episodes": 4, "public_queries_per_episode": 1,
++            "private_queries_per_episode": 4, "private_labels": 28,
++            "label_source": "Hash-verified native execution receipt; not re-executed for export",
++            "public_checker_sha256": file_hash(checker), "public_checker": receipt}
++
++
++def audit(qualification_path, output, export=None):
++    output = Path(output).resolve()
++    output.mkdir(parents=True, exist_ok=False)
++    report = {"schema": "arcpuzzles-parametric-bounded-audit-v1", "task_id": TASK_ID,
++              "status": "running", "racket_evaluations": 0,
++              "evaluation_limit": MAX_EVALUATIONS, "executions": [],
++              "boundary_checks": [], "teaching_checks": [], "failures": [],
++              "training_admitted": False,
++              "limits": ["Finite settings, seeds and named rivals only; no universal uniqueness claim.",
++                         "This audit does not grant native qualification or acceptance.",
++                         "Rival survival is computed from demonstrations alone; query labels are checked afterwards."]}
++    bridge = None
++    try:
++        q, native, episodes, execution_path = qualification_inputs(qualification_path)
++        binding, contract = q["source_binding"], q["contract"]
++        report.update(source_binding=copy.deepcopy(binding),
++                      audit_source_sha256=file_hash(Path(__file__)),
++                      qualification={"path": str(Path(qualification_path).resolve()),
++                                     "sha256": file_hash(qualification_path),
++                                     "execution_path": str(execution_path),
++                                     "execution_sha256": file_hash(execution_path),
++                                     "reused_episodes": len(episodes),
++                                     "reported_racket_evaluations": native["racket_evaluations"]})
++        runtime = ROOT / "shared/runtime"
++        with _local_imports(runtime, HERE):
++            prototype = load_prototype()
++            settings = settings_space(contract)
++            require(len(settings) == 2 and {raw(s) for s in settings}
++                    == {raw(s) for s in prototype.SETTINGS}, "Declared settings differ from prototype")
++            programs = {raw(setting): prototype.program(copy.deepcopy(setting)) for setting in settings}
++            for key, program in programs.items():
++                require(q["programs"].get(key.decode().strip()) == program_hash(program),
++                        "Prototype setting program differs from native qualification")
++            for episode in episodes:
++                require(episode["program"] == programs[raw(episode["settings"])],
++                        "Qualified episode uses a different program")
++                for pair in episode["train"] + episode["test"]:
++                    require(_grid(prototype.rule_mirror(copy.deepcopy(pair["input"]),
++                                                       copy.deepcopy(episode["settings"]))) == pair["output"],
++                            "Python mirror differs from a qualified Racket label")
++            report["native_python_label_comparisons"] = sum(
++                len(ep["train"]) + len(ep["test"]) for ep in episodes)
++            apply, identity, bridge = _real_evaluator(runtime)
++            report["racket"] = identity
++
++            def execute(program, grid, scope):
++                require(report["racket_evaluations"] < MAX_EVALUATIONS,
++                        "Bounded Racket evaluation budget exceeded")
++                report["racket_evaluations"] += 1
++                row = {"scope": scope, "program_sha256": program_hash(program),
++                       "input_sha256": digest(_grid(grid))}
++                report["executions"].append(row)
++                result = _grid(apply(program, copy.deepcopy(grid)))
++                row["output_sha256"] = digest(result)
++                return result
++
++            boundary_episodes = []
++            for setting in settings:
++                program = programs[raw(setting)]
++                for demos in (2, 6):
++                    generated = prototype.generate(BOUNDARY_SEED, copy.deepcopy(setting),
++                                                   demos=demos, queries=4)
++                    require(generated.get("program_solution") == program,
++                            "Boundary episode changed its setting program")
++                    episode = {"task_id": TASK_ID, "seed": BOUNDARY_SEED,
++                               "settings": copy.deepcopy(setting), "program": program,
++                               "program_sha256": program_hash(program),
++                               "train": pairs(generated, "train", demos),
++                               "test": pairs(generated, "test", 4)}
++                    require(len({digest(p["input"]) for p in episode["train"] + episode["test"]})
++                            == demos + 4, "Boundary episode has repeated inputs")
++                    for split in ("train", "test"):
++                        for index, pair in enumerate(episode[split]):
++                            label = execute(program, pair["input"], f"boundary:{setting}:{demos}:{split}:{index}")
++                            mirror = _grid(prototype.rule_mirror(copy.deepcopy(pair["input"]),
++                                                               copy.deepcopy(setting)))
++                            require(label == pair["output"] == mirror,
++                                    "Boundary Racket, generated label and Python mirror disagree")
++                    survivors = [copy.deepcopy(setting)]
++                    for rival_setting in settings:
++                        if raw(rival_setting) == raw(setting):
++                            continue
++                        results = []
++                        for index, pair in enumerate(episode["train"]):
++                            value = execute(programs[raw(rival_setting)], pair["input"],
++                                            f"boundary-setting-rival:{setting}:{demos}:{index}")
++                            require(value == _grid(prototype.rule_mirror(
++                                copy.deepcopy(pair["input"]), copy.deepcopy(rival_setting))),
++                                "Other-setting Python mirror differs from protected Racket")
++                            results.append(value == pair["output"])
++                        if all(results):
++                            survivors.append(copy.deepcopy(rival_setting))
++                    require(survivors == [setting], "Boundary demonstrations do not identify the setting")
++                    boundary_episodes.append(episode)
++                    report["boundary_checks"].append({"seed": BOUNDARY_SEED, "settings": setting,
++                        "demos": demos, "queries": 4, "surviving_settings": survivors,
++                        "input_shapes": [[len(p["input"]), len(p["input"][0])]
++                                         for p in episode["train"] + episode["test"]]})
++
++            for setting in settings:
++                episode = next(ep for ep in episodes if raw(ep["settings"]) == raw(setting))
++                teaching = {**copy.deepcopy(episode), "train": copy.deepcopy(episode["train"][:2]), "test": []}
++                claim = prototype.teaching_check(copy.deepcopy(teaching))
++                rivals = prototype.rival_programs(copy.deepcopy(setting))
++                require(type(rivals) is dict and rivals, "Expected a finite named Racket rival family")
++                observed = {name: [] for name in rivals}
++                for index, pair in enumerate(teaching["train"]):
++                    reference = execute(programs[raw(setting)], pair["input"], f"teaching-reference:{setting}:{index}")
++                    require(reference == pair["output"], "Teaching reference label changed")
++                    mirrors = prototype.rival_outputs(copy.deepcopy(pair["input"]), copy.deepcopy(setting))
++                    require(set(mirrors) == set(rivals), "Python and Racket rival inventories differ")
++                    for name, program in rivals.items():
++                        actual = execute(program, pair["input"], f"teaching-rival:{setting}:{name}:{index}")
++                        require(actual == _grid(mirrors[name]), "Rival Python/Racket mismatch: " + name)
++                        observed[name].append({"demo_index": index, "input_sha256": digest(pair["input"]),
++                                               "output": actual, "expected_output": reference,
++                                               "matches": actual == reference})
++                survivors = [name for name, rows in observed.items() if all(row["matches"] for row in rows)]
++                require(set(claim.get("surviving_rivals", [])) == set(survivors),
++                        "teaching_check disagrees with executed demo-only rival survival")
++                require(claim.get("status") == ("ambiguous" if survivors else "identified"),
++                        "teaching_check status differs from executed rival survival")
++                for name, index in claim.get("refuted_by", {}).items():
++                    require(name in observed and type(index) is int and 0 <= index < 2
++                            and not observed[name][index]["matches"],
++                            "teaching_check names an invalid refuting demonstration")
++                query_checks = []
++                for name in survivors:
++                    for index, pair in enumerate(episode["test"]):
++                        actual = execute(rivals[name], pair["input"], f"surviving-rival:{setting}:{name}:{index}")
++                        mirror = prototype.rival_outputs(copy.deepcopy(pair["input"]), copy.deepcopy(setting))[name]
++                        require(actual == _grid(mirror), "Surviving-rival query mirror differs from Racket")
++                        query_checks.append({"rival": name, "query_index": index,
++                                             "output": actual, "expected_output": pair["output"]})
++                        if actual != pair["output"]:
++                            report["failures"].append({"kind": "demo_survivor_changes_query", "settings": setting,
++                                                       "rival": name, "query_index": index,
++                                                       "input": pair["input"], "output": pair["output"],
++                                                       "rival_output": actual})
++                report["teaching_checks"].append({"seed": episode["seed"], "settings": setting,
++                    "demos_used": 2, "queries_used_for_survival": 0, "claim": claim,
++                    "rival_program_sha256": {name: program_hash(program) for name, program in rivals.items()},
++                    "demonstrations": observed, "surviving_rivals": survivors,
++                    "surviving_rival_query_checks": query_checks})
++
++            setting = {"merge": "2_into_1"}
++            episode = next(ep for ep in episodes if ep["settings"] == setting)
++            grid = episode["train"][0]["input"]
++            program = prototype.program(copy.deepcopy(setting))
++            counterfactual = prototype.rival_programs(copy.deepcopy(setting))["rank_then_recolor"]
++            label = execute(program, grid, "sequential-witness:reference")
++            wrong = execute(counterfactual, grid, "sequential-witness:wrong_order")
++            require(label == episode["train"][0]["output"] and label != wrong,
++                    "Sequential wrong-order witness must change the actual Racket output")
++            recolored = _grid([[1 if cell == 2 else cell for cell in row] for row in grid])
++            original_components = prototype.components(copy.deepcopy(grid))
++            merged_components = prototype.components(copy.deepcopy(recolored))
++            witness = {"schema": "arcpuzzles-sequential-dependency-witness-v1",
++                "source_binding": copy.deepcopy(binding),
++                "racket": {"backend": identity["backend"], "protected": identity["protected"]},
++                "racket_runtime_identity": copy.deepcopy(identity),
++                "step_a": "Recolor every 2 to 1, then extract nonzero same-color four-connected components.",
++                "intermediate": "The input-dependent component partition after recoloring, with each component's color and area.",
++                "step_b": "Rank the resulting components by descending area and ascending color, then emit one color run per component.",
++                "why_b_depends_on_a": "Recoloring joins touching color-1/color-2 regions. Their merged area and component identity determine ranking and emitted run lengths; ranking the original components before recoloring gives a different result.",
++                "cases": [{"input": grid, "settings": setting,
++                    "intermediate_value": {"recolored_grid": recolored,
++                        "original_components": original_components, "recolored_components": merged_components,
++                        "original_component_areas": [c["size"] for c in original_components],
++                        "recolored_component_areas": [c["size"] for c in merged_components]},
++                    "program": program, "output": label,
++                    "counterfactual_program": counterfactual, "counterfactual_output": wrong,
++                    "ablation": "wrong_order"}],
++                "limits": "One source-bound protected-Racket causal witness; no universal depth or training-gain claim."}
++            check_source(binding, contract)
++            write_json(output / "sequential-witness.json", witness)
++            dependency = {key: witness[key] for key in
++                          ("step_a", "intermediate", "step_b", "why_b_depends_on_a")}
++            dependency["witness_path"] = "sequential-witness.json"
++            report["native_witness_validation"] = validate_sequential_witness(
++                {"sequential_dependency": dependency}, q,
++                lambda name: (output / name).read_bytes())
++            write_json(output / "boundary-episodes.private.json", {
++                "schema": "arcpuzzles-parametric-boundary-episodes-v1", "task_id": TASK_ID,
++                "source_binding_sha256": digest(binding), "racket": identity,
++                "episodes": boundary_episodes, "private": True})
++            report["sequential_witness"] = {"path": "sequential-witness.json",
++                                             "sha256": file_hash(output / "sequential-witness.json")}
++            report["boundary_episode_bank"] = {"path": "boundary-episodes.private.json",
++                "sha256": file_hash(output / "boundary-episodes.private.json"),
++                "episodes": 4, "labels": 32, "queries_per_episode": 4}
++            if export is not None:
++                report["export"] = check_export(prototype, episodes, export)
++            check_source(binding, contract)
++            report["status"] = "failed" if report["failures"] else "passed"
++    except Exception as error:
++        report["status"] = "failed"
++        report["error"] = {"type": type(error).__name__, "message": str(error)}
++    finally:
++        if bridge is not None:
++            bridge.close()
++        write_json(output / "audit.json", report)
++    return report
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--qualification", required=True, type=Path)
++    parser.add_argument("--out", required=True, type=Path)
++    parser.add_argument("--export", type=Path)
++    options = parser.parse_args()
++    try:
++        report = audit(options.qualification, options.out, options.export)
++        print(json.dumps({"status": report["status"], "audit": str(options.out.resolve() / "audit.json"),
++                          "racket_evaluations": report["racket_evaluations"],
++                          "error": report.get("error"), "failures": len(report["failures"])}))
++        return 0 if report["status"] == "passed" else 1
++    except Exception as error:
++        print(json.dumps({"status": "failed", "error": type(error).__name__, "message": str(error)}))
++        return 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/0f801939eff6/workspace/parametric/canonical.rkt b/repo/generators/0f801939eff6/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0f801939eff6/workspace/parametric/canonical.rkt
+@@ -0,0 +1,8 @@
++(rule!
++  (let* ((items
++           (sort (map (lambda (obj) (list (obj-size obj) (obj-color obj))) (objects g 0))
++                 (lambda (a b)
++                   (cond [(not (= (first a) (first b))) (> (first a) (first b))]
++                         [else (< (second a) (second b))]))))
++         (row (apply append (map (lambda (item) (make-list (first item) (second item))) items))))
++    (if (empty? row) (list (list 0)) (list row))))
+\ No newline at end of file
+diff --git a/repo/generators/0f801939eff6/workspace/parametric/evidence/current/sampling.json b/repo/generators/0f801939eff6/workspace/parametric/evidence/current/sampling.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0f801939eff6/workspace/parametric/evidence/current/sampling.json
+@@ -0,0 +1,29 @@
++{
++  "attempted": 72,
++  "demos": [
++    2,
++    3,
++    6
++  ],
++  "failures": [],
++  "queries": 4,
++  "schema": "bounded-parametric-sampling-v1",
++  "scope": "Python structure, claimed labels, distinctness and named finite-rival demonstration checks; Racket qualification separate",
++  "seconds": 0.261,
++  "seeds": [
++    0,
++    1,
++    2,
++    3,
++    4,
++    5,
++    6,
++    7,
++    8,
++    9,
++    10,
++    11
++  ],
++  "source_sha256": "008251bf3f0f79fcb0b6f7fbf3a22bf542ca635b9c35e8dc540a4901100e1b1f",
++  "succeeded": 72
++}
+diff --git a/repo/generators/0f801939eff6/workspace/parametric/evidence/manifest.json b/repo/generators/0f801939eff6/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0f801939eff6/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,77 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "db7ad2b97a6790967778c9c8bcd503b4bce34dc16f889f0b9f74b0bba1a18330",
++  "canonical_rule_hash": "cbb04236ecda",
++  "default": {
++    "merge": "none"
++  },
++  "evidence_root": "generators/0f801939eff6/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 19962,
++      "path": "generators/0f801939eff6/generator.py",
++      "sha256": "1a0c005389f20e2b3ea5ea5697f9b5117ba0d8fd25b2c40c917fb3a038f6ac87"
++    },
++    {
++      "bytes": 19148,
++      "path": "generators/0f801939eff6/tests/test_parametric.py",
++      "sha256": "0b730c2f457e782a70c896fd9fb2a1f33ff4ec02e2c219733943719966782a18"
++    },
++    {
++      "bytes": 480,
++      "path": "generators/0f801939eff6/workspace/parametric/adapter.py",
++      "sha256": "555dda80215d785ee2d3d232230c0a675b0f204246c1fc1c437da1e2f13da1fa"
++    },
++    {
++      "bytes": 23322,
++      "path": "generators/0f801939eff6/workspace/parametric/audit.py",
++      "sha256": "434ed7c2407cb6d19318fa4e4379723ca6af019bacf26016c112f190fa080b19"
++    },
++    {
++      "bytes": 435,
++      "path": "generators/0f801939eff6/workspace/parametric/canonical.rkt",
++      "sha256": "db7ad2b97a6790967778c9c8bcd503b4bce34dc16f889f0b9f74b0bba1a18330"
++    },
++    {
++      "bytes": 505,
++      "path": "generators/0f801939eff6/workspace/parametric/evidence/current/sampling.json",
++      "sha256": "7d88255bf15a691bf316055fcc847e696bdf78e39f74a3ca834f2430ec70404e"
++    },
++    {
++      "bytes": 333,
++      "path": "generators/0f801939eff6/workspace/parametric/promotion.json",
++      "sha256": "ab5d04c5471bab057b12b747b715ee51eb479eb96c5e898a70407f283589e1f0"
++    },
++    {
++      "bytes": 18807,
++      "path": "generators/0f801939eff6/workspace/parametric/prototype.py",
++      "sha256": "008251bf3f0f79fcb0b6f7fbf3a22bf542ca635b9c35e8dc540a4901100e1b1f"
++    }
++  ],
++  "generator_sha256": "1a0c005389f20e2b3ea5ea5697f9b5117ba0d8fd25b2c40c917fb3a038f6ac87",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "merge": [
++      "none",
++      "2_into_1"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "80 focused prototype tests passed; 72/72 bounded Python samples; audit writer now projects exact native witness runtime identity and invokes native witness validator. Qualification and execution receipts are separate.",
++  "rule_task_id": "0f801939eff6",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "0f801939eff6",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/0f801939eff6/workspace/parametric/promotion.json b/repo/generators/0f801939eff6/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0f801939eff6/workspace/parametric/promotion.json
+@@ -0,0 +1,8 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/0f801939eff6/workspace/parametric/adapter.py",
++  "parameters": {"merge": ["none", "2_into_1"]},
++  "default": {"merge": "none"},
++  "limits": {"demos": [2, 6], "queries": [1, 4]},
++  "resources": ["generators/0f801939eff6/workspace/parametric/canonical.rkt"]
++}
+diff --git a/repo/generators/0f801939eff6/workspace/parametric/prototype.py b/repo/generators/0f801939eff6/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0f801939eff6/workspace/parametric/prototype.py
+@@ -0,0 +1,418 @@
++"""Area-ranked components, optionally coalescing color 2 into 1 first.
++
++The canonical sampler and authority are untouched. Python labels are claims;
++native qualification and audit.py replay them with protected Racket.
++"""
++from __future__ import annotations
++
++import argparse
++from collections import Counter, deque
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++import random
++
++from reviewer_support import public_challenge_bytes, public_challenge_id
++
++TASK_ID = "0f801939eff6"
++SETTINGS = ({"merge": "none"}, {"merge": "2_into_1"})
++DEFAULT = {"merge": "none"}
++CANONICAL_PROGRAM = Path(__file__).with_name("canonical.rkt").read_text()
++_BODY = CANONICAL_PROGRAM.strip()[len("(rule!"):].rstrip()[:-1].strip()
++_LIMIT = 2**63 - 1
++
++
++def _integer(name, value, low, high):
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be a literal integer in {low}..{high}")
++
++
++def _settings(settings):
++    if (type(settings) is not dict or set(settings) != {"merge"}
++            or type(settings["merge"]) is not str
++            or settings["merge"] not in ("none", "2_into_1")):
++        raise ValueError("settings must be exactly {'merge': 'none'|'2_into_1'}")
++    return settings["merge"]
++
++
++def _grid(grid):
++    if (type(grid) is not list or not 1 <= len(grid) <= 30
++            or type(grid[0]) is not list or not 1 <= len(grid[0]) <= 30):
++        raise ValueError("grid must have 1..30 rows and columns")
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width
++           or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++           for row in grid):
++        raise ValueError("grid must be rectangular with literal integer colors 0..9")
++    return grid
++
++
++def components(grid, *, eight=False):
++    """Independent same-color BFS; returned descriptions are JSON-safe."""
++    _grid(grid)
++    h, w = len(grid), len(grid[0])
++    steps = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1)
++             if (dr or dc) and (eight or abs(dr) + abs(dc) == 1)]
++    seen, found = set(), []
++    for r in range(h):
++        for c in range(w):
++            color = grid[r][c]
++            if not color or (r, c) in seen:
++                continue
++            queue, cells = deque([(r, c)]), []
++            seen.add((r, c))
++            while queue:
++                rr, cc = queue.popleft()
++                cells.append([rr, cc])
++                for dr, dc in steps:
++                    nr, nc = rr + dr, cc + dc
++                    if (0 <= nr < h and 0 <= nc < w and (nr, nc) not in seen
++                            and grid[nr][nc] == color):
++                        seen.add((nr, nc))
++                        queue.append((nr, nc))
++            cells.sort()
++            rows, cols = [p[0] for p in cells], [p[1] for p in cells]
++            found.append({"color": color, "size": len(cells), "cells": cells,
++                          "anchor": cells[0],
++                          "bbox_area": (max(rows)-min(rows)+1)*(max(cols)-min(cols)+1)})
++    return found
++
++
++def preprocess(grid, settings):
++    _grid(grid)
++    merge = _settings(settings) == "2_into_1"
++    return [[1 if merge and cell == 2 else cell for cell in row] for row in grid]
++
++
++def _strip(parts):
++    return [[p["color"] for p in parts for _ in range(p["size"])] or [0]]
++
++
++def rule_mirror(grid, settings):
++    parts = components(preprocess(grid, settings))
++    return _strip(sorted(parts, key=lambda p: (-p["size"], p["color"])))
++
++
++def _rule(body):
++    return "(rule!\n  " + body + ")"
++
++
++def _before(body, settings):
++    if _settings(settings) == "2_into_1":
++        return "(let ((g (recolor g 2 1)))\n    " + body + ")"
++    return body
++
++
++def program(settings):
++    """The default is byte-identical to the selected canonical authority."""
++    return CANONICAL_PROGRAM if _settings(settings) == "none" else _rule(_before(_BODY, settings))
++
++
++def rival_outputs(grid, settings):
++    transformed = preprocess(grid, settings)
++    parts = components(transformed)
++    by_area = lambda p: (-p["size"], p["color"])
++    counts = Counter(v for row in transformed for v in row if v)
++    other = {"merge": "2_into_1" if settings["merge"] == "none" else "none"}
++    rivals = {
++        "other_setting": rule_mirror(grid, other),
++        "color_frequency": _strip(sorted(
++            [{"color": c, "size": n} for c, n in counts.items()], key=by_area)),
++        "position_tie": _strip(sorted(parts, key=lambda p: (-p["size"], p["anchor"]))),
++        "eight_connected": _strip(sorted(components(transformed, eight=True), key=by_area)),
++        "bbox_rank": _strip(sorted(parts, key=lambda p: (-p["bbox_area"], p["color"]))),
++        "color_rank": _strip(sorted(parts, key=lambda p: (p["color"], -p["size"]))),
++        "scan_order": _strip(sorted(parts, key=lambda p: p["anchor"])),
++        "target_first": _strip(sorted(parts, key=lambda p: (p["color"] != 1, *by_area(p)))),
++    }
++    if settings["merge"] == "2_into_1":
++        rivals["rank_then_recolor"] = preprocess(rule_mirror(grid, DEFAULT), settings)
++        # Strong scope shortcut: change 2 only in a foreground cluster that has 1.
++        mask = [[int(bool(value)) for value in row] for row in grid]
++        local = deepcopy(grid)
++        for group in components(mask, eight=True):
++            if any(grid[r][c] == 1 for r, c in group["cells"]):
++                for r, c in group["cells"]:
++                    if local[r][c] == 2:
++                        local[r][c] = 1
++        rivals["local_cluster_recolor"] = rule_mirror(local, DEFAULT)
++    return rivals
++
++
++def rival_programs(settings):
++    """Executable counterparts of the finite authoring rivals, not gold rules."""
++    _settings(settings)
++    other = {"merge": "2_into_1" if settings["merge"] == "none" else "none"}
++    area = "(obj-size a)"
++    area_b = "(obj-size b)"
++    color_tie = "(< (obj-color a) (obj-color b))"
++    anchor_a = "(apply min (map (lambda (p) (+ (* 30 (first p)) (second p))) (obj-cells a)))"
++    anchor_b = anchor_a.replace("(obj-cells a)", "(obj-cells b)")
++    comparisons = {
++        "position_tie": f"(if (= {area} {area_b}) (< {anchor_a} {anchor_b}) (> {area} {area_b}))",
++        "bbox_rank": f"(let ((aa (* (obj-h a) (obj-w a))) (bb (* (obj-h b) (obj-w b)))) (if (= aa bb) {color_tie} (> aa bb)))",
++        "color_rank": f"(if (= (obj-color a) (obj-color b)) (> {area} {area_b}) {color_tie})",
++        "scan_order": f"(< {anchor_a} {anchor_b})",
++        "target_first": f"(cond [(and (= (obj-color a) 1) (not (= (obj-color b) 1))) #t] [(and (not (= (obj-color a) 1)) (= (obj-color b) 1)) #f] [(= {area} {area_b}) {color_tie}] [else (> {area} {area_b})])",
++    }
++    result = {"other_setting": program(other)}
++    for name, compare in comparisons.items():
++        body = f"""(let* ((parts (sort (objects g 0) (lambda (a b) {compare})))
++  (row (apply append (map (lambda (obj) (make-list (obj-size obj) (obj-color obj))) parts))))
++  (if (empty? row) (list (list 0)) (list row)))"""
++        result[name] = _rule(_before(body, settings))
++    result["eight_connected"] = _rule(_before(_BODY.replace("(objects g 0)", "(objects-8 g 0)"), settings))
++    frequency = """(let* ((flat (apply append g))
++  (items (sort (map (lambda (color) (list (count (lambda (v) (= v color)) flat) color)) (grid-colors g 0))
++    (lambda (a b) (if (= (first a) (first b)) (< (second a) (second b)) (> (first a) (first b))))))
++  (row (apply append (map (lambda (item) (make-list (first item) (second item))) items))))
++  (if (empty? row) (list (list 0)) (list row)))"""
++    result["color_frequency"] = _rule(_before(frequency, settings))
++    if settings["merge"] == "2_into_1":
++        result["rank_then_recolor"] = _rule("(recolor " + _BODY + " 2 1)")
++        local = """(let* ((mask (map (lambda (row) (map (lambda (v) (if (= v 0) 0 1)) row)) g))
++  (clusters (objects-8 mask 0))
++  (chosen (filter (lambda (obj) (ormap (lambda (p) (= (list-ref (list-ref g (first p)) (second p)) 1)) (obj-cells obj))) clusters))
++  (locations (apply append (map obj-cells chosen)))
++  (changed (foldl (lambda (p acc) (if (= (list-ref (list-ref g (first p)) (second p)) 2)
++      (set-cell acc (first p) (second p) 1) acc)) g locations)))
++  (let ((g changed)) BODY))"""
++        result["local_cluster_recolor"] = _rule(local.replace("BODY", _BODY))
++    return result
++
++
++def teaching_check(episode):
++    """Fit rivals to demonstrations only; query labels cannot affect this result."""
++    settings = episode["settings"]
++    _settings(settings)
++    train = episode["train"]
++    if type(train) is not list or not train:
++        raise ValueError("nonempty demonstrations required")
++    refuted = {}
++    names = None
++    for index, pair in enumerate(train):
++        _grid(pair["output"])
++        if rule_mirror(pair["input"], settings) != pair["output"]:
++            raise ValueError("demonstration label disagrees with selected rule")
++        rivals = rival_outputs(pair["input"], settings)
++        names = list(rivals)
++        for name, output in rivals.items():
++            if output != pair["output"]:
++                refuted.setdefault(name, index)
++    survivors = [name for name in names if name not in refuted]
++    return {"status": "ambiguous" if survivors else "identified",
++            "surviving_rivals": survivors, "refuted_by": refuted,
++            "limits": "Demonstration-only check of the named finite rivals; not universal uniqueness."}
++
++
++def _shape(n, color, *, compact=False):
++    if compact:
++        width = 2 if n <= 4 else 3
++        points = [(i // width, i % width) for i in range(n)]
++    else:
++        height = n // 2 + 1
++        points = [(r, 0) for r in range(height)] + [(height-1, c) for c in range(1, n-height+1)]
++    return [(r, c, color) for r, c in points]
++
++
++def _orient(cells, rng):
++    turns, reflect = rng.randrange(4), rng.choice((False, True))
++    result = []
++    for r, c, color in cells:
++        if reflect:
++            c = -c
++        for _ in range(turns):
++            r, c = c, -r
++        result.append((r, c, color))
++    r0, c0 = min(x[0] for x in result), min(x[1] for x in result)
++    return [(r-r0, c-c0, color) for r, c, color in result]
++
++
++def _place(groups, h, w, rng, *, corners=False):
++    if corners:
++        placed = []
++        for index, group in enumerate(groups):
++            gh, gw = max(p[0] for p in group)+1, max(p[1] for p in group)+1
++            r0 = 0 if index < 2 else h-gh
++            c0 = 0 if index % 2 == 0 else w-gw
++            placed.append([(r+r0, c+c0, value) for r, c, value in group])
++        return placed
++    candidates = []
++    for group in groups:
++        gh, gw = max(p[0] for p in group)+1, max(p[1] for p in group)+1
++        options = [(r, c) for r in range(h-gh+1) for c in range(w-gw+1)]
++        rng.shuffle(options)
++        candidates.append(options)
++    chosen = [None] * len(groups)
++    nodes = 0
++    def visit(index, blocked):
++        nonlocal nodes
++        if index == len(groups):
++            return True
++        for r0, c0 in candidates[index]:
++            nodes += 1
++            if nodes > 50000:
++                raise RuntimeError("bounded constructive placement exhausted")
++            moved = [(r+r0, c+c0, value) for r, c, value in groups[index]]
++            mask = {(r, c) for r, c, _ in moved}
++            if mask & blocked:
++                continue
++            # Group 1 is the larger-color L; it must precede the tied low color.
++            if index == 2 and min(mask) <= min((r, c) for r, c, _ in chosen[1]):
++                continue
++            chosen[index] = moved
++            halo = {(r+dr, c+dc) for r, c in mask for dr in (-1, 0, 1) for dc in (-1, 0, 1)}
++            if visit(index+1, blocked | halo):
++                return True
++        chosen[index] = None
++        return False
++    if not visit(0, set()):
++        raise RuntimeError(f"no complete motif placement on {h}x{w}")
++    return chosen
++
++
++def _input(seed, split, index):
++    key = f"{TASK_ID}/coalesce-v1/{seed}/{split}/{index}".encode()
++    rng = random.Random(int.from_bytes(hashlib.sha256(key).digest(), "big"))
++    palette = rng.sample(range(3, 10), 3)
++    low, high = sorted(palette[:2])
++    extra = palette[2]
++    stress = split == "query" and index == 3
++    if stress:
++        h = w = 30
++        a, b, tie = 6, 5, 7
++    elif split == "demo":
++        h, w = 10 + index, 13 + (seed % 3)
++        a, b, tie = (4, 3, 6) if index % 2 == 0 else (2, 2, 5)
++    elif index == 0:
++        h, w, a, b, tie = 8, 11, 3, 2, 4
++    else:
++        h, w = ((rng.randrange(21, 30), rng.randrange(21, 30)) if index == 1 else (16, 20))
++        a, b, tie = rng.randrange(2, 6), rng.randrange(1, 5), rng.randrange(4, 7)
++    # Query 2 contains separated source/target components: recoloring is global,
++    # and does not imply that every occurrence of the resulting color coalesces.
++    gap = 1 if split == "query" and index == 2 else 0
++    joined = [(r, 0, 1) for r in range(a)] + [(a-1, c+1+gap, 2) for c in range(b)]
++    if stress:
++        joined += [(a, b+1, 2), (a, b+2, 2)]  # diagonal, stays 4-disconnected
++    elif split == "demo" and index % 2:
++        # Isolated even under 8-connected foreground grouping: demonstrations
++        # must teach global recoloring before queries put 2 far from every 1.
++        joined.append((a+2, b+3, 2))
++    else:
++        joined.append((-1, -1, 1))
++    groups = [joined, _shape(tie, high), _shape(tie, low, compact=True)]
++    if stress:
++        groups.append(_shape(3, 1))
++    elif split == "demo" and index % 2:
++        groups.append(_shape(3, extra))
++    elif split == "query" and index == 2:
++        groups.append(_shape(2, extra))
++    groups = [_orient(group, rng) for group in groups]
++    placed = _place(groups, h, w, rng, corners=stress)
++    grid = [[0] * w for _ in range(h)]
++    for group in placed:
++        for r, c, color in group:
++            if grid[r][c]:
++                raise RuntimeError("constructive placement collision")
++            grid[r][c] = color
++    if sum(bool(v) for row in grid for v in row) > 30:
++        raise RuntimeError("constructed output would exceed ARC width")
++    return grid
++
++
++def generate(seed, settings, demos=3, queries=4):
++    _integer("seed", seed, 0, _LIMIT)
++    _integer("demos", demos, 2, 6)
++    _integer("queries", queries, 1, 4)
++    _settings(settings)
++    def pairs(split, count):
++        grids = [_input(seed, split, i) for i in range(count)]
++        return [{"input": grid, "output": rule_mirror(grid, settings)} for grid in grids]
++    episode = {"task_id": TASK_ID, "seed": seed, "settings": deepcopy(settings),
++               "train": pairs("demo", demos), "test": pairs("query", queries),
++               "program_solution": program(settings)}
++    inputs = [json.dumps(p["input"]) for p in episode["train"]+episode["test"]]
++    if len(set(inputs)) != len(inputs):
++        raise RuntimeError("duplicate input in constructed episode")
++    if teaching_check(episode)["surviving_rivals"]:
++        raise RuntimeError("constructed demonstrations do not eliminate declared rivals")
++    return episode
++
++
++def public_challenge(episode, query_index=0):
++    _integer("query_index", query_index, 0, len(episode["test"])-1)
++    # Round-trip the established projection helper for exact, strict visible bytes.
++    selected = {"train": episode["train"], "test": [episode["test"][query_index]]}
++    return json.loads(public_challenge_bytes(selected))
++
++
++def export_batch(episodes, output_dir):
++    """Publish first turns only; controller banks and all semantics stay private.
++
++    Validation and duplicate-visible detection finish before creating output_dir.
++    IDs depend only on exact first-turn visible bytes, never future queries.
++    This authoring writer does not grant native acceptance or training admission.
++    """
++    if type(episodes) not in (list, tuple) or not episodes:
++        raise ValueError("a nonempty episode batch is required")
++    pending, ids = [], set()
++    # Check visible duplicates before private label validation, including two
++    # contradictory hidden banks claiming the same visible first-turn lesson.
++    for episode in episodes:
++        visible = public_challenge(episode)
++        identity = public_challenge_id(visible)
++        if identity in ids:
++            raise ValueError("duplicate visible public challenge")
++        ids.add(identity)
++        pending.append((identity, public_challenge_bytes(visible), deepcopy(episode)))
++    serialized = []
++    for identity, visible_bytes, episode in pending:
++        _settings(episode["settings"])
++        _integer("demos", len(episode["train"]), 2, 6)
++        _integer("queries", len(episode["test"]), 1, 4)
++        code = episode.get("program_solution", episode.get("program"))
++        if code != program(episode["settings"]):
++            raise ValueError("private program differs from selected rule")
++        seen = set()
++        for pair in episode["train"] + episode["test"]:
++            _grid(pair["input"])
++            _grid(pair["output"])
++            fingerprint = json.dumps(pair["input"])
++            if fingerprint in seen:
++                raise ValueError("duplicate demonstration/query input")
++            seen.add(fingerprint)
++            if rule_mirror(pair["input"], episode["settings"]) != pair["output"]:
++                raise ValueError("private label disagrees with selected rule")
++        if teaching_check(episode)["surviving_rivals"]:
++            raise ValueError("underidentified demonstrations")
++        private_bytes = (json.dumps(episode, sort_keys=True, separators=(",", ":"),
++                                   allow_nan=False) + "\n").encode("utf-8")
++        serialized.append((identity, visible_bytes, private_bytes))
++    output = Path(output_dir)
++    output.mkdir(parents=True, exist_ok=False)
++    (output / "public").mkdir()
++    (output / "private").mkdir()
++    for identity, visible_bytes, private_bytes in sorted(serialized):
++        (output / "public" / (identity + ".json")).write_bytes(visible_bytes)
++        (output / "private" / (identity + ".json")).write_bytes(private_bytes)
++    return {"episodes": len(pending), "public_dir": str(output / "public"),
++            "private_dir": str(output / "private"), "training_admitted": False}
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seed", type=int, default=17)
++    parser.add_argument("--demos", type=int, default=3)
++    parser.add_argument("--queries", type=int, default=4)
++    parser.add_argument("--merge", choices=("none", "2_into_1", "both"), default="both")
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    settings = SETTINGS if args.merge == "both" else ({"merge": args.merge},)
++    print(json.dumps(export_batch([generate(args.seed, setting, args.demos, args.queries)
++                                   for setting in settings], args.out), sort_keys=True))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/repo/generators/147c2b92e5c1/notes.md b/repo/generators/147c2b92e5c1/notes.md
+--- a/repo/generators/147c2b92e5c1/notes.md
++++ b/repo/generators/147c2b92e5c1/notes.md
+@@ -35,6 +35,31 @@
+ ## Current reviewer considerations
+ 
+ Source SHA-256: `658485dcaa05e19b78869e77afa0da15170000fbb0aa09a65a5f13fad82607a0`.
++
++### Bounded peer finding: unseen flip-code meanings (2026-10-24)
++
++Status: **peer-review unverified proposal; no approval or catalog change**.
++One default-generated easy lesson (`seed=0`, indices `0..4`, first four as
++demonstrations) has codes `[1,2,3,4,5]`. The fixed rival that swaps the meanings
++of codes 5 and 6, preserving all other operations, fits all four visible
++demonstrations and differs on the query. Both programs were executed through
++the protected Racket backend. The query outputs are 6×10 and differ in 16
++cells; zero-based cell `(0,8)` is canonical `1`, rival `0`. All five inputs
++pass `self_check`, and `lesson_identifiable` returns no reasons because this
++code-map rival is outside its ten declared competitors.
++
++Reusable evidence: `WORK/checks/147c2b92e5c1/probe.py` (SHA-256
++`144c4fe236e8b879e7598c01cf5478b0148ef1d0764dee541fbf516797e08333`)
++and compact `WORK/checks/147c2b92e5c1/probe-result.json` (SHA-256
++`7c1d2d983c6ffba0f2301573a34ed830d6c6d827d1a6ffbfe6a2c95bfb9f07a8`).
++The JSON retains actual inputs, canonical/rival programs and outputs, generator
++and authority hashes, runtime identity, and assertions. Reproduce from packet:
++`WORK/.venv/bin/python review.py run python3 ../checks/147c2b92e5c1/probe.py`.
++
++This is one lesson against one fixed rival, not a full battery or an exhaustive
++learnability result. It concerns inferring a code legend from the visible
++grids; an explicitly supplied legend would resolve the ambiguity. The
++canonical authority and production generator remain unchanged.
+ 
+ # Decisions — 147c2b92e5c1
+ 
+diff --git a/repo/generators/fd93f1d51f8b/notes.md b/repo/generators/fd93f1d51f8b/notes.md
+--- a/repo/generators/fd93f1d51f8b/notes.md
++++ b/repo/generators/fd93f1d51f8b/notes.md
+@@ -1,4 +1,27 @@
+ # Working notes: fd93f1d51f8b
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
++Rule: crop to the bounding box of **all** nonzero cells, preserving the interior.
++
++Current bounded peer finding: for selected source
++`4a8587c42ed71bd6f66ec54b731ae8445988dbc0c11c38b8c36abaa1af54f67b`,
++easy seed 2, consecutive sample indices 0–2 used as demonstrations all fit the
++wrong rule “crop to the most frequent nonzero color's bounding box.” Query index
++3 distinguishes it: canonical output is `[[2,0,0,1],[0,1,1,1]]`; the rival returns
++`[[0,0,1],[1,1,1]]`. All four inputs pass the current self-check; all four gold
++labels were executed through protected Racket using the exact canonical program.
++The bounded search stopped after seeds 0–2 and tested five explicit rivals.
++
++Runnable evidence: `WORK/checks/fd93f1d51f8b/probe.py`; retained inputs, outputs,
++source/rule hashes and rival definitions: `WORK/checks/fd93f1d51f8b/evidence.json`;
++successful command receipt: `WORK/checks/fd93f1d51f8b/command.json`.
++Run from packet root:
++`WORK/.venv/bin/python review.py run python3 ../checks/fd93f1d51f8b/probe.py`.
++
++Owner-review-pending teaching proposal: ensure a demonstration puts a minority
++color outside the dominant color's bbox, using the retained query as a witness.
++This finding concerns the stated three-demo/one-query grouping and finite rivals;
++it is not a population estimate, exhaustive review, or approval. No selected
++generator code or approval metadata changed. The selected generator remains
++unverified and unapproved.
++
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.

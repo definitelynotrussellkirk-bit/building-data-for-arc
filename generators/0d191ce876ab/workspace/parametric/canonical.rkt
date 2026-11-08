@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (grid-from-fn (rows g) (cols g) (lambda (r c) (let ((v (at g r c))) (if (and (not (= v 0)) (> r 0) (< r (- (rows g) 1)) (> c 0) (< c (- (cols g) 1)) (= (at g (- r 1) c) v) (= (at g (+ r 1) c) v) (= (at g r (- c 1)) v) (= (at g r (+ c 1)) v)) v 0))))))

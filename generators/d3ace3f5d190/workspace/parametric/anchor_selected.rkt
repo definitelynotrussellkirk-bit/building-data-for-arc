@@ -1,0 +1,18 @@
+(rule!
+  (let* ((n (rows g))
+         (corners (list (list 0 0)
+                        (list 0 (- n 1))
+                        (list (- n 1) 0)
+                        (list (- n 1) (- n 1))))
+         (anchors (filter (lambda (p)
+                            (= (at g (first p) (second p)) 8))
+                          corners))
+         (anchor (first anchors))
+         (use-main (= (first anchor) (second anchor))))
+    (grid-from-fn n n
+      (lambda (r c)
+        (let* ((mr (if use-main c (- (- n 1) c)))
+               (mc (if use-main r (- (- n 1) r)))
+               (v (at g r c))
+               (mirror (at g mr mc)))
+          (if (not (= mirror 0)) mirror v))))))

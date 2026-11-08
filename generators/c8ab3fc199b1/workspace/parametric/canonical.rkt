@@ -1,0 +1,18 @@
+(rule!
+  (let* ((markers (filter (lambda (cell) (and (= (first cell) 0) (not (= (third cell) 0)))) (grid-cells g)))
+         (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1)))
+         (objs (objects body 0)))
+    (define (crop-for color)
+      (let* ((obj (first (filter (lambda (o) (= (obj-color o) color)) objs))))
+        (subgrid body (obj-r1 obj) (obj-c1 obj) (obj-r2 obj) (obj-c2 obj))))
+    (define crops (map (lambda (m) (list (third m) (second m) (crop-for (third m)))) markers))
+    (define out-h (apply max (map (lambda (x) (rows (third x))) crops)))
+    (for/fold ([out (empty-grid out-h (cols g) 0)]) ([item (in-list crops)])
+      (let* ((left (second item))
+             (crop (third item))
+             (top (- out-h (rows crop))))
+        (for*/fold ([acc out])
+                   ([r (in-range (rows crop))]
+                    [c (in-range (cols crop))])
+          (let ((v (at crop r c)))
+            (if (not (= v 0)) (set-cell acc (+ top r) (+ left c) v) acc)))))))

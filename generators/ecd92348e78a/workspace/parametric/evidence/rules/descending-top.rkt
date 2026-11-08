@@ -1,0 +1,17 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((all-colors (filter (lambda (c) (!= c 0)) (grid-colors g)))
+                  (color-heights (for/list ((color all-colors))
+                                   (let* ((cells (find-color g color))
+                                          (rs (map first cells))
+                                          (height (+ 1 (- (max-list rs) (min-list rs)))))
+                                     (list height color))))
+                  (sorted (sort color-heights (lambda (a b) (> (first a) (first b)))))
+                  (max-h (first (first sorted)))
+                  (num-colors (length sorted)))
+             (build-grid max-h
+                         num-colors
+                         (r c)
+                         (let ((entry (list-ref sorted c)))
+                           (if (< r (first entry)) (second entry) 0)))))))

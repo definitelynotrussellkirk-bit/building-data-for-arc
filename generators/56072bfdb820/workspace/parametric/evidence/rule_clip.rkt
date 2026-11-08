@@ -1,0 +1,73 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((tile-color (lambda (tr tc)
+                                (let* ((r0 (* tr 4))
+                                       (c0 (* tc 4))
+                                       (vals (filter (lambda (v)
+                                                       (and (!= v 7) (!= v 6)))
+                                                     (map (lambda (p)
+                                                            (at g (first p) (second p)))
+                                                          (positions-in-rect r0
+                                                                             c0
+                                                                             (+ r0 2)
+                                                                             (+ c0 2))))))
+                                  (if (empty? vals) 0 (first vals)))))
+                  (symbols (filter (lambda (entry) (!= (third entry) 0))
+                                   (flatmap (lambda (tr)
+                                              (map (lambda (tc)
+                                                     (list tr tc (tile-color tr tc)))
+                                                   (range 0 3)))
+                                            (range 0 3))))
+                  (bad? (any? (lambda (entry) (!= (third entry) 2)) symbols)))
+             (if bad?
+                 (empty-grid 16 16 7)
+                 (let* ((twos (map (lambda (entry) (list (first entry) (second entry)))
+                                   symbols))
+                        (p1 (first twos))
+                        (p2 (second twos))
+                        (r1 (first p1))
+                        (c1 (second p1))
+                        (r2 (first p2))
+                        (c2 (second p2))
+                        (extras (cond
+                                  ((= c1 c2) (let ((r (- (min r1 r2) 1))
+                                          (c c1))
+                                      (list (list r (- c 1) 5) (list r (+ c 1) 8))))
+                                  ((= r1 r2) (let ((r r1)
+                                          (c (- (min c1 c2) 1)))
+                                      (list (list (- r 1) c 8) (list (+ r 1) c 5))))
+                                  ((< c2 c1) (list (list r2 (- c2 1) 8) (list (+ r2 1) c2 5)))
+                                  (else (list (list r2 (+ c2 1) 8) (list (+ r2 1) c2 5)))))
+                        (items (append symbols
+                                       (filter (lambda (e)
+                                                 (and
+                                                   (>= (first e) 0)
+                                                   (< (first e) 3)
+                                                   (>= (second e) 0)
+                                                   (< (second e) 3)))
+                                               extras)))
+                        (lookup (lambda (tr tc)
+                                  (let ((hit (find-first (lambda (entry)
+                                                           (and
+                                                             (= (first entry) tr)
+                                                             (= (second entry) tc)))
+                                                         items)))
+                                    (if hit (third hit) 0)))))
+                   (build-grid 11
+                               11
+                               (r c)
+                               (if (or (= r 3) (= r 7) (= c 3) (= c 7))
+                                   6
+                                   (let* ((tr (quotient r 4))
+                                          (tc (quotient c 4))
+                                          (lr (modulo r 4))
+                                          (lc (modulo c 4))
+                                          (v (lookup tr tc)))
+                                     (if (and
+                                           (!= v 0)
+                                           (or
+                                             (and (= lr 1) (or (zero? lc) (= lc 2)))
+                                             (and (= lc 1) (or (zero? lr) (= lr 2)))))
+                                         v
+                                         7))))))))))

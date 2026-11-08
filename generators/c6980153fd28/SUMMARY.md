@@ -1,0 +1,6 @@
+# c6980153fd28
+
+Fixed 7×11 0-bg grid laid out as TWO ROWS of THREE 3×3 PANELS each, separated by COLOR-9 LINES: (a) 9-DIVIDERS — full vertical column-9 at cols 3 and 7, full horizontal row-9 at row 3 (so the grid splits into a 2×3 panel grid with 9 borders); (b) TOP ROW (DEMO): three 3×3 panels showing _A, _B, and (_A op _B) where op is one of 5 fixed binary set ops {union, intersection, xor, A-B, B-A} chosen for this sample; (c) BOTTOM ROW (QUERY): bottom-left panel = _D (fixed mask), bottom-middle panel = _E (fixed mask), bottom-right panel is BLANK (the target). All masks painted in a single random non-{0,9} color drawn from {1..7}. Rule (INFER THE BINARY OCCUPANCY OP FROM TOP DEMO AND APPLY TO BOTTOM-LEFT × BOTTOM-MIDDLE INTO BOTTOM-RIGHT): read the TOP ROW to determine which of the 5 ops produces the third panel from the first two. APPLY that same op to the bottom-left and bottom-middle 3×3 occupancy masks. PAINT the resulting cells (in the same color) into the bottom-right 3×3 panel. Top row, dividers, and the two bottom operand panels stay unchanged. Net: the blank bottom-right panel gets filled with the inferred op of the two bottom operands.
+
+Kind: `per_puzzle`. Imported version: `2.1.1`.
+Approval is derived by the catalog from current code and retained evidence.

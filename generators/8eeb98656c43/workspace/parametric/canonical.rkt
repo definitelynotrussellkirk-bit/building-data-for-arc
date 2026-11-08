@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let ((axis (quotient (cols g) 2))) (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range axis))) (let ((mc (- (* 2 axis) c))) (if (and (= (at g r c) 2) (in-bounds? r mc (rows g) (cols g))) (set-cell out r mc 7) out))))))

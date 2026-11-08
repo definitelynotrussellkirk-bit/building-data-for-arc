@@ -1,0 +1,12 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((objs (objects g 0))
+                  (all-vals (flatmap (lambda (r)
+                                       (map (lambda (c) (at g r c)) (range 0 (cols g))))
+                                     (range 0 (rows g))))
+                  (rarest (first (sort-by objs
+                                          (lambda (o)
+                                            (count-if (lambda (v) (= v (obj-color o)))
+                                                      all-vals))))))
+             (crop-object g rarest)))))

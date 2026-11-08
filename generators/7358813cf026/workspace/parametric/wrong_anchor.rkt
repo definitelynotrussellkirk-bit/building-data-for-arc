@@ -1,0 +1,10 @@
+(rule!
+ (let* ((objs (objects g 0))
+        (ranked (sort objs (lambda (a b) (> (obj-size a) (obj-size b)))))
+        (anchor-color (obj-color (second ranked))))
+   (for/fold ((out (empty-grid (rows g) (cols g) 0)))
+             ((obj (in-list objs)))
+     (if (or (>= (obj-size obj) 2)
+             (= (obj-color obj) anchor-color))
+         (paint-cells out (obj-cells obj) (obj-color obj))
+         out))))

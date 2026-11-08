@@ -1,0 +1,55 @@
+(rule!
+  (let ((dummy 0))
+    (define (diamond-color grid r c)
+      (if (not (= (at grid r c) 0))
+          #f
+          (let ((vals (list (at grid (- r 1) (- c 1))
+                            (at grid (- r 1) (+ c 1))
+                            (at grid (+ r 1) (- c 1))
+                            (at grid (+ r 1) (+ c 1)))))
+            (if (and (not (= (first vals) 0))
+                     (all? (lambda (v) (= v (first vals))) vals))
+                (first vals)
+                #f))))
+    (define original-anchors
+      (reverse
+       (for*/fold ((acc empty))
+                  ((r (in-range 1 (- (rows g) 1)))
+                   (c (in-range 1 (- (cols g) 1))))
+         (let ((color (diamond-color g r c)))
+           (if color (cons (list r c color) acc) acc)))))
+    (define filled
+      (for/fold ((out g)) ((a (in-list original-anchors)))
+        (set-cell out (first a) (second a) (third a))))
+    ;; Wrong intermediate for step B only: keep A's true center fills, but move
+    ;; every connection anchor down by one row.
+    (define anchors
+      (map (lambda (a) (list (+ (first a) 1) (second a) (third a)))
+           original-anchors))
+    (for*/fold ((out filled))
+               ((a (in-list anchors))
+                (b (in-list anchors)))
+      (cond
+        ((and (= (third a) (third b))
+              (= (first a) (first b))
+              (< (+ (second a) 1) (second b)))
+         (for/fold ((acc out))
+                   ((p (in-list
+                        (positions-in-rect
+                         (first a) (+ (second a) 1)
+                         (first a) (- (second b) 1)))))
+           (if (= (at acc (first p) (second p)) 0)
+               (set-cell acc (first p) (second p) (third a))
+               acc)))
+        ((and (= (third a) (third b))
+              (= (second a) (second b))
+              (< (+ (first a) 1) (first b)))
+         (for/fold ((acc out))
+                   ((p (in-list
+                        (positions-in-rect
+                         (+ (first a) 1) (second a)
+                         (- (first b) 1) (second a)))))
+           (if (= (at acc (first p) (second p)) 0)
+               (set-cell acc (first p) (second p) (third a))
+               acc)))
+        (else out)))))

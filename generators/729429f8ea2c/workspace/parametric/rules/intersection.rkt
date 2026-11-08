@@ -1,0 +1,18 @@
+(rule!
+  (let ((dummy 0))
+    (define (normalize cells)
+      (let ((bb (bbox-of-cells cells)))
+        (map (lambda (p) (list (- (first p) (first bb)) (- (second p) (second bb)))) cells)))
+    (let* ((comp2 (first (sort (objects (keep-only g 2) 0) (lambda (a b) (> (obj-size a) (obj-size b))))))
+           (comp3 (first (sort (objects (keep-only g 3) 0) (lambda (a b) (> (obj-size a) (obj-size b))))))
+           (n2 (normalize (obj-cells comp2)))
+           (n3 (normalize (obj-cells comp3)))
+           (pts (sort (filter (lambda (p) (member p n3)) n2)
+                      (lambda (a b) (if (= (first a) (first b)) (< (second a) (second b)) (< (first a) (first b)))))))
+      (if (empty? pts)
+          (list (list 0))
+          (paint-cells (empty-grid (+ (apply max (map first pts)) 1)
+                                   (+ (apply max (map second pts)) 1)
+                                   0)
+                         pts
+                         8)))))

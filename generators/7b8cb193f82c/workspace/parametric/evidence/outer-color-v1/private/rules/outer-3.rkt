@@ -1,0 +1,30 @@
+(rule!
+  (let ((regions (find-0-regions g 0)))
+    (define (hole-cells obj)
+      (append* (filter (lambda (reg)
+                         (all? (lambda (p)
+                                 (and (> (first p) (obj-r1 obj)) (< (first p) (obj-r2 obj))
+                                      (> (second p) (obj-c1 obj)) (< (second p) (obj-c2 obj))))
+                               reg))
+                       regions)))
+    (define (touches-any? p cells)
+      (any? (lambda (d) (member? (list (+ (first p) (first d)) (+ (second p) (second d))) cells))
+            cardinal-deltas))
+    (define (paint-layers out holes)
+      (let loop ([acc out]
+                 [remaining holes]
+                 [current (filter (lambda (p)
+                                    (any? (lambda (d)
+                                            (not (member? (list (+ (first p) (first d)) (+ (second p) (second d))) holes)))
+                                          cardinal-deltas))
+                                  holes)]
+                 [d 1])
+        (if (empty? current)
+            acc
+            (let* ((new-acc (paint-cells acc current (if (odd? d) 3 2)))
+                   (new-remaining (filter (lambda (p) (not (member? p current))) remaining))
+                   (next-current (filter (lambda (p) (touches-any? p current)) new-remaining)))
+              (loop new-acc new-remaining next-current (+ d 1))))))
+    (for/fold ([out g]) ([obj (in-list (filter (lambda (o) (= (obj-color o) 8)) (objects g 0)))])
+      (let ((holes (hole-cells obj)))
+        (if (empty? holes) out (paint-layers out holes))))))

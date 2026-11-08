@@ -1,0 +1,42 @@
+(rule! (let ((dummy 0))
+  (define (colors-reading grid)
+    (remove-duplicates
+      (filter (lambda (v) (not (= v 0)))
+        (map (lambda (p) (at grid (first p) (second p)))
+             (grid-positions grid)))))
+  (define (has-diagonal? grid color)
+    (let ((cells (find-color grid color)))
+      (not (empty?
+        (filter
+          (lambda (p)
+            (not (empty?
+              (filter
+                (lambda (d)
+                  (member? (list (+ (first p) (first d))
+                                 (+ (second p) (second d)))
+                           cells))
+                (list (list 1 1) (list 1 -1))))))
+          cells)))))
+  (let* ((active (filter (lambda (color) (has-diagonal? g color))
+                         (colors-reading g)))
+         (ranked (sort active
+                       (lambda (a b)
+                         (< (length (find-color g a))
+                            (length (find-color g b)))))))
+    (if (empty? ranked)
+        g
+        (let* ((color (first ranked))
+               (cells (find-color g color)))
+          (for/fold ((acc g)) ((p (in-list cells)))
+            (for/fold ((acc2 acc))
+                      ((d (in-list (list (list 1 1) (list 1 -1)))))
+              (let ((q (list (+ (first p) (first d))
+                             (+ (second p) (second d)))))
+                (if (member? q cells)
+                    (let* ((rs (sort (list (first p) (first q)) <))
+                           (cs (sort (list (second p) (second q)) <)))
+                      (for*/fold ((acc3 acc2))
+                                 ((r (in-list rs)) (c (in-list cs)))
+                        (set-cell acc3 r c color)))
+                    acc2))))))))
+)

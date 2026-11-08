@@ -1,0 +1,1201 @@
+diff --git a/repo/generators/fe54bfae4cee/notes.md b/repo/generators/fe54bfae4cee/notes.md
+--- a/repo/generators/fe54bfae4cee/notes.md
++++ b/repo/generators/fe54bfae4cee/notes.md
+@@ -1,4 +1,16 @@
+ # Working notes: fe54bfae4cee
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Current decision — review-c152b56c0dc26ed3 (2026-10-24)
++
++- Keep the canonical default byte-for-byte: `passes=1` applies the approved midpoint-fill program once.
++- Add one episode-fixed alternative: `passes=2` applies the same rule to the first-pass grid exactly once more. Inputs are matched across settings; only labels/programs change.
++- The generated grammar contains horizontal-first and vertical-first cascades, ordinary horizontal/vertical pairs, crossed scan-order cases, blocked midpoints, diagonal and long-span near misses, dense distractors, boundary contacts, and lawful 30x30 scenes.
++- Supported episodes use 2–6 demonstrations and exactly four distinct queries. The same first query is retained when queries are revealed sequentially.
++- Required causal chain: A creates input-dependent endpoint cells; the intermediate grid exposes previously nonexistent equal-color pairs; B consumes those cells. The skip-A program produces only the intermediate, not the two-pass output.
++- The bounded teaching audit covers 20 episodes, 11 declared rival families, and 40 protected-Racket labels. None of the finite rivals fits all demonstrations; this is not a universal uniqueness proof.
++- Native qualification reports two settings and four jobs. The canonical generator SHA-256 remains `36fd943a6ce78ebaef593f69a43ed7bd97c2ec4a2b3429795be2e6e0cc2aa2b4`; canonical program SHA-256 remains `92b2f2721622256c4dfcd8bfa4311234c31b54cd25344b8933746391aeef86a0`.
++- The staged portable test exposed and repaired an older test-only path bug: canonical data and generator loading now use `reviewer_support.find_root`, `canonical_path`, `canonical_pairs`, and `load_selected_generator` instead of fixed parent depth/runtime imports.
++
++## Owner handoff
++
++Integrate the exact delta, rerun native qualification against the live source, replay the packaged sequential witness, and perform fresh native acceptance. Reviewer `ready` is not acceptance. No training admission or activation was performed. Optional peers `138ffc14ac65` and `8291f3ee7e54` were not run in this round.
+diff --git a/repo/generators/fe54bfae4cee/tests/test_generator_fe54bfae4cee.py b/repo/generators/fe54bfae4cee/tests/test_generator_fe54bfae4cee.py
+--- a/repo/generators/fe54bfae4cee/tests/test_generator_fe54bfae4cee.py
++++ b/repo/generators/fe54bfae4cee/tests/test_generator_fe54bfae4cee.py
+@@ -4,22 +4,38 @@
+ from collections import Counter
+ import copy
+ import hashlib
+-import importlib
+ import json
+ from pathlib import Path
+ import random
++import sys
+ import unittest
+ 
+ 
++# Portable bootstrap: works in the repository and in task-test snapshots.
++for ancestor in Path(__file__).resolve().parents:
++    runtime = ancestor / "shared" / "runtime"
++    if (runtime / "reviewer_support.py").is_file():
++        sys.path.insert(0, str(runtime))
++        break
++    if (ancestor / "reviewer_support.py").is_file():
++        sys.path.insert(0, str(ancestor))
++        break
++
++from reviewer_support import (  # noqa: E402
++    canonical_pairs as load_canonical_pairs,
++    canonical_path,
++    find_root,
++    load_selected_generator,
++)
++
++
+ TASK_ID = "fe54bfae4cee"
+-ROOT = Path(__file__).resolve().parents[1]
+-MODULE = importlib.import_module(
+-    f"puzzle_generators.per_puzzle.{TASK_ID}.generator"
+-)
++ROOT = find_root(__file__)
++MODULE, _GENERATOR_PATH, _GENERATOR_SHA256 = load_selected_generator(TASK_ID, root=ROOT)
+ 
+ 
+ def _canonical_row():
+-    for line in (ROOT / "data/canonical/puzzles.jsonl").read_text().splitlines():
++    for line in canonical_path(ROOT).read_text(encoding="utf-8").splitlines():
+         row = json.loads(line)
+         if row.get("task_id") == TASK_ID:
+             return row
+@@ -27,10 +43,7 @@
+ 
+ 
+ def _canonical_pairs():
+-    row = _canonical_row()
+-    test = row.get("test")
+-    test_pairs = test if isinstance(test, list) else ([test] if test else [])
+-    return [*row.get("train", []), *test_pairs]
++    return load_canonical_pairs(TASK_ID, root=ROOT, labeled_only=True)
+ 
+ 
+ def _normalized_hash(source: str) -> str:
+diff --git a/repo/generators/fe54bfae4cee/tests/test_parametric_pass_depth.py b/repo/generators/fe54bfae4cee/tests/test_parametric_pass_depth.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/tests/test_parametric_pass_depth.py
+@@ -0,0 +1,238 @@
++"""Focused contracts for the opt-in one-pass/two-pass midpoint family."""
++from __future__ import annotations
++
++from copy import deepcopy
++from importlib.util import module_from_spec, spec_from_file_location
++import json
++from pathlib import Path
++import sys
++
++import pytest
++
++from reviewer_support import canonical_pairs, find_root, public_challenge_bytes, public_challenge_id
++
++TASK_ID = "fe54bfae4cee"
++ROOT = find_root(__file__)
++HOME = Path(__file__).resolve().parents[1]
++PARAMETRIC = HOME / "workspace" / "parametric"
++CANONICAL_PROGRAM = "(rule! (let ((dummy 0)) (let ((after-h (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range (- (cols g) 2)))) (if (and (not (= (at g r c) 0)) (= (at g r c) (at g r (+ c 2))) (= (at g r (+ c 1)) 0)) (set-cell out r (+ c 1) (at g r c)) out)))) (for*/fold ((out after-h)) ((r (in-range (- (rows g) 2))) (c (in-range (cols g)))) (if (and (not (= (at g r c) 0)) (= (at g r c) (at g (+ r 2) c)) (= (at g (+ r 1) c) 0)) (set-cell out (+ r 1) c (at g r c)) out)))))"
++
++
++def _load(name: str, path: Path):
++    assert path.is_file(), f"missing implementation file: {path}"
++    spec = spec_from_file_location(name, path)
++    assert spec and spec.loader
++    module = module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _one_pass(grid: list[list[int]]) -> list[list[int]]:
++    h, w = len(grid), len(grid[0])
++    out = deepcopy(grid)
++    for r in range(h):
++        for c in range(w - 2):
++            color = grid[r][c]
++            if color and color == grid[r][c + 2] and grid[r][c + 1] == 0:
++                out[r][c + 1] = color
++    for r in range(h - 2):
++        for c in range(w):
++            color = grid[r][c]
++            if color and color == grid[r + 2][c] and grid[r + 1][c] == 0:
++                out[r + 1][c] = color
++    return out
++
++
++def _apply(grid: list[list[int]], passes: int) -> list[list[int]]:
++    out = deepcopy(grid)
++    for _ in range(passes):
++        out = _one_pass(out)
++    return out
++
++
++def _shared_midpoint_count(grid: list[list[int]]) -> int:
++    h, w = len(grid), len(grid[0])
++    mids: list[tuple[int, int]] = []
++    for r in range(h):
++        for c in range(w - 2):
++            if grid[r][c] and grid[r][c] == grid[r][c + 2] and grid[r][c + 1] == 0:
++                mids.append((r, c + 1))
++    for r in range(h - 2):
++        for c in range(w):
++            if grid[r][c] and grid[r][c] == grid[r + 2][c] and grid[r + 1][c] == 0:
++                mids.append((r + 1, c))
++    return len(mids) - len(set(mids))
++
++
++def test_adapter_preserves_exact_default_and_declares_two_pass_program():
++    prototype = _load("midpoint_pass_depth_prototype", PARAMETRIC / "prototype.py")
++    adapter = _load("midpoint_pass_depth_adapter", PARAMETRIC / "adapter.py")
++
++    assert adapter.program({"passes": 1}) == CANONICAL_PROGRAM
++    assert adapter.program({"passes": 2}) == prototype.TWO_PASS_PROGRAM
++    assert adapter.program({"passes": 2}) != CANONICAL_PROGRAM
++
++    for invalid in ({}, {"passes": 3}, {"passes": True}, {"passes": 1, "extra": 0}, None):
++        with pytest.raises(ValueError):
++            adapter.program(invalid)
++
++
++@pytest.mark.parametrize("seed", [0, 17, 991])
++@pytest.mark.parametrize("demos", range(2, 7))
++@pytest.mark.parametrize("passes", [1, 2])
++def test_episode_counts_distinct_inputs_stage_depth_and_python_labels(seed, demos, passes):
++    prototype = _load(f"midpoint_pass_proto_{seed}_{demos}_{passes}", PARAMETRIC / "prototype.py")
++    episode = prototype.generate_episode(seed, passes=passes, demos=demos, queries=4)
++
++    assert len(episode["train"]) == demos
++    assert len(episode["test"]) == 4
++    assert episode["program_solution"] == prototype.rule_text(passes)
++
++    pairs = episode["train"] + episode["test"]
++    serialized = [json.dumps(pair["input"], separators=(",", ":")) for pair in pairs]
++    assert len(serialized) == len(set(serialized))
++
++    for pair in pairs:
++        grid = pair["input"]
++        assert 12 <= len(grid) <= 30
++        assert 12 <= len(grid[0]) <= 30
++        assert all(type(cell) is int and 0 <= cell <= 9 for row in grid for cell in row)
++        stage1 = _one_pass(grid)
++        stage2 = _one_pass(stage1)
++        stage3 = _one_pass(stage2)
++        stage4 = _one_pass(stage3)
++        assert stage1 != grid
++        assert stage2 != stage1
++        assert stage3 != stage2
++        assert stage4 == stage3
++        assert pair["output"] == (stage1 if passes == 1 else stage2)
++
++    # Every lesson includes a crossed-pair precedence witness in the first demo.
++    assert _shared_midpoint_count(episode["train"][0]["input"]) >= 1
++
++    stress = episode["test"][-1]["input"]
++    assert (len(stress), len(stress[0])) == (30, 30)
++    nonzero = [(r, c, value) for r, row in enumerate(stress) for c, value in enumerate(row) if value]
++    assert len(nonzero) >= 70
++    assert {0, 29} <= {r for r, _, _ in nonzero}
++    assert {0, 29} <= {c for _, c, _ in nonzero}
++    assert len({value for _, _, value in nonzero}) >= 8
++
++
++def test_setting_changes_labels_not_inputs_and_every_demo_identifies_pass_count():
++    prototype = _load("midpoint_pass_shared_inputs", PARAMETRIC / "prototype.py")
++    one = prototype.generate_episode(73, passes=1, demos=6, queries=4)
++    two = prototype.generate_episode(73, passes=2, demos=6, queries=4)
++
++    assert [p["input"] for p in one["train"] + one["test"]] == [
++        p["input"] for p in two["train"] + two["test"]
++    ]
++    assert all(a["output"] != b["output"] for a, b in zip(one["train"], two["train"]))
++    assert all(a["output"] != b["output"] for a, b in zip(one["test"], two["test"]))
++
++
++@pytest.mark.parametrize(
++    "kwargs",
++    [
++        {"seed": True, "passes": 1, "demos": 3, "queries": 4},
++        {"seed": -1, "passes": 1, "demos": 3, "queries": 4},
++        {"seed": 0, "passes": 0, "demos": 3, "queries": 4},
++        {"seed": 0, "passes": 3, "demos": 3, "queries": 4},
++        {"seed": 0, "passes": True, "demos": 3, "queries": 4},
++        {"seed": 0, "passes": 1, "demos": 1, "queries": 4},
++        {"seed": 0, "passes": 1, "demos": 7, "queries": 4},
++        {"seed": 0, "passes": 1, "demos": 3, "queries": 3},
++        {"seed": 0, "passes": 1, "demos": 3, "queries": 5},
++    ],
++)
++def test_episode_rejects_out_of_contract_requests(kwargs):
++    prototype = _load("midpoint_pass_bad_requests", PARAMETRIC / "prototype.py")
++    with pytest.raises(ValueError):
++        prototype.generate_episode(**kwargs)
++
++
++def test_public_projection_ignores_private_settings_seed_program_and_query_answers():
++    prototype = _load("midpoint_pass_public_projection", PARAMETRIC / "prototype.py")
++    episode = prototype.generate_episode(109, passes=2, demos=3, queries=4)
++    changed = deepcopy(episode)
++    changed["settings"] = {"passes": 1}
++    changed["seed"] = 999999
++    changed["program_solution"] = "not the program"
++    for pair in changed["test"]:
++        pair["output"] = [[9]]
++
++    assert public_challenge_bytes(changed) == public_challenge_bytes(episode)
++    assert public_challenge_id(changed) == public_challenge_id(episode)
++    visible = json.loads(public_challenge_bytes(episode))
++    assert set(visible) == {"train", "test"}
++    assert all(set(pair) == {"input"} for pair in visible["test"])
++    serialized = json.dumps(visible, sort_keys=True)
++    assert "passes" not in serialized and "program" not in serialized and "seed" not in serialized
++
++
++def _racket_apply(bridge, program: str, grid: list[list[int]]):
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return bridge.eval_text(f"({wrap_rule(program)} {literal})")
++
++
++def test_protected_racket_replays_canonical_and_exposes_real_two_stage_dependency():
++    from arc_repl.racket_bridge import RacketBridge
++
++    prototype = _load("midpoint_pass_racket", PARAMETRIC / "prototype.py")
++    witness = prototype.generate_episode(0, passes=2, demos=2, queries=4)["train"][0]["input"]
++
++    with RacketBridge() as bridge:
++        assert bridge.runtime_identity["backend"] == "racket"
++        assert bridge.runtime_identity["protected"] is True
++        for pair in canonical_pairs(TASK_ID, root=ROOT, labeled_only=True):
++            assert _racket_apply(bridge, prototype.CANONICAL_PROGRAM, pair["input"]) == pair["output"]
++        stage1 = _racket_apply(bridge, prototype.CANONICAL_PROGRAM, witness)
++        stage2 = _racket_apply(bridge, prototype.TWO_PASS_PROGRAM, witness)
++        stage2_by_composition = _racket_apply(bridge, prototype.CANONICAL_PROGRAM, stage1)
++        stage3 = _racket_apply(bridge, prototype.CANONICAL_PROGRAM, stage2)
++        stage4 = _racket_apply(bridge, prototype.CANONICAL_PROGRAM, stage3)
++
++    assert stage1 == _one_pass(witness)
++    assert stage2 == _apply(witness, 2) == stage2_by_composition
++    assert stage2 != stage1  # skipping A leaves only the first-stage output
++    assert stage3 != stage2  # exact two passes is not closure
++    assert stage4 == stage3
++
++
++def test_bounded_teaching_audit_refutes_declared_shortcuts():
++    audit = _load("midpoint_pass_audit", PARAMETRIC / "audit.py")
++    report = audit.python_audit(seeds=(0, 17), demo_counts=range(2, 7))
++
++    assert report["episodes"] == 20
++    assert report["ambiguities"] == []
++    # Inputs intentionally repeat across settings and nested demo counts; only
++    # the two seeds × (six maximal demos + four queries) are distinct.
++    assert report["distinct_inputs"] == 20
++    assert report["stress_30x30"] == 20
++    assert {
++        "identity",
++        "horizontal_only",
++        "vertical_only",
++        "updated_vertical_scan",
++        "horizontal_precedence",
++        "fill_longspan",
++        "fill_diagonal",
++        "overwrite_blocked",
++        "fixed_color",
++        "closure",
++        "three_pass",
++    } <= set(report["rivals"])
++
++
++def test_promotion_contract_exposes_two_to_six_demos_and_exactly_four_queries():
++    contract = json.loads((PARAMETRIC / "promotion.json").read_text())
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": "generators/fe54bfae4cee/workspace/parametric/adapter.py",
++        "parameters": {"passes": [1, 2]},
++        "default": {"passes": 1},
++        "limits": {"demos": [2, 6], "queries": [4, 4]},
++    }
+diff --git a/repo/generators/fe54bfae4cee/workspace/parametric/README.md b/repo/generators/fe54bfae4cee/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/workspace/parametric/README.md
+@@ -0,0 +1,28 @@
++# Exact-pass midpoint parametric family
++
++The native parameter is `passes`:
++
++- `1` is the exact canonical Racket program, byte-for-byte.
++- `2` applies the same midpoint rule to the first-pass result once more.
++
++Every generated scene contains both horizontal-first and vertical-first
++three-stage cascades.  The first pass creates a colored endpoint; the second
++pass must inspect that intermediate grid to choose a newly active midpoint.  A
++third possible fill remains absent, separating exactly two passes from closure.
++The adapter supports 2–6 demonstrations and exactly four distinct queries; the
++last query is a populated 30×30 boundary case.
++
++Focused check from the outer packet directory:
++
++```bash
++python3 review.py run python3 -m pytest \
++  generators/fe54bfae4cee/tests/test_parametric_pass_depth.py -q
++```
++
++Bounded protected-Racket and teaching audit:
++
++```bash
++python3 review.py run python3 \
++  generators/fe54bfae4cee/workspace/parametric/audit.py \
++  --out generators/fe54bfae4cee/workspace/parametric/evidence/current/self_audit.json
++```
+diff --git a/repo/generators/fe54bfae4cee/workspace/parametric/adapter.py b/repo/generators/fe54bfae4cee/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/workspace/parametric/adapter.py
+@@ -0,0 +1,31 @@
++"""Native promotion adapter for the exact-pass midpoint family."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++_HERE = Path(__file__).resolve().parent
++_SPEC = importlib.util.spec_from_file_location("midpoint_pass_depth_prototype", _HERE / "prototype.py")
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError("cannot load adjacent parametric prototype")
++prototype = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(prototype)
++
++
++def _settings(settings):
++    return prototype.validate_settings(settings)
++
++
++def program(settings):
++    settings = _settings(settings)
++    return prototype.rule_text(settings["passes"])
++
++
++def generate(seed, settings, demos, queries):
++    settings = _settings(settings)
++    return prototype.generate_episode(
++        seed,
++        passes=settings["passes"],
++        demos=demos,
++        queries=queries,
++    )
+diff --git a/repo/generators/fe54bfae4cee/workspace/parametric/audit.py b/repo/generators/fe54bfae4cee/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/workspace/parametric/audit.py
+@@ -0,0 +1,292 @@
++"""Bounded teaching and protected-Racket audit for the exact-pass family."""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++_HERE = Path(__file__).resolve().parent
++_SPEC = importlib.util.spec_from_file_location("midpoint_pass_depth_audit_target", _HERE / "prototype.py")
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError("cannot load adjacent parametric prototype")
++prototype = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(prototype)
++
++
++def _horizontal_only(grid):
++    out = deepcopy(grid)
++    for row in range(len(grid)):
++        for col in range(len(grid[0]) - 2):
++            color = grid[row][col]
++            if color and color == grid[row][col + 2] and grid[row][col + 1] == 0:
++                out[row][col + 1] = color
++    return out
++
++
++def _vertical_only(grid):
++    out = deepcopy(grid)
++    for row in range(len(grid) - 2):
++        for col in range(len(grid[0])):
++            color = grid[row][col]
++            if color and color == grid[row + 2][col] and grid[row + 1][col] == 0:
++                out[row + 1][col] = color
++    return out
++
++
++def _updated_vertical_scan(grid):
++    out = _horizontal_only(grid)
++    for row in range(len(out) - 2):
++        for col in range(len(out[0])):
++            color = out[row][col]
++            if color and color == out[row + 2][col] and out[row + 1][col] == 0:
++                out[row + 1][col] = color
++    return out
++
++
++def _horizontal_precedence(grid):
++    out = deepcopy(grid)
++    for row in range(len(grid) - 2):
++        for col in range(len(grid[0])):
++            color = grid[row][col]
++            if color and color == grid[row + 2][col] and grid[row + 1][col] == 0:
++                out[row + 1][col] = color
++    for row in range(len(grid)):
++        for col in range(len(grid[0]) - 2):
++            color = grid[row][col]
++            if color and color == grid[row][col + 2] and grid[row][col + 1] == 0:
++                out[row][col + 1] = color
++    return out
++
++
++def _fill_longspan(grid):
++    out = prototype.one_pass(grid)
++    for row in range(len(grid)):
++        for col in range(len(grid[0]) - 3):
++            color = grid[row][col]
++            if color and color == grid[row][col + 3]:
++                for middle in (col + 1, col + 2):
++                    if out[row][middle] == 0:
++                        out[row][middle] = color
++    for row in range(len(grid) - 3):
++        for col in range(len(grid[0])):
++            color = grid[row][col]
++            if color and color == grid[row + 3][col]:
++                for middle in (row + 1, row + 2):
++                    if out[middle][col] == 0:
++                        out[middle][col] = color
++    return out
++
++
++def _fill_diagonal(grid):
++    out = prototype.one_pass(grid)
++    for row in range(len(grid) - 2):
++        for col in range(len(grid[0]) - 2):
++            for dc in (2, -2):
++                far_col = col + dc
++                if not 0 <= far_col < len(grid[0]):
++                    continue
++                color = grid[row][col]
++                center_col = col + dc // 2
++                if color and color == grid[row + 2][far_col] and out[row + 1][center_col] == 0:
++                    out[row + 1][center_col] = color
++    return out
++
++
++def _overwrite_blocked(grid):
++    out = deepcopy(grid)
++    for row in range(len(grid)):
++        for col in range(len(grid[0]) - 2):
++            color = grid[row][col]
++            if color and color == grid[row][col + 2]:
++                out[row][col + 1] = color
++    for row in range(len(grid) - 2):
++        for col in range(len(grid[0])):
++            color = grid[row][col]
++            if color and color == grid[row + 2][col]:
++                out[row + 1][col] = color
++    return out
++
++
++def _fixed_color(grid):
++    out = deepcopy(grid)
++    for row in range(len(grid)):
++        for col in range(len(grid[0]) - 2):
++            color = grid[row][col]
++            if color and color == grid[row][col + 2] and grid[row][col + 1] == 0:
++                out[row][col + 1] = 1
++    for row in range(len(grid) - 2):
++        for col in range(len(grid[0])):
++            color = grid[row][col]
++            if color and color == grid[row + 2][col] and grid[row + 1][col] == 0:
++                out[row + 1][col] = 1
++    return out
++
++
++def _closure(grid):
++    out = deepcopy(grid)
++    for _ in range(12):
++        nxt = prototype.one_pass(out)
++        if nxt == out:
++            return out
++        out = nxt
++    raise RuntimeError("closure rival did not stabilize")
++
++
++RIVALS = {
++    "identity": lambda grid: deepcopy(grid),
++    "horizontal_only": _horizontal_only,
++    "vertical_only": _vertical_only,
++    "updated_vertical_scan": _updated_vertical_scan,
++    "horizontal_precedence": _horizontal_precedence,
++    "fill_longspan": _fill_longspan,
++    "fill_diagonal": _fill_diagonal,
++    "overwrite_blocked": _overwrite_blocked,
++    "fixed_color": _fixed_color,
++    "closure": _closure,
++    "three_pass": lambda grid: prototype.apply_passes(grid, 3),
++}
++
++
++def python_audit(seeds=(0, 17), demo_counts=range(2, 7)):
++    ambiguities = []
++    distinct = set()
++    pairs = 0
++    episodes = 0
++    stress = 0
++    rival_summary = {name: {"fits_demonstrations": 0, "query_disagreements": 0} for name in RIVALS}
++
++    for seed in seeds:
++        for passes in prototype.PASS_VALUES:
++            for demos in demo_counts:
++                episode = prototype.generate_episode(seed, passes=passes, demos=demos, queries=4)
++                episodes += 1
++                all_pairs = episode["train"] + episode["test"]
++                pairs += len(all_pairs)
++                distinct.update(json.dumps(pair["input"], separators=(",", ":")) for pair in all_pairs)
++                stress += int(any(len(pair["input"]) == len(pair["input"][0]) == 30 for pair in episode["test"]))
++                for name, rival in RIVALS.items():
++                    fits = all(rival(pair["input"]) == pair["output"] for pair in episode["train"])
++                    if not fits:
++                        continue
++                    rival_summary[name]["fits_demonstrations"] += 1
++                    disagreements = [
++                        index
++                        for index, pair in enumerate(episode["test"])
++                        if rival(pair["input"]) != pair["output"]
++                    ]
++                    rival_summary[name]["query_disagreements"] += len(disagreements)
++                    if disagreements:
++                        ambiguities.append(
++                            {
++                                "seed": seed,
++                                "passes": passes,
++                                "demos": demos,
++                                "rival": name,
++                                "queries": disagreements,
++                            }
++                        )
++    return {
++        "episodes": episodes,
++        "pairs": pairs,
++        "distinct_inputs": len(distinct),
++        "stress_30x30": stress,
++        "rivals": rival_summary,
++        "ambiguities": ambiguities,
++        "limits": "Finite declared rivals over seeds 0 and 17 and demo counts 2..6; not universal uniqueness.",
++    }
++
++
++def _racket_audit(seeds=(0, 17)):
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    bridge = RacketBridge()
++    wrapped = {}
++    mismatches = []
++    evaluations = 0
++    try:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise ValueError("audit requires a protected Racket backend")
++        for seed in seeds:
++            for passes in prototype.PASS_VALUES:
++                episode = prototype.generate_episode(seed, passes=passes, demos=6, queries=4)
++                program = prototype.rule_text(passes)
++                wrapped.setdefault(program, wrap_rule(program))
++                for split in ("train", "test"):
++                    for index, pair in enumerate(episode[split]):
++                        literal = "'(" + " ".join(
++                            "(" + " ".join(map(str, row)) + ")" for row in pair["input"]
++                        ) + ")"
++                        actual = bridge.eval_text(f"({wrapped[program]} {literal})")
++                        evaluations += 1
++                        if actual != pair["output"]:
++                            mismatches.append(
++                                {"seed": seed, "passes": passes, "split": split, "index": index}
++                            )
++        keep = (
++            "schema",
++            "backend",
++            "protected",
++            "binary_sha256",
++            "prelude_sha256",
++            "bridge_sha256",
++            "boot_script_sha256",
++            "candidate_symbol_policy_sha256",
++        )
++        return {
++            "runtime": {key: identity[key] for key in keep if key in identity},
++            "evaluations": evaluations,
++            "mismatches": mismatches,
++        }
++    finally:
++        bridge.close()
++
++
++def build_report():
++    report = {
++        "schema": "arcpuzzles-parametric-self-audit-v1",
++        "task_id": "fe54bfae4cee",
++        "python": python_audit(),
++        "racket": _racket_audit(),
++        "program_sha256": {
++            str(passes): hashlib.sha256(prototype.rule_text(passes).encode()).hexdigest()
++            for passes in prototype.PASS_VALUES
++        },
++    }
++    report["status"] = (
++        "passed"
++        if not report["python"]["ambiguities"] and not report["racket"]["mismatches"]
++        else "failed"
++    )
++    return report
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    report = build_report()
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++    print(
++        json.dumps(
++            {
++                "status": report["status"],
++                "episodes": report["python"]["episodes"],
++                "racket_evaluations": report["racket"]["evaluations"],
++                "ambiguities": len(report["python"]["ambiguities"]),
++                "mismatches": len(report["racket"]["mismatches"]),
++                "out": str(args.out),
++            },
++            sort_keys=True,
++        )
++    )
++    return 0 if report["status"] == "passed" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/focused_tests.log b/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/focused_tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/focused_tests.log
+@@ -0,0 +1,2 @@
++.............................................                            [100%]
++45 passed in 3.90s
+diff --git a/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/public_export_check.json b/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/public_export_check.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/public_export_check.json
+@@ -0,0 +1,24 @@
++{
++  "demonstrations": 3,
++  "files": [
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_ticket_112316_round3/input/WORK/checks/fe54bfae4cee/public_exports/9d3ca244b4e00f7c08aaebf4d164972d70e17e46efa5fc4ea4c9cef5bb23843c.json",
++      "queries": 4,
++      "sha256": "9d3ca244b4e00f7c08aaebf4d164972d70e17e46efa5fc4ea4c9cef5bb23843c"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_ticket_112316_round3/input/WORK/checks/fe54bfae4cee/public_exports/f918e8cbd7ccf527aed89bca62cb908ccd099e0c41d98f028c7e2db9c0ecf83e.json",
++      "queries": 4,
++      "sha256": "f918e8cbd7ccf527aed89bca62cb908ccd099e0c41d98f028c7e2db9c0ecf83e"
++    }
++  ],
++  "files_checked": 2,
++  "findings": [],
++  "limits": "Saved-file structure/identity only. Does not execute a writer, test private-metadata invariance, verify labels, establish identifiability or approve variants.",
++  "queries": 4,
++  "reference_labels_checked": false,
++  "schema": "arcpuzzles-public-export-check-v1",
++  "status": "passed"
++}
+diff --git a/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/public_exports_manifest.json b/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/public_exports_manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/public_exports_manifest.json
+@@ -0,0 +1,14 @@
++[
++  {
++    "bytes": 8658,
++    "passes_private": 1,
++    "path": "9d3ca244b4e00f7c08aaebf4d164972d70e17e46efa5fc4ea4c9cef5bb23843c.json",
++    "public_id": "9d3ca244b4e00f7c08aaebf4d164972d70e17e46efa5fc4ea4c9cef5bb23843c"
++  },
++  {
++    "bytes": 8658,
++    "passes_private": 2,
++    "path": "f918e8cbd7ccf527aed89bca62cb908ccd099e0c41d98f028c7e2db9c0ecf83e.json",
++    "public_id": "f918e8cbd7ccf527aed89bca62cb908ccd099e0c41d98f028c7e2db9c0ecf83e"
++  }
++]
+diff --git a/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/self_audit.json b/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/self_audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/workspace/parametric/evidence/current/self_audit.json
+@@ -0,0 +1,77 @@
++{
++  "program_sha256": {
++    "1": "92b2f2721622256c4dfcd8bfa4311234c31b54cd25344b8933746391aeef86a0",
++    "2": "5bf8ed02a64c5b72fb67b0ff043cf02c7a70cf410701c88fc7bc34de14fcd52d"
++  },
++  "python": {
++    "ambiguities": [],
++    "distinct_inputs": 20,
++    "episodes": 20,
++    "limits": "Finite declared rivals over seeds 0 and 17 and demo counts 2..6; not universal uniqueness.",
++    "pairs": 160,
++    "rivals": {
++      "closure": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      },
++      "fill_diagonal": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      },
++      "fill_longspan": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      },
++      "fixed_color": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      },
++      "horizontal_only": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      },
++      "horizontal_precedence": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      },
++      "identity": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      },
++      "overwrite_blocked": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      },
++      "three_pass": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      },
++      "updated_vertical_scan": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      },
++      "vertical_only": {
++        "fits_demonstrations": 0,
++        "query_disagreements": 0
++      }
++    },
++    "stress_30x30": 20
++  },
++  "racket": {
++    "evaluations": 40,
++    "mismatches": [],
++    "runtime": {
++      "backend": "racket",
++      "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++      "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++      "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++      "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++      "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++      "protected": true,
++      "schema": "arc-protected-racket-runtime-v1"
++    }
++  },
++  "schema": "arcpuzzles-parametric-self-audit-v1",
++  "status": "passed",
++  "task_id": "fe54bfae4cee"
++}
+diff --git a/repo/generators/fe54bfae4cee/workspace/parametric/evidence/manifest.json b/repo/generators/fe54bfae4cee/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,87 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "92b2f2721622256c4dfcd8bfa4311234c31b54cd25344b8933746391aeef86a0",
++  "canonical_rule_hash": "92b2f2721622",
++  "default": {
++    "passes": 1
++  },
++  "evidence_root": "generators/fe54bfae4cee/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 18495,
++      "path": "generators/fe54bfae4cee/generator.py",
++      "sha256": "36fd943a6ce78ebaef593f69a43ed7bd97c2ec4a2b3429795be2e6e0cc2aa2b4"
++    },
++    {
++      "bytes": 10214,
++      "path": "generators/fe54bfae4cee/tests/test_parametric_pass_depth.py",
++      "sha256": "3eec701e1fb645fe931fed99907da6cffcd8e1954f58458d9e24b95883276cf8"
++    },
++    {
++      "bytes": 901,
++      "path": "generators/fe54bfae4cee/workspace/parametric/adapter.py",
++      "sha256": "a932f2a5b486a507a3c5437eee4cb0b7413a152061eda0c8a8202db320ea6ec7"
++    },
++    {
++      "bytes": 10450,
++      "path": "generators/fe54bfae4cee/workspace/parametric/audit.py",
++      "sha256": "2b19eb5f03b77ee41444834bd8c100808b84eec2b5bad93cf0d452c107bc4c74"
++    },
++    {
++      "bytes": 99,
++      "path": "generators/fe54bfae4cee/workspace/parametric/evidence/current/focused_tests.log",
++      "sha256": "3024999e2c9ca6b6efb697bb7e2e4d78ca6bc97416be3cd5f199c48f6ba4f9b3"
++    },
++    {
++      "bytes": 1003,
++      "path": "generators/fe54bfae4cee/workspace/parametric/evidence/current/public_export_check.json",
++      "sha256": "13ea5ec719198f8d35f7be7f1b02f0856471bf90d8cdc7fc7cd654d3b5f43361"
++    },
++    {
++      "bytes": 447,
++      "path": "generators/fe54bfae4cee/workspace/parametric/evidence/current/public_exports_manifest.json",
++      "sha256": "66b1301cf1b7bd517b9b027994960ad30ef541c64fb4ab1a81cb057903f3b8c8"
++    },
++    {
++      "bytes": 2329,
++      "path": "generators/fe54bfae4cee/workspace/parametric/evidence/current/self_audit.json",
++      "sha256": "a298d1f519689196948780b07429712ed1fa9eabe34da4253e7aedc993ee58a6"
++    },
++    {
++      "bytes": 319,
++      "path": "generators/fe54bfae4cee/workspace/parametric/promotion.json",
++      "sha256": "bfbd38dfa9c4194a010cc7db47bae1d3a0e096b29846d12d382263002f7275b6"
++    },
++    {
++      "bytes": 10238,
++      "path": "generators/fe54bfae4cee/workspace/parametric/prototype.py",
++      "sha256": "ae42a87ca872e846e0ab0ab524e1685d2025b6e6ad065bc583b2b6f5d871575b"
++    }
++  ],
++  "generator_sha256": "36fd943a6ce78ebaef593f69a43ed7bd97c2ec4a2b3429795be2e6e0cc2aa2b4",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      4,
++      4
++    ]
++  },
++  "parameters": {
++    "passes": [
++      1,
++      2
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "45 focused tests; 20 bounded teaching episodes against 11 declared rivals; 40 protected-Racket audit labels; two public projections checked. Finite sampled evidence only.",
++  "rule_task_id": "fe54bfae4cee",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "fe54bfae4cee",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/fe54bfae4cee/workspace/parametric/promotion.json b/repo/generators/fe54bfae4cee/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/workspace/parametric/promotion.json
+@@ -0,0 +1,23 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/fe54bfae4cee/workspace/parametric/adapter.py",
++  "parameters": {
++    "passes": [
++      1,
++      2
++    ]
++  },
++  "default": {
++    "passes": 1
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      4,
++      4
++    ]
++  }
++}
+diff --git a/repo/generators/fe54bfae4cee/workspace/parametric/prototype.py b/repo/generators/fe54bfae4cee/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/fe54bfae4cee/workspace/parametric/prototype.py
+@@ -0,0 +1,248 @@
++"""Opt-in one-pass/two-pass family for ARC task ``fe54bfae4cee``.
++
++The default is the exact canonical program.  The alternate applies that same
++program to the first-pass output once more.  Constructive scenes contain
++alternating-orientation cascades: pass one creates an input-dependent endpoint,
++and pass two must consume that intermediate grid to discover the next midpoint.
++A third-stage witness remains unfilled, distinguishing exactly two passes from
++unbounded closure.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++from random import Random
++
++CANONICAL_PROGRAM = "(rule! (let ((dummy 0)) (let ((after-h (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range (- (cols g) 2)))) (if (and (not (= (at g r c) 0)) (= (at g r c) (at g r (+ c 2))) (= (at g r (+ c 1)) 0)) (set-cell out r (+ c 1) (at g r c)) out)))) (for*/fold ((out after-h)) ((r (in-range (- (rows g) 2))) (c (in-range (cols g)))) (if (and (not (= (at g r c) 0)) (= (at g r c) (at g (+ r 2) c)) (= (at g (+ r 1) c) 0)) (set-cell out (+ r 1) c (at g r c)) out)))))"
++
++
++def _step_expr(source: str) -> str:
++    """Racket expression for one canonical pass over ``source``."""
++    return (
++        f"(let ((after-h (for*/fold ((out {source})) "
++        f"((r (in-range (rows {source}))) (c (in-range (- (cols {source}) 2)))) "
++        f"(if (and (not (= (at {source} r c) 0)) "
++        f"(= (at {source} r c) (at {source} r (+ c 2))) "
++        f"(= (at {source} r (+ c 1)) 0)) "
++        f"(set-cell out r (+ c 1) (at {source} r c)) out)))) "
++        f"(for*/fold ((out after-h)) "
++        f"((r (in-range (- (rows {source}) 2))) (c (in-range (cols {source})))) "
++        f"(if (and (not (= (at {source} r c) 0)) "
++        f"(= (at {source} r c) (at {source} (+ r 2) c)) "
++        f"(= (at {source} (+ r 1) c) 0)) "
++        f"(set-cell out (+ r 1) c (at {source} r c)) out)))"
++    )
++
++
++TWO_PASS_PROGRAM = f"(rule! (let ((stage1 {_step_expr('g')})) {_step_expr('stage1')}))"
++PASS_VALUES = (1, 2)
++
++# Each colored tuple is (row, column, palette slot).  Every pattern fits in a
++# 4x4 footprint, allowing safe 6x6 tiling with independent boundary alignment.
++_BASE_PATTERNS: dict[str, tuple[tuple[int, int, int], ...]] = {
++    # Pass 1 fills (0,1), pass 2 fills (1,1), pass 3 would fill (1,2).
++    "cascade": ((0, 0, 0), (0, 2, 0), (2, 1, 0), (1, 3, 0)),
++    # Horizontal and vertical direct pairs, separated and differently colored.
++    "orthogonal": ((0, 0, 0), (0, 2, 0), (1, 3, 1), (3, 3, 1)),
++    # Shared midpoint: horizontal is written first, vertical last.
++    "cross": ((1, 0, 0), (1, 2, 0), (0, 1, 1), (2, 1, 1)),
++    "blocked": ((1, 0, 0), (1, 1, 1), (1, 2, 0)),
++    "longspan": ((1, 0, 0), (1, 3, 0)),
++    "diagonal": ((0, 0, 0), (2, 2, 0)),
++    "direct": ((1, 0, 0), (1, 2, 0)),
++    "square": ((0, 0, 0), (0, 1, 0), (1, 0, 0), (1, 1, 0)),
++}
++
++_DEMO_SPECS = ((12, 12), (12, 18), (18, 18), (18, 24), (24, 24), (24, 30))
++_QUERY_SPECS = ((18, 30), (30, 18), (30, 24), (30, 30))
++_GENERAL_CYCLE = (
++    "cascade_h",
++    "cascade_v",
++    "orthogonal",
++    "cross",
++    "blocked",
++    "longspan",
++    "diagonal",
++    "square",
++    "cascade_h",
++    "cascade_v",
++    "orthogonal",
++    "square",
++    "direct",
++    "cascade_h",
++    "cross",
++    "cascade_v",
++)
++
++
++def validate_settings(settings: object) -> dict[str, int]:
++    if type(settings) is not dict or set(settings) != {"passes"}:
++        raise ValueError("settings must contain exactly passes")
++    passes = settings["passes"]
++    if type(passes) is not int or passes not in PASS_VALUES:
++        raise ValueError("passes must be the exact integer 1 or 2")
++    return {"passes": passes}
++
++
++def rule_text(passes: int) -> str:
++    if type(passes) is not int or passes not in PASS_VALUES:
++        raise ValueError("passes must be the exact integer 1 or 2")
++    return CANONICAL_PROGRAM if passes == 1 else TWO_PASS_PROGRAM
++
++
++def _valid_grid(grid: object) -> bool:
++    return (
++        type(grid) is list
++        and 1 <= len(grid) <= 30
++        and type(grid[0]) is list
++        and 1 <= len(grid[0]) <= 30
++        and all(
++            type(row) is list
++            and len(row) == len(grid[0])
++            and all(type(cell) is int and 0 <= cell <= 9 for cell in row)
++            for row in grid
++        )
++    )
++
++
++def one_pass(grid: list[list[int]]) -> list[list[int]]:
++    """Python mirror of the exact canonical program, including scan precedence."""
++    if not _valid_grid(grid):
++        raise ValueError("grid must be rectangular 1..30 with exact integer colors")
++    height, width = len(grid), len(grid[0])
++    out = deepcopy(grid)
++    for row in range(height):
++        for col in range(width - 2):
++            color = grid[row][col]
++            if color != 0 and color == grid[row][col + 2] and grid[row][col + 1] == 0:
++                out[row][col + 1] = color
++    for row in range(height - 2):
++        for col in range(width):
++            color = grid[row][col]
++            if color != 0 and color == grid[row + 2][col] and grid[row + 1][col] == 0:
++                out[row + 1][col] = color
++    return out
++
++
++def apply_passes(grid: list[list[int]], passes: int) -> list[list[int]]:
++    if type(passes) is not int or passes < 0:
++        raise ValueError("passes must be a nonnegative exact integer")
++    out = deepcopy(grid)
++    for _ in range(passes):
++        out = one_pass(out)
++    return out
++
++
++def _normalize(pattern: tuple[tuple[int, int, int], ...]):
++    top = min(row for row, _, _ in pattern)
++    left = min(col for _, col, _ in pattern)
++    return tuple(sorted((row - top, col - left, slot) for row, col, slot in pattern))
++
++
++def _turn(pattern, quarter_turns: int):
++    result = tuple(pattern)
++    for _ in range(quarter_turns % 4):
++        result = tuple((col, -row, slot) for row, col, slot in result)
++    return _normalize(result)
++
++
++def _transform(kind: str, rng: Random):
++    base_kind = "cascade" if kind.startswith("cascade_") else kind
++    pattern = _BASE_PATTERNS[base_kind]
++    if rng.randrange(2):
++        pattern = tuple((row, -col, slot) for row, col, slot in pattern)
++    if kind == "cascade_h":
++        turns = rng.choice((0, 2))
++    elif kind == "cascade_v":
++        turns = rng.choice((1, 3))
++    else:
++        turns = rng.randrange(4)
++    return _turn(pattern, turns)
++
++
++def _pattern_schedule(kind: str, index: int, blocks: int) -> list[str]:
++    if kind == "demo" and index == 0:
++        base = ["cascade_h", "cascade_v", "cross", "blocked"]
++    elif kind == "demo" and index == 1:
++        base = ["cascade_h", "cascade_v", "orthogonal", "longspan", "diagonal", "square"]
++    else:
++        shift = (index * 5 + (3 if kind == "query" else 0)) % len(_GENERAL_CYCLE)
++        base = list(_GENERAL_CYCLE[shift:] + _GENERAL_CYCLE[:shift])
++    return [base[i % len(base)] for i in range(blocks)]
++
++
++def _axis_offset(block: int, total: int, span: int, rng: Random) -> int:
++    if block == 0:
++        return 0
++    if block == total - 1:
++        return 6 - span
++    # Keep at least one blank cell at each internal block boundary.
++    high = 5 - span
++    return 1 if high <= 1 else rng.randint(1, high)
++
++
++def _scene(seed: int, kind: str, index: int, spec: tuple[int, int]) -> list[list[int]]:
++    height, width = spec
++    if height % 6 or width % 6:
++        raise ValueError("scene dimensions must be multiples of six")
++    block_rows, block_cols = height // 6, width // 6
++    rng = Random(seed * 1_000_003 + index * 97_409 + (0x51 if kind == "demo" else 0xA7))
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    schedule = _pattern_schedule(kind, index, block_rows * block_cols)
++
++    for block_index, pattern_kind in enumerate(schedule):
++        block_row, block_col = divmod(block_index, block_cols)
++        pattern = _transform(pattern_kind, rng)
++        pattern_height = max(row for row, _, _ in pattern) + 1
++        pattern_width = max(col for _, col, _ in pattern) + 1
++        top = block_row * 6 + _axis_offset(block_row, block_rows, pattern_height, rng)
++        left = block_col * 6 + _axis_offset(block_col, block_cols, pattern_width, rng)
++
++        first = 1 + ((block_index + seed + index * 2) % 9)
++        second = 1 + ((block_index * 5 + seed * 3 + index + 4) % 9)
++        if second == first:
++            second = 1 + (second % 9)
++        colors = (first, second)
++        for row, col, slot in pattern:
++            target = (top + row, left + col)
++            if grid[target[0]][target[1]] != 0:
++                raise RuntimeError("motif placement overlap")
++            grid[target[0]][target[1]] = colors[slot]
++
++    # Construction certificate: every scene has a real three-stage cascade and
++    # stabilizes after the third canonical application, never earlier.
++    stage1 = one_pass(grid)
++    stage2 = one_pass(stage1)
++    stage3 = one_pass(stage2)
++    stage4 = one_pass(stage3)
++    if grid == stage1 or stage1 == stage2 or stage2 == stage3 or stage3 != stage4:
++        raise RuntimeError("constructed scene lost its exact three-stage cascade")
++    return grid
++
++
++def _pair(seed: int, kind: str, index: int, spec: tuple[int, int], passes: int):
++    grid = _scene(seed, kind, index, spec)
++    return {"input": grid, "output": apply_passes(grid, passes)}
++
++
++def generate_episode(seed: int, *, passes: int, demos: int, queries: int):
++    if type(seed) is not int or not 0 <= seed <= 2**63 - 1:
++        raise ValueError("seed must be an exact integer in 0..2**63-1")
++    if type(passes) is not int or passes not in PASS_VALUES:
++        raise ValueError("passes must be the exact integer 1 or 2")
++    if type(demos) is not int or not 2 <= demos <= 6:
++        raise ValueError("demos must be an exact integer in 2..6")
++    if type(queries) is not int or queries != 4:
++        raise ValueError("queries must be exactly four")
++
++    train = [_pair(seed, "demo", index, _DEMO_SPECS[index], passes) for index in range(demos)]
++    test = [_pair(seed, "query", index, spec, passes) for index, spec in enumerate(_QUERY_SPECS)]
++    inputs = [repr(pair["input"]) for pair in train + test]
++    if len(inputs) != len(set(inputs)):
++        raise RuntimeError("episode construction produced duplicate inputs")
++    return {
++        "train": train,
++        "test": test,
++        "program_solution": rule_text(passes),
++        "settings": {"passes": passes},
++        "seed": seed,
++    }

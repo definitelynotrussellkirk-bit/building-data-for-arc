@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import random
+import sys
+from pathlib import Path
+
+import pytest
+
+TASK_DIR = Path(__file__).resolve().parents[1]
+REPO = TASK_DIR.parents[1]
+RUNTIME = REPO / "shared" / "runtime"
+if str(RUNTIME) not in sys.path:
+    sys.path.insert(0, str(RUNTIME))
+
+
+def _load_generator():
+    spec = importlib.util.spec_from_file_location(
+        "generator_531e65dffc0a", TASK_DIR / "generator.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+gen = _load_generator()
+
+
+def _canonical_record() -> dict:
+    source = REPO / "shared" / "data" / "canonical" / "puzzles.jsonl"
+    with source.open(encoding="utf-8") as handle:
+        for line in handle:
+            row = json.loads(line)
+            if row.get("task_id") == gen.TASK_ID:
+                return row
+    raise AssertionError("canonical record not found")
+
+
+def _canonical_pairs() -> list[dict]:
+    record = _canonical_record()
+    return [*record["train"], *record["test"]]
+
+
+def _nonzero(grid: list[list[int]]) -> set[tuple[int, int]]:
+    return {
+        (row, col)
+        for row, values in enumerate(grid)
+        for col, value in enumerate(values)
+        if value != 0
+    }
+
+
+def _lesson(seed: int, start: int, difficulty=None) -> tuple[list[dict], dict]:
+    demos = []
+    for sample_index in range(start, start + gen.EXAMPLES_NEEDED):
+        grid = gen.generate(seed, sample_index, difficulty=difficulty)
+        demos.append({"input": grid, "output": gen.rule_mirror(grid)})
+    query_grid = gen.generate(seed, start + gen.EXAMPLES_NEEDED, difficulty=difficulty)
+    query = {"input": query_grid, "output": gen.rule_mirror(query_grid)}
+    return demos, query
+
+
+def test_selected_rule_hash_is_pinned() -> None:
+    assert gen.RULE_HASH == "4acd30f1e03a"
+
+
+def test_canonical_examples_pass_validator_and_python_authority() -> None:
+    for index, pair in enumerate(_canonical_pairs()):
+        assert gen.self_check(pair["input"]) == [], index
+        assert gen.strict_canonical_like(pair["input"]) == [], index
+        assert gen.rule_mirror(pair["input"]) == pair["output"], index
+
+
+def test_canonical_code4_identity_shortcut_is_declared_and_reproduced() -> None:
+    assert "code_4_as_identity" in gen.CANONICAL_SHORTCUTS
+    shortcut = gen.CANONICAL_SHORTCUTS["code_4_as_identity"]
+    for index, pair in enumerate(_canonical_pairs()):
+        assert shortcut(pair["input"]) == pair["output"], index
+
+
+def test_unknown_or_malformed_calls_are_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown override"):
+        gen.generate(5, 0, typo_axis=3)
+    with pytest.raises(ValueError, match="difficulty"):
+        gen.generate(5, 0, difficulty="expert")
+    with pytest.raises(ValueError, match="grid_h"):
+        gen.generate(5, 0, grid_h=9)
+    with pytest.raises(ValueError, match="n_anchors"):
+        gen.generate(5, 0, n_anchors=True)
+
+
+@pytest.mark.parametrize("grid_h", [10, 11, 12])
+@pytest.mark.parametrize("grid_w", [10, 11, 12])
+@pytest.mark.parametrize("n_anchors", [2, 3, 4])
+@pytest.mark.parametrize("proto_size", [3, 4, 5])
+def test_each_axis_override_is_exact(
+    grid_h: int, grid_w: int, n_anchors: int, proto_size: int
+) -> None:
+    requested = {
+        "grid_h": grid_h,
+        "grid_w": grid_w,
+        "n_anchors": n_anchors,
+        "proto_size": proto_size,
+    }
+    grid = gen.generate(47, 6, **requested)
+    assert gen.observe_overrides(grid) == requested
+    assert gen.self_check(grid, meta={"overrides": requested}) == []
+
+
+@pytest.mark.parametrize("difficulty", [None, "easy", "medium", "hard"])
+def test_default_draws_are_valid_decisive_canonical_like_lessons(difficulty) -> None:
+    for start in range(8):
+        demos, query = _lesson(109, start, difficulty=difficulty)
+        assert gen.lesson_identifiable(demos, query) == [], (difficulty, start)
+        seen_codes = {
+            code
+            for pair in demos
+            for code in gen.semantic_observables(pair["input"])["codes"]
+        }
+        assert seen_codes == {2, 3, 4, 5}
+        for pair in demos:
+            grid = pair["input"]
+            facts = gen.semantic_observables(grid)
+            assert facts["errors"] == []
+            assert facts["rotation_signature_count"] == 4
+            assert facts["stamps_full_and_disjoint"] is True
+            proto_cells = {
+                (row, col)
+                for row, values in enumerate(grid)
+                for col, value in enumerate(values)
+                if value not in {0, 2, 3, 4, 5}
+            }
+            assert proto_cells.isdisjoint(_nonzero(pair["output"]))
+
+
+def test_every_named_rival_is_eliminated_by_each_three_demo_window() -> None:
+    for start in range(12):
+        demos, _query = _lesson(223, start)
+        for name, rival in gen.LESSON_COMPETITORS.items():
+            assert any(rival(pair["input"]) != pair["output"] for pair in demos), (
+                start,
+                name,
+            )
+
+
+def test_generated_code4_witness_refutes_canonical_shortcut() -> None:
+    shortcut = gen.CANONICAL_SHORTCUTS["code_4_as_identity"]
+    for start in range(8):
+        demos, _query = _lesson(331, start)
+        witnesses = [
+            pair
+            for pair in demos
+            if 4 in gen.semantic_observables(pair["input"])["codes"]
+        ]
+        assert witnesses
+        assert any(shortcut(pair["input"]) != pair["output"] for pair in witnesses)
+
+
+def test_self_check_rejects_minimal_impostors() -> None:
+    assert gen.self_check([[0] * 10 for _ in range(10)])
+
+    singleton = [[0] * 10 for _ in range(10)]
+    singleton[2][2] = 6
+    singleton[7][7] = 2
+    assert gen.self_check(singleton)
+
+    duplicate_code = gen.generate(419, 0)
+    anchors = [
+        (r, c)
+        for r, row in enumerate(duplicate_code)
+        for c, value in enumerate(row)
+        if value in {2, 3, 4, 5}
+    ]
+    assert len(anchors) >= 2
+    r0, c0 = anchors[0]
+    r1, c1 = anchors[1]
+    duplicate_code[r1][c1] = duplicate_code[r0][c0]
+    assert gen.self_check(duplicate_code)
+
+
+def test_generation_is_deterministic_and_does_not_touch_global_random() -> None:
+    random.seed(991)
+    before = random.getstate()
+    first = gen.generate(557, 9, difficulty="hard")
+    after = random.getstate()
+    second = gen.generate(557, 9, difficulty="hard")
+    assert first == second
+    assert before == after

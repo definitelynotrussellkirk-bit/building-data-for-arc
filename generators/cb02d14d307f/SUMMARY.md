@@ -1,0 +1,6 @@
+# cb02d14d307f
+
+0-bg grid (h ~ source_rows + tail_rows + repeat_rows, w~5-10) with three row bands stacked top-to-bottom: (a) SOURCE BAND (top source_rows ∈ {2..4}): each row's col 0 = GRAY (5) marker; cols 1..w-1 hold a scattered non-{0,5} colored PATTERN drawn by one of 6 SOURCE_LAYOUTS (scattered / blob / diagonal / stripes / left_biased / right_biased) using a 2-5 color palette and fill density 0.3-0.7; each source row has ≥1 non-gray colored cell; (b) TAIL BAND (next tail_rows ∈ {1..3}): more sparse colored cells (no gray markers); (c) REPEAT BAND (final repeat_rows ∈ {4..10}): ALL-BG ZEROS, ready to receive the cycled pattern. Rule (CYCLICALLY REPEAT SOURCE ROWS — WITH GRAY MARKERS ERASED — INTO THE REPEAT BAND): the gray-marked top rows define a SOURCE CYCLE. for EACH ROW r in the REPEAT BAND (below the source+tail band): COPY source row (r mod source_rows) into row r, ERASING the col-0 gray-5 marker (set to 0). The colored non-gray pattern is replicated cyclically. Source and tail bands stay unchanged. Net: the bottom repeat band fills with cyclic copies of the gray-marked source rows minus the markers.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

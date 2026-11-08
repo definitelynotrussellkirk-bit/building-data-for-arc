@@ -1,0 +1,95 @@
+--- reused-code/check_first_turn.py
++++ checks/tools/check_first_turn.py
+@@ -9,6 +9,8 @@
+ 
+ Repeat --bundle to inspect multiple bundles. This uses the packet's existing
+ preview_public.py implementation and actual source-bound exported episodes.
++V2 bundles follow the verified shuffled source_indices; legacy v1 bundles
++retain source order. First-turn mutations use the first presented query.
+ It checks serialization only: no Racket execution, semantic label validation,
+ controller implementation, owner acceptance, or training admission.
+ """
+@@ -116,13 +118,27 @@
+     qualification = json.loads(qualification_path.read_bytes())
+     execution = json.loads(execution_path.read_bytes())
+     manifest = json.loads(manifest_path.read_bytes())
++    require(manifest["schema"] in (native.SCHEMA, native.LEGACY_SCHEMA),
++            "Unsupported native projection schema")
+     cases, public_count = [], 0
+     manifest_episodes = {item["episode_index"]: item for item in manifest["episodes"]}
+     for episode_index, episode in enumerate(execution["episodes"]):
+-        identifiers = manifest_episodes[episode_index]["view_ids"]
++        mapping = manifest_episodes[episode_index]
++        identifiers = mapping["view_ids"]
+         require(len(identifiers) == len(episode["test"]), "Query count differs from manifest")
++        source_indices = (mapping.get("source_indices") if manifest["schema"] == native.SCHEMA
++                          else list(range(len(episode["test"]))))
++        require(type(source_indices) is list
++                and all(type(index) is int for index in source_indices)
++                and sorted(source_indices) == list(range(len(episode["test"]))),
++                "Manifest source_indices must be a complete integer permutation")
++        if manifest["schema"] == native.SCHEMA:
++            require(source_indices == native.query_order(len(episode["test"]),
++                    episode["seed"] + manifest["presentation_seed"]),
++                    "Manifest source_indices differ from native presentation order")
+         first_bytes = None
+-        for query_index, query in enumerate(episode["test"]):
++        for position, query_index in enumerate(source_indices):
++            query = episode["test"][query_index]
+             visible = native.public_view_bytes(episode, query_index)
+             identifier = sha(visible)
+             expected = {
+@@ -134,19 +150,21 @@
+             independent_bytes = (json.dumps(expected, sort_keys=True, separators=(",", ":"),
+                                              ensure_ascii=False) + "\n").encode("utf-8")
+             require(visible == independent_bytes, "Public bytes differ from strict visible serialization")
+-            require(identifier == identifiers[query_index], "Query public ID differs from manifest")
++            require(identifier == identifiers[position], "Query public ID differs from manifest")
+             require((bundle / "public" / f"{identifier}.json").read_bytes() == visible,
+                     "Saved public file differs from native visible bytes")
+             public_count += 1
+-            if query_index == 0:
++            if position == 0:
+                 first_bytes = visible
++        presented = deepcopy(episode)
++        presented["test"] = [deepcopy(episode["test"][index]) for index in source_indices]
+         mutations = []
+-        for name, variant in first_turn_variants(episode):
++        for name, variant in first_turn_variants(presented):
+             require(native.public_view_bytes(variant, 0) == first_bytes,
+                     f"First-turn visibility changed for episode {episode_index}: {name}")
+             mutations.append(name)
+         # Positive control: changing a genuinely visible query cell must change bytes.
+-        visible_change = deepcopy(episode)
++        visible_change = deepcopy(presented)
+         cell = visible_change["test"][0]["input"][0][0]
+         visible_change["test"][0]["input"][0][0] = (cell + 1) % 10
+         require(native.public_view_bytes(visible_change, 0) != first_bytes,
+@@ -157,6 +175,8 @@
+             "settings": episode["settings"],
+             "demos": len(episode["train"]),
+             "queries": len(episode["test"]),
++            "source_indices": source_indices,
++            "first_source_query_index": source_indices[0],
+             "first_view_sha256": sha(first_bytes),
+             "first_view_bytes": len(first_bytes),
+             "invariance_checks": mutations,
+@@ -167,6 +187,8 @@
+     return {
+         "bundle": display_path(bundle),
+         "task_id": qualification["task_id"],
++        "projection_schema": manifest["schema"],
++        "presentation_seed": manifest.get("presentation_seed"),
+         "native_verification": verified,
+         "private_evidence": before,
+         "public_views_checked": public_count,
+@@ -185,7 +207,8 @@
+     if args.out.exists() or args.out.is_symlink():
+         parser.error("Choose a new report path; existing evidence is not overwritten")
+     sources = [Path(__file__), WORK / "preview_public.py",
+-               WORK / "repo/shared/runtime/reviewer_support.py"]
++               WORK / "repo/shared/runtime/reviewer_support.py",
++               WORK / "repo/src/arcpuzzles/query_presentation.py"]
+     bindings = [file_binding(path) for path in sources]
+     report = {
+         "schema": "arcpuzzles-first-turn-visibility-check-v1",

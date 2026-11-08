@@ -1,0 +1,6 @@
+# 5b84a92aea55
+
+0-bg EVEN-HEIGHT compact grid (h ∈ {2,4,6}, w ∈ {1,2,3}) filled by one of 9 TEXTURES (noise / sparse / blob / stripes / gradient / checkerboard / frame / ring / plus) using a palette of 1-8 distinct non-9 colors. Optional bg_density and noise_overlay layers. Optionally TOP_BOT_RELATION ties the two halves (independent / mirror_pair / same / complementary). Colors exclude 9 (reserved for separator). Rule (PRODUCE (h+1) × (w+1) OUTPUT: TOP HALF KEPT, SEPARATOR ROW/COL ADDED, BOTTOM HALF REVERSED AND SHIFTED): the OUTPUT has dimensions (h+1) × (w+1). TOP HALF rows 0..h/2-1: copy rows 0..h/2-1 from input into output's rows 0..h/2-1, with a 9 appended in the new right column (c=w). SEPARATOR ROW at output row r = h/2: all cells = 9. BOTTOM HALF rows h/2+1..h: a 9 in the prepended LEFT column (c=0), plus rows h/2..h-1 from the input shifted RIGHT by 1 and in REVERSED ROW ORDER (input row h/2 → output row h, input row h-1 → output row h/2+1). Net: top half preserved, bottom half flipped vertically and inset by a row/column of 9-separator, output grows by 1 row × 1 col.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

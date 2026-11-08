@@ -1,0 +1,9 @@
+# Working notes: c878420172c2
+
+Current source is generator version 1.3.0. The ordinary generator's override contract was repaired and narrowed to reachable values (`grid_h` 7–14, `grid_w` 8–16, `n_shape` 2–6, explicit textures). Regular draws produce two distinct four-connected equal-size shapes with nonempty normalized overlap. `self_check` now rejects identical normalized shapes, matching the declared invariant and canonical task intent. The exact canonical all-overlap rule remains the default.
+
+The native parametric family adds `overlap_mode=largest_component`: normalize colors 2 and 3, compute the exact overlap, partition it into four-connected components, and retain the unique largest component with row-major tie-breaking. The matched-input lesson bank supports 2–6 demonstrations and 1–4 queries, retains four distinct sequential queries, and includes a substantive 30×30 boundary/quadrant stress case.
+
+Adversarial review found that an early lesson could be explained as merely deleting singleton components and did not distinguish four- from eight-connectivity. Generated intersections now contain a largest core, a nontrivial secondary component diagonally adjacent under eight-connectivity, and a remote singleton. Retained regressions and the bounded audit require both shortcuts to fail on the two-demo minimum and on queries.
+
+Current reviewer evidence: 49 focused task checks pass; protected authoring preflight passes with 32 Racket evaluations; the protected skip-intersection witness replays; 16 single-query public projections and 24 private-field invariance checks pass; and the cross-family independent-oracle sweep covers 512 seeds. These are finite reviewer checks, not owner acceptance or training admission. Next owner action is exact-source native qualification and fresh acceptance after integration.

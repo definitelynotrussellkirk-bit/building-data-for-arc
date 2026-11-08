@@ -1,0 +1,6 @@
+# ff3bd1942373
+
+Grid (h, w ~ 5-12) FILLED with DOMINANT COLOR dom_color ∈ {1, 2, 3} (drawn uniformly) at density dom_count_ratio (0.6..0.8). The remaining cells are scattered with OTHER COLORS — 1-4 distinct values from {0, 4..9} (excluding dom_color) — placed via one of 7 LAYOUTS (scattered / blob / diagonal / row_dominant / col_dominant / checker / frame) at spread / center / edge bias. The MODE COLOR is strictly the most-common non-bg value (post-verified). Rule (READ THE DOMINANT COLOR — A VALUE IN {1, 2, 3} — AND OUTPUT THE CORRESPONDING 3×3 SHAPE FROM A FIXED MAPPING): COUNT each non-zero color's frequency. find the MODE — the value with the strict maximum count. The mode is in {1, 2, 3} by construction. LOOK UP the corresponding 3×3 SHAPE: 1 → S-shape, 2 → plus, 3 → L-shape (per demos). OUTPUT is that fixed 3×3 shape (in some color per demos, possibly the mode color). The input grid's size and content beyond mode color are dropped. Net: a small 3×3 output encoding one of 3 fixed shapes based on the mode value. Flagged intrinsic-low (uniq_out=3): only 3 possible output shapes.
+
+Kind: `per_puzzle`. Imported version: `2.1.0`.
+Approval is derived by the catalog from current code and retained evidence.

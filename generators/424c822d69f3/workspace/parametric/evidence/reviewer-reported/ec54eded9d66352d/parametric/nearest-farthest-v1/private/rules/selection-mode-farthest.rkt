@@ -1,0 +1,16 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((markers (filter (lambda (m) (!= 0 (snd m)))
+                                   (map (lambda (c) (list c (at g 0 c))) (range 0 w))))
+                  (objs (filter (lambda (obj) (= 5 (obj-color obj))) (objects g 0))))
+             (paint-objects-by g
+                               objs
+                               (lambda (obj)
+                                 (let* ((bb (obj-bbox obj))
+                                        (center (/ (+ (second bb) (fourth bb)) 2))
+                                        (marker (argmax (lambda (m)
+                                                          (abs (- (fst m) center)))
+                                                        markers))
+                                        (new-color (snd marker)))
+                                   new-color)))))))

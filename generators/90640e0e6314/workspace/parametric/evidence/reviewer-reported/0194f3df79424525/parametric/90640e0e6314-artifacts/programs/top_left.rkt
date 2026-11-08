@@ -1,0 +1,12 @@
+(rule! (lambda (g)
+         (let ((n (rows g)))
+           (build-grid (* 2 n)
+                       (* 2 n)
+                       (r c)
+                       (let ((qr (quotient r n))
+                             (qc (quotient c n))
+                             (lr (remainder r n))
+                             (lc (remainder c n)))
+                         (at g
+                             (if (zero? qr) lr (- n 1 lr))
+                             (if (zero? qc) lc (- n 1 lc))))))))

@@ -1,0 +1,11 @@
+(rule!
+  (let ((mapping (make-hash)))
+    (let loop ([c 0])
+      (when (< (+ c 1) (cols g))
+        (if (and (not (= (at g 0 c) 0)) (not (= (at g 0 (+ c 1)) 0)))
+            (begin (hash-set! mapping (at g 0 c) (at g 0 (+ c 1))) (loop (+ c 2)))
+            (loop (+ c 1)))))
+    (grid-from-fn (- (rows g) 1) (cols g)
+      (lambda (r c)
+        (let ((v (at g (+ r 1) c)))
+          (hash-ref mapping v v))))))

@@ -1,0 +1,6 @@
+# 79fa065ed7aa
+
+0-bg grid (h~9-14, w~12-18) with 1-3 (typically 2) HOLLOW COLOR-5 RECTANGULAR FRAMES, each size rh × rw (4..6 each) placed at non-touching positions (1-cell padding via bbox_overlaps). Each frame is painted as a complete border outline in COLOR 5 (gray). Inside EACH FRAME's STRICT INTERIOR: ONE NON-{0, 5} MARKER CELL placed at a random interior position, painted with a randomly chosen color from {1, 2, 3, 4, 6, 7, 8, 9} via random_palette (each frame's marker color is independently drawn, may collide between frames). The strict interior of each frame is the cells (r1+1..r2-1, c1+1..c2-1). Rule (FOR EACH 5-FRAME WHOSE INTERIOR HOLDS EXACTLY ONE NON-0 NON-5 MARKER, FLOOD THE INTERIOR WITH THE MARKER'S COLOR): for EACH 5-color HOLLOW RECTANGULAR FRAME: SCAN its strict interior (cells strictly inside the border, excluding the 5-walls). VERIFY there's EXACTLY ONE distinct non-0 non-5 COLOR value (call it M). PAINT every interior cell (strict interior) with COLOR M. The frame's 5-border stays gray. Net: each 5-framed chamber gets entirely filled by its lone marker color.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

@@ -1,0 +1,11 @@
+(rule!
+ (let* ((payloads (sort-by (filter (lambda (obj) (not (= (obj-color obj) 8)))
+                                    (objects g 0))
+                            (lambda (obj) (first (obj-bbox obj)))))
+        (selector (length (find-color g 8)))
+        (selected (nth payloads (modulo selector 3)))
+        (c0 (second (obj-bbox selected))))
+   (paint-cells (empty-grid (rows g) (cols g) 0)
+                (map (lambda (p) (list (first p) (- (second p) c0)))
+                     (obj-cells selected))
+                (obj-color selected))))

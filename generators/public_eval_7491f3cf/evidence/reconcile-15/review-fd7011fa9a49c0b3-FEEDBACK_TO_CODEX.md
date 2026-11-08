@@ -1,0 +1,2 @@
+F1: Exercise native adapter invocation during public-authoring preflight
+Symptom: both adapters initially passed focused positional calls but rejected the required `settings=` keyword used by the native contract. Evidence: the reusable full-boundary probe failed before source-bound preflight evidence was finalized. Suggested change: have `review_public_creation preflight` invoke every adapter once with explicit `seed=`, `settings=`, `demos=`, and `queries=` keywords before protected label execution.

@@ -1,0 +1,1341 @@
+diff --git a/repo/generators/3a4b67ab16ff/generator.py b/repo/generators/3a4b67ab16ff/generator.py
+--- a/repo/generators/3a4b67ab16ff/generator.py
++++ b/repo/generators/3a4b67ab16ff/generator.py
+@@ -14,7 +14,7 @@
+ 
+ GENERATOR_ID = "3a4b67ab16ff"
+ TASK_ID = "3a4b67ab16ff"
+-VERSION = "3.0.0"
++VERSION = "3.1.0"
+ RULE_HASH = "32c694357bd0"
+ SUMMARY = "Intersect each marker-color bounding box with the gray bounding rectangle, filling intersections in ascending color order."
+ INVARIANTS = [
+@@ -34,6 +34,7 @@
+     "horizontal_band",
+     "vertical_band",
+     "interior_box",
++    "split_extrema",
+     "three_color_nonoverlap",
+     "overlap_priority",
+     "inactive_companion",
+@@ -45,8 +46,8 @@
+ AXES = {
+     "scene_profile": {
+         "type": "str",
+-        "default": "four exact-public and eleven recoverable bbox-intersection lessons",
+-        "valid": "public_1|public_2|public_3|public_4|top_left_projection|top_right_projection|bottom_left_projection|bottom_right_projection|horizontal_band|vertical_band|interior_box|three_color_nonoverlap|overlap_priority|inactive_companion|full_bbox_projection",
++        "default": "four exact-public and twelve recoverable bbox-intersection lessons",
++        "valid": "public_1|public_2|public_3|public_4|top_left_projection|top_right_projection|bottom_left_projection|bottom_right_projection|horizontal_band|vertical_band|interior_box|split_extrema|three_color_nonoverlap|overlap_priority|inactive_companion|full_bbox_projection",
+     }
+ }
+ 
+@@ -179,6 +180,31 @@
+     )
+ 
+ 
++def _is_split_extrema(facts):
++    """Recognize four non-corner markers that jointly supply all bbox extrema."""
++    active, inactive = facts["active_colors"], facts["inactive_colors"]
++    if len(active) != 1 or inactive:
++        return False
++    cells = facts["colors"][active[0]]["cells"]
++    if len(cells) != 4:
++        return False
++    row0, col0, row1, col1 = facts["colors"][active[0]]["bbox"]
++    if row1 - row0 < 2 or col1 - col0 < 2:
++        return False
++    cell_set = set(cells)
++    corners = {(row0, col0), (row0, col1), (row1, col0), (row1, col1)}
++    if cell_set & corners:
++        return False
++    touches_all_sides = (
++        any(row == row0 for row, _ in cells)
++        and any(row == row1 for row, _ in cells)
++        and any(col == col0 for _, col in cells)
++        and any(col == col1 for _, col in cells)
++    )
++    endpoint_bbox = _bbox((cells[0], cells[-1]))
++    return touches_all_sides and endpoint_bbox != (row0, col0, row1, col1)
++
++
+ def _profile_for(grid, facts):
+     public = _PUBLIC_SIGNATURES.get(tuple(map(tuple, grid)))
+     if public:
+@@ -186,6 +212,8 @@
+     active, inactive = facts["active_colors"], facts["inactive_colors"]
+     if inactive and active:
+         return "inactive_companion"
++    if _is_split_extrema(facts):
++        return "split_extrema"
+     if len(active) >= 3 and not facts["overlaps"]:
+         return "three_color_nonoverlap"
+     if len(active) == 2 and facts["overlaps"]:
+@@ -235,6 +263,43 @@
+     return {"errors": errors, "facts": facts, "scene_profile": profile, "output": facts["output"]}
+ 
+ 
++def _endpoint_only_bbox_rule(grid):
++    """Plausible shortcut: infer each marker bbox from row-major endpoints only."""
++    errors = _valid_grid(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    facts = _extract_facts(grid)
++    if facts["errors"]:
++        raise ValueError("; ".join(facts["errors"]))
++    output = [[0 for _ in row] for row in grid]
++    for row, col in facts["gray_area"]:
++        output[row][col] = 5
++    for color in sorted(facts["colors"]):
++        cells = facts["colors"][color]["cells"]
++        endpoint_bbox = _bbox((cells[0], cells[-1]))
++        for row, col in _rect_cells(_intersection(endpoint_bbox, facts["gray_bbox"])):
++            output[row][col] = color
++    return output
++
++
++def _split_extrema_refutes_endpoint_only_bbox(grid):
++    analysis = _analysis(grid)
++    return (
++        not analysis["errors"]
++        and analysis["scene_profile"] == "split_extrema"
++        and _endpoint_only_bbox_rule(grid) != analysis["output"]
++    )
++
++
++SEMANTIC_RIVALS = {"endpoint_only_bbox": _endpoint_only_bbox_rule}
++SEMANTIC_WITNESSES = {
++    "split_extrema_refutes_endpoint_only_bbox": _split_extrema_refutes_endpoint_only_bbox
++}
++WITNESS_RIVALS = {
++    "split_extrema_refutes_endpoint_only_bbox": ["endpoint_only_bbox"]
++}
++
++
+ def self_check(grid, *, difficulty=None, meta=None):
+     return _analysis(grid)["errors"]
+ 
+@@ -313,6 +378,25 @@
+     return grid
+ 
+ 
++def _split_extrema_scene(difficulty, rng):
++    grid, (gr0, gc0, gr1, gc1) = _base_canvas(difficulty, rng)
++    row0 = rng.randint(gr0 + 1, gr1 - 3)
++    row1 = rng.randint(row0 + 2, gr1 - 1)
++    col0 = rng.randint(gc0 + 1, gc1 - 3)
++    col1 = rng.randint(col0 + 2, gc1 - 1)
++    middle_row = rng.randint(row0 + 1, row1 - 1)
++    middle_col = rng.randint(col0 + 1, col1 - 1)
++    color = rng.choice(_MARKER_COLORS)
++    for row, col in (
++        (row0, middle_col),
++        (middle_row, col0),
++        (middle_row, col1),
++        (row1, middle_col),
++    ):
++        grid[row][col] = color
++    return grid
++
++
+ def _three_nonoverlap(difficulty, rng):
+     grid, (gr0, gc0, gr1, gc1) = _base_canvas(difficulty, rng)
+     colors = rng.sample(_MARKER_COLORS, 3)
+@@ -357,6 +441,8 @@
+         "horizontal_band", "vertical_band", "interior_box", "full_bbox_projection",
+     }:
+         return _single_projection(profile, difficulty, rng)
++    if profile == "split_extrema":
++        return _split_extrema_scene(difficulty, rng)
+     if profile == "three_color_nonoverlap":
+         return _three_nonoverlap(difficulty, rng)
+     if profile == "overlap_priority":
+@@ -376,6 +462,12 @@
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
++    if type(seed) is not int:
++        raise TypeError("seed must be an integer (not bool)")
++    if type(sample_index) is not int:
++        raise TypeError("sample_index must be an integer (not bool)")
++    if sample_index < 0:
++        raise ValueError("sample_index must be non-negative")
+     if difficulty not in (None, "easy", "medium", "hard"):
+         raise ValueError(f"unknown difficulty: {difficulty!r}")
+     unknown = sorted(set(overrides) - {"scene_profile"})
+@@ -383,9 +475,12 @@
+         raise ValueError("unknown override(s): " + ", ".join(unknown))
+     ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION, task_id=TASK_ID, difficulty=difficulty, overrides=overrides)
+     weighted = (
+-        PUBLIC_PROFILES * 2
++        # Keep canonical 15x15 lessons above the strict 25% profile-envelope
++        # floor after adding split_extrema to the default curriculum.
++        PUBLIC_PROFILES * 7
+         + ("top_left_projection", "top_right_projection", "bottom_left_projection", "bottom_right_projection") * 5
+         + ("horizontal_band", "vertical_band", "interior_box") * 5
++        + ("split_extrema",) * 8
+         + ("three_color_nonoverlap",) * 9
+         + ("overlap_priority",) * 8
+         + ("inactive_companion",) * 5
+diff --git a/repo/generators/3a4b67ab16ff/notes.md b/repo/generators/3a4b67ab16ff/notes.md
+--- a/repo/generators/3a4b67ab16ff/notes.md
++++ b/repo/generators/3a4b67ab16ff/notes.md
+@@ -1,7 +1,22 @@
+ # Working notes: 3a4b67ab16ff
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Current decision
++
++Generator `3.1.0` keeps canonical rule hash `32c694357bd0` and adds a `split_extrema` curriculum profile. Four non-corner markers jointly provide the top, bottom, left, and right extrema, so a first/last-row-major-occurrence shortcut computes the wrong box. The machine-readable rival is `endpoint_only_bbox`; its bound witness is `split_extrema_refutes_endpoint_only_bbox`.
++
++Adding the profile initially diluted the fixed default schedule enough to miss canonical public profiles in one band. The final schedule retains the new lesson and weights the four existing public profiles by 7, yielding final strict support in every band and 19 exact canonical-profile hits across 60 pinned draws. `generate` now strictly rejects bool/non-integer seeds or sample indices and negative sample indices.
++
++## Parametric proposal
++
++The task-local `workspace/parametric/prototype.py` proposes one hidden episode setting, `layer_order=ascending|descending`. Ascending is the exact canonical program; descending reverses only the color traversal. Paired settings share input sampling, each retained episode has 3 demonstrations and 4 distinct queries, and all seven inputs distinguish the rival setting under exact Racket. Public exports omit settings, seeds, programs, and answers. This remains a proposal, not a production API, variant approval, or training admission.
++
++## Authority and verification
++
++Canonical `puzzles.jsonl` and archival `raw_code` are unchanged. The selected base solution's active `target_code` was synchronized byte-for-byte to canonical formatting, with execution parity preserved. Focused authored tests pass 17/17, and the twelve final source-bound stages pass. Aggregate task tests remain blocked at preflight by the issued frozen fixture's fixed parent-depth root lookup; that fixture remains byte-identical to baseline.
++
++## Next useful action
++
++Maintainers should replay the return, migrate the frozen fixture to `reviewer_support.find_root`/`canonical_pairs` in packet-generation source, and evaluate the `layer_order` proposal separately from the production repair.
+ 
+ <!-- arcpuzzles-current-supplementary:start -->
+ ## Current supplementary checks
+diff --git a/repo/generators/3a4b67ab16ff/tests/test_parametric_layer_order.py b/repo/generators/3a4b67ab16ff/tests/test_parametric_layer_order.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3a4b67ab16ff/tests/test_parametric_layer_order.py
+@@ -0,0 +1,217 @@
++"""Focused tests for the isolated 3a4b67ab16ff layer-order prototype."""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import re
++import sys
++
++import pytest
++
++from reviewer_support import canonical_pairs, canonical_path, find_root
++
++TASK_ID = "3a4b67ab16ff"
++ROOT = find_root(__file__)
++PROTOTYPE_PATH = (
++    Path(__file__).resolve().parents[1] / "workspace" / "parametric" / "prototype.py"
++)
++
++
++def _load_prototype():
++    spec = importlib.util.spec_from_file_location(
++        "task_3a4b67ab16ff_parametric_layer_order", PROTOTYPE_PATH
++    )
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture(scope="module")
++def prototype():
++    return _load_prototype()
++
++
++def _canonical_program() -> str:
++    rows = [
++        json.loads(line)
++        for line in canonical_path(ROOT).read_text(encoding="utf-8").splitlines()
++        if line.strip()
++    ]
++    found = [row["program_solution"] for row in rows if row.get("task_id") == TASK_ID]
++    assert len(found) == 1
++    return found[0]
++
++
++def _grid_digest(grid) -> str:
++    return hashlib.sha256(
++        json.dumps(grid, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    ).hexdigest()
++
++
++def test_parameter_contract_is_strict_and_default_program_is_exact_canonical(prototype):
++    assert prototype.PARAMETER_NAME == "layer_order"
++    assert prototype.ALLOWED_SETTINGS == ("ascending", "descending")
++    assert prototype.DEFAULT_SETTING == "ascending"
++    assert prototype.choose_setting(0) == "ascending"
++    assert prototype.choose_setting(1) == "descending"
++    assert prototype.choose_setting(17) == prototype.choose_setting(17)
++    with pytest.raises(TypeError):
++        prototype.choose_setting(True)
++    for invalid in (None, True, 0, "reverse", "Ascending"):
++        error = TypeError if type(invalid) is not str else ValueError
++        with pytest.raises(error):
++            prototype.program_for(invalid)
++
++    canonical = _canonical_program()
++    assert prototype.program_for("ascending") == canonical
++    descending = prototype.program_for("descending")
++    assert descending != canonical
++    marker = "(list 9 8 7 6 5 4 3 2 1)"
++    assert descending.count(marker) == 1
++    assert descending.replace(marker, "(range 1 10)") == canonical
++
++
++def test_default_python_reference_matches_every_labelled_canonical_pair(prototype):
++    pairs = canonical_pairs(TASK_ID, root=ROOT, labeled_only=True)
++    assert len(pairs) == 4
++    for pair in pairs:
++        assert prototype.apply_python(pair["input"], "ascending") == pair["output"]
++
++
++def test_layer_order_changes_only_the_overlap_winner(prototype):
++    generator = prototype.selected_generator(ROOT)
++    grid = generator.generate(
++        20261023,
++        0,
++        difficulty="medium",
++        scene_profile="overlap_priority",
++    )
++    facts = generator._analysis(grid)["facts"]
++    low, high = facts["active_colors"]
++    overlap = (
++        generator._rect_cells(facts["colors"][low]["intersection"])
++        & generator._rect_cells(facts["colors"][high]["intersection"])
++    )
++    assert overlap
++
++    ascending = prototype.apply_python(grid, "ascending")
++    descending = prototype.apply_python(grid, "descending")
++    assert ascending != descending
++    assert all(ascending[row][col] == high for row, col in overlap)
++    assert all(descending[row][col] == low for row, col in overlap)
++    assert all(
++        ascending[row][col] == descending[row][col]
++        for row in range(len(grid))
++        for col in range(len(grid[0]))
++        if (row, col) not in overlap
++    )
++    assert grid == generator.generate(
++        20261023,
++        0,
++        difficulty="medium",
++        scene_profile="overlap_priority",
++    )
++
++
++def test_episode_has_one_setting_three_demos_and_four_distinct_queries(prototype):
++    for seed, expected in ((0, "ascending"), (1, "descending")):
++        episode = prototype.build_episode(seed, demo_count=3, query_count=4, root=ROOT)
++        assert episode == prototype.build_episode(
++            seed, demo_count=3, query_count=4, root=ROOT
++        )
++        assert episode["meta"][prototype.PARAMETER_NAME] == expected
++        assert len(episode["train"]) == 3
++        assert len(episode["test"]) == 4
++        pairs = episode["train"] + episode["test"]
++        assert len({_grid_digest(pair["input"]) for pair in pairs}) == 7
++        rival = next(value for value in prototype.ALLOWED_SETTINGS if value != expected)
++        assert all(
++            pair["output"] == prototype.apply_python(pair["input"], expected)
++            for pair in pairs
++        )
++        assert all(
++            pair["output"] != prototype.apply_python(pair["input"], rival)
++            for pair in pairs
++        )
++
++
++def test_public_export_uses_only_visible_content_and_returns_fresh_data(prototype):
++    episode = prototype.build_episode(
++        23, setting="descending", demo_count=3, query_count=4, root=ROOT
++    )
++    name = prototype.public_filename(episode)
++    assert re.fullmatch(r"challenge-[0-9a-f]{64}\.json", name)
++
++    changed_private = deepcopy(episode)
++    changed_private["meta"] = {"layer_order": "ascending", "episode_seed": 999}
++    for pair in changed_private["test"]:
++        pair["output"] = [[0 for _ in row] for row in pair["output"]]
++    assert prototype.public_filename(changed_private) == name
++
++    changed_visible = deepcopy(episode)
++    changed_visible["train"][0]["output"][0][0] = (
++        changed_visible["train"][0]["output"][0][0] + 1
++    ) % 10
++    assert prototype.public_filename(changed_visible) != name
++
++    public = prototype.public_challenge(episode)
++    assert set(public) == {"train", "test"}
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert all(set(pair) == {"input"} for pair in public["test"])
++    serialized = json.dumps(public, sort_keys=True)
++    for forbidden in ("layer_order", "episode_seed", "rule!", "program"):
++        assert forbidden not in serialized
++    before = deepcopy(episode)
++    public["train"][0]["input"][0][0] = 9
++    assert episode == before
++
++
++def test_racket_evidence_covers_both_settings_queries_canonical_and_split_extrema(
++    prototype, tmp_path
++):
++    destination = tmp_path / "evidence"
++    report = prototype.write_evidence(
++        destination,
++        seeds=(0, 1),
++        demo_count=3,
++        query_count=4,
++        root=ROOT,
++    )
++    assert report["status"] == "passed"
++    assert report["canonical_default_exact_program_match"] is True
++    assert report["canonical_pairs_checked_with_default_racket"] == 4
++    assert report["canonical_pairs_passed_with_default_racket"] == 4
++    assert report["split_extrema"]["checked"] == 4
++    assert report["split_extrema"]["all_racket_matches"] is True
++    assert set(report["episodes"]) == set(prototype.ALLOWED_SETTINGS)
++
++    public_names = []
++    for setting, row in report["episodes"].items():
++        assert row["selected_setting"] == setting
++        assert row["demo_count"] == 3
++        assert row["query_count"] == 4
++        assert row["distinct_input_count"] == 7
++        assert row["all_demos_distinguish_rival"] is True
++        assert row["all_queries_distinguish_rival"] is True
++        public_path = destination / row["public_path"]
++        private_path = destination / row["private_path"]
++        assert public_path.is_file() and private_path.is_file()
++        assert re.fullmatch(r"challenge-[0-9a-f]{64}\.json", public_path.name)
++        private = json.loads(private_path.read_text(encoding="utf-8"))
++        assert public_path.name == prototype.public_filename(private["episode"])
++        assert json.loads(public_path.read_text(encoding="utf-8")) == (
++            prototype.public_challenge(private["episode"])
++        )
++        public_names.append(public_path.name)
++    assert len(set(public_names)) == 2
++
++    manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
++    assert manifest["report"] == "report.json"
++    assert manifest["files"]
++    with pytest.raises(FileExistsError):
++        prototype.write_evidence(destination, seeds=(0, 1), root=ROOT)
+diff --git a/repo/generators/3a4b67ab16ff/tests/test_split_extrema_repair.py b/repo/generators/3a4b67ab16ff/tests/test_split_extrema_repair.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3a4b67ab16ff/tests/test_split_extrema_repair.py
+@@ -0,0 +1,141 @@
++"""Focused regression tests for the split-extrema curriculum repair."""
++from __future__ import annotations
++
++import hashlib
++
++import pytest
++from reviewer_support import canonical_pairs, find_root, load_selected_generator
++
++TASK_ID = "3a4b67ab16ff"
++ROOT = find_root(__file__)
++MODULE = load_selected_generator(TASK_ID, root=ROOT)[0]
++BANDS = ("easy", "medium", "hard")
++
++
++def _endpoint_only_rule(grid):
++    """Known shortcut: use only first/last row-major marker occurrences."""
++    facts = MODULE._extract_facts(grid)
++    output = [[0 for _ in row] for row in grid]
++    for row, col in facts["gray_area"]:
++        output[row][col] = 5
++    for color in sorted(facts["colors"]):
++        cells = facts["colors"][color]["cells"]
++        endpoint_bbox = MODULE._bbox((cells[0], cells[-1]))
++        intersection = MODULE._intersection(endpoint_bbox, facts["gray_bbox"])
++        for row, col in MODULE._rect_cells(intersection):
++            output[row][col] = color
++    return output
++
++
++def _profile(grid):
++    return (len(grid), len(grid[0]), len({cell for row in grid for cell in row}))
++
++
++def _pinned_seed(band: str, index: int) -> int:
++    digest = hashlib.sha256(
++        f"profile-floor:v1:{TASK_ID}:{band}:{index}".encode("utf-8")
++    ).hexdigest()
++    return int(digest[:12], 16)
++
++
++def test_split_extrema_profile_is_recoverable_in_every_band():
++    for band_index, band in enumerate((None, *BANDS)):
++        for seed in range(20):
++            grid = MODULE.generate(
++                900_000 + band_index * 1_000 + seed,
++                seed * 41,
++                difficulty=band,
++                scene_profile="split_extrema",
++            )
++            analysis = MODULE._analysis(grid)
++            assert not analysis["errors"]
++            assert analysis["scene_profile"] == "split_extrema"
++            assert MODULE.observe_overrides(grid) == {"scene_profile": "split_extrema"}
++
++
++def test_split_extrema_profile_refutes_first_last_occurrence_bbox_rival():
++    for seed in range(40):
++        grid = MODULE.generate(
++            910_000 + seed,
++            seed * 43,
++            scene_profile="split_extrema",
++        )
++        facts = MODULE._analysis(grid)["facts"]
++        color, = facts["active_colors"]
++        cells = facts["colors"][color]["cells"]
++        true_bbox = facts["colors"][color]["bbox"]
++        endpoint_bbox = MODULE._bbox((cells[0], cells[-1]))
++        row0, col0, row1, col1 = true_bbox
++        assert endpoint_bbox != true_bbox
++        assert (row0, col0) not in cells
++        assert (row1, col1) not in cells
++        assert _endpoint_only_rule(grid) != MODULE.rule_mirror(grid)
++
++
++def test_pinned_default_schedule_retains_canonical_profile_support_per_band():
++    canonical = canonical_pairs(TASK_ID, root=ROOT, labeled_only=False)
++    profiles = {_profile(pair["input"]) for pair in canonical}
++    h_values = [profile[0] for profile in profiles]
++    w_values = [profile[1] for profile in profiles]
++    p_values = [profile[2] for profile in profiles]
++    envelope = (
++        (min(h_values), max(h_values)),
++        (min(w_values), max(w_values)),
++        (min(p_values), max(p_values)),
++    )
++
++    exact_by_band = {}
++    exact_total = 0
++    envelope_total = 0
++    for band in BANDS:
++        exact = 0
++        inside = 0
++        for index in range(20):
++            seed = _pinned_seed(band, index)
++            sample_index = seed % 7919 + index
++            profile = _profile(MODULE.generate(seed, sample_index, difficulty=band))
++            exact += profile in profiles
++            (h0, h1), (w0, w1), (p0, p1) = envelope
++            inside += h0 <= profile[0] <= h1 and w0 <= profile[1] <= w1 and p0 <= profile[2] <= p1
++        exact_by_band[band] = exact
++        exact_total += exact
++        envelope_total += inside
++
++    assert all(count >= 1 for count in exact_by_band.values()), exact_by_band
++    assert exact_total >= 3
++    assert envelope_total >= 15
++
++
++def test_semantic_contract_names_and_refutes_the_endpoint_only_rival():
++    witness_name = "split_extrema_refutes_endpoint_only_bbox"
++    rival_name = "endpoint_only_bbox"
++    assert set(MODULE.SEMANTIC_WITNESSES) == {witness_name}
++    assert set(MODULE.SEMANTIC_RIVALS) == {rival_name}
++    assert MODULE.WITNESS_RIVALS == {witness_name: [rival_name]}
++
++    rival = MODULE.SEMANTIC_RIVALS[rival_name]
++    witness = MODULE.SEMANTIC_WITNESSES[witness_name]
++    canonical = canonical_pairs(TASK_ID, root=ROOT, labeled_only=True)
++    assert all(rival(pair["input"]) == pair["output"] for pair in canonical)
++
++    for seed in range(12):
++        grid = MODULE.generate(
++            920_000 + seed,
++            seed * 47,
++            scene_profile="split_extrema",
++        )
++        assert witness(grid)
++        assert rival(grid) != MODULE.rule_mirror(grid)
++
++
++@pytest.mark.parametrize("bad", [True, False, 1.0, 1.75, "1", None])
++def test_generate_rejects_non_integer_seed_and_sample_index(bad):
++    with pytest.raises(TypeError):
++        MODULE.generate(bad, 0)
++    with pytest.raises(TypeError):
++        MODULE.generate(0, bad)
++
++
++def test_generate_rejects_negative_sample_index():
++    with pytest.raises(ValueError):
++        MODULE.generate(0, -1)
+diff --git a/repo/generators/3a4b67ab16ff/workspace/parametric/README.md b/repo/generators/3a4b67ab16ff/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3a4b67ab16ff/workspace/parametric/README.md
+@@ -0,0 +1,21 @@
++# Proposed `layer_order` prototype for `3a4b67ab16ff`
++
++Status: **task-local proposal; not production-approved**. The selected generator and canonical Racket rule remain bound to ascending numeric color order.
++
++The prototype keeps the original family structure: color 5 defines the restored gray rectangle, each other color defines one bounding box, and only that box's intersection with gray is filled. The episode chooses exactly one hidden setting:
++
++- `ascending` — the exact canonical Racket program; higher numeric colors win overlaps.
++- `descending` — the same complete program with only the final color traversal reversed; lower numeric colors win overlaps.
++
++Inputs come only from the selected production generator's `overlap_priority` profile. Paired episode seeds share the same input sampling, so the hidden setting does not choose the grids. The default evidence build uses three labeled demonstrations and four distinct unlabeled public queries per setting. Private records retain query answers, both complete programs, and exact-Racket executions.
++
++From the packet root, build fresh evidence with:
++
++```bash
++python3 review.py run python3 \
++  generators/3a4b67ab16ff/workspace/parametric/prototype.py \
++  --out ../checks/parametric/3a4b67ab16ff-layer-order-v1 \
++  --seeds 0 1 --demo-count 3 --query-count 4
++```
++
++The destination must not already exist. Public files use opaque `challenge-<sha256>.json` names derived only from visible demonstration inputs/outputs and query inputs. Private files and `report.json` record the setting, query answers, runtime identity, source hashes, canonical replay, and split-extrema repair checks.
+diff --git a/repo/generators/3a4b67ab16ff/workspace/parametric/prototype.py b/repo/generators/3a4b67ab16ff/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3a4b67ab16ff/workspace/parametric/prototype.py
+@@ -0,0 +1,724 @@
++#!/usr/bin/env python3
++"""Task-local layer-order prototype for ARC task 3a4b67ab16ff.
++
++The selected production generator and canonical Racket rule remain unchanged:
++marker-color bounding boxes are intersected with the gray bounding rectangle,
++and colors are painted in ascending numeric order.  This proposed prototype
++adds one episode-level parameter, ``layer_order``.  Its alternate value paints
++colors in descending order, so the lower color wins only where active
++intersections overlap.
++
++Every retained evidence label is executed by the bundled protected Racket
++bridge.  The Python implementation is an independent mirror used for focused
++tests and parity checks, not label authority.
++"""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++from functools import lru_cache
++import hashlib
++import json
++import os
++from pathlib import Path
++import sys
++from typing import Any, Iterable
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import strip_rule_wrapper
++from reviewer_support import (
++    canonical_pairs,
++    canonical_path,
++    find_root,
++    load_selected_generator,
++    public_challenge_bytes,
++    public_challenge_id,
++)
++
++TASK_ID = "3a4b67ab16ff"
++PROTOTYPE_VERSION = "1.0.0"
++PARAMETER_NAME = "layer_order"
++ALLOWED_SETTINGS = ("ascending", "descending")
++DEFAULT_SETTING = "ascending"
++PARAMETER_SPEC = {
++    "name": PARAMETER_NAME,
++    "allowed": list(ALLOWED_SETTINGS),
++    "default": DEFAULT_SETTING,
++    "selection": "ALLOWED_SETTINGS[episode_seed % 2], chosen once per episode",
++    "input_sampling": (
++        "episode_seed // 2 selects inputs, so paired ascending/descending "
++        "episodes use the same input distribution"
++    ),
++}
++STATUS = "proposed task-local prototype; not production-approved"
++ROOT = find_root(__file__)
++HERE = Path(__file__).resolve().parent
++_DESCENDING_SEQUENCE = "(list 9 8 7 6 5 4 3 2 1)"
++_CANONICAL_SEQUENCE = "(range 1 10)"
++
++
++def _sha256_bytes(data: bytes) -> str:
++    return hashlib.sha256(data).hexdigest()
++
++
++def _sha256_file(path: Path) -> str:
++    return _sha256_bytes(path.read_bytes())
++
++
++def _grid_sha256(grid: list[list[int]]) -> str:
++    return _sha256_bytes(
++        json.dumps(grid, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    )
++
++
++def _write_json(path: Path, value: Any) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(
++        json.dumps(value, indent=2, sort_keys=True) + "\n",
++        encoding="utf-8",
++    )
++
++
++def _canonical_record(*, root: Path | str = ROOT) -> dict[str, Any]:
++    root = Path(root).resolve()
++    found = []
++    with canonical_path(root).open(encoding="utf-8") as stream:
++        for line in stream:
++            if line.strip():
++                row = json.loads(line)
++                if row.get("task_id") == TASK_ID:
++                    found.append(row)
++    if len(found) != 1:
++        raise ValueError(f"expected one canonical task {TASK_ID}, found {len(found)}")
++    return found[0]
++
++
++def _validate_setting(setting: Any) -> str:
++    if type(setting) is not str:
++        raise TypeError(f"{PARAMETER_NAME} must be a string")
++    if setting not in ALLOWED_SETTINGS:
++        raise ValueError(
++            f"{PARAMETER_NAME} must be one of {ALLOWED_SETTINGS}, got {setting!r}"
++        )
++    return setting
++
++
++def choose_setting(seed: int) -> str:
++    """Choose one hidden setting exactly once from an episode seed."""
++    if type(seed) is not int:
++        raise TypeError("episode seed must be an integer (not bool)")
++    return ALLOWED_SETTINGS[seed % len(ALLOWED_SETTINGS)]
++
++
++@lru_cache(maxsize=8)
++def _selected_generator_record(root_text: str):
++    return load_selected_generator(TASK_ID, root=Path(root_text))
++
++
++def selected_generator(root: Path | str = ROOT):
++    """Return the selected production generator from one explicit source tree."""
++    return _selected_generator_record(str(Path(root).resolve()))[0]
++
++
++def program_for(setting: str = DEFAULT_SETTING, *, root: Path | str = ROOT) -> str:
++    """Return the exact complete Racket program for one declared setting."""
++    setting = _validate_setting(setting)
++    canonical = _canonical_record(root=root)["program_solution"]
++    if setting == DEFAULT_SETTING:
++        return canonical
++    if canonical.count(_CANONICAL_SEQUENCE) != 1:
++        raise AssertionError(
++            "canonical program must contain one unambiguous final color sequence"
++        )
++    return canonical.replace(_CANONICAL_SEQUENCE, _DESCENDING_SEQUENCE, 1)
++
++
++def apply_python(
++    grid: list[list[int]],
++    setting: str = DEFAULT_SETTING,
++    *,
++    root: Path | str = ROOT,
++) -> list[list[int]]:
++    """Independent Python mirror for tests and Racket parity checks."""
++    setting = _validate_setting(setting)
++    generator = selected_generator(root)
++    errors = generator._valid_grid(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    facts = generator._extract_facts(grid)
++    if facts["errors"]:
++        raise ValueError("; ".join(facts["errors"]))
++
++    output = [[0 for _ in row] for row in grid]
++    for row, col in facts["gray_area"]:
++        output[row][col] = 5
++    colors = sorted(facts["colors"], reverse=(setting == "descending"))
++    for color in colors:
++        intersection = facts["colors"][color]["intersection"]
++        for row, col in generator._rect_cells(intersection):
++            output[row][col] = color
++    return output
++
++
++def _episode_inputs(
++    seed: int,
++    *,
++    root: Path | str = ROOT,
++    pair_count: int,
++) -> tuple[list[list[int]], ...]:
++    if type(seed) is not int:
++        raise TypeError("episode seed must be an integer (not bool)")
++    if type(pair_count) is not int or not 2 <= pair_count <= 16:
++        raise ValueError("pair_count must be an integer in 2..16")
++
++    generator = selected_generator(root)
++    # Paired seeds (0/1, 2/3, ...) share input sampling.  The hidden setting
++    # therefore cannot influence which grids are shown.
++    input_seed = (seed // len(ALLOWED_SETTINGS)) ^ 0x3A4B67AB
++    grids: list[list[list[int]]] = []
++    seen: set[str] = set()
++    for sample_index in range(512):
++        grid = generator.generate(
++            input_seed,
++            sample_index,
++            difficulty="medium",
++            scene_profile="overlap_priority",
++        )
++        analysis = generator._analysis(grid)
++        if analysis["errors"] or analysis["scene_profile"] != "overlap_priority":
++            raise AssertionError("selected generator returned an invalid overlap lesson")
++        if apply_python(grid, "ascending", root=root) == apply_python(
++            grid, "descending", root=root
++        ):
++            raise AssertionError("overlap lesson does not distinguish layer orders")
++        digest = _grid_sha256(grid)
++        if digest in seen:
++            continue
++        seen.add(digest)
++        grids.append(grid)
++        if len(grids) == pair_count:
++            return tuple(grids)
++    raise AssertionError(f"could not generate {pair_count} distinct overlap lessons")
++
++
++def build_episode(
++    seed: int,
++    *,
++    setting: str | None = None,
++    root: Path | str = ROOT,
++    demo_count: int = 3,
++    query_count: int = 4,
++) -> dict[str, Any]:
++    """Build a deterministic complete episode with mirror-generated labels.
++
++    ``write_evidence`` re-executes and replaces every retained label with exact
++    Racket output before materializing artifacts.
++    """
++    if type(seed) is not int:
++        raise TypeError("episode seed must be an integer (not bool)")
++    selected = choose_setting(seed) if setting is None else _validate_setting(setting)
++    if type(demo_count) is not int or not 1 <= demo_count <= 8:
++        raise ValueError("demo_count must be an integer in 1..8")
++    if type(query_count) is not int or not 1 <= query_count <= 8:
++        raise ValueError("query_count must be an integer in 1..8")
++
++    grids = _episode_inputs(
++        seed,
++        root=root,
++        pair_count=demo_count + query_count,
++    )
++    pairs = [
++        {
++            "input": deepcopy(grid),
++            "output": apply_python(grid, selected, root=root),
++        }
++        for grid in grids
++    ]
++    return {
++        "meta": {
++            "task_id": TASK_ID,
++            "prototype_version": PROTOTYPE_VERSION,
++            "episode_seed": seed,
++            PARAMETER_NAME: selected,
++        },
++        "train": pairs[:demo_count],
++        "test": pairs[demo_count:],
++    }
++
++
++def public_challenge(episode: dict[str, Any]) -> dict[str, Any]:
++    """Return a fresh public view: labeled demos and unlabeled query inputs."""
++    return {
++        "train": [
++            {
++                "input": deepcopy(pair["input"]),
++                "output": deepcopy(pair["output"]),
++            }
++            for pair in episode["train"]
++        ],
++        "test": [
++            {"input": deepcopy(pair["input"])}
++            for pair in episode["test"]
++        ],
++    }
++
++
++def public_filename(episode: dict[str, Any]) -> str:
++    """Identify exactly the visible challenge, excluding all private fields."""
++    return f"challenge-{public_challenge_id(public_challenge(episode))}.json"
++
++
++def _assert_public_redaction(public: dict[str, Any]) -> None:
++    # Also validate the precise public schema and grid types through the shared
++    # canonical serializer used by the identifier.
++    public_challenge_bytes(public)
++    if any("output" in pair for pair in public["test"]):
++        raise AssertionError("public challenge leaks a query answer")
++    serialized = json.dumps(public, sort_keys=True)
++    for forbidden in (
++        PARAMETER_NAME,
++        "episode_seed",
++        "rule!",
++        '"program"',
++        "query_answer",
++    ):
++        if forbidden in serialized:
++            raise AssertionError(f"public challenge leaks {forbidden!r}")
++
++
++def _callable_text(program: str) -> str:
++    return strip_rule_wrapper(program)
++
++
++def _grid_literal(grid: list[list[int]]) -> str:
++    rows = " ".join("(" + " ".join(map(str, row)) + ")" for row in grid)
++    return f"'({rows})"
++
++
++def application(program: str, grid: list[list[int]]) -> str:
++    return f"({_callable_text(program)} {_grid_literal(grid)})"
++
++
++def execute_racket(
++    bridge: RacketBridge,
++    program: str,
++    grid: list[list[int]],
++) -> list[list[int]]:
++    return bridge.eval_text(application(program, grid))
++
++
++def _replace_episode_outputs(
++    episode: dict[str, Any],
++    outputs: Iterable[list[list[int]]],
++) -> dict[str, Any]:
++    stream = iter(outputs)
++    replaced = {
++        "meta": deepcopy(episode["meta"]),
++        "train": [
++            {"input": deepcopy(pair["input"]), "output": next(stream)}
++            for pair in episode["train"]
++        ],
++        "test": [
++            {"input": deepcopy(pair["input"]), "output": next(stream)}
++            for pair in episode["test"]
++        ],
++    }
++    try:
++        next(stream)
++    except StopIteration:
++        return replaced
++    raise ValueError("too many outputs for episode")
++
++
++def _endpoint_only_output(grid: list[list[int]], *, root: Path | str) -> list[list[int]]:
++    """Known shortcut retained only as a split-extrema counterexample."""
++    generator = selected_generator(root)
++    facts = generator._extract_facts(grid)
++    output = [[0 for _ in row] for row in grid]
++    for row, col in facts["gray_area"]:
++        output[row][col] = 5
++    for color in sorted(facts["colors"]):
++        cells = facts["colors"][color]["cells"]
++        endpoint_bbox = generator._bbox((cells[0], cells[-1]))
++        intersection = generator._intersection(endpoint_bbox, facts["gray_bbox"])
++        for row, col in generator._rect_cells(intersection):
++            output[row][col] = color
++    return output
++
++
++def write_evidence(
++    out: Path | str,
++    *,
++    seeds: tuple[int, ...] | list[int] = (0, 1),
++    demo_count: int = 3,
++    query_count: int = 4,
++    root: Path | str = ROOT,
++) -> dict[str, Any]:
++    """Materialize exact-Racket public/private evidence for both settings."""
++    out = Path(out)
++    root = Path(root).resolve()
++    if out.exists():
++        raise FileExistsError(f"evidence output already exists: {out}")
++    if not seeds or any(type(seed) is not int for seed in seeds):
++        raise ValueError("seeds must be a non-empty sequence of integers")
++    selected_settings = [choose_setting(seed) for seed in seeds]
++    if len(seeds) != len(ALLOWED_SETTINGS) or set(selected_settings) != set(
++        ALLOWED_SETTINGS
++    ):
++        raise ValueError(
++            "seeds must select each declared setting exactly once; "
++            f"got {selected_settings}"
++        )
++    if type(demo_count) is not int or not 1 <= demo_count <= 8:
++        raise ValueError("demo_count must be an integer in 1..8")
++    if type(query_count) is not int or not 1 <= query_count <= 8:
++        raise ValueError("query_count must be an integer in 1..8")
++
++    public_dir = out / "public"
++    private_dir = out / "private"
++    rules_dir = out / "rules"
++    for folder in (public_dir, private_dir, rules_dir):
++        folder.mkdir(parents=True, exist_ok=False)
++
++    programs = {setting: program_for(setting, root=root) for setting in ALLOWED_SETTINGS}
++    canonical_program = _canonical_record(root=root)["program_solution"]
++    if programs[DEFAULT_SETTING] != canonical_program:
++        raise AssertionError("default prototype program is not exact canonical authority")
++
++    rule_records: dict[str, dict[str, Any]] = {}
++    for setting, program in programs.items():
++        path = rules_dir / f"layer-{setting}.rkt"
++        path.write_text(program, encoding="utf-8")
++        rule_records[setting] = {
++            "path": str(path.relative_to(out)),
++            "sha256": _sha256_file(path),
++            "normalized_sha256": _sha256_bytes(" ".join(program.split()).encode()),
++        }
++
++    canonical_checks: list[dict[str, Any]] = []
++    split_checks: list[dict[str, Any]] = []
++    all_executions: list[dict[str, Any]] = []
++    episode_summaries: dict[str, dict[str, Any]] = {}
++
++    generator, generator_path, generator_sha256 = _selected_generator_record(str(root))
++    with RacketBridge(max_calls_before_restart=128) as bridge:
++        runtime_identity = bridge.runtime_identity
++
++        for pair in canonical_pairs(TASK_ID, root=root, labeled_only=True):
++            actual = execute_racket(bridge, programs[DEFAULT_SETTING], pair["input"])
++            passed = actual == pair["output"]
++            if not passed:
++                raise AssertionError(
++                    f"canonical Racket mismatch: {pair['split']} pair {pair['pair_index']}"
++                )
++            canonical_checks.append(
++                {
++                    "variant": pair["variant"],
++                    "split": pair["split"],
++                    "pair_index": pair["pair_index"],
++                    "input_sha256": _grid_sha256(pair["input"]),
++                    "passed": passed,
++                }
++            )
++
++        for sample_index in range(4):
++            grid = generator.generate(
++                0x5EED3A4B,
++                sample_index,
++                difficulty="medium",
++                scene_profile="split_extrema",
++            )
++            expected = generator.rule_mirror(grid)
++            actual = execute_racket(bridge, programs[DEFAULT_SETTING], grid)
++            mirror = apply_python(grid, DEFAULT_SETTING, root=root)
++            shortcut = _endpoint_only_output(grid, root=root)
++            facts = generator._analysis(grid)["facts"]
++            color, = facts["active_colors"]
++            cells = facts["colors"][color]["cells"]
++            endpoint_bbox = generator._bbox((cells[0], cells[-1]))
++            true_bbox = facts["colors"][color]["bbox"]
++            if actual != expected or mirror != expected:
++                raise AssertionError("split-extrema Racket/Python parity failed")
++            if shortcut == expected or endpoint_bbox == true_bbox:
++                raise AssertionError("split-extrema lesson did not refute endpoint shortcut")
++            split_checks.append(
++                {
++                    "sample_index": sample_index,
++                    "input_sha256": _grid_sha256(grid),
++                    "racket_matches_generator": True,
++                    "python_matches_generator": True,
++                    "endpoint_bbox": list(endpoint_bbox),
++                    "true_bbox": list(true_bbox),
++                    "endpoint_shortcut_refuted": True,
++                }
++            )
++
++        first_witness: dict[str, Any] | None = None
++        for episode_index, seed in enumerate(seeds):
++            selected = choose_setting(seed)
++            rival = next(value for value in ALLOWED_SETTINGS if value != selected)
++            mirror_episode = build_episode(
++                seed,
++                setting=selected,
++                root=root,
++                demo_count=demo_count,
++                query_count=query_count,
++            )
++            pairs = mirror_episode["train"] + mirror_episode["test"]
++            grids = [pair["input"] for pair in pairs]
++            if len({_grid_sha256(grid) for grid in grids}) != len(grids):
++                raise AssertionError("episode contains duplicate inputs")
++
++            predictions: dict[str, list[list[list[int]]]] = {}
++            for setting in ALLOWED_SETTINGS:
++                setting_outputs = []
++                for pair_index, grid in enumerate(grids):
++                    output = execute_racket(bridge, programs[setting], grid)
++                    setting_outputs.append(output)
++                    python_output = apply_python(grid, setting, root=root)
++                    if output != python_output:
++                        raise AssertionError(
++                            f"Python/Racket mismatch: seed={seed} pair={pair_index} "
++                            f"setting={setting}"
++                        )
++                    all_executions.append(
++                        {
++                            "episode_index": episode_index,
++                            "episode_seed": seed,
++                            "pair_index": pair_index,
++                            PARAMETER_NAME: setting,
++                            "application_sha256": _sha256_bytes(
++                                application(programs[setting], grid).encode("utf-8")
++                            ),
++                            "output": output,
++                        }
++                    )
++                predictions[setting] = setting_outputs
++
++            selected_outputs = predictions[selected]
++            racket_episode = _replace_episode_outputs(mirror_episode, selected_outputs)
++            query_start = demo_count
++            demo_disagreements = [
++                index
++                for index in range(demo_count)
++                if predictions[selected][index] != predictions[rival][index]
++            ]
++            query_disagreements = [
++                index - query_start
++                for index in range(query_start, len(pairs))
++                if predictions[selected][index] != predictions[rival][index]
++            ]
++            if len(demo_disagreements) != demo_count:
++                raise AssertionError("every retained demo must distinguish layer order")
++            if len(query_disagreements) != query_count:
++                raise AssertionError("every retained query must distinguish layer order")
++
++            public = public_challenge(racket_episode)
++            _assert_public_redaction(public)
++            public_path = public_dir / public_filename(racket_episode)
++            _write_json(public_path, public)
++
++            private_path = private_dir / f"episode-{selected}.json"
++            private_record = {
++                "schema": "3a4b67ab16ff-parametric-layer-order-episode-v1",
++                "status": STATUS,
++                "task_id": TASK_ID,
++                "episode_index": episode_index,
++                "episode_seed": seed,
++                "parameter": PARAMETER_SPEC,
++                "selected_setting": selected,
++                "rival_setting": rival,
++                "selected_program": rule_records[selected],
++                "rival_program": rule_records[rival],
++                "episode": racket_episode,
++                "racket_predictions": predictions,
++                "query_answers": selected_outputs[query_start:],
++                "checks": {
++                    "setting_chosen_once": True,
++                    "demo_count": len(racket_episode["train"]),
++                    "query_count": len(racket_episode["test"]),
++                    "distinct_inputs": len({_grid_sha256(grid) for grid in grids}),
++                    "all_labels_executed_by_racket": True,
++                    "python_mirror_parity": True,
++                    "all_demos_distinguish_rival": (
++                        len(demo_disagreements) == demo_count
++                    ),
++                    "all_queries_distinguish_rival": (
++                        len(query_disagreements) == query_count
++                    ),
++                },
++                "demonstration_disagreement_indices": demo_disagreements,
++                "query_disagreement_indices": query_disagreements,
++            }
++            _write_json(private_path, private_record)
++
++            episode_summaries[selected] = {
++                "episode_seed": seed,
++                "selected_setting": selected,
++                "rival_setting": rival,
++                "demo_count": demo_count,
++                "query_count": query_count,
++                "distinct_input_count": len(grids),
++                "all_demos_distinguish_rival": True,
++                "all_queries_distinguish_rival": True,
++                "public_path": str(public_path.relative_to(out)),
++                "public_sha256": _sha256_file(public_path),
++                "private_path": str(private_path.relative_to(out)),
++                "private_sha256": _sha256_file(private_path),
++            }
++            if first_witness is None:
++                first_witness = {
++                    "input": deepcopy(grids[-1]),
++                    "outputs": {
++                        setting: deepcopy(predictions[setting][-1])
++                        for setting in ALLOWED_SETTINGS
++                    },
++                }
++
++        if first_witness is None:
++            raise AssertionError("no setting witness was generated")
++        if first_witness["outputs"]["ascending"] == first_witness["outputs"][
++            "descending"
++        ]:
++            raise AssertionError("setting witness does not distinguish layer orders")
++        witness_path = private_dir / "setting-difference-witness.json"
++        _write_json(
++            witness_path,
++            {
++                "task_id": TASK_ID,
++                **first_witness,
++                "checked_by": "both complete Racket programs",
++                "outputs_differ": True,
++            },
++        )
++
++    canonical_checks_path = private_dir / "canonical-racket-checks.json"
++    split_checks_path = private_dir / "split-extrema-racket-checks.json"
++    executions_path = private_dir / "racket-executions.json"
++    _write_json(canonical_checks_path, canonical_checks)
++    _write_json(split_checks_path, split_checks)
++    _write_json(executions_path, all_executions)
++
++    source_paths = [
++        Path(__file__).resolve(),
++        HERE / "README.md",
++        Path(generator_path),
++        root / "generators" / TASK_ID / "tests" / "test_generator_3a4b67ab16ff.py",
++        root / "generators" / TASK_ID / "tests" / "test_parametric_layer_order.py",
++    ]
++    report = {
++        "schema": "3a4b67ab16ff-parametric-layer-order-v1",
++        "status": "passed",
++        "scope": STATUS,
++        "task_id": TASK_ID,
++        "prototype_version": PROTOTYPE_VERSION,
++        "parameter": PARAMETER_SPEC,
++        "invariant_reasoning": [
++            "infer the gray bounding rectangle from all color-5 cells",
++            "infer each other color bounding box from all of that color's markers",
++            "restore the gray rectangle and clear the outside background",
++            "fill each bbox intersection in one episode-fixed numeric color order",
++            "only overlapping intersections reveal which numeric layer wins",
++        ],
++        "canonical_default_exact_program_match": True,
++        "canonical_pairs_checked_with_default_racket": len(canonical_checks),
++        "canonical_pairs_passed_with_default_racket": sum(
++            row["passed"] for row in canonical_checks
++        ),
++        "canonical_checks": {
++            "path": str(canonical_checks_path.relative_to(out)),
++            "sha256": _sha256_file(canonical_checks_path),
++        },
++        "split_extrema": {
++            "checked": len(split_checks),
++            "all_racket_matches": all(
++                row["racket_matches_generator"] for row in split_checks
++            ),
++            "endpoint_shortcut_refuted_count": sum(
++                row["endpoint_shortcut_refuted"] for row in split_checks
++            ),
++            "path": str(split_checks_path.relative_to(out)),
++            "sha256": _sha256_file(split_checks_path),
++        },
++        "programs": rule_records,
++        "episodes": episode_summaries,
++        "distinguishing_witness": {
++            "path": str(witness_path.relative_to(out)),
++            "sha256": _sha256_file(witness_path),
++            "lawful_overlap_input": True,
++            "outputs_differ": True,
++        },
++        "racket_execution_log": {
++            "path": str(executions_path.relative_to(out)),
++            "sha256": _sha256_file(executions_path),
++            "count": len(all_executions),
++        },
++        "racket_runtime": runtime_identity,
++        "selected_generator": {
++            "path": str(Path(generator_path).relative_to(root)),
++            "sha256": generator_sha256,
++        },
++        "source_hashes": {
++            str(path.relative_to(root)): _sha256_file(path)
++            for path in source_paths
++        },
++        "command": {
++            "cwd": os.getcwd(),
++            "argv": [sys.executable, *sys.argv],
++        },
++        "limitations": [
++            "This is a task-local proposed prototype, not a production API or approval.",
++            "The canonical production rule and its default ascending order are unchanged.",
++            "Evidence covers the two declared settings and the retained paired seeds.",
++            "All retained episode inputs use the production overlap_priority grammar.",
++            "Finite rival checks do not exclude arbitrary alternative programs.",
++        ],
++        "passed": True,
++    }
++    _write_json(out / "report.json", report)
++    _write_json(
++        out / "manifest.json",
++        {
++            "schema": "3a4b67ab16ff-parametric-layer-order-manifest-v1",
++            "report": "report.json",
++            "report_sha256": _sha256_file(out / "report.json"),
++            "files": {
++                str(path.relative_to(out)): _sha256_file(path)
++                for path in sorted(out.rglob("*"))
++                if path.is_file() and path.name != "manifest.json"
++            },
++        },
++    )
++    return report
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", nargs="+", type=int, default=[0, 1])
++    parser.add_argument("--demo-count", type=int, default=3)
++    parser.add_argument("--query-count", type=int, default=4)
++    args = parser.parse_args(argv)
++    report = write_evidence(
++        args.out,
++        seeds=tuple(args.seeds),
++        demo_count=args.demo_count,
++        query_count=args.query_count,
++    )
++    print(
++        json.dumps(
++            {
++                "status": report["status"],
++                "task_id": report["task_id"],
++                "parameter": report["parameter"],
++                "evidence": str(args.out),
++            },
++            indent=2,
++            sort_keys=True,
++        )
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/shared/data/base/solutions/training/1c02dbbe__3a4b67ab16ff.json b/repo/shared/data/base/solutions/training/1c02dbbe__3a4b67ab16ff.json
+--- a/repo/shared/data/base/solutions/training/1c02dbbe__3a4b67ab16ff.json
++++ b/repo/shared/data/base/solutions/training/1c02dbbe__3a4b67ab16ff.json
+@@ -87,7 +87,7 @@
+     "needs_conversion": false,
+     "raw_code": "(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((grays (find-color g 5)) (gr0 (min-of fst grays)) (gr1 (max-of fst grays)) (gc0 (min-of snd grays)) (gc1 (max-of snd grays)) (base (cellmap g (r c v) (if (and (>= r gr0) (<= r gr1) (>= c gc0) (<= c gc1)) 5 0)))) (reduce (lambda (acc color) (if (= color 5) acc (let ((cells (find-color g color))) (if (zero? (length cells)) acc (let ((ir0 (max (min-of fst cells) gr0)) (ir1 (min (max-of fst cells) gr1)) (ic0 (max (min-of snd cells) gc0)) (ic1 (min (max-of snd cells) gc1))) (reduce (lambda (a r) (reduce (lambda (a2 c) (set-cell a2 r c color)) a (range ic0 (+ ic1 1)))) acc (range ir0 (+ ir1 1)))))))) base (range 1 10))))))",
+     "solution_language": "racket",
+-    "target_code": "(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((grays (find-color g 5)) (gr0 (min-of fst grays)) (gr1 (max-of fst grays)) (gc0 (min-of snd grays)) (gc1 (max-of snd grays)) (base (cellmap g (r c v) (if (and (>= r gr0) (<= r gr1) (>= c gc0) (<= c gc1)) 5 0)))) (reduce (lambda (acc color) (if (= color 5) acc (let ((cells (find-color g color))) (if (zero? (length cells)) acc (let ((ir0 (max (min-of fst cells) gr0)) (ir1 (min (max-of fst cells) gr1)) (ic0 (max (min-of snd cells) gc0)) (ic1 (min (max-of snd cells) gc1))) (reduce (lambda (a r) (reduce (lambda (a2 c) (set-cell a2 r c color)) a (range ic0 (+ ic1 1)))) acc (range ir0 (+ ir1 1)))))))) base (range 1 10))))))",
++    "target_code": "(rule! (lambda (g)\n         (let* ((h (rows g))\n                (w (cols g)))\n           (let* ((grays (find-color g 5))\n                  (gr0 (min-of fst grays))\n                  (gr1 (max-of fst grays))\n                  (gc0 (min-of snd grays))\n                  (gc1 (max-of snd grays))\n                  (base (cellmap g\n                                 (r c v)\n                                 (if (and (>= r gr0) (<= r gr1) (>= c gc0) (<= c gc1))\n                                     5\n                                     0))))\n             (reduce (lambda (acc color)\n                       (if (= color 5)\n                           acc\n                           (let ((cells (find-color g color)))\n                             (if (zero? (length cells))\n                                 acc\n                                 (let ((ir0 (max (min-of fst cells) gr0))\n                                       (ir1 (min (max-of fst cells) gr1))\n                                       (ic0 (max (min-of snd cells) gc0))\n                                       (ic1 (min (max-of snd cells) gc1)))\n                                   (reduce (lambda (a r)\n                                             (reduce (lambda (a2 c)\n                                                       (set-cell a2 r c color))\n                                                     a\n                                                     (range ic0 (+ ic1 1))))\n                                           acc\n                                           (range ir0 (+ ir1 1))))))))\n                     base\n                     (range 1 10))))))",
+     "target_status": "verified_racket_available"
+   },
+   "schema_version": 1,

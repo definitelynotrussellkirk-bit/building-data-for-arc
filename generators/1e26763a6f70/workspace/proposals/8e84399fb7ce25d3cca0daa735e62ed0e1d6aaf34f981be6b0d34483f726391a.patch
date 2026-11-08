@@ -1,0 +1,782 @@
+diff --git a/repo/generators/1e26763a6f70/counterexamples/span_four_only.json b/repo/generators/1e26763a6f70/counterexamples/span_four_only.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1e26763a6f70/counterexamples/span_four_only.json
+@@ -0,0 +1,29 @@
++{
++  "schema": "arcpuzzles-generator-counterexample-v1",
++  "task_id": "1e26763a6f70",
++  "generator_sha256": "7484db9bb662e9e309c500704fe028a1217b2f43d2aee6b9585afe63b8821b97",
++  "rule_hash": "dffe1ada0168",
++  "rival": "span_four_only",
++  "input": [
++    [0, 0, 0, 0, 0, 0],
++    [0, 0, 0, 0, 0, 0],
++    [0, 2, 0, 2, 0, 0],
++    [0, 0, 0, 0, 0, 0],
++    [0, 0, 0, 0, 0, 0]
++  ],
++  "intended_output": [
++    [0, 0, 0, 0, 0, 0],
++    [0, 0, 0, 0, 0, 0],
++    [0, 2, 2, 2, 0, 0],
++    [0, 0, 0, 0, 0, 0],
++    [0, 0, 0, 0, 0, 0]
++  ],
++  "rival_output": [
++    [0, 0, 0, 0, 0, 0],
++    [0, 0, 0, 0, 0, 0],
++    [0, 2, 0, 2, 0, 0],
++    [0, 0, 0, 0, 0, 0],
++    [0, 0, 0, 0, 0, 0]
++  ],
++  "explanation": "The endpoints have lawful even span 2, so the intended rule fills their empty midpoint. A rival inferred from the canonical demonstrations that fires only at span 4 leaves the input unchanged. Every ordinary generated grid contains at least one non-four span, normally this span-2 witness."
++}
+diff --git a/repo/generators/1e26763a6f70/generator.py b/repo/generators/1e26763a6f70/generator.py
+--- a/repo/generators/1e26763a6f70/generator.py
++++ b/repo/generators/1e26763a6f70/generator.py
+@@ -1,130 +1,351 @@
+-"""Generator for arc_puzzle_bank_seventeenth21:E119 — aligned same-color pair fills empty midpoint.
+-
+-Rule: each unique-color endpoint pair (aligned, even span) has its
+-midpoint cell filled.
+-
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, pairs, palette_size,
+-position_bias, n_distinct_colors, density, texture.
+-Degenerates: no_pairs, odd_span, single_endpoint.
++"""Generator for E119, "Mark the midpoint".
++
++The selected Racket authority fills the empty midpoint of every same-color pair
++whose two cells are aligned on one row or one column and have an even, nonzero
++span.  This module generates inputs only; labels remain source-bound to the
++canonical Racket rule.
+ """
+ from __future__ import annotations
+ 
++from collections import defaultdict
++from typing import Iterable
++
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "1e26763a6f70"
+-VERSION = "1.1.1"
+-TASK_ID = "1e26763a6f70"
+-
+-SUMMARY = "Aligned same-color endpoint pairs have an empty midpoint."
++TASK_ID = GENERATOR_ID
++RULE_HASH = "dffe1ada0168"
++VERSION = "2.0.0"
++
++SUMMARY = (
++    "Each nonzero color occurs at two aligned endpoints with an empty integer "
++    "midpoint; the rule fills every such midpoint with the endpoint color."
++)
+ 
+ INVARIANTS = [
+-    "background is 0",
+-    "each active color appears exactly twice",
+-    "the endpoints share one row or one column",
+-    "the endpoint span is even and midpoint cell is initially 0",
++    "background is integer color 0",
++    "1..5 distinct active colors each occur exactly twice",
++    "each same-color pair is horizontal or vertical with a positive even span",
++    "every pair midpoint is initially background and pair endpoint/midpoint cells do not overlap",
++    "every generated input contains at least one lawful span other than four",
+ ]
+ 
+-PALETTE_KINDS = ("default", "warm", "cool", "varied")
+-DEGENERATE_TEXTURES = ("no_pairs", "odd_span", "single_endpoint")
+-HELPFUL_TEXTURES = PALETTE_KINDS
+-
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 5..8", "valid": "4..16"},
+-    "grid_w":         {"type": "int", "default": "rng 7..10", "valid": "4..16"},
+-    "palette_kind":   {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(PALETTE_KINDS)},
+-    "pairs":          {"type": "int", "default": "rng 1..3", "valid": "1..8"},
+-    "palette_size":   {"type": "int", "default": "= pairs", "valid": "1..9"},
+-    "position_bias":  {"type": "str", "default": "axis_aligned_even_span",
+-                       "valid": "axis_aligned_even_span"},
+-    "n_distinct_colors": {"type": "int", "default": "= pairs", "valid": "1..9"},
+-    "density":        {"type": "str", "default": "sparse", "valid": "sparse"},
+-    "texture":        {"type": "str", "default": "alias for palette_kind",
+-                       "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "grid_h": {
++        "type": "int",
++        "default": "difficulty-weighted 5..12; exact canonical anchor every third sample",
++        "valid": "5..12",
++    },
++    "grid_w": {
++        "type": "int",
++        "default": "difficulty-weighted 6..14; exact canonical anchor every third sample",
++        "valid": "6..14",
++    },
++    "pairs": {
++        "type": "int",
++        "default": "difficulty-weighted 1..5; one on canonical anchor samples",
++        "valid": "1..5",
++    },
+ }
+ 
++# Every advertised boundary combination is constructive, including 5x6 with
++# five pairs.  Unknown override keys are rejected explicitly in generate().
++INCOMPATIBLE_OVERRIDE_COMBINATIONS: list[dict[str, object]] = []
++
++_CANONICAL_PROFILES = ((5, 7), (7, 6), (7, 7))
++_VALID_DIFFICULTIES = {None, "easy", "medium", "hard"}
++
++# Candidate: (orientation, span, endpoint_a, endpoint_b, midpoint)
++_Candidate = tuple[str, int, tuple[int, int], tuple[int, int], tuple[int, int]]
++
++
++def _validate_call(seed, sample_index, difficulty, overrides) -> None:
++    if type(seed) is not int:
++        raise TypeError("seed must be an integer (not bool)")
++    if type(sample_index) is not int:
++        raise TypeError("sample_index must be an integer (not bool)")
++    if sample_index < 0:
++        raise ValueError("sample_index must be nonnegative")
++    if difficulty not in _VALID_DIFFICULTIES:
++        raise ValueError("difficulty must be None, 'easy', 'medium', or 'hard'")
++    unknown = sorted(set(overrides) - set(AXES))
++    if unknown:
++        raise ValueError(f"unknown override axis/axes: {', '.join(unknown)}")
++
++
++def _has_override(overrides: dict, name: str) -> bool:
++    return name in overrides and overrides[name] is not None
++
++
++def _draw_weighted_int(ctx, name: str, lo: int, hi: int, favored: Iterable[int]) -> int:
++    """Strict exact override, otherwise a keyed weighted integer choice."""
++    if _has_override(ctx.overrides, name):
++        return ctx.draw_int_strict(name, lo, hi)
++    options = list(range(lo, hi + 1)) + list(favored)
++    return ctx.draw_choice(name, options)
++
++
++def _draw_axes(ctx, sample_index: int) -> tuple[int, int, int]:
++    # A deterministic schedule anchor gives every band exact canonical shape and
++    # palette-size support without narrowing any explicit override domain.
++    anchor = sample_index % 3 == 0
++    if anchor:
++        profile = ctx.draw_rng("canonical_profile").choice(_CANONICAL_PROFILES)
++        h = (
++            ctx.draw_int_strict("grid_h", 5, 12)
++            if _has_override(ctx.overrides, "grid_h")
++            else ctx.draw_choice("grid_h", (profile[0],))
++        )
++        w = (
++            ctx.draw_int_strict("grid_w", 6, 14)
++            if _has_override(ctx.overrides, "grid_w")
++            else ctx.draw_choice("grid_w", (profile[1],))
++        )
++        pairs = (
++            ctx.draw_int_strict("pairs", 1, 5)
++            if _has_override(ctx.overrides, "pairs")
++            else ctx.draw_choice("pairs", (1,))
++        )
++        return h, w, pairs
++
++    if ctx.difficulty == "easy":
++        h_favored = (5, 5, 6, 6, 7)
++        w_favored = (6, 7, 7, 8)
++        pair_favored = (1, 1, 1, 2)
++    elif ctx.difficulty == "hard":
++        h_favored = (9, 10, 11, 12, 12)
++        w_favored = (11, 12, 13, 14, 14)
++        pair_favored = (3, 4, 5, 5)
++    elif ctx.difficulty == "medium":
++        h_favored = (7, 8, 8, 9)
++        w_favored = (8, 9, 10, 10)
++        pair_favored = (2, 2, 3, 4)
++    else:
++        h_favored = ()
++        w_favored = ()
++        pair_favored = ()
++
++    return (
++        _draw_weighted_int(ctx, "grid_h", 5, 12, h_favored),
++        _draw_weighted_int(ctx, "grid_w", 6, 14, w_favored),
++        _draw_weighted_int(ctx, "pairs", 1, 5, pair_favored),
++    )
++
++
++def _all_candidates(h: int, w: int) -> list[_Candidate]:
++    candidates: list[_Candidate] = []
++    for span in range(2, w, 2):
++        half = span // 2
++        for r in range(h):
++            for c in range(w - span):
++                candidates.append(
++                    ("horizontal", span, (r, c), (r, c + span), (r, c + half))
++                )
++    for span in range(2, h, 2):
++        half = span // 2
++        for c in range(w):
++            for r in range(h - span):
++                candidates.append(
++                    ("vertical", span, (r, c), (r + span, c), (r + half, c))
++                )
++    return candidates
++
++
++def _candidate_cells(candidate: _Candidate) -> frozenset[tuple[int, int]]:
++    return frozenset(candidate[2:])
++
++
++def _select_candidates(ctx, h: int, w: int, pairs: int) -> list[_Candidate]:
++    """Find exactly ``pairs`` disjoint endpoint/midpoint triples.
++
++    The first pair always has span two, which is a lawful counterexample to the
++    span-four-only shortcut fitting every canonical demonstration.  With at
++    least two pairs, the second has span four in the opposite orientation.  A
++    small backtracking search makes all advertised override combinations exact,
++    rather than silently dropping pairs after a capped rejection loop.
++    """
++    first_orientation = "horizontal" if ctx.sample_index % 2 == 0 else "vertical"
++    specifications: list[tuple[str | None, int | None]] = [(first_orientation, 2)]
++    if pairs >= 2:
++        second_orientation = "vertical" if first_orientation == "horizontal" else "horizontal"
++        specifications.append((second_orientation, 4))
++    specifications.extend([(None, None)] * (pairs - len(specifications)))
++
++    candidates = _all_candidates(h, w)
++    ctx.draw_rng("layout").shuffle(candidates)
++
++    def search(
++        depth: int,
++        occupied: frozenset[tuple[int, int]],
++        selected: tuple[_Candidate, ...],
++    ) -> tuple[_Candidate, ...] | None:
++        if depth == len(specifications):
++            return selected
++        required_orientation, required_span = specifications[depth]
++        for candidate in candidates:
++            orientation, span = candidate[0], candidate[1]
++            if required_orientation is not None and orientation != required_orientation:
++                continue
++            if required_span is not None and span != required_span:
++                continue
++            cells = _candidate_cells(candidate)
++            if occupied.isdisjoint(cells):
++                result = search(depth + 1, occupied | cells, selected + (candidate,))
++                if result is not None:
++                    return result
++        return None
++
++    result = search(0, frozenset(), ())
++    if result is None:  # Defensive: 5x6 has a constructive five-pair packing.
++        raise RuntimeError(f"could not place {pairs} midpoint pairs in {h}x{w}")
++    return list(result)
++
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION,
+-                  task_id=TASK_ID, difficulty=difficulty, overrides=overrides)
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], None)
+-    if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 5, 6)
+-        w = ctx.draw_int("grid_w", 7, 8)
+-        target = ctx.draw_int("pairs", 1, 2)
+-    elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 8, 12)
+-        w = ctx.draw_int("grid_w", 10, 14)
+-        target = ctx.draw_int("pairs", 3, 5)
+-    else:
+-        h = ctx.draw_int("grid_h", 5, 8)
+-        w = ctx.draw_int("grid_w", 7, 10)
+-        target = ctx.draw_int("pairs", 1, 3)
+-    rng = ctx.draw_rng("layout")
+-    g = full_grid(h, w, 0)
+-    reserved: set[tuple[int, int]] = set()
+-    colors = rng.sample([1, 2, 3, 4, 5, 6, 7, 8, 9], min(target, 9))
+-    placed = 0
+-    for _ in range(400):
+-        if placed >= target:
+-            break
+-        horizontal = rng.randrange(2) == 0
+-        if horizontal:
+-            span = rng.choice([2, 4, 6][:max(1, (w - 1) // 2)])
+-            r = rng.randrange(h)
+-            c = rng.randint(0, w - span - 1)
+-            pts = [(r, c), (r, c + span), (r, c + span // 2)]
++    _validate_call(seed, sample_index, difficulty, overrides)
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++    h, w, pair_count = _draw_axes(ctx, sample_index)
++    placements = _select_candidates(ctx, h, w, pair_count)
++    colors = ctx.draw_distinct_colors("colors", n=pair_count, exclude={0})
++
++    grid = full_grid(h, w, 0)
++    for color, candidate in zip(colors, placements):
++        _orientation, _span, first, second, _midpoint = candidate
++        grid[first[0]][first[1]] = color
++        grid[second[0]][second[1]] = color
++    return grid
++
++
++def _pair_cells(grid) -> dict[int, list[tuple[int, int]]]:
++    cells: dict[int, list[tuple[int, int]]] = defaultdict(list)
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if value != 0:
++                cells[value].append((r, c))
++    return dict(cells)
++
++
++def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
++    """Validate the rule-bearing input structure, not just color counts."""
++    if not isinstance(grid, (list, tuple)) or not grid:
++        return ["expected a nonempty rectangular grid"]
++    if not isinstance(grid[0], (list, tuple)) or not grid[0]:
++        return ["expected nonempty rows"]
++    width = len(grid[0])
++    if any(not isinstance(row, (list, tuple)) or len(row) != width for row in grid):
++        return ["grid must be rectangular"]
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        return ["cells must be integer ARC colors 0..9 (not bool)"]
++
++    cells = _pair_cells(grid)
++    if not cells:
++        return ["expected at least one nonzero endpoint pair"]
++
++    errors: list[str] = []
++    for color in sorted(cells):
++        points = cells[color]
++        if len(points) != 2:
++            errors.append(f"color {color} appears {len(points)} times, expected exactly twice")
++            continue
++        (r1, c1), (r2, c2) = points
++        if r1 == r2:
++            span = abs(c2 - c1)
++            midpoint = (r1, (c1 + c2) // 2)
++        elif c1 == c2:
++            span = abs(r2 - r1)
++            midpoint = ((r1 + r2) // 2, c1)
+         else:
+-            span = rng.choice([2, 4, 6][:max(1, (h - 1) // 2)])
+-            c = rng.randrange(w)
+-            r = rng.randint(0, h - span - 1)
+-            pts = [(r, c), (r + span, c), (r + span // 2, c)]
+-        if any(p in reserved for p in pts):
+-            continue
+-        color = colors[placed % len(colors)]
+-        g[pts[0][0]][pts[0][1]] = color
+-        g[pts[1][0]][pts[1][1]] = color
+-        reserved.update(pts)
+-        placed += 1
+-    return g
+-
+-
+-def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Verify: >=1 distinct non-bg color; each color appears exactly twice."""
+-    if not grid or any(len(row) != len(grid[0]) for row in grid):
+-        return ["grid must be nonempty and rectangular"]
+-    texture = (meta or {}).get("texture", "")
+-    if texture in DEGENERATE_TEXTURES:
+-        return []
++            errors.append(f"color {color} endpoints are not row/column aligned")
++            continue
++        if span <= 0 or span % 2:
++            errors.append(f"color {color} has nonpositive or odd endpoint span {span}")
++            continue
++        mr, mc = midpoint
++        if grid[mr][mc] != 0:
++            errors.append(f"color {color} midpoint {(mr, mc)} is not background")
++    return errors
++
++
++def strict_canonical_like(grid):
++    """Generated-domain validator used by the semantic gate."""
++    errors = list(self_check(grid))
++    if errors:
++        return errors
+     h, w = len(grid), len(grid[0])
+-    errs = []
+-    from collections import Counter
+-    counts = Counter(grid[r][c] for r in range(h) for c in range(w) if grid[r][c] != 0)
+-    if not counts:
+-        errs.append("no non-bg cells (expected aligned color pairs)")
+-    bad = [c for c, n in counts.items() if n != 2]
+-    if bad:
+-        errs.append(f"colors not appearing exactly twice: {bad}")
+-    return errs
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    h, w = 6, 9
+-    g = full_grid(h, w, 0)
+-    if name == "no_pairs":
+-        # Singletons only — rule has nothing to bridge.
+-        g[1][1] = 3; g[3][6] = 4; g[5][2] = 5
+-        return g
+-    if name == "odd_span":
+-        # Endpoints aligned but span is odd — no integer midpoint.
+-        g[1][1] = 4; g[1][4] = 4
+-        g[4][2] = 6; g[4][5] = 6
+-        return g
+-    if name == "single_endpoint":
+-        # Each color appears once — no pair, no midpoint.
+-        g[1][2] = 4
+-        g[4][6] = 6
+-        return g
+-    return g
++    pair_count = len(_pair_cells(grid))
++    if not 5 <= h <= 12:
++        errors.append(f"grid_h={h} outside generated domain 5..12")
++    if not 6 <= w <= 14:
++        errors.append(f"grid_w={w} outside generated domain 6..14")
++    if not 1 <= pair_count <= 5:
++        errors.append(f"pairs={pair_count} outside generated domain 1..5")
++    return errors
++
++
++def observe_overrides(grid) -> dict[str, int]:
++    """Recover all exact advertised controls from returned pixels."""
++    if self_check(grid):
++        raise ValueError("cannot observe overrides on an invalid midpoint-pair grid")
++    return {
++        "grid_h": len(grid),
++        "grid_w": len(grid[0]),
++        "pairs": len(_pair_cells(grid)),
++    }
++
++
++def _midpoint_output(grid, *, allowed_spans: set[int] | None = None):
++    """Pure task-local oracle used only for declared rival predictions."""
++    out = [list(row) for row in grid]
++    for color, points in _pair_cells(grid).items():
++        if len(points) != 2:
++            continue
++        (r1, c1), (r2, c2) = points
++        if r1 == r2 and (c1 + c2) % 2 == 0:
++            span = abs(c2 - c1)
++            mr, mc = r1, (c1 + c2) // 2
++        elif c1 == c2 and (r1 + r2) % 2 == 0:
++            span = abs(r2 - r1)
++            mr, mc = (r1 + r2) // 2, c1
++        else:
++            continue
++        if span and grid[mr][mc] == 0 and (
++            allowed_spans is None or span in allowed_spans
++        ):
++            out[mr][mc] = color
++    return out
++
++
++def _span_four_only(grid):
++    """Rival: incorrectly fires only for the span seen in canonical examples."""
++    return _midpoint_output(grid, allowed_spans={4})
++
++
++def _has_non_four_span(grid) -> bool:
++    for points in _pair_cells(grid).values():
++        if len(points) != 2:
++            continue
++        (r1, c1), (r2, c2) = points
++        if r1 == r2:
++            span = abs(c2 - c1)
++        elif c1 == c2:
++            span = abs(r2 - r1)
++        else:
++            continue
++        if span > 0 and span % 2 == 0 and span != 4:
++            return True
++    return False
++
++
++SEMANTIC_WITNESSES = {"non_four_span": _has_non_four_span}
++SEMANTIC_RIVALS = {"span_four_only": _span_four_only}
++WITNESS_RIVALS = {"non_four_span": ["span_four_only"]}
++CANONICAL_SHORTCUTS = {"span_four_only": _span_four_only}
++LESSON_COMPETITORS = {"span_four_only": _span_four_only}
+diff --git a/repo/generators/1e26763a6f70/notes.md b/repo/generators/1e26763a6f70/notes.md
+--- a/repo/generators/1e26763a6f70/notes.md
++++ b/repo/generators/1e26763a6f70/notes.md
+@@ -1,4 +1,27 @@
+ # Working notes: 1e26763a6f70
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Authority and intended rule
++
++The unchanged selected Racket authority is pinned by `RULE_HASH = "dffe1ada0168"`. For every nonzero color that appears exactly twice, the authority fills the empty integer midpoint when the endpoints share a row or column and their positive span is even. The generator produces inputs only; Racket remains the label authority.
++
++## Repaired generator contract
++
++Version 2.0.0 advertises only three observable axes: `grid_h` 5..12, `grid_w` 6..14, and `pairs` 1..5. Exact overrides are strict in every difficulty band; unknown keys, bools/non-integers, negative `sample_index`, and unknown difficulty names are rejected. A backtracking placer constructs exactly the requested number of endpoint/midpoint triples, including the tight 5x6, five-pair boundary, rather than silently underplacing after a rejection-loop cap.
++
++Each generated color is distinct and occurs at exactly two endpoints. Endpoint and midpoint cells are disjoint across pairs. Pair 1 is always span 2; its orientation alternates by `sample_index`. When present, pair 2 is span 4 in the opposite orientation. Remaining pairs use any lawful even span. This gives both orientations and deliberately refutes a span-four-only shortcut while preserving ordinary variability.
++
++Every third `sample_index` is a canonical-profile anchor. Unless explicitly overridden, it selects one of the exact canonical input shapes `(5,7)`, `(7,6)`, or `(7,7)` with one pair. The first design anchored every fifth sample; the profile-floor gate found only 4/20 exact canonical profiles in one band, so the schedule was changed to every third sample and rechecked at >=6/20 in all bands.
++
++`self_check` now validates rectangular ARC-color grids, exactly two cells per active color, row/column alignment, positive even span, and an initially empty midpoint. `strict_canonical_like` additionally checks generated-domain dimensions and pair count. `observe_overrides` recovers all three advertised controls from pixels.
++
++## Shortcut evidence
++
++All canonical demonstrations use span 4, so the strongest compact rival is `span_four_only`: perform the midpoint fill only for span-4 pairs. The lawful 5x6 witness in `counterexamples/span_four_only.json` has color 2 at `(2,1)` and `(2,3)`; the intended output also colors `(2,2)`, while the rival leaves it zero. `SEMANTIC_RIVALS`, `CANONICAL_SHORTCUTS`, `LESSON_COMPETITORS`, and `WITNESS_RIVALS` bind this rival to the `non_four_span` witness. Every generated grid contains a non-four span.
++
++## Retired behavior
++
++The prior implementation had no rule pin, declared dead texture/palette controls, routed ordinary sampling through declared negative textures, accepted semantically invalid odd/diagonal/obstructed pairs in `self_check`, silently coerced or ignored invalid overrides, and could return fewer pairs than requested. Those behaviors were removed rather than preserved as compatibility surface. The canonical Racket row was not edited.
++
++## Known limits
++
++The semantic evidence is finite and names one high-value rival; it does not prove identifiability against every possible hypothesis. The generated domain intentionally caps at five pairs and at even spans fitting the 5..12 by 6..14 canvas. Backtracking protects only endpoint/midpoint disjointness; other empty cells may lie between endpoints, which is lawful under the selected rule. Canonical-profile anchoring covers the observed shape/pair-count profile, not every possible spatial arrangement or color. Associated retained notes were empty, so no earlier design rationale was available beyond the supplied baseline and current authority.
+diff --git a/repo/generators/1e26763a6f70/tests/test_generator.py b/repo/generators/1e26763a6f70/tests/test_generator.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1e26763a6f70/tests/test_generator.py
+@@ -0,0 +1,243 @@
++"""Task-local regression tests for the midpoint-pair sampler.
++
++The oracle below is intentionally independent of the production generator.  It
++implements the canonical prose rule directly and is also used to exercise the
++strongest canonical shortcut found during review: "only span-four pairs fire".
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import importlib.util
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++import pytest
++from reviewer_support import canonical_pairs, canonical_path, find_root
++
++TASK_ID = "1e26763a6f70"
++EXPECTED_RULE_HASH = "dffe1ada0168"
++ROOT = find_root(__file__)
++SOURCE = Path(
++    os.environ.get(
++        "GENERATOR_UNDER_TEST",
++        str(Path(__file__).resolve().parents[1] / "generator.py"),
++    )
++)
++SPEC = importlib.util.spec_from_file_location("reviewed_generator", SOURCE)
++GEN = importlib.util.module_from_spec(SPEC)
++assert SPEC.loader is not None
++SPEC.loader.exec_module(GEN)
++
++
++def _color_cells(grid: list[list[int]]) -> dict[int, list[tuple[int, int]]]:
++    cells: dict[int, list[tuple[int, int]]] = {}
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if value:
++                cells.setdefault(value, []).append((r, c))
++    return cells
++
++
++def midpoint_output(
++    grid: list[list[int]], *, allowed_spans: set[int] | None = None
++) -> list[list[int]]:
++    """Independent implementation of the selected Racket rule."""
++    out = deepcopy(grid)
++    for color, cells in _color_cells(grid).items():
++        if len(cells) != 2:
++            continue
++        (r1, c1), (r2, c2) = cells
++        if r1 == r2 and (c1 + c2) % 2 == 0:
++            span = abs(c2 - c1)
++            mr, mc = r1, (c1 + c2) // 2
++        elif c1 == c2 and (r1 + r2) % 2 == 0:
++            span = abs(r2 - r1)
++            mr, mc = (r1 + r2) // 2, c1
++        else:
++            continue
++        if span and grid[mr][mc] == 0 and (
++            allowed_spans is None or span in allowed_spans
++        ):
++            out[mr][mc] = color
++    return out
++
++
++def observed_pair_facts(grid: list[list[int]]) -> tuple[int, set[str], set[int]]:
++    orientations: set[str] = set()
++    spans: set[int] = set()
++    cells = _color_cells(grid)
++    for points in cells.values():
++        assert len(points) == 2
++        (r1, c1), (r2, c2) = points
++        if r1 == r2:
++            orientations.add("horizontal")
++            spans.add(abs(c2 - c1))
++        else:
++            assert c1 == c2
++            orientations.add("vertical")
++            spans.add(abs(r2 - r1))
++    return len(cells), orientations, spans
++
++
++def profile(grid: list[list[int]]) -> tuple[int, int, int]:
++    return len(grid), len(grid[0]), len({value for row in grid for value in row})
++
++
++def test_rule_pin_and_canonical_inputs_match_independent_oracle():
++    assert GEN.RULE_HASH == EXPECTED_RULE_HASH
++    assert canonical_path(ROOT).is_file()
++    pairs = canonical_pairs(TASK_ID, root=ROOT, labeled_only=True)
++    assert pairs
++    for pair in pairs:
++        assert GEN.self_check(pair["input"]) == []
++        assert midpoint_output(pair["input"]) == pair["output"]
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++@pytest.mark.parametrize(
++    "options",
++    [
++        {"grid_h": 5, "grid_w": 6, "pairs": 1},
++        {"grid_h": 5, "grid_w": 6, "pairs": 5},
++        {"grid_h": 12, "grid_w": 14, "pairs": 1},
++        {"grid_h": 12, "grid_w": 14, "pairs": 5},
++    ],
++)
++def test_exact_overrides_are_realized_without_dropped_pairs(band, options):
++    grid = GEN.generate(37, 11, difficulty=band, **options)
++    assert GEN.self_check(grid) == []
++    count, _orientations, spans = observed_pair_facts(grid)
++    assert (len(grid), len(grid[0]), count) == (
++        options["grid_h"],
++        options["grid_w"],
++        options["pairs"],
++    )
++    assert all(span > 0 and span % 2 == 0 for span in spans)
++    assert GEN.observe_overrides(grid) == options
++
++
++@pytest.mark.parametrize(
++    "kwargs",
++    [
++        {"__typo_axis": 1},
++        {"pairs": True},
++        {"pairs": 1.0},
++        {"pairs": "1"},
++        {"pairs": 0},
++        {"pairs": 6},
++        {"grid_h": True},
++        {"grid_h": 4},
++        {"grid_w": 15},
++    ],
++)
++def test_invalid_overrides_are_rejected(kwargs):
++    with pytest.raises((TypeError, ValueError, KeyError)):
++        GEN.generate(0, 0, **kwargs)
++
++
++@pytest.mark.parametrize("sample_index", [True, False, 1.0, "1", -1])
++def test_invalid_sample_index_is_rejected(sample_index):
++    with pytest.raises((TypeError, ValueError)):
++        GEN.generate(0, sample_index)
++
++
++@pytest.mark.parametrize(
++    "grid",
++    [
++        [],
++        [[]],
++        [[0], [0, 1]],
++        [[0, 0], [0, True]],
++        [[0] * 7 for _ in range(5)],
++        [[0, 0, 0, 0, 0], [0, 2, 0, 0, 2]],  # odd span
++        [[2, 0, 0], [0, 0, 0], [0, 0, 2]],  # diagonal pair
++        [[0, 2, 3, 0, 2], [0, 0, 0, 3, 0]],  # occupied midpoint
++        [[2, 0, 2], [0, 2, 0]],  # three occurrences
++    ],
++)
++def test_self_check_rejects_malformed_or_semantically_invalid_inputs(grid):
++    assert GEN.self_check(grid)
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++def test_default_distribution_is_deterministic_lawful_and_teaches_non_four_span(band):
++    seen_orientations: set[str] = set()
++    seen_spans: set[int] = set()
++    seen_pair_counts: set[int] = set()
++    for index in range(96):
++        grid = GEN.generate(1000 + index, index, difficulty=band)
++        assert grid == GEN.generate(1000 + index, index, difficulty=band)
++        assert GEN.self_check(grid) == []
++        pair_count, orientations, spans = observed_pair_facts(grid)
++        seen_pair_counts.add(pair_count)
++        seen_orientations.update(orientations)
++        seen_spans.update(spans)
++        # The canonical demonstrations all use span four.  Every generated
++        # input must expose at least one legal counterexample to that shortcut.
++        assert any(span != 4 for span in spans)
++        assert midpoint_output(grid, allowed_spans={4}) != midpoint_output(grid)
++    assert seen_orientations == {"horizontal", "vertical"}
++    assert {2, 4} <= seen_spans
++    assert max(seen_pair_counts) >= 2
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++def test_each_band_has_exact_canonical_profile_support_in_twenty_draws(band):
++    canonical_profiles = {
++        profile(pair["input"])
++        for pair in canonical_pairs(TASK_ID, root=ROOT, labeled_only=True)
++    }
++    generated_profiles = [
++        profile(GEN.generate(7000 + index, index, difficulty=band))
++        for index in range(20)
++    ]
++    assert sum(item in canonical_profiles for item in generated_profiles) >= 6
++
++
++def test_span_four_only_rival_fits_canonical_but_is_refuted_by_sampler():
++    pairs = canonical_pairs(TASK_ID, root=ROOT, labeled_only=True)
++    assert all(
++        midpoint_output(pair["input"], allowed_spans={4}) == pair["output"]
++        for pair in pairs
++    )
++    for index in range(32):
++        grid = GEN.generate(9000 + index, index, difficulty="hard")
++        before = deepcopy(grid)
++        witness = GEN.SEMANTIC_WITNESSES["non_four_span"](grid)
++        rival = GEN.SEMANTIC_RIVALS["span_four_only"](grid)
++        assert grid == before
++        assert witness
++        assert rival == midpoint_output(grid, allowed_spans={4})
++        assert rival != midpoint_output(grid)
++    assert GEN.WITNESS_RIVALS["non_four_span"] == ["span_four_only"]
++    assert GEN.CANONICAL_SHORTCUTS["span_four_only"] is GEN.SEMANTIC_RIVALS["span_four_only"]
++    assert GEN.LESSON_COMPETITORS["span_four_only"] is GEN.SEMANTIC_RIVALS["span_four_only"]
++
++
++def test_keyed_rng_is_independent_of_python_hash_seed():
++    script = (
++        "import importlib.util,json,sys;"
++        "p=sys.argv[1];s=importlib.util.spec_from_file_location('g',p);"
++        "m=importlib.util.module_from_spec(s);s.loader.exec_module(m);"
++        "print(json.dumps(m.generate(31,8,difficulty='hard')))"
++    )
++    results = []
++    for hash_seed in ("1", "901"):
++        env = dict(
++            os.environ,
++            PYTHONHASHSEED=hash_seed,
++            PYTHONDONTWRITEBYTECODE="1",
++            PYTHONPATH=os.pathsep.join(
++                filter(None, [str(ROOT / "shared" / "runtime"), os.environ.get("PYTHONPATH")])
++            ),
++        )
++        results.append(
++            subprocess.check_output(
++                [sys.executable, "-B", "-c", script, str(SOURCE)],
++                env=env,
++                text=True,
++            )
++        )
++    assert results[0] == results[1]

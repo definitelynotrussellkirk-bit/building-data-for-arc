@@ -1,0 +1,6 @@
+# 8a07ec9e021a
+
+0-bg grid (h~12-25, w~12-25) with: (a) RIGHT EDGE GRAY LINE — every cell in column w-1 painted color 5 (the gray edge); (b) 2-6 COLORED BARS placed in the interior (rows 1..h-3, cols 1..w-6), each a small 1×L or 2×L rectangle (L ∈ {1..3}, height 1 or 2) painted in a DISTINCT non-{0, 5} color drawn from a palette (warm/cool/primary/broad kinds). Bars are placed at non-overlapping rows (every 3rd row available) so they are disconnected from each other and from the gray edge. Rule (EACH COLORED BAR PROJECTS A RECTANGLE RIGHTWARD TOWARD THE GRAY EDGE — NEARER BARS OVERWRITE OVERLAPPING PROJECTIONS): for EACH non-{0, 5} BAR at rows [r..r+rh-1], cols [c..c+length-1]: PROJECT a RECTANGLE rightward — paint cells [r..r+rh-1] × [c..w-2] with the bar's color (extending from the bar through to one cell before the gray edge). Bars with overlapping projection rows compete — the NEARER bar (higher c value, i.e., closer to the gray edge) OVERWRITES the farther bar's projection in the overlap zone. The gray edge stays color 5. Net: each bar's color streaks rightward to the edge; nearer bars cover farther ones.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

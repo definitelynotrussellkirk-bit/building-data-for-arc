@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let* ((divider (first (filter (lambda (r) (all? (lambda (v) (= v 5)) (row g r))) (range (rows g))))) (top (subgrid g 0 0 (- divider 1) (- (cols g) 1))) (bottom (subgrid g (+ divider 1) 0 (- (rows g) 1) (- (cols g) 1)))) (grid-from-fn (rows top) (cols top) (lambda (r c) (if (and (not (= (at top r c) 0)) (not (= (at bottom r c) 0))) 8 0))))))

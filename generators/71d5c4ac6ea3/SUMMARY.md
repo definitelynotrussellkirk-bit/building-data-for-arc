@@ -1,0 +1,6 @@
+# 71d5c4ac6ea3
+
+0-bg grid (h~9-11, w~10-12) with: (a) ONE COLOR-9 ANCHOR CELL placed at random interior position in the UPPER-LEFT quadrant (rows 1..h//2, cols 1..w//3); (b) 2-4 COLOR-1 OFFSET CELLS placed at distinct positions adjacent to the anchor — for each, pick a random (dr, dc) with dr ∈ {-1..2}, dc ∈ {-1..2}, (dr, dc) ≠ (0, 0), such that the resulting absolute position is in-bounds and bg-0 — defining the RELATIVE OFFSET PATTERN; (c) 1-3 COLOR-2 SEED CELLS placed at distinct positions in the LOWER-RIGHT quadrant (rows h//2+1..h-2, cols w//2..w-2) such that each seed's offset pattern (seed + each (dr, dc)) lands fully on bg-0 cells. Rule (STAMP THE OFFSET PATTERN IN COLOR 8 AT EACH COLOR-2 SEED): EXTRACT the relative OFFSET PATTERN by finding the color-9 anchor and the color-1 cells around it; compute (dr, dc) for each color-1 relative to the anchor. For EACH COLOR-2 SEED cell at (r, c): for each offset (dr, dc): PAINT cell (r+dr, c+dc) with COLOR 8 (cyan), provided it's in bounds. The anchor, color-1 cells, and seeds may stay or be cleared per demos. Net: the offset pattern surrounding the anchor is replicated as a cyan halo around each color-2 seed.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

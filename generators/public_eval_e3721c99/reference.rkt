@@ -1,0 +1,23 @@
+(rule!
+  (define os (objects g 0))
+  (define (cavities o)
+    (define bh (obj-h o))
+    (define bw (obj-w o))
+    (define mask
+      (build-grid bh bw (r c)
+        (if (member (list (+ r (obj-r1 o)) (+ c (obj-c1 o))) (obj-cells o)) 0 1)))
+    (filter (lambda (z) (and (> (obj-r1 z) 0) (> (obj-c1 z) 0)
+                            (< (obj-r2 z) (- bh 1)) (< (obj-c2 z) (- bw 1))))
+            (objects mask 0)))
+  (define legends
+    (filter (lambda (o) (and (not (= (obj-color o) 5))
+                            (> (obj-r1 o) 0) (> (obj-c1 o) 0)
+                            (< (obj-r2 o) (- h 1)) (< (obj-c2 o) (- w 1)))) os))
+  (define mapping (map (lambda (o) (list (length (cavities o)) (obj-color o))) legends))
+  (define payload (filter (lambda (o) (= (obj-color o) 5)) os))
+  (for/fold ([out g]) ([o payload])
+    (define regions (cavities o))
+    (define n (length regions))
+    (define matches (filter (lambda (p) (= (first p) n)) mapping))
+    (define color (if (null? matches) 0 (second (pick-max matches first))))
+    (recolor-cells out (obj-cells o) color)))

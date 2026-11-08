@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (define (t13c-panel grid idx top-rows) (subgrid grid 0 (* idx 6) (- top-rows 1) (+ (* idx 6) 4))) (let ((panels (map (lambda (i) (t13c-panel g i (rows g))) (range 3)))) (grid-from-fn 5 5 (lambda (r c) (let ((cnt (count-where (lambda (panel) (not (= (at panel r c) 0))) panels))) (cond ((= cnt 0) 0) ((= cnt 1) 2) ((= cnt 2) 4) (else 8))))))))

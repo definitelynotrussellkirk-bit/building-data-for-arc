@@ -1,0 +1,6 @@
+# 524410ebe7b7
+
+0-bg grid (h~5-11, w~6-13) with: (a) ONE HOLLOW RECTANGLE FRAME of size rh × rw (3..5 each) placed at random position (r1, c1) — painted as a complete BORDER OUTLINE (top, bottom rows + left, right columns) in a single non-0 color C0 (palette[0]); the interior cells (rows r1+1..r2-1, cols c1+1..c2-1) stay bg-0; (b) 0-2 SMALL DISTRACTOR SHAPES (1-2 cells each, drawn from _SMALL bank) placed at non-overlapping non-touching positions (bbox padding tracked in placed list), each in a DISTINCT non-{0, C0} color from the palette. Objects don't touch each other. The frame is the only hollow rectangular outline. Rule (FILL EACH HOLLOW RECTANGLE FRAME'S INTERIOR WITH ITS OWN BORDER COLOR): find every RECTANGULAR HOLLOW FRAME (full perimeter outline, ≥3×3, interior cells bg-0). For EACH frame of color C: PAINT every bg-0 cell inside the frame's interior bbox (strictly inside the border) with COLOR C. The border cells stay C. Distractor shapes (non-frame) stay unchanged. Net: the hollow rectangle becomes a solid filled rectangle of the same color; distractors elsewhere are preserved.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

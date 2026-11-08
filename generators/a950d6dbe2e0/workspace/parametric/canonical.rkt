@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let ((midr (quotient (rows g) 2)) (midc (quotient (cols g) 2))) (for*/fold ((out g)) ((r (in-range midr)) (c (in-range midc))) (let ((v (at g r c))) (if (= v 0) out (set-cell (set-cell (set-cell (set-cell out r c v) r (- (cols g) 1 c) v) (- (rows g) 1 r) c v) (- (rows g) 1 r) (- (cols g) 1 c) v)))))))

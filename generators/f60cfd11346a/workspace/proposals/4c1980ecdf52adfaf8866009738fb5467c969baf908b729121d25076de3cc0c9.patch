@@ -1,0 +1,1812 @@
+diff --git a/repo/generators/91ba301501c5/notes.md b/repo/generators/91ba301501c5/notes.md
+--- a/repo/generators/91ba301501c5/notes.md
++++ b/repo/generators/91ba301501c5/notes.md
+@@ -73,3 +73,11 @@
+ 
+ Current source-bound ticket observations: `generators/91ba301501c5/evidence/supplementary-current.json`. Results are reviewer-reported; blocked or unknown stays explicit. These observations do not approve a generator or variant, resolve audits, or admit data to training.
+ <!-- arcpuzzles-current-supplementary:end -->
++
++## 2026-10-24 optional peer finding — stop-at-blocker branch is unexercised
++
++The selected Racket rule stops each ray at the first intervening nonzero input cell. The current training grammar requires distinct columns among marks on the same side of the divider, so that stopping branch is never observable. A wrong rule that skips intervening markers and continues toward the edge/divider matched all 1,536 audited generated draws.
++
++`checks/91ba301501c5/stop-at-blocker-probe.json` retains a protected-Racket counterexample with a red mark blocking an outward blue ray. The selected rule and the rival differ beyond the blocker; four protected-Racket evaluations passed. The production generator is intentionally unchanged (SHA-256 `e40bb84f5b027b6406e27122aa3a3f18828f5c9fc705c2fbbd632aabdfede4dd`).
++
++Next useful repair: add a separately named same-side blocker profile, keep independent positive evidence for all four color/side branches, and add the skip-marker rival to lesson checks. This finding is finite and does not assert that blocker interactions must be part of every lesson.
+diff --git a/repo/generators/91ba301501c5/workspace/stop_at_blocker_probe.py b/repo/generators/91ba301501c5/workspace/stop_at_blocker_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/91ba301501c5/workspace/stop_at_blocker_probe.py
+@@ -0,0 +1,190 @@
++#!/usr/bin/env python3
++"""Audit whether lessons teach that rays stop at intervening nonzero cells."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root, load_selected_generator
++
++TASK_ID = "91ba301501c5"
++
++
++def _literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++def _canonical_program(root: Path) -> str:
++    for line in canonical_path(root).read_text(encoding="utf-8").splitlines():
++        row = json.loads(line)
++        if row.get("task_id") == TASK_ID and row.get("program_solution"):
++            return row["program_solution"]
++    raise RuntimeError("canonical program not found")
++
++
++def _skip_intervening_markers(grid: list[list[int]]) -> list[list[int]]:
++    """Wrong rule: keep extending through markers, but not through the gray divider."""
++    line = next(r for r, row in enumerate(grid) if row and all(value == 5 for value in row))
++    out = [row[:] for row in grid]
++    height, width = len(grid), len(grid[0])
++    for r in range(height):
++        for c in range(width):
++            value = grid[r][c]
++            if value not in (1, 2):
++                continue
++            above = r < line
++            if value == 1:
++                direction = -1 if above else 1
++            else:
++                direction = 1 if above else -1
++            rr = r + direction
++            while 0 <= rr < height and rr != line:
++                if grid[rr][c] == 0:
++                    out[rr][c] = value
++                rr += direction
++    return out
++
++
++def _witness() -> list[list[int]]:
++    grid = [[0] * 10 for _ in range(10)]
++    grid[5] = [5] * 10
++    # Above: red at row 1 blocks the outward blue at row 3 after one zero.
++    grid[1][2] = 2
++    grid[3][2] = 1
++    # Independent positive evidence for every color/side branch.
++    grid[2][4] = 1
++    grid[8][6] = 1
++    grid[8][7] = 2
++    return grid
++
++
++def audit(draws_per_band: int = 512) -> dict:
++    root = find_root(__file__)
++    module, source_path, source_sha = load_selected_generator(TASK_ID, root=root)
++    program = _canonical_program(root)
++    wrapped = wrap_rule(program)
++
++    witness = _witness()
++    intended = module._apply_variant(witness, blue_mode="away", red_mode="toward")
++    rival = _skip_intervening_markers(witness)
++    if intended == rival:
++        raise AssertionError("counterexample does not distinguish stop-at-blocker semantics")
++
++    checked = 0
++    differences = []
++    same_side_collisions = 0
++    samples = []
++    for band_index, band in enumerate(("easy", "medium", "hard")):
++        for index in range(draws_per_band):
++            seed = 100_000 * band_index + index
++            grid = module.generate(seed, index, difficulty=band)
++            expected = module._apply_variant(grid, blue_mode="away", red_mode="toward")
++            wrong = _skip_intervening_markers(grid)
++            checked += 1
++            if expected != wrong:
++                differences.append({"band": band, "seed": seed, "sample_index": index})
++            line = module._line_row(grid)
++            for side in ("above", "below"):
++                cols = [
++                    c
++                    for r, row in enumerate(grid)
++                    for c, value in enumerate(row)
++                    if value in (1, 2) and ((r < line) == (side == "above"))
++                ]
++                if len(cols) != len(set(cols)):
++                    same_side_collisions += 1
++            if index == 0:
++                samples.append(grid)
++    if differences:
++        raise AssertionError(differences[:3])
++
++    evaluations = 0
++    with RacketBridge() as bridge:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise RuntimeError("protected Racket backend required")
++        got = bridge.eval_text(f"({wrapped} {_literal(witness)})")
++        evaluations += 1
++        if got != intended:
++            raise AssertionError("canonical Racket disagrees with independent intended mirror")
++        for grid in samples:
++            got = bridge.eval_text(f"({wrapped} {_literal(grid)})")
++            evaluations += 1
++            if got != module._apply_variant(grid, blue_mode="away", red_mode="toward"):
++                raise AssertionError("generated protected-Racket label mismatch")
++        racket = {
++            key: identity[key]
++            for key in (
++                "schema", "backend", "protected", "binary_sha256",
++                "prelude_sha256", "bridge_sha256", "boot_script_sha256",
++                "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        }
++
++    return {
++        "schema": "91ba301501c5-stop-at-blocker-probe-v1",
++        "status": "finding",
++        "task_id": TASK_ID,
++        "generator_sha256": source_sha,
++        "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        "canonical_program_sha256": hashlib.sha256(program.encode("utf-8")).hexdigest(),
++        "protected_racket": racket,
++        "racket_evaluations": evaluations,
++        "finite_generated_draws": {
++            "count": checked,
++            "skip_marker_rival_differences": len(differences),
++            "same_side_collision_occurrences": same_side_collisions,
++        },
++        "counterexample": {
++            "input": witness,
++            "canonical_output": intended,
++            "skip_intervening_markers_output": rival,
++            "different_cells": [
++                [r, c, intended[r][c], rival[r][c]]
++                for r in range(len(witness))
++                for c in range(len(witness[0]))
++                if intended[r][c] != rival[r][c]
++            ],
++            "current_self_check_reasons": module.self_check(witness),
++        },
++        "finding": (
++            "The selected Racket rule stops a ray at any intervening nonzero cell, "
++            "but the current training grammar enforces distinct same-side columns. "
++            "A skip-intervening-markers rival therefore matched every audited draw "
++            "and diverged on the protected-Racket counterexample."
++        ),
++        "next_action": (
++            "Add a separately named same-side blocker profile, retain positive "
++            "evidence for all four branches, and add this rival to lesson checks."
++        ),
++        "limits": (
++            "Finite generated draws and one constructed rule-domain counterexample; "
++            "the production source is intentionally unchanged."
++        ),
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--draws-per-band", type=int, default=512)
++    args = parser.parse_args()
++    report = audit(args.draws_per_band)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({
++        "status": report["status"],
++        "draws": report["finite_generated_draws"]["count"],
++        "rival_differences": report["finite_generated_draws"]["skip_marker_rival_differences"],
++        "racket_evaluations": report["racket_evaluations"],
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/c1fd38e5812b/generator.py b/repo/generators/c1fd38e5812b/generator.py
+--- a/repo/generators/c1fd38e5812b/generator.py
++++ b/repo/generators/c1fd38e5812b/generator.py
+@@ -316,6 +316,26 @@
+     return _compression_info(grid)["output"]
+ 
+ 
++def _uniform_first_stride_rival(grid):
++    """Wrong rule: infer one global row/column stride from the first runs."""
++    error = _grid_shape_error(grid)
++    if error is not None:
++        raise ValueError(error)
++    first = grid[0][0]
++    row_stride = next(
++        (row for row in range(1, len(grid)) if grid[row][0] != first),
++        len(grid),
++    )
++    col_stride = next(
++        (col for col in range(1, len(grid[0])) if grid[0][col] != first),
++        len(grid[0]),
++    )
++    return [
++        [grid[row][col] for col in range(0, len(grid[0]), col_stride)]
++        for row in range(0, len(grid), row_stride)
++    ]
++
++
+ def _analyze(grid):
+     error = _grid_shape_error(grid)
+     if error is not None:
+@@ -563,3 +583,35 @@
+     if tuple(tuple(row) for row in grid) in _PUBLIC_LITERALS:
+         raise RuntimeError("public input literal replayed")
+     return grid
++
++EXAMPLES_NEEDED = 2
++LESSON_COMPETITORS = {
++    "uniform_first_stride": _uniform_first_stride_rival,
++}
++
++
++def lesson_identifiable(demos, query):
++    """Reject lessons where a fixed-stride compression fits demos but not query."""
++    if not isinstance(demos, (list, tuple)) or len(demos) < EXAMPLES_NEEDED:
++        return [f"at least {EXAMPLES_NEEDED} demonstrations are required"]
++    pairs = [*demos, query]
++    reasons = []
++    for index, pair in enumerate(pairs):
++        role = f"demo {index}" if index < len(demos) else "query"
++        if not isinstance(pair, dict) or "input" not in pair or "output" not in pair:
++            reasons.append(f"{role} must contain input and output grids")
++            continue
++        findings = self_check(pair["input"])
++        if findings:
++            reasons.append(f"{role} input is outside the teaching grammar: {findings[:2]}")
++            continue
++        if solve_python(pair["input"]) != pair["output"]:
++            reasons.append(f"{role} output disagrees with the pinned rule mirror")
++    if reasons:
++        return reasons
++    for name, rival in LESSON_COMPETITORS.items():
++        if all(rival(pair["input"]) == pair["output"] for pair in demos):
++            if rival(query["input"]) != query["output"]:
++                reasons.append(f"query-changing rival survives demonstrations: {name}")
++    return reasons
++
+diff --git a/repo/generators/c1fd38e5812b/notes.md b/repo/generators/c1fd38e5812b/notes.md
+--- a/repo/generators/c1fd38e5812b/notes.md
++++ b/repo/generators/c1fd38e5812b/notes.md
+@@ -13,3 +13,17 @@
+ 
+ Current source-bound ticket observations: `generators/c1fd38e5812b/evidence/supplementary-current.json`. Results are reviewer-reported; blocked or unknown stays explicit. These observations do not approve a generator or variant, resolve audits, or admit data to training.
+ <!-- arcpuzzles-current-supplementary:end -->
++
++## 2026-10-24 optional peer repair — fixed-stride lesson ambiguity
++
++The existing task tests were not portable: they derived the repository root with a fixed `parents[1]` path and imported a package layout absent from task-test snapshots. The tests now use `reviewer_support.find_root`, `canonical_path`, and an explicit selected source file, so the copied runtime binds to its own canonical/base data.
++
++A second defect was episode-level rather than per-grid. Two lawful `uniform_runs` demonstrations can be solved by a wrong rule that reads only the first row/column run length and samples at that fixed stride; a nonuniform query then requires the intended boundary detector. Added `_uniform_first_stride_rival`, `LESSON_COMPETITORS`, `EXAMPLES_NEEDED=2`, and `lesson_identifiable` so the lesson builder rejects that query-changing survivor.
++
++Evidence:
++
++- `checks/c1fd38e5812b/uniform-stride-probe.json`: exact default seed 21 witness, 3 protected-Racket labels, and 41 ambiguous consecutive windows among 2,048 hard-band windows before the guard; all 41 are rejected by the new hook.
++- `checks/c1fd38e5812b-tests/result.json`: 14 task tests passed after repair. The immutable before task-test check failed on the nonportable canonical path, preserving the original defect.
++- Generator SHA-256 after the teaching-contract addition: `6fa82180a1bd7b720a8556148fb8dcefb58e065acd14470d83c2443189c831d2`.
++
++The canonical Racket program and grid-generation distribution are unchanged. The finite rival set does not prove universal lesson identifiability; add future model-derived compression shortcuts to `LESSON_COMPETITORS`.
+diff --git a/repo/generators/c1fd38e5812b/tests/test_generator_c1fd38e5812b.py b/repo/generators/c1fd38e5812b/tests/test_generator_c1fd38e5812b.py
+--- a/repo/generators/c1fd38e5812b/tests/test_generator_c1fd38e5812b.py
++++ b/repo/generators/c1fd38e5812b/tests/test_generator_c1fd38e5812b.py
+@@ -1,22 +1,31 @@
+ from __future__ import annotations
+ 
+ import copy
+-from importlib import import_module
++from importlib.util import module_from_spec, spec_from_file_location
+ import json
++import os
+ from pathlib import Path
+ import random
++import sys
+ import unittest
+ 
+-
+-ROOT = Path(__file__).resolve().parents[1]
+-generator = import_module(
+-    "puzzle_generators.per_puzzle.c1fd38e5812b.generator"
+-)
++from reviewer_support import canonical_path, find_root
++
++
++ROOT = find_root(__file__)
++DATA_ROOT = canonical_path(ROOT).parents[1]
++HOME = Path(__file__).resolve().parents[1]
++GENERATOR_PATH = Path(os.environ.get("GENERATOR_UNDER_TEST", HOME / "generator.py"))
++SPEC = spec_from_file_location("generator_c1fd38e5812b", GENERATOR_PATH)
++assert SPEC and SPEC.loader
++generator = module_from_spec(SPEC)
++sys.modules[SPEC.name] = generator
++SPEC.loader.exec_module(generator)
+ 
+ 
+ def canonical_row():
+     for line in (
+-        ROOT / "data/canonical/puzzles.jsonl"
++        DATA_ROOT / "canonical/puzzles.jsonl"
+     ).read_text(encoding="utf-8").splitlines():
+         row = json.loads(line)
+         if (
+@@ -303,6 +312,36 @@
+         with self.assertRaises(ValueError):
+             generator.generate(1, 1, scene_profile="not_a_profile")
+ 
++    def test_two_uniform_demos_do_not_leave_fixed_stride_query_ambiguity(self):
++        demos = []
++        for seed in (0, 1):
++            grid = generator.generate(
++                seed,
++                0,
++                difficulty="hard",
++                scene_profile="uniform_runs",
++            )
++            output = generator.solve_python(grid)
++            self.assertEqual(generator._uniform_first_stride_rival(grid), output)
++            demos.append({"input": grid, "output": output})
++
++        query_grid = generator.generate(
++            0,
++            0,
++            difficulty="hard",
++            scene_profile="nonuniform_runs",
++        )
++        query = {"input": query_grid, "output": generator.solve_python(query_grid)}
++        self.assertNotEqual(
++            generator._uniform_first_stride_rival(query_grid),
++            query["output"],
++        )
++        reasons = generator.lesson_identifiable(demos, query)
++        self.assertTrue(
++            any("uniform_first_stride" in reason for reason in reasons),
++            reasons,
++        )
++
+     def test_base_sources_match_canonical_program(self):
+         program = canonical_row()["program_solution"]
+         for relative in (
+@@ -311,7 +350,7 @@
+             "data/base/solutions/augmented/"
+             "e1baa8a4__ae9e6741664f.json",
+         ):
+-            base = json.loads((ROOT / relative).read_text(encoding="utf-8"))
++            base = json.loads((DATA_ROOT / relative.removeprefix("data/")).read_text(encoding="utf-8"))
+             self.assertEqual(base["racket_target"]["raw_code"], program)
+             self.assertEqual(base["racket_target"]["target_code"], program)
+         self.assertEqual(generator.RULE_HASH, "dc8aa1222f34")
+diff --git a/repo/generators/c1fd38e5812b/workspace/uniform_stride_probe.py b/repo/generators/c1fd38e5812b/workspace/uniform_stride_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c1fd38e5812b/workspace/uniform_stride_probe.py
+@@ -0,0 +1,161 @@
++#!/usr/bin/env python3
++"""Reproduce and count the uniform-first-stride lesson shortcut."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root, load_selected_generator
++
++TASK_ID = "c1fd38e5812b"
++HERE = Path(__file__).resolve().parent
++
++
++def _literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++def _canonical_program(root: Path) -> str:
++    for line in canonical_path(root).read_text(encoding="utf-8").splitlines():
++        row = json.loads(line)
++        if row.get("task_id") == TASK_ID and row.get("program_solution"):
++            return row["program_solution"]
++    raise RuntimeError("canonical program not found")
++
++
++def _pair(module, seed: int, sample_index: int) -> dict:
++    grid = module.generate(seed, sample_index, difficulty="hard")
++    analysis = module._analyze(grid)
++    return {
++        "input": grid,
++        "output": module.solve_python(grid),
++        "profile": analysis["scene_profile"],
++        "row_spans": analysis["row_spans"],
++        "col_spans": analysis["col_spans"],
++    }
++
++
++def audit(window_count: int = 2048) -> dict:
++    root = find_root(__file__)
++    module, source_path, source_sha = load_selected_generator(TASK_ID, root=root)
++    program = _canonical_program(root)
++    wrapped = wrap_rule(program)
++
++    exact_seed = 21
++    exact = [_pair(module, exact_seed, index) for index in range(3)]
++    demos = [{"input": row["input"], "output": row["output"]} for row in exact[:2]]
++    query = {"input": exact[2]["input"], "output": exact[2]["output"]}
++    rival_outputs = [module._uniform_first_stride_rival(row["input"]) for row in exact]
++    if rival_outputs[:2] != [row["output"] for row in exact[:2]]:
++        raise AssertionError("fixed-stride rival does not fit exact demonstrations")
++    if rival_outputs[2] == exact[2]["output"]:
++        raise AssertionError("fixed-stride rival does not change exact query")
++    reasons = module.lesson_identifiable(demos, query)
++    if not any("uniform_first_stride" in reason for reason in reasons):
++        raise AssertionError(reasons)
++
++    evaluations = 0
++    with RacketBridge() as bridge:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise RuntimeError("protected Racket backend required")
++        for row in exact:
++            got = bridge.eval_text(f"({wrapped} {_literal(row['input'])})")
++            evaluations += 1
++            if got != row["output"]:
++                raise AssertionError("canonical Racket label mismatch")
++        racket = {
++            key: identity[key]
++            for key in (
++                "schema", "backend", "protected", "binary_sha256",
++                "prelude_sha256", "bridge_sha256", "boot_script_sha256",
++                "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        }
++
++    surviving = []
++    for seed in range(window_count):
++        pairs = [_pair(module, seed, index) for index in range(3)]
++        fits = all(
++            module._uniform_first_stride_rival(row["input"]) == row["output"]
++            for row in pairs[:2]
++        )
++        changes = module._uniform_first_stride_rival(pairs[2]["input"]) != pairs[2]["output"]
++        if fits and changes:
++            public_pairs = [
++                {"input": row["input"], "output": row["output"]}
++                for row in pairs
++            ]
++            hook = module.lesson_identifiable(public_pairs[:2], public_pairs[2])
++            if not any("uniform_first_stride" in reason for reason in hook):
++                raise AssertionError((seed, hook))
++            surviving.append({
++                "seed": seed,
++                "profiles": [row["profile"] for row in pairs],
++            })
++
++    test_path = root / "generators" / TASK_ID / "tests" / "test_generator_c1fd38e5812b.py"
++    return {
++        "schema": "c1fd38e5812b-uniform-stride-probe-v1",
++        "status": "passed",
++        "task_id": TASK_ID,
++        "generator_sha256": source_sha,
++        "test_sha256": hashlib.sha256(test_path.read_bytes()).hexdigest(),
++        "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        "canonical_program_sha256": hashlib.sha256(program.encode("utf-8")).hexdigest(),
++        "protected_racket": racket,
++        "racket_evaluations": evaluations,
++        "exact_witness": {
++            "seed": exact_seed,
++            "profiles": [row["profile"] for row in exact],
++            "row_spans": [row["row_spans"] for row in exact],
++            "col_spans": [row["col_spans"] for row in exact],
++            "rival_fits_both_demos": True,
++            "rival_changes_query": True,
++            "lesson_guard_reasons": reasons,
++            "pairs": [
++                {
++                    "input": row["input"],
++                    "canonical_output": row["output"],
++                    "uniform_first_stride_output": rival,
++                }
++                for row, rival in zip(exact, rival_outputs)
++            ],
++        },
++        "finite_default_windows": {
++            "count": window_count,
++            "ambiguous_before_guard": len(surviving),
++            "all_rejected_by_guard": True,
++            "first_ten": surviving[:10],
++        },
++        "limits": (
++            "Finite consecutive hard-band windows and one named rival only; "
++            "this is not a universal identifiability proof."
++        ),
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--windows", type=int, default=2048)
++    args = parser.parse_args()
++    report = audit(args.windows)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({
++        "status": report["status"],
++        "racket_evaluations": report["racket_evaluations"],
++        "windows": report["finite_default_windows"]["count"],
++        "ambiguous_before_guard": report["finite_default_windows"]["ambiguous_before_guard"],
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/f60cfd11346a/notes.md b/repo/generators/f60cfd11346a/notes.md
+--- a/repo/generators/f60cfd11346a/notes.md
++++ b/repo/generators/f60cfd11346a/notes.md
+@@ -126,3 +126,22 @@
+ - Topology is a deliberately bounded family, not arbitrary maze generation.
+ - Ordinary accents are only 1/9; the exact override domain covers 3/4/6/7 as contract cases rather than default lessons.
+ - The declared-rival set is finite. A future plausible rival should be added to the generator declaration, focused tests, probe, and census.
++
++## 2026-10-24 native parametric admission candidate
++
++Built a source-bound two-setting family under `workspace/parametric/` without changing the approved production generator or canonical rule.
++
++- `mode=canonical` preserves the selected Racket source byte-for-byte.
++- `mode=reachable_port_relay` first floods from the unique red seed through `{0,2}`. The input-dependent intermediate is the number `k in {1,2,3}` of color-1 ports cardinally adjacent to that reached component. The rule then selects the `k`-th color-3 anchor in row-major order and floods its separate zero chamber to color 8.
++- Exactly three ports are present, but inactive ports border a disconnected pocket. Thus a global-port-count shortcut chooses the wrong chamber. The generated source area is also tuned so an area-modulo shortcut points at a different chamber.
++- Inputs are matched across settings, demonstration count is independently 2–6, query count is independently 1–4, query streams are prefix-stable, and the fourth stored query is 30x30.
++
++Evidence and verification:
++
++- `workspace/parametric/evidence/current/audit.json`: 320 finite episodes over seeds 0–31 and all demonstration counts 2–6, zero surviving named query-changing rivals, 74 protected-Racket evaluations, and two checked public exports.
++- `checks/f60cfd11346a/qualification/qualification.json`: native status `qualified`, two settings, seeds 0 and 17, 3 demonstrations, 4 queries, 4 jobs, 40 protected-Racket evaluations.
++- `checks/f60cfd11346a/causal/witness.json`: source-bound wrong-intermediate witness; active count 2 versus global count 3. `replay.json` status is `reviewer_replayed`.
++- Focused plus existing task tests: 184 passed after the addition. Production generator SHA-256 remains `c8b8f277bb56e95db13d75c843bb89e210be443b95cab51bae299a576bcc14eb`.
++- Native source inventory: `workspace/parametric/evidence/manifest.json`; adapter and promotion contract: `workspace/parametric/adapter.py`, `workspace/parametric/promotion.json`.
++
++This is reviewer-ready, not owner-accepted. Owner integration, canonical approval, fresh exact-live-source qualification/acceptance replay, and any training admission remain pending.
+diff --git a/repo/generators/f60cfd11346a/tests/test_parametric_reachable_port_relay.py b/repo/generators/f60cfd11346a/tests/test_parametric_reachable_port_relay.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/tests/test_parametric_reachable_port_relay.py
+@@ -0,0 +1,153 @@
++"""Focused contract, teaching, and causal checks for the native parametric family."""
++from __future__ import annotations
++
++from importlib.util import module_from_spec, spec_from_file_location
++import json
++from pathlib import Path
++import sys
++
++import pytest
++
++HOME = Path(__file__).resolve().parents[1]
++PARAMETRIC = HOME / "workspace" / "parametric"
++CANONICAL_PROGRAM = """(rule!
++  (let* ((seed (first (find-color g 2)))
++         (region (connected-region g (first seed) (second seed) (lambda (r c v) (or (= v 0) (= v 2))) 4))
++         (zeros (filter (lambda (p) (= (at g (first p) (second p)) 0)) region)))
++    (paint-cells g zeros 8)))"""
++
++
++def _load(name: str, path: Path):
++    spec = spec_from_file_location(name, path)
++    assert spec and spec.loader
++    module = module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _prototype():
++    return _load("f60cfd11346a_parametric_prototype_test", PARAMETRIC / "prototype.py")
++
++
++def _adapter():
++    return _load("f60cfd11346a_parametric_adapter_test", PARAMETRIC / "adapter.py")
++
++
++def test_adapter_preserves_exact_canonical_program_and_validates_settings():
++    prototype = _prototype()
++    adapter = _adapter()
++
++    assert adapter.program({"mode": "canonical"}) == CANONICAL_PROGRAM
++    assert adapter.program({"mode": "reachable_port_relay"}) == prototype.RELAY_PROGRAM
++
++    for invalid in (
++        None,
++        {},
++        {"mode": "unknown"},
++        {"mode": "canonical", "extra": 1},
++        {"mode": True},
++    ):
++        with pytest.raises((TypeError, ValueError)):
++            adapter.program(invalid)
++
++
++def test_episode_counts_are_independent_prefix_stable_and_inputs_match_settings():
++    prototype = _prototype()
++    for seed in (0, 17, 991):
++        short = prototype.generate_episode(seed, mode="reachable_port_relay", demos=2, queries=1)
++        long = prototype.generate_episode(seed, mode="reachable_port_relay", demos=6, queries=4)
++        canonical = prototype.generate_episode(seed, mode="canonical", demos=6, queries=4)
++
++        assert short["train"] == long["train"][:2]
++        assert short["test"] == long["test"][:1]
++        assert [pair["input"] for pair in canonical["train"]] == [
++            pair["input"] for pair in long["train"]
++        ]
++        assert [pair["input"] for pair in canonical["test"]] == [
++            pair["input"] for pair in long["test"]
++        ]
++        all_inputs = [pair["input"] for pair in long["train"] + long["test"]]
++        assert len({json.dumps(grid) for grid in all_inputs}) == len(all_inputs)
++
++
++def test_generated_scenes_exercise_reachability_counts_boundaries_and_python_labels():
++    prototype = _prototype()
++    seen_counts = set()
++    for seed in (0, 17, 991):
++        for mode in prototype.MODES:
++            episode = prototype.generate_episode(seed, mode=mode, demos=6, queries=4)
++            for pair in episode["train"] + episode["test"]:
++                grid = pair["input"]
++                analysis = prototype.analyze_scene(grid)
++                seen_counts.add(analysis["active_port_count"])
++                assert len(analysis["anchors"]) == 3
++                assert 1 <= analysis["active_port_count"] <= 3
++                assert analysis["selected_anchor"] == analysis["anchors"][
++                    analysis["active_port_count"] - 1
++                ]
++                assert pair["output"] == prototype.apply_mode(grid, mode)
++                assert all(type(cell) is int and 0 <= cell <= 9 for row in grid for cell in row)
++                assert 10 <= len(grid) <= 30
++                assert 16 <= len(grid[0]) <= 30
++
++            stress = episode["test"][3]["input"]
++            assert (len(stress), len(stress[0])) == (30, 30)
++            nonzero = [(r, c) for r, row in enumerate(stress) for c, value in enumerate(row) if value]
++            assert len(nonzero) >= 180
++            assert {0, 29} <= {r for r, _ in nonzero}
++            assert {0, 29} <= {c for _, c in nonzero}
++
++    assert seen_counts == {1, 2, 3}
++
++
++def test_two_demonstrations_refute_declared_shortcuts_for_every_setting():
++    prototype = _prototype()
++    report = prototype.audit_python(seeds=range(12), demo_counts=(2, 3, 6))
++
++    assert report["episodes"] == 72
++    assert report["ambiguities"] == []
++    assert report["distinct_inputs"] == report["pairs"]
++    assert report["stress_30x30"] == 72
++    assert {
++        "canonical_only",
++        "fixed_target_1",
++        "fixed_target_2",
++        "fixed_target_3",
++        "global_port_count",
++        "reverse_port_count",
++        "source_area_modulo",
++    } <= set(report["rivals"])
++
++
++def test_wrong_global_port_intermediate_changes_the_selected_remote_chamber():
++    prototype = _prototype()
++    episode = prototype.generate_episode(0, mode="reachable_port_relay", demos=3, queries=4)
++    witness = next(
++        pair for pair in episode["test"]
++        if prototype.analyze_scene(pair["input"])["active_port_count"] != 3
++    )
++    analysis = prototype.analyze_scene(witness["input"])
++
++    assert len(analysis["all_ports"]) == 3
++    assert analysis["active_port_count"] in {1, 2}
++    assert prototype.apply_mode(witness["input"], "reachable_port_relay") == witness["output"]
++    assert prototype.apply_global_port_count_rival(witness["input"]) != witness["output"]
++
++
++@pytest.mark.parametrize(
++    "kwargs",
++    [
++        {"seed": True, "mode": "canonical", "demos": 3, "queries": 4},
++        {"seed": -1, "mode": "canonical", "demos": 3, "queries": 4},
++        {"seed": 0, "mode": "unknown", "demos": 3, "queries": 4},
++        {"seed": 0, "mode": "canonical", "demos": 1, "queries": 4},
++        {"seed": 0, "mode": "canonical", "demos": 7, "queries": 4},
++        {"seed": 0, "mode": "canonical", "demos": 3, "queries": 0},
++        {"seed": 0, "mode": "canonical", "demos": 3, "queries": 5},
++    ],
++)
++def test_episode_rejects_out_of_contract_requests(kwargs):
++    prototype = _prototype()
++    with pytest.raises(ValueError):
++        prototype.generate_episode(**kwargs)
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/README.md b/repo/generators/f60cfd11346a/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/README.md
+@@ -0,0 +1,24 @@
++# f60cfd11346a native parametric family
++
++`mode=canonical` preserves the selected program byte-for-byte. In
++`mode=reachable_port_relay`, step A computes the red seed's `{0,2}` reachable
++component. The input-dependent intermediate is the number (1–3) of color-1
++ports cardinally adjacent to that component. Step B uses that count to select
++the corresponding row-major color-3 anchor and fills its remote zero chamber.
++Three total ports are always present; the non-counted ports border an isolated
++pocket, so counting all ports skips the required flood and selects the wrong
++chamber.
++
++The input stream is identical across settings, supports 2–6 demonstrations and
++1–4 prefix-stable private queries, and includes a substantive 30×30 fourth
++query.
++
++From the packet outer directory:
++
++```bash
++python3 review.py run python3 -m pytest \
++  generators/f60cfd11346a/tests/test_parametric_reachable_port_relay.py -q
++python3 review.py run python3 -m arcpuzzles parametric qualify f60cfd11346a \
++  --seed 0 --seed 17 --demos 3 --queries 4 \
++  --out ../checks/f60cfd11346a/qualification --summary
++```
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/adapter.py b/repo/generators/f60cfd11346a/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/adapter.py
+@@ -0,0 +1,37 @@
++"""Native adapter for the canonical/reachable-port-relay family."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++from types import ModuleType
++from typing import Any
++
++
++def _load_adjacent_prototype() -> ModuleType:
++    path = Path(__file__).with_name("prototype.py")
++    spec = importlib.util.spec_from_file_location(
++        "_f60cfd11346a_reachable_port_relay_prototype", path
++    )
++    if spec is None or spec.loader is None:
++        raise ImportError(f"cannot load task-local prototype from {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++_PROTOTYPE = _load_adjacent_prototype()
++
++
++def program(settings: dict[str, Any]) -> str:
++    normalized = _PROTOTYPE.validate_settings(settings)
++    return _PROTOTYPE.program_for(normalized["mode"])
++
++
++def generate(seed: int, settings: dict[str, Any], demos: int, queries: int) -> dict[str, Any]:
++    normalized = _PROTOTYPE.validate_settings(settings)
++    return _PROTOTYPE.generate_episode(
++        seed,
++        mode=normalized["mode"],
++        demos=demos,
++        queries=queries,
++    )
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/canonical.rkt b/repo/generators/f60cfd11346a/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/canonical.rkt
+@@ -0,0 +1,5 @@
++(rule!
++  (let* ((seed (first (find-color g 2)))
++         (region (connected-region g (first seed) (second seed) (lambda (r c v) (or (= v 0) (= v 2))) 4))
++         (zeros (filter (lambda (p) (= (at g (first p) (second p)) 0)) region)))
++    (paint-cells g zeros 8)))
+\ No newline at end of file
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/evidence/current/audit.json b/repo/generators/f60cfd11346a/workspace/parametric/evidence/current/audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/evidence/current/audit.json
+@@ -0,0 +1,153 @@
++{
++  "causal_probe": {
++    "ablation": "wrong_intermediate",
++    "active_port_count": 2,
++    "all_port_count": 3,
++    "outputs_differ": true,
++    "seed": 0,
++    "selected_anchor": [
++      7,
++      16
++    ],
++    "wrong_global_count_rank": 3
++  },
++  "jobs": [
++    {
++      "demos": 2,
++      "labels": 6,
++      "mode": "canonical",
++      "queries": 4,
++      "seed": 0
++    },
++    {
++      "demos": 6,
++      "labels": 10,
++      "mode": "canonical",
++      "queries": 4,
++      "seed": 0
++    },
++    {
++      "demos": 2,
++      "labels": 6,
++      "mode": "canonical",
++      "queries": 4,
++      "seed": 17
++    },
++    {
++      "demos": 6,
++      "labels": 10,
++      "mode": "canonical",
++      "queries": 4,
++      "seed": 17
++    },
++    {
++      "demos": 2,
++      "labels": 6,
++      "mode": "reachable_port_relay",
++      "queries": 4,
++      "seed": 0
++    },
++    {
++      "demos": 6,
++      "labels": 10,
++      "mode": "reachable_port_relay",
++      "queries": 4,
++      "seed": 0
++    },
++    {
++      "demos": 2,
++      "labels": 6,
++      "mode": "reachable_port_relay",
++      "queries": 4,
++      "seed": 17
++    },
++    {
++      "demos": 6,
++      "labels": 10,
++      "mode": "reachable_port_relay",
++      "queries": 4,
++      "seed": 17
++    }
++  ],
++  "limits": "Finite seeds, declared rivals, and protected executions only; owner native acceptance and training admission remain pending.",
++  "program_sha256": {
++    "canonical": "755f959a29c79e14f608bccf3baa514312baf8e22619cbe0b50a4fa0534d8e3f",
++    "reachable_port_relay": "8b0d9f0df1bd989c256165d3220757d346188597cbf80f8fcfed0b5179d7f5c1"
++  },
++  "protected_racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "public_exports": [
++    {
++      "demos": 3,
++      "mode": "canonical",
++      "path": "challenge-dd2668fe2c124a23d84f754e5e1ece461c5b3ca19434926eb533eb625a0dd7b5.json",
++      "queries": 4,
++      "sha256": "dd2668fe2c124a23d84f754e5e1ece461c5b3ca19434926eb533eb625a0dd7b5",
++      "single_query_prefix_sha256": "a9224b6fc4615573400c77fae248f2a79f0486ac2ee10f80ab1b997506dc6913"
++    },
++    {
++      "demos": 3,
++      "mode": "reachable_port_relay",
++      "path": "challenge-39983a49ed4db129f21a06a8b6c36c9a2cca587889871c4a231ab5699fe85edd.json",
++      "queries": 4,
++      "sha256": "39983a49ed4db129f21a06a8b6c36c9a2cca587889871c4a231ab5699fe85edd",
++      "single_query_prefix_sha256": "f0a8cf4cd0a02b24fc4221dc4c9a82a825bce50cb01226a24fb934ebc1cb829b"
++    }
++  ],
++  "python_teaching_audit": {
++    "ambiguities": [],
++    "distinct_inputs": 320,
++    "episodes": 320,
++    "pair_instances": 2560,
++    "pairs": 320,
++    "rivals": {
++      "canonical_only": {
++        "demo_refutations": 160,
++        "query_disagreements": 160
++      },
++      "fixed_target_1": {
++        "demo_refutations": 320,
++        "query_disagreements": 320
++      },
++      "fixed_target_2": {
++        "demo_refutations": 320,
++        "query_disagreements": 320
++      },
++      "fixed_target_3": {
++        "demo_refutations": 320,
++        "query_disagreements": 320
++      },
++      "global_port_count": {
++        "demo_refutations": 320,
++        "query_disagreements": 320
++      },
++      "reverse_port_count": {
++        "demo_refutations": 320,
++        "query_disagreements": 320
++      },
++      "source_area_modulo": {
++        "demo_refutations": 320,
++        "query_disagreements": 320
++      }
++    },
++    "stress_30x30": 320
++  },
++  "racket_evaluations": 74,
++  "schema": "f60cfd11346a-parametric-audit-v1",
++  "sources": {
++    "adapter.py": "dc228f4de96ddb71b9a34823aa322fc4d0efcc80802caa42eaa8fd3156861dd8",
++    "canonical.rkt": "755f959a29c79e14f608bccf3baa514312baf8e22619cbe0b50a4fa0534d8e3f",
++    "prototype.py": "11596cd7e7b6ee1a56bab0ca5b0eea994eeda3f2946c5e644a8a79ea022b8b6e",
++    "relay.rkt": "8b0d9f0df1bd989c256165d3220757d346188597cbf80f8fcfed0b5179d7f5c1",
++    "wrong_global_port_count.rkt": "aed6cff3ef2698d2c960df9140847b9e0c0f913fd58b4a43bb967b3e13ec9d38"
++  },
++  "status": "passed"
++}
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/evidence/current/public/challenge-39983a49ed4db129f21a06a8b6c36c9a2cca587889871c4a231ab5699fe85edd.json b/repo/generators/f60cfd11346a/workspace/parametric/evidence/current/public/challenge-39983a49ed4db129f21a06a8b6c36c9a2cca587889871c4a231ab5699fe85edd.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/evidence/current/public/challenge-39983a49ed4db129f21a06a8b6c36c9a2cca587889871c4a231ab5699fe85edd.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,9,0,0,0,0,1,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,0,3,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,0,0,0,6,0,0,0,0,0,5],[5,0,0,0,7,3,0,0,5,6,0,0,6,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,5,0,0,0,6,0,0,9,6,0,5],[5,0,0,0,7,0,0,0,5,0,0,0,6,0,0,9,0,2,5],[5,0,0,0,7,0,0,0,5,0,0,0,6,0,0,9,0,0,5],[5,5,5,5,5,5,5,5,5,0,0,0,6,0,0,9,0,0,5],[5,0,0,3,0,0,0,0,1,0,0,0,6,0,0,9,0,0,5],[5,0,0,0,0,4,0,0,5,0,0,0,0,0,0,9,0,0,5],[5,0,0,0,0,4,0,0,5,0,0,0,0,0,0,9,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]},{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,6,0,0,0,0,0,9,0,0,5,0,0,4,0,0,0,0,0,3,5],[5,0,0,6,0,0,0,0,0,9,0,0,5,0,0,4,0,0,0,0,0,0,5],[5,0,0,6,0,0,7,0,0,9,0,0,5,0,0,0,0,0,0,0,0,0,5],[5,0,0,6,0,0,7,0,0,9,0,0,5,0,0,4,0,0,0,0,0,0,5],[5,0,0,6,0,0,7,0,0,9,0,0,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,6,0,0,7,0,0,9,0,0,1,0,0,0,7,0,0,0,0,0,5],[5,0,0,6,6,0,7,0,0,9,0,0,5,0,0,3,7,0,0,0,0,0,5],[5,0,0,6,0,0,7,0,0,9,0,0,5,0,0,0,0,0,0,0,0,0,5],[5,0,2,6,0,0,7,0,0,9,0,0,5,0,0,0,7,0,0,0,0,0,5],[5,0,0,6,0,0,7,0,6,9,0,0,1,0,0,0,7,0,0,0,0,0,5],[5,0,0,0,0,0,7,0,0,0,0,0,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,7,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,0,0,0,0,9,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,9,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,9,3,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]},{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,6,0,0,0,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,0,0,0,7,2,0,5],[5,0,0,0,0,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,3,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,1,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,7,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,7,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,7,0,0,0,5,0,0,6,0,6,9,0,0,7,0,0,5],[5,0,0,0,0,3,0,0,0,0,7,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,7,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,7,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,9,0,0,0,0,5,0,0,6,0,0,9,0,0,7,0,6,5],[5,0,0,0,0,0,0,0,0,9,0,0,0,0,1,0,0,0,0,0,9,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,9,0,0,0,0,5,0,0,0,0,0,9,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,0,0,0,9,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,3,0,0,9,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]},{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,9,0,3,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,6,0,0,0,0,0,9,0,0,0,5,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,6,0,0,0,0,0,9,0,0,0,5,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,6,9,0,0,0,5,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,1,0,0,0,7,0,0,3,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,6,7,0,0,9,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,3,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,2,0,9,0,0,0,0,0,7,0,0,0,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,0,0,0,7,0,0,0,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]}],"train":[{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,3,0,4,0,0,1,0,0,0,0,0,0,9,0,0,5],[5,0,0,0,4,0,0,1,0,0,0,0,0,0,9,0,0,5],[5,0,0,0,0,0,0,5,0,0,0,6,6,0,9,2,0,5],[5,5,5,5,5,5,5,5,0,0,0,6,0,0,9,0,0,5],[5,0,0,0,0,0,0,1,0,0,0,6,0,0,9,0,0,5],[5,0,0,7,0,0,0,5,0,0,0,6,0,0,0,0,0,5],[5,0,3,7,0,0,0,5,0,0,0,6,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,9,0,3,0,0,5,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,5,0,0,0,0,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]],"output":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,3,0,4,0,0,1,8,8,8,8,8,8,9,8,8,5],[5,0,0,0,4,0,0,1,8,8,8,8,8,8,9,8,8,5],[5,0,0,0,0,0,0,5,8,8,8,6,6,8,9,2,8,5],[5,5,5,5,5,5,5,5,8,8,8,6,8,8,9,8,8,5],[5,0,0,0,0,0,0,1,8,8,8,6,8,8,9,8,8,5],[5,0,0,7,0,0,0,5,8,8,8,6,8,8,8,8,8,5],[5,0,3,7,0,0,0,5,8,8,8,6,8,8,8,8,8,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,8,9,8,3,8,8,5,0,0,0,0,0,0,0,0,0,5],[5,8,8,8,8,8,8,5,0,0,0,0,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]},{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,9,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,0,0,0,0,9,0,3,5],[5,0,0,0,0,0,7,0,0,0,0,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,7,0,0,0,0,1,3,0,0,7,0,0,0,5],[5,0,0,6,0,0,7,0,0,0,0,5,0,0,0,0,0,0,0,5],[5,0,2,6,0,0,7,0,0,0,6,5,0,0,0,7,0,0,0,5],[5,0,0,6,0,0,7,0,0,0,0,1,5,5,5,5,5,5,5,5],[5,0,0,6,0,0,7,0,0,0,6,5,0,0,4,0,0,0,0,5],[5,0,0,6,0,0,0,0,0,0,0,5,0,0,4,0,0,0,0,5],[5,0,0,6,0,0,0,0,0,0,0,5,0,0,3,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]],"output":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,9,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,0,0,0,0,9,0,3,5],[5,8,8,8,8,8,7,8,8,8,8,5,5,5,5,5,5,5,5,5],[5,8,8,8,8,8,7,8,8,8,8,1,3,8,8,7,8,8,8,5],[5,8,8,6,8,8,7,8,8,8,8,5,8,8,8,8,8,8,8,5],[5,8,2,6,8,8,7,8,8,8,6,5,8,8,8,7,8,8,8,5],[5,8,8,6,8,8,7,8,8,8,8,1,5,5,5,5,5,5,5,5],[5,8,8,6,8,8,7,8,8,8,6,5,0,0,4,0,0,0,0,5],[5,8,8,6,8,8,8,8,8,8,8,5,0,0,4,0,0,0,0,5],[5,8,8,6,8,8,8,8,8,8,8,5,0,0,3,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]},{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,9,0,0,0,3,1,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,9,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,5,0,6,0,0,9,0,0,0,0,0,5],[5,0,0,0,0,0,7,0,0,0,5,0,0,0,0,9,0,0,0,0,0,5],[5,0,3,0,0,0,7,0,0,0,1,0,0,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,7,0,0,0,5,0,0,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,5,0,0,0,0,9,0,0,7,0,2,5],[5,5,5,5,5,5,5,5,5,5,5,0,0,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,5,0,0,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,4,0,0,5,0,0,0,0,9,0,0,7,0,0,5],[5,0,0,0,3,0,0,4,0,0,5,0,0,0,0,0,0,0,7,0,0,5],[5,0,0,0,0,0,0,4,0,0,5,0,0,0,0,0,0,0,7,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]],"output":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,8,8,8,8,9,8,8,8,3,1,0,0,0,0,0,0,0,0,0,0,5],[5,8,8,8,8,9,8,8,8,8,1,0,0,0,0,0,0,0,0,0,0,5],[5,8,8,8,8,8,8,8,8,8,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,5,8,6,8,8,9,8,8,8,8,8,5],[5,0,0,0,0,0,7,0,0,0,5,8,8,8,8,9,8,8,8,8,8,5],[5,0,3,0,0,0,7,0,0,0,1,8,8,8,8,9,8,8,7,8,8,5],[5,0,0,0,0,0,7,0,0,0,5,8,8,8,8,9,8,8,7,8,8,5],[5,0,0,0,0,0,0,0,0,0,5,8,8,8,8,9,8,8,7,8,2,5],[5,5,5,5,5,5,5,5,5,5,5,8,8,8,8,9,8,8,7,8,8,5],[5,0,0,0,0,0,0,0,0,0,5,8,8,8,8,9,8,8,7,8,8,5],[5,0,0,0,0,0,0,4,0,0,5,8,8,8,8,9,8,8,7,8,8,5],[5,0,0,0,3,0,0,4,0,0,5,8,8,8,8,8,8,8,7,8,8,5],[5,0,0,0,0,0,0,4,0,0,5,8,8,8,8,8,8,8,7,8,8,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]}]}
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/evidence/current/public/challenge-dd2668fe2c124a23d84f754e5e1ece461c5b3ca19434926eb533eb625a0dd7b5.json b/repo/generators/f60cfd11346a/workspace/parametric/evidence/current/public/challenge-dd2668fe2c124a23d84f754e5e1ece461c5b3ca19434926eb533eb625a0dd7b5.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/evidence/current/public/challenge-dd2668fe2c124a23d84f754e5e1ece461c5b3ca19434926eb533eb625a0dd7b5.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,9,0,0,0,0,1,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,0,3,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,0,0,0,6,0,0,0,0,0,5],[5,0,0,0,7,3,0,0,5,6,0,0,6,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,5,0,0,0,6,0,0,9,6,0,5],[5,0,0,0,7,0,0,0,5,0,0,0,6,0,0,9,0,2,5],[5,0,0,0,7,0,0,0,5,0,0,0,6,0,0,9,0,0,5],[5,5,5,5,5,5,5,5,5,0,0,0,6,0,0,9,0,0,5],[5,0,0,3,0,0,0,0,1,0,0,0,6,0,0,9,0,0,5],[5,0,0,0,0,4,0,0,5,0,0,0,0,0,0,9,0,0,5],[5,0,0,0,0,4,0,0,5,0,0,0,0,0,0,9,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]},{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,6,0,0,0,0,0,9,0,0,5,0,0,4,0,0,0,0,0,3,5],[5,0,0,6,0,0,0,0,0,9,0,0,5,0,0,4,0,0,0,0,0,0,5],[5,0,0,6,0,0,7,0,0,9,0,0,5,0,0,0,0,0,0,0,0,0,5],[5,0,0,6,0,0,7,0,0,9,0,0,5,0,0,4,0,0,0,0,0,0,5],[5,0,0,6,0,0,7,0,0,9,0,0,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,6,0,0,7,0,0,9,0,0,1,0,0,0,7,0,0,0,0,0,5],[5,0,0,6,6,0,7,0,0,9,0,0,5,0,0,3,7,0,0,0,0,0,5],[5,0,0,6,0,0,7,0,0,9,0,0,5,0,0,0,0,0,0,0,0,0,5],[5,0,2,6,0,0,7,0,0,9,0,0,5,0,0,0,7,0,0,0,0,0,5],[5,0,0,6,0,0,7,0,6,9,0,0,1,0,0,0,7,0,0,0,0,0,5],[5,0,0,0,0,0,7,0,0,0,0,0,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,7,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,0,0,0,0,9,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,9,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,9,3,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]},{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,6,0,0,0,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,0,0,0,7,2,0,5],[5,0,0,0,0,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,3,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,4,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,1,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,7,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,7,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,7,0,0,0,5,0,0,6,0,6,9,0,0,7,0,0,5],[5,0,0,0,0,3,0,0,0,0,7,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,7,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,7,0,0,0,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,0,0,6,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,9,0,0,0,0,5,0,0,6,0,0,9,0,0,7,0,6,5],[5,0,0,0,0,0,0,0,0,9,0,0,0,0,1,0,0,0,0,0,9,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,9,0,0,0,0,5,0,0,0,0,0,9,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,0,0,0,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,0,0,0,9,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,3,0,0,9,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]},{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,9,0,3,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,6,0,0,0,0,0,9,0,0,0,5,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,6,0,0,0,0,0,9,0,0,0,5,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,6,9,0,0,0,5,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,0,9,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,1,0,0,0,7,0,0,3,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,7,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,6,7,0,0,9,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,3,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,6,0,0,7,0,0,9,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,2,0,9,0,0,0,0,0,7,0,0,0,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,0,0,9,0,0,0,0,0,7,0,0,0,0,0,0,5,0,0,4,0,0,0,0,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]}],"train":[{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,3,0,4,0,0,1,0,0,0,0,0,0,9,0,0,5],[5,0,0,0,4,0,0,1,0,0,0,0,0,0,9,0,0,5],[5,0,0,0,0,0,0,5,0,0,0,6,6,0,9,2,0,5],[5,5,5,5,5,5,5,5,0,0,0,6,0,0,9,0,0,5],[5,0,0,0,0,0,0,1,0,0,0,6,0,0,9,0,0,5],[5,0,0,7,0,0,0,5,0,0,0,6,0,0,0,0,0,5],[5,0,3,7,0,0,0,5,0,0,0,6,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,9,0,3,0,0,5,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,5,0,0,0,0,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]],"output":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,3,0,4,0,0,1,8,8,8,8,8,8,9,8,8,5],[5,0,0,0,4,0,0,1,8,8,8,8,8,8,9,8,8,5],[5,0,0,0,0,0,0,5,8,8,8,6,6,8,9,2,8,5],[5,5,5,5,5,5,5,5,8,8,8,6,8,8,9,8,8,5],[5,0,0,0,0,0,0,1,8,8,8,6,8,8,9,8,8,5],[5,0,0,7,0,0,0,5,8,8,8,6,8,8,8,8,8,5],[5,0,3,7,0,0,0,5,8,8,8,6,8,8,8,8,8,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,9,0,3,0,0,5,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,5,0,0,0,0,0,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]},{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,9,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,0,0,0,0,9,0,3,5],[5,0,0,0,0,0,7,0,0,0,0,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,7,0,0,0,0,1,3,0,0,7,0,0,0,5],[5,0,0,6,0,0,7,0,0,0,0,5,0,0,0,0,0,0,0,5],[5,0,2,6,0,0,7,0,0,0,6,5,0,0,0,7,0,0,0,5],[5,0,0,6,0,0,7,0,0,0,0,1,5,5,5,5,5,5,5,5],[5,0,0,6,0,0,7,0,0,0,6,5,0,0,4,0,0,0,0,5],[5,0,0,6,0,0,0,0,0,0,0,5,0,0,4,0,0,0,0,5],[5,0,0,6,0,0,0,0,0,0,0,5,0,0,3,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]],"output":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,9,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,0,0,0,0,9,0,3,5],[5,8,8,8,8,8,7,8,8,8,8,5,5,5,5,5,5,5,5,5],[5,8,8,8,8,8,7,8,8,8,8,1,3,0,0,7,0,0,0,5],[5,8,8,6,8,8,7,8,8,8,8,5,0,0,0,0,0,0,0,5],[5,8,2,6,8,8,7,8,8,8,6,5,0,0,0,7,0,0,0,5],[5,8,8,6,8,8,7,8,8,8,8,1,5,5,5,5,5,5,5,5],[5,8,8,6,8,8,7,8,8,8,6,5,0,0,4,0,0,0,0,5],[5,8,8,6,8,8,8,8,8,8,8,5,0,0,4,0,0,0,0,5],[5,8,8,6,8,8,8,8,8,8,8,5,0,0,3,0,0,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]},{"input":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,9,0,0,0,3,1,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,9,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,5,0,6,0,0,9,0,0,0,0,0,5],[5,0,0,0,0,0,7,0,0,0,5,0,0,0,0,9,0,0,0,0,0,5],[5,0,3,0,0,0,7,0,0,0,1,0,0,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,7,0,0,0,5,0,0,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,5,0,0,0,0,9,0,0,7,0,2,5],[5,5,5,5,5,5,5,5,5,5,5,0,0,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,0,0,0,5,0,0,0,0,9,0,0,7,0,0,5],[5,0,0,0,0,0,0,4,0,0,5,0,0,0,0,9,0,0,7,0,0,5],[5,0,0,0,3,0,0,4,0,0,5,0,0,0,0,0,0,0,7,0,0,5],[5,0,0,0,0,0,0,4,0,0,5,0,0,0,0,0,0,0,7,0,0,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]],"output":[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,0,0,0,0,9,0,0,0,3,1,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,9,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,5],[5,0,0,0,0,0,0,0,0,0,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,5,8,6,8,8,9,8,8,8,8,8,5],[5,0,0,0,0,0,7,0,0,0,5,8,8,8,8,9,8,8,8,8,8,5],[5,0,3,0,0,0,7,0,0,0,1,8,8,8,8,9,8,8,7,8,8,5],[5,0,0,0,0,0,7,0,0,0,5,8,8,8,8,9,8,8,7,8,8,5],[5,0,0,0,0,0,0,0,0,0,5,8,8,8,8,9,8,8,7,8,2,5],[5,5,5,5,5,5,5,5,5,5,5,8,8,8,8,9,8,8,7,8,8,5],[5,0,0,0,0,0,0,0,0,0,5,8,8,8,8,9,8,8,7,8,8,5],[5,0,0,0,0,0,0,4,0,0,5,8,8,8,8,9,8,8,7,8,8,5],[5,0,0,0,3,0,0,4,0,0,5,8,8,8,8,8,8,8,7,8,8,5],[5,0,0,0,0,0,0,4,0,0,5,8,8,8,8,8,8,8,7,8,8,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]}]}
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/evidence/manifest.json b/repo/generators/f60cfd11346a/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,97 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "755f959a29c79e14f608bccf3baa514312baf8e22619cbe0b50a4fa0534d8e3f",
++  "canonical_rule_hash": "23823efe5a14",
++  "default": {
++    "mode": "canonical"
++  },
++  "evidence_root": "generators/f60cfd11346a/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 19029,
++      "path": "generators/f60cfd11346a/generator.py",
++      "sha256": "c8b8f277bb56e95db13d75c843bb89e210be443b95cab51bae299a576bcc14eb"
++    },
++    {
++      "bytes": 5977,
++      "path": "generators/f60cfd11346a/tests/test_parametric_reachable_port_relay.py",
++      "sha256": "1c8f38a064c4c78211e6b08cc28f4466324c59a7360bcf479bb958a810a9e5d8"
++    },
++    {
++      "bytes": 1137,
++      "path": "generators/f60cfd11346a/workspace/parametric/adapter.py",
++      "sha256": "dc228f4de96ddb71b9a34823aa322fc4d0efcc80802caa42eaa8fd3156861dd8"
++    },
++    {
++      "bytes": 264,
++      "path": "generators/f60cfd11346a/workspace/parametric/canonical.rkt",
++      "sha256": "755f959a29c79e14f608bccf3baa514312baf8e22619cbe0b50a4fa0534d8e3f"
++    },
++    {
++      "bytes": 4416,
++      "path": "generators/f60cfd11346a/workspace/parametric/evidence/current/audit.json",
++      "sha256": "e0d1cc9536e70456c75e66a524aa533b093c5be92d21e40e1ee39d915b01be5a"
++    },
++    {
++      "bytes": 8102,
++      "path": "generators/f60cfd11346a/workspace/parametric/evidence/current/public/challenge-39983a49ed4db129f21a06a8b6c36c9a2cca587889871c4a231ab5699fe85edd.json",
++      "sha256": "39983a49ed4db129f21a06a8b6c36c9a2cca587889871c4a231ab5699fe85edd"
++    },
++    {
++      "bytes": 8102,
++      "path": "generators/f60cfd11346a/workspace/parametric/evidence/current/public/challenge-dd2668fe2c124a23d84f754e5e1ece461c5b3ca19434926eb533eb625a0dd7b5.json",
++      "sha256": "dd2668fe2c124a23d84f754e5e1ece461c5b3ca19434926eb533eb625a0dd7b5"
++    },
++    {
++      "bytes": 570,
++      "path": "generators/f60cfd11346a/workspace/parametric/promotion.json",
++      "sha256": "d3457905cb741853090f8f8aa820c7bf519dba3bfc619ab7007a2e7f89820d74"
++    },
++    {
++      "bytes": 16139,
++      "path": "generators/f60cfd11346a/workspace/parametric/prototype.py",
++      "sha256": "11596cd7e7b6ee1a56bab0ca5b0eea994eeda3f2946c5e644a8a79ea022b8b6e"
++    },
++    {
++      "bytes": 1260,
++      "path": "generators/f60cfd11346a/workspace/parametric/relay.rkt",
++      "sha256": "8b0d9f0df1bd989c256165d3220757d346188597cbf80f8fcfed0b5179d7f5c1"
++    },
++    {
++      "bytes": 7933,
++      "path": "generators/f60cfd11346a/workspace/parametric/verify.py",
++      "sha256": "c8d29ed80a8e1f721d39c2e111d0c15441c25b994b5df787a7ece59b19103b90"
++    },
++    {
++      "bytes": 837,
++      "path": "generators/f60cfd11346a/workspace/parametric/wrong_global_port_count.rkt",
++      "sha256": "aed6cff3ef2698d2c960df9140847b9e0c0f913fd58b4a43bb967b3e13ec9d38"
++    }
++  ],
++  "generator_sha256": "c8b8f277bb56e95db13d75c843bb89e210be443b95cab51bae299a576bcc14eb",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "mode": [
++      "canonical",
++      "reachable_port_relay"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "12 focused tests; 74 protected-Racket evaluations over 8 boundary jobs; 320-episode finite teaching audit over seeds 0..31 and demo counts 2..6; two canonical public exports checked for schema, IDs, four queries, and prefix-stable first-turn projection.",
++  "rule_task_id": "f60cfd11346a",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "f60cfd11346a",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/promotion.json b/repo/generators/f60cfd11346a/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/promotion.json
+@@ -0,0 +1,28 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/f60cfd11346a/workspace/parametric/adapter.py",
++  "parameters": {
++    "mode": [
++      "canonical",
++      "reachable_port_relay"
++    ]
++  },
++  "default": {
++    "mode": "canonical"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "resources": [
++    "generators/f60cfd11346a/workspace/parametric/prototype.py",
++    "generators/f60cfd11346a/workspace/parametric/canonical.rkt",
++    "generators/f60cfd11346a/workspace/parametric/relay.rkt"
++  ]
++}
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/prototype.py b/repo/generators/f60cfd11346a/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/prototype.py
+@@ -0,0 +1,416 @@
++"""Native parametric family for f60cfd11346a.
++
++The canonical setting preserves the selected flood-fill rule byte-for-byte.  The
++alternate first computes that same red-seed reachable component, counts the
++color-1 ports cardinally adjacent to it, and uses the resulting key in {1,2,3}
++to select one of three row-major green-anchored remote chambers to fill.
++"""
++from __future__ import annotations
++
++from collections.abc import Iterable
++from copy import deepcopy
++from pathlib import Path
++from random import Random
++from typing import Any, Callable
++
++_HERE = Path(__file__).resolve().parent
++CANONICAL_PROGRAM = (_HERE / "canonical.rkt").read_text(encoding="utf-8")
++RELAY_PROGRAM = (_HERE / "relay.rkt").read_text(encoding="utf-8")
++
++MODES = ("canonical", "reachable_port_relay")
++_CARDINAL = ((-1, 0), (1, 0), (0, -1), (0, 1))
++
++# First two demonstrations always carry different keys; the first three cover
++# all keys.  Sizes are independently prefix-stable and culminate in a real 30x30
++# query rather than padding a tiny scene.
++_DEMO_SPECS = (
++    (12, 18, 1),
++    (13, 20, 3),
++    (15, 22, 2),
++    (18, 24, 1),
++    (22, 26, 3),
++    (26, 28, 2),
++)
++_QUERY_SPECS = (
++    (14, 19, 2),
++    (17, 23, 1),
++    (24, 27, 3),
++    (30, 30, 2),
++)
++
++
++def validate_settings(settings: object) -> dict[str, str]:
++    if type(settings) is not dict or set(settings) != {"mode"}:
++        raise ValueError("settings must contain exactly mode")
++    mode = settings["mode"]
++    if type(mode) is not str or mode not in MODES:
++        raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
++    return {"mode": mode}
++
++
++def program_for(mode: str) -> str:
++    if mode == "canonical":
++        return CANONICAL_PROGRAM
++    if mode == "reachable_port_relay":
++        return RELAY_PROGRAM
++    raise ValueError(f"unknown mode {mode!r}")
++
++
++def _neighbors(row: int, col: int) -> Iterable[tuple[int, int]]:
++    for dr, dc in _CARDINAL:
++        yield row + dr, col + dc
++
++
++def _region(grid: list[list[int]], start: tuple[int, int], passable: Callable[[int], bool]) -> set[tuple[int, int]]:
++    height, width = len(grid), len(grid[0])
++    if not passable(grid[start[0]][start[1]]):
++        raise ValueError("region start is not passable")
++    seen = {start}
++    stack = [start]
++    while stack:
++        row, col = stack.pop()
++        for nr, nc in _neighbors(row, col):
++            if (
++                0 <= nr < height
++                and 0 <= nc < width
++                and (nr, nc) not in seen
++                and passable(grid[nr][nc])
++            ):
++                seen.add((nr, nc))
++                stack.append((nr, nc))
++    return seen
++
++
++def _positions(grid: list[list[int]], color: int) -> list[tuple[int, int]]:
++    return [
++        (row, col)
++        for row, values in enumerate(grid)
++        for col, value in enumerate(values)
++        if value == color
++    ]
++
++
++def analyze_scene(grid: list[list[int]]) -> dict[str, Any]:
++    if (
++        type(grid) is not list
++        or not grid
++        or type(grid[0]) is not list
++        or not grid[0]
++        or any(type(row) is not list or len(row) != len(grid[0]) for row in grid)
++        or any(type(cell) is not int or not 0 <= cell <= 9 for row in grid for cell in row)
++    ):
++        raise ValueError("grid must be a nonempty rectangular ARC integer grid")
++    seeds = _positions(grid, 2)
++    if len(seeds) != 1:
++        raise ValueError("expected exactly one red seed")
++    source_region = _region(grid, seeds[0], lambda value: value in (0, 2))
++    all_ports = sorted(_positions(grid, 1))
++    active_ports = [
++        port
++        for port in all_ports
++        if any(neighbor in source_region for neighbor in _neighbors(*port))
++    ]
++    if not 1 <= len(active_ports) <= 3:
++        raise ValueError("expected one to three source-adjacent ports")
++    anchors = sorted(_positions(grid, 3))
++    if len(anchors) != 3:
++        raise ValueError("expected exactly three green target anchors")
++    selected_anchor = anchors[len(active_ports) - 1]
++    target_region = _region(grid, selected_anchor, lambda value: value in (0, 3))
++    source_zeros = {cell for cell in source_region if grid[cell[0]][cell[1]] == 0}
++    target_zeros = {cell for cell in target_region if grid[cell[0]][cell[1]] == 0}
++    if not source_zeros or not target_zeros or source_region & target_region:
++        raise ValueError("source and target must be nonempty disjoint regions")
++    return {
++        "seed": seeds[0],
++        "source_region": tuple(sorted(source_region)),
++        "source_zeros": tuple(sorted(source_zeros)),
++        "all_ports": tuple(all_ports),
++        "active_ports": tuple(active_ports),
++        "active_port_count": len(active_ports),
++        "anchors": tuple(anchors),
++        "selected_anchor": selected_anchor,
++        "target_region": tuple(sorted(target_region)),
++        "target_zeros": tuple(sorted(target_zeros)),
++    }
++
++
++def _paint(grid: list[list[int]], cells: Iterable[tuple[int, int]], color: int) -> list[list[int]]:
++    out = deepcopy(grid)
++    for row, col in cells:
++        out[row][col] = color
++    return out
++
++
++def _apply_target_rank(grid: list[list[int]], rank: int) -> list[list[int]]:
++    analysis = analyze_scene(grid)
++    if type(rank) is not int or not 1 <= rank <= 3:
++        raise ValueError("target rank must be 1..3")
++    source = _paint(grid, analysis["source_zeros"], 8)
++    anchor = analysis["anchors"][rank - 1]
++    target = _region(grid, anchor, lambda value: value in (0, 3))
++    target_zeros = [cell for cell in target if grid[cell[0]][cell[1]] == 0]
++    return _paint(source, target_zeros, 8)
++
++
++def apply_mode(grid: list[list[int]], mode: str) -> list[list[int]]:
++    if mode not in MODES:
++        raise ValueError(f"unknown mode {mode!r}")
++    analysis = analyze_scene(grid)
++    source = _paint(grid, analysis["source_zeros"], 8)
++    if mode == "canonical":
++        return source
++    return _paint(source, analysis["target_zeros"], 8)
++
++
++def apply_global_port_count_rival(grid: list[list[int]]) -> list[list[int]]:
++    """Wrong intermediate: count every color-1 cell, not source-adjacent ports."""
++    return _apply_target_rank(grid, min(3, len(_positions(grid, 1))))
++
++
++def _apply_reverse_port_count(grid: list[list[int]]) -> list[list[int]]:
++    count = analyze_scene(grid)["active_port_count"]
++    return _apply_target_rank(grid, 4 - count)
++
++
++def _apply_source_area_modulo(grid: list[list[int]]) -> list[list[int]]:
++    size = len(analyze_scene(grid)["source_zeros"])
++    return _apply_target_rank(grid, (size % 3) + 1)
++
++
++def _flip_lr(grid: list[list[int]]) -> list[list[int]]:
++    return [list(reversed(row)) for row in grid]
++
++
++def _flip_ud(grid: list[list[int]]) -> list[list[int]]:
++    return [row[:] for row in reversed(grid)]
++
++
++def _rotate_180(grid: list[list[int]]) -> list[list[int]]:
++    return _flip_ud(_flip_lr(grid))
++
++
++def _key(base_key: int, seed: int) -> int:
++    return ((base_key - 1 + seed % 3) % 3) + 1
++
++
++
++def _tune_source_area_decoy(grid: list[list[int]], key: int, rng: Random) -> None:
++    """Make the source-area-modulo shortcut choose the next, wrong target.
++
++    Blocking one non-articulation source zero changes the modulo without changing
++    the actual reachable-port count.  The retained scene therefore teaches that
++    component area is not the relay key.
++    """
++    desired_modulo = key % 3
++    for _ in range(3):
++        analysis = analyze_scene(grid)
++        current_size = len(analysis["source_zeros"])
++        if current_size % 3 == desired_modulo:
++            return
++        candidates = list(analysis["source_zeros"])
++        rng.shuffle(candidates)
++        changed = False
++        for row, col in candidates:
++            if any(grid[nr][nc] == 1 for nr, nc in _neighbors(row, col)
++                   if 0 <= nr < len(grid) and 0 <= nc < len(grid[0])):
++                continue
++            trial = deepcopy(grid)
++            trial[row][col] = 6
++            try:
++                after = analyze_scene(trial)
++            except ValueError:
++                continue
++            if (
++                after["active_port_count"] == key
++                and len(after["source_zeros"]) == current_size - 1
++            ):
++                grid[row][col] = 6
++                changed = True
++                break
++        if not changed:
++            raise RuntimeError("could not tune source-area decoy without changing reachability")
++    raise RuntimeError("source-area decoy tuning did not converge")
++
++def _draw_scene(seed: int, split: str, index: int, spec: tuple[int, int, int]) -> list[list[int]]:
++    height, width, base_key = spec
++    if height < 12 or width < 18 or height > 30 or width > 30:
++        raise ValueError("scene dimensions outside supported construction")
++    salt = 0x6D2B79F5 if split == "demo" else 0x1B873593
++    rng = Random(seed * 1_000_003 + index * 97_409 + salt)
++    key = _key(base_key, seed)
++
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    for row in range(height):
++        grid[row][0] = 5
++        grid[row][width - 1] = 5
++    for col in range(width):
++        grid[0][col] = 5
++        grid[height - 1][col] = 5
++
++    split_col = max(7, min(width - 7, width // 2 + rng.choice((-1, 0, 1))))
++    for row in range(1, height - 1):
++        grid[row][split_col] = 5
++
++    divider_1 = max(4, height // 3)
++    divider_2 = min(height - 4, max(divider_1 + 3, (2 * height) // 3))
++    for divider in (divider_1, divider_2):
++        for col in range(split_col + 1, width - 1):
++            grid[divider][col] = 5
++
++    pocket_wall = height - 4
++    for col in range(1, split_col):
++        grid[pocket_wall][col] = 5
++
++    # Alternating teeth make the source component a real wall-aware flood.  The
++    # rightmost source corridor remains open so all active port candidates are
++    # reachable, while the lower pocket is deliberately disconnected.
++    tooth_cols = list(range(3, max(3, split_col - 2), 3))
++    for tooth_index, col in enumerate(tooth_cols):
++        color = (6, 7, 9)[(tooth_index + seed + index) % 3]
++        if tooth_index % 2 == 0:
++            rows = range(1, max(1, pocket_wall - 2))
++        else:
++            rows = range(3, pocket_wall)
++        for row in rows:
++            grid[row][col] = color
++
++    seed_candidates = [
++        (row, col)
++        for row in range(1, pocket_wall)
++        for col in range(1, min(3, split_col))
++        if grid[row][col] == 0
++    ]
++    if not seed_candidates:
++        raise RuntimeError("no legal seed cell")
++    seed_row, seed_col = rng.choice(seed_candidates)
++    grid[seed_row][seed_col] = 2
++
++    active_candidates = [
++        row
++        for row in range(1, pocket_wall)
++        if grid[row][split_col - 1] == 0
++    ]
++    inactive_candidates = [
++        row
++        for row in range(pocket_wall + 1, height - 1)
++        if grid[row][split_col - 1] == 0
++    ]
++    if len(active_candidates) < 3 or len(inactive_candidates) < 2:
++        raise RuntimeError("insufficient active/inactive port rows")
++    active_rows = rng.sample(active_candidates, key)
++    inactive_rows = rng.sample(inactive_candidates, 3 - key)
++    for row in active_rows + inactive_rows:
++        grid[row][split_col] = 1
++
++    room_ranges = (
++        (1, divider_1 - 1),
++        (divider_1 + 1, divider_2 - 1),
++        (divider_2 + 1, height - 2),
++    )
++    target_left, target_right = split_col + 1, width - 2
++    for room_index, (top, bottom) in enumerate(room_ranges):
++        if top > bottom:
++            raise RuntimeError("target room collapsed")
++        obstacle_col = min(target_right - 1, target_left + 2 + room_index)
++        gap_row = top + ((seed + index + room_index) % (bottom - top + 1))
++        if target_left + 2 <= target_right - 1:
++            for row in range(top, bottom + 1):
++                if row != gap_row:
++                    grid[row][obstacle_col] = (4, 7, 9)[room_index]
++        anchor_candidates = [
++            (row, col)
++            for row in range(top, bottom + 1)
++            for col in range(target_left, target_right + 1)
++            if grid[row][col] == 0
++        ]
++        if not anchor_candidates:
++            raise RuntimeError("target room has no anchor cell")
++        # Alternate near/far anchor placements without revealing the selected rank.
++        anchor = anchor_candidates[(seed * 7 + index * 5 + room_index * 11) % len(anchor_candidates)]
++        grid[anchor[0]][anchor[1]] = 3
++
++    _tune_source_area_decoy(grid, key, rng)
++
++    transforms = (
++        lambda value: value,
++        _flip_lr,
++        _flip_ud,
++        _rotate_180,
++    )
++    grid = transforms[(seed + index + (0 if split == "demo" else 2)) % 4](grid)
++    analysis = analyze_scene(grid)
++    if analysis["active_port_count"] != key:
++        raise RuntimeError("constructed port key changed under validation")
++    return grid
++
++
++def _pair(seed: int, split: str, index: int, spec: tuple[int, int, int], mode: str) -> dict[str, list[list[int]]]:
++    grid = _draw_scene(seed, split, index, spec)
++    return {"input": grid, "output": apply_mode(grid, mode)}
++
++
++def generate_episode(seed: int, *, mode: str, demos: int, queries: int) -> dict[str, Any]:
++    if type(seed) is not int or not 0 <= seed <= 2**63 - 1:
++        raise ValueError("seed must be an integer in 0..2**63-1")
++    if mode not in MODES:
++        raise ValueError(f"unknown mode {mode!r}")
++    if type(demos) is not int or not 2 <= demos <= 6:
++        raise ValueError("demos must be an integer in 2..6")
++    if type(queries) is not int or not 1 <= queries <= 4:
++        raise ValueError("queries must be an integer in 1..4")
++    train = [_pair(seed, "demo", index, _DEMO_SPECS[index], mode) for index in range(demos)]
++    test = [_pair(seed, "query", index, _QUERY_SPECS[index], mode) for index in range(queries)]
++    return {"train": train, "test": test, "program_solution": program_for(mode)}
++
++
++def _rivals() -> dict[str, Callable[[list[list[int]]], list[list[int]]]]:
++    return {
++        "canonical_only": lambda grid: apply_mode(grid, "canonical"),
++        "fixed_target_1": lambda grid: _apply_target_rank(grid, 1),
++        "fixed_target_2": lambda grid: _apply_target_rank(grid, 2),
++        "fixed_target_3": lambda grid: _apply_target_rank(grid, 3),
++        "global_port_count": apply_global_port_count_rival,
++        "reverse_port_count": _apply_reverse_port_count,
++        "source_area_modulo": _apply_source_area_modulo,
++    }
++
++
++def audit_python(*, seeds: Iterable[int], demo_counts: Iterable[int]) -> dict[str, Any]:
++    ambiguities: list[dict[str, Any]] = []
++    rivals = _rivals()
++    rival_stats = {name: {"demo_refutations": 0, "query_disagreements": 0} for name in rivals}
++    serialized_inputs: set[str] = set()
++    episodes = 0
++    stress = 0
++    for seed in seeds:
++        for demos in demo_counts:
++            for mode in MODES:
++                episode = generate_episode(seed, mode=mode, demos=demos, queries=4)
++                episodes += 1
++                stress += int(len(episode["test"][3]["input"]) == 30 and len(episode["test"][3]["input"][0]) == 30)
++                for pair in episode["train"] + episode["test"]:
++                    serialized_inputs.add(repr(pair["input"]))
++                for name, rival in rivals.items():
++                    demo_matches = [rival(pair["input"]) == pair["output"] for pair in episode["train"]]
++                    query_differs = [rival(pair["input"]) != pair["output"] for pair in episode["test"]]
++                    if not all(demo_matches):
++                        rival_stats[name]["demo_refutations"] += 1
++                    if any(query_differs):
++                        rival_stats[name]["query_disagreements"] += 1
++                    if all(demo_matches) and any(query_differs):
++                        ambiguities.append({
++                            "seed": seed,
++                            "demos": demos,
++                            "mode": mode,
++                            "rival": name,
++                        })
++    return {
++        "episodes": episodes,
++        "pairs": len(serialized_inputs),
++        "pair_instances": sum((demos + 4) * len(MODES) for _ in seeds for demos in demo_counts),
++        "distinct_inputs": len(serialized_inputs),
++        "stress_30x30": stress,
++        "rivals": rival_stats,
++        "ambiguities": ambiguities,
++    }
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/relay.rkt b/repo/generators/f60cfd11346a/workspace/parametric/relay.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/relay.rkt
+@@ -0,0 +1,28 @@
++(rule!
++  (let ((dummy 0))
++    (define (adjacent-to-region? p region)
++      (any? (lambda (d)
++              (member? (list (+ (first p) (first d))
++                             (+ (second p) (second d)))
++                       region))
++            cardinal-deltas))
++    (let* ((seed (first (find-color g 2)))
++           (source-region
++            (connected-region g (first seed) (second seed)
++                              (lambda (r c v) (or (= v 0) (= v 2))) 4))
++           (source-zeros
++            (filter (lambda (p) (= (at g (first p) (second p)) 0))
++                    source-region))
++           (active-ports
++            (filter (lambda (p) (adjacent-to-region? p source-region))
++                    (find-color g 1)))
++           (port-count (length active-ports))
++           (anchors (sort (find-color g 3) cell<))
++           (selected-anchor (nth anchors (- port-count 1)))
++           (target-region
++            (connected-region g (first selected-anchor) (second selected-anchor)
++                              (lambda (r c v) (or (= v 0) (= v 3))) 4))
++           (target-zeros
++            (filter (lambda (p) (= (at g (first p) (second p)) 0))
++                    target-region)))
++      (paint-cells (paint-cells g source-zeros 8) target-zeros 8))))
+\ No newline at end of file
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/verify.py b/repo/generators/f60cfd11346a/workspace/parametric/verify.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/verify.py
+@@ -0,0 +1,206 @@
++#!/usr/bin/env python3
++"""Protected-Racket and public-projection audit for this task-local family."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++from typing import Any
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import public_challenge_bytes, public_challenge_id
++
++HERE = Path(__file__).resolve().parent
++
++
++def _load_prototype():
++    path = HERE / "prototype.py"
++    spec = importlib.util.spec_from_file_location(
++        "_f60cfd11346a_verify_prototype", path
++    )
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _sha(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def _literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++def _public_episode(episode: dict[str, Any]) -> dict[str, Any]:
++    return {
++        "train": [
++            {"input": pair["input"], "output": pair["output"]}
++            for pair in episode["train"]
++        ],
++        "test": [{"input": pair["input"]} for pair in episode["test"]],
++    }
++
++
++def audit(*, public_dir: Path) -> dict[str, Any]:
++    prototype = _load_prototype()
++    programs = {mode: prototype.program_for(mode) for mode in prototype.MODES}
++    wrong_program = (HERE / "wrong_global_port_count.rkt").read_text(encoding="utf-8")
++    wrapped = {name: wrap_rule(program) for name, program in {**programs, "wrong_global_port_count": wrong_program}.items()}
++    evaluations = 0
++    jobs = []
++    with RacketBridge() as bridge:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise RuntimeError("protected Racket backend required")
++
++        def execute(name: str, grid: list[list[int]]) -> list[list[int]]:
++            nonlocal evaluations
++            evaluations += 1
++            return bridge.eval_text(f"({wrapped[name]} {_literal(grid)})")
++
++        for mode in prototype.MODES:
++            other = next(value for value in prototype.MODES if value != mode)
++            for seed in (0, 17):
++                for demos in (2, 6):
++                    episode = prototype.generate_episode(seed, mode=mode, demos=demos, queries=4)
++                    for pair in episode["train"] + episode["test"]:
++                        actual = execute(mode, pair["input"])
++                        if actual != pair["output"]:
++                            raise AssertionError((mode, seed, demos, "label mismatch"))
++                    other_fits = all(
++                        execute(other, pair["input"]) == pair["output"]
++                        for pair in episode["train"]
++                    )
++                    if other_fits:
++                        raise AssertionError((mode, seed, demos, "setting not identified"))
++                    jobs.append({
++                        "mode": mode,
++                        "seed": seed,
++                        "demos": demos,
++                        "queries": 4,
++                        "labels": demos + 4,
++                    })
++
++        witness_episode = prototype.generate_episode(
++            0, mode="reachable_port_relay", demos=3, queries=4
++        )
++        witness_pair = next(
++            pair for pair in witness_episode["test"]
++            if prototype.analyze_scene(pair["input"])["active_port_count"] != 3
++        )
++        analysis = prototype.analyze_scene(witness_pair["input"])
++        correct = execute("reachable_port_relay", witness_pair["input"])
++        wrong = execute("wrong_global_port_count", witness_pair["input"])
++        if correct != witness_pair["output"] or wrong == correct:
++            raise AssertionError("causal counterfactual did not change the output")
++
++        racket = {
++            key: identity[key]
++            for key in (
++                "schema",
++                "backend",
++                "protected",
++                "binary_sha256",
++                "prelude_sha256",
++                "bridge_sha256",
++                "boot_script_sha256",
++                "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        }
++
++    public_dir.mkdir(parents=True, exist_ok=True)
++    public_rows = []
++    for mode in prototype.MODES:
++        full = prototype.generate_episode(5, mode=mode, demos=3, queries=4)
++        single = prototype.generate_episode(5, mode=mode, demos=3, queries=1)
++        if single["train"] != full["train"] or single["test"] != full["test"][:1]:
++            raise AssertionError("query stream is not prefix-stable")
++        public = _public_episode(full)
++        payload = public_challenge_bytes(public)
++        digest = public_challenge_id(public)
++        path = public_dir / f"challenge-{digest}.json"
++        path.write_bytes(payload)
++        first_single = public_challenge_bytes(_public_episode(single))
++        first_from_full = public_challenge_bytes({
++            "train": public["train"],
++            "test": public["test"][:1],
++        })
++        if first_single != first_from_full:
++            raise AssertionError("single-query first turn differs from four-query prefix")
++        public_rows.append({
++            "mode": mode,
++            "path": path.name,
++            "sha256": digest,
++            "demos": 3,
++            "queries": 4,
++            "single_query_prefix_sha256": hashlib.sha256(first_single).hexdigest(),
++        })
++
++    python_audit = prototype.audit_python(seeds=range(32), demo_counts=range(2, 7))
++    if python_audit["ambiguities"]:
++        raise AssertionError(python_audit["ambiguities"][:3])
++
++    return {
++        "schema": "f60cfd11346a-parametric-audit-v1",
++        "status": "passed",
++        "program_sha256": {
++            mode: hashlib.sha256(program.encode("utf-8")).hexdigest()
++            for mode, program in programs.items()
++        },
++        "sources": {
++            name: _sha(HERE / name)
++            for name in (
++                "adapter.py",
++                "prototype.py",
++                "canonical.rkt",
++                "relay.rkt",
++                "wrong_global_port_count.rkt",
++            )
++        },
++        "protected_racket": racket,
++        "racket_evaluations": evaluations,
++        "jobs": jobs,
++        "python_teaching_audit": python_audit,
++        "public_exports": public_rows,
++        "causal_probe": {
++            "seed": 0,
++            "active_port_count": analysis["active_port_count"],
++            "all_port_count": len(analysis["all_ports"]),
++            "selected_anchor": list(analysis["selected_anchor"]),
++            "wrong_global_count_rank": len(analysis["all_ports"]),
++            "outputs_differ": correct != wrong,
++            "ablation": "wrong_intermediate",
++        },
++        "limits": (
++            "Finite seeds, declared rivals, and protected executions only; owner "
++            "native acceptance and training admission remain pending."
++        ),
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--public-dir", type=Path, required=True)
++    args = parser.parse_args()
++    report = audit(public_dir=args.public_dir)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({
++        "status": report["status"],
++        "racket_evaluations": report["racket_evaluations"],
++        "episodes": report["python_teaching_audit"]["episodes"],
++        "ambiguities": len(report["python_teaching_audit"]["ambiguities"]),
++        "public_exports": len(report["public_exports"]),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/f60cfd11346a/workspace/parametric/wrong_global_port_count.rkt b/repo/generators/f60cfd11346a/workspace/parametric/wrong_global_port_count.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f60cfd11346a/workspace/parametric/wrong_global_port_count.rkt
+@@ -0,0 +1,18 @@
++(rule!
++  (let* ((seed (first (find-color g 2)))
++         (source-region
++          (connected-region g (first seed) (second seed)
++                            (lambda (r c v) (or (= v 0) (= v 2))) 4))
++         (source-zeros
++          (filter (lambda (p) (= (at g (first p) (second p)) 0))
++                  source-region))
++         (port-count (length (find-color g 1)))
++         (anchors (sort (find-color g 3) cell<))
++         (selected-anchor (nth anchors (- port-count 1)))
++         (target-region
++          (connected-region g (first selected-anchor) (second selected-anchor)
++                            (lambda (r c v) (or (= v 0) (= v 3))) 4))
++         (target-zeros
++          (filter (lambda (p) (= (at g (first p) (second p)) 0))
++                  target-region)))
++    (paint-cells (paint-cells g source-zeros 8) target-zeros 8)))
+\ No newline at end of file

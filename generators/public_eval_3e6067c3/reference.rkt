@@ -1,0 +1,60 @@
+(rule!
+ ;; Detached singleton colors form an ordered route through solid framed blocks.
+ ;; Match repeated colors to same-colored blocks in reading order. For each
+ ;; consecutive aligned pair, fill the empty corridor at the payload thickness
+ ;; using the departing block's payload color. Preserve blocks and legend.
+ (lambda (g)
+  (let ()
+   (define bg (pick-max (grid-colors g) (lambda (v) (count-color g v))))
+   (define frame
+    (pick-max (filter (lambda (v) (not (= v bg))) (grid-colors g))
+              (lambda (v) (count-color g v))))
+   (define all-objects (objects-multicolor g bg))
+   (define raw-blocks
+    (sort (filter (lambda (o) (> (obj-size o) 1)) all-objects)
+          (lambda (a b) (if (= (obj-r1 a) (obj-r1 b))
+                            (< (obj-c1 a) (obj-c1 b))
+                            (< (obj-r1 a) (obj-r1 b))))))
+   (define legend
+    (sort (filter (lambda (o) (= (obj-size o) 1)) all-objects)
+          (lambda (a b) (if (= (obj-r1 a) (obj-r1 b))
+                            (< (obj-c1 a) (obj-c1 b))
+                            (< (obj-r1 a) (obj-r1 b))))))
+   (define (block-data o)
+    (define colors
+     (remove-duplicates
+      (map (lambda (p) (at g (first p) (second p))) (obj-cells o))))
+    (define payload (first (filter (lambda (v) (not (= v frame))) colors)))
+    (define payload-cells
+     (filter (lambda (p) (= (at g (first p) (second p)) payload)) (obj-cells o)))
+    (list payload (obj-r1 o) (obj-c1 o) (obj-r2 o) (obj-c2 o)
+          (min-of first payload-cells) (min-of second payload-cells)
+          (max-of first payload-cells) (max-of second payload-cells)))
+   (define blocks (map block-data raw-blocks))
+   (define sequence (map obj-color legend))
+   (define route
+    (for/list ((color sequence) (i (range (length sequence))))
+     (define occurrence
+      (count-if (lambda (v) (= v color)) (take sequence i)))
+     (list-ref (filter (lambda (b) (= (first b) color)) blocks) occurrence)))
+   (define (bridge-cells a b)
+    (cond
+     ((and (= (list-ref a 5) (list-ref b 5)) (= (list-ref a 7) (list-ref b 7)))
+      (define lo (if (< (list-ref a 2) (list-ref b 2))
+                     (+ (list-ref a 4) 1) (+ (list-ref b 4) 1)))
+      (define hi (if (< (list-ref a 2) (list-ref b 2))
+                     (list-ref b 2) (list-ref a 2)))
+      (for*/list ((r (range (list-ref a 5) (+ (list-ref a 7) 1)))
+                  (c (range lo hi))) (list r c)))
+     ((and (= (list-ref a 6) (list-ref b 6)) (= (list-ref a 8) (list-ref b 8)))
+      (define lo (if (< (list-ref a 1) (list-ref b 1))
+                     (+ (list-ref a 3) 1) (+ (list-ref b 3) 1)))
+      (define hi (if (< (list-ref a 1) (list-ref b 1))
+                     (list-ref b 1) (list-ref a 1)))
+      (for*/list ((r (range lo hi))
+                  (c (range (list-ref a 6) (+ (list-ref a 8) 1)))) (list r c)))
+     (else '())))
+   (for/fold ((out g)) ((i (range (- (length route) 1))))
+    (define a (list-ref route i))
+    (define b (list-ref route (+ i 1)))
+    (paint-cells out (bridge-cells a b) (first a))))))

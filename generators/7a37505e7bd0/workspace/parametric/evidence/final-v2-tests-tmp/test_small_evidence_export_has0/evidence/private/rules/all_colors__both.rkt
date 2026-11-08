@@ -1,0 +1,1 @@
+(rule! (lambda (g) (let* ((n (length (grid-colors g)))) (if (<= n 1) g (upscale g n)))))

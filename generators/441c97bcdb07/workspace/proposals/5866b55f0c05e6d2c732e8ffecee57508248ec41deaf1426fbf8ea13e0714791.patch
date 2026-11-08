@@ -1,0 +1,4436 @@
+diff --git a/repo/generators/42ccd1ff25f3/SUMMARY.md b/repo/generators/42ccd1ff25f3/SUMMARY.md
+--- a/repo/generators/42ccd1ff25f3/SUMMARY.md
++++ b/repo/generators/42ccd1ff25f3/SUMMARY.md
+@@ -2,5 +2,5 @@
+ 
+ 0-bg grid (h~6-8, w~7-9) with exactly 3 SINGLE-CELL SEEDS in distinct colors at fixed asymmetric anchor positions: (1, 1), (1, w-2), (h-2, 3). Rule: extract seeds (all non-bg cells). For each cell of the output grid: if input is non-bg, keep that value. Else compute Manhattan distance to each seed, sort ascending; if the MIN distance is unique → take that seed's color; else (tie at the minimum) → 0. Net effect: nearest-seed Voronoi tessellation with ties left as bg.
+ 
+-Kind: `per_puzzle`. Imported version: `2.0.0`.
++Kind: `per_puzzle`. Reviewed version: `2.0.1`. Ordinary height-6 draws use width 8 so visible examples distinguish Manhattan from squared-Euclidean distance; explicit 6×7 and 6×9 overrides remain available for audits.
+ Approval is derived by the catalog from current code and retained evidence.
+diff --git a/repo/generators/42ccd1ff25f3/generator.py b/repo/generators/42ccd1ff25f3/generator.py
+--- a/repo/generators/42ccd1ff25f3/generator.py
++++ b/repo/generators/42ccd1ff25f3/generator.py
+@@ -14,7 +14,7 @@
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "42ccd1ff25f3"
+-VERSION = "2.0.0"
++VERSION = "2.0.1"
+ TASK_ID = "42ccd1ff25f3"
+ SUMMARY = (
+     "0-bg grid (h~6-8, w~7-9) with exactly 3 SINGLE-CELL "
+@@ -36,6 +36,7 @@
+ PALETTE_KINDS = ("default", "warm", "cool", "rainbow")
+ DEGENERATE_TEXTURES = ("only_one_seed", "all_same_color", "no_seeds")
+ HELPFUL_TEXTURES = PALETTE_KINDS
++CANONICAL_SHORTCUTS = ("euclidean_distance",)
+ 
+ AXES = {
+     "grid_h":         {"type": "int", "default": "rng 6..8", "valid": "5..12"},
+@@ -61,13 +62,22 @@
+         return _draw_from_degenerate(overrides["texture"], None)
+     if difficulty == "easy":
+         h = ctx.draw_int("grid_h", 6, 7)
+-        w = ctx.draw_int("grid_w", 7, 8)
++        w_lo, w_hi = 7, 8
+     elif difficulty == "hard":
+         h = ctx.draw_int("grid_h", 7, 8)
+-        w = ctx.draw_int("grid_w", 8, 9)
++        w_lo, w_hi = 8, 9
+     else:
+         h = ctx.draw_int("grid_h", 6, 8)
+-        w = ctx.draw_int("grid_w", 7, 9)
++        w_lo, w_hi = 7, 9
++
++    # At the fixed three anchor positions, 6x7 and 6x9 inputs have identical
++    # Manhattan and Euclidean Voronoi labels.  Keep those exact dimensions
++    # available to explicit audits, but choose the constructive 6x8 witness for
++    # ordinary draws so every visible example refutes the Euclidean shortcut.
++    if h == 6 and overrides.get("grid_w") is None:
++        w = ctx.draw_int("grid_w", 8, 8)
++    else:
++        w = ctx.draw_int("grid_w", w_lo, w_hi)
+     g = full_grid(h, w, 0)
+     rng = ctx.draw_rng("layout")
+     palette = [2, 3, 4, 5, 6]; rng.shuffle(palette)
+diff --git a/repo/generators/42ccd1ff25f3/notes.md b/repo/generators/42ccd1ff25f3/notes.md
+--- a/repo/generators/42ccd1ff25f3/notes.md
++++ b/repo/generators/42ccd1ff25f3/notes.md
+@@ -2,3 +2,11 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Optional peer repair 2.0.1 (2026-10-24)
++
++A source-bound probe found a metric ambiguity in the assigned 2.0.0 sampler. With the fixed three anchor positions, 6×7 and 6×9 grids produce exactly the same canonical Manhattan and plausible squared-Euclidean Voronoi labels. A three-demonstration lesson using dimensions 6×9, 6×7, and 6×9 therefore admits both rules, while an 8×8 query separates them at five cells under protected Racket.
++
++The repair keeps those dimensions available through explicit `grid_h` / `grid_w` overrides for audits, but ordinary draws with height 6 now constructively use width 8, which separates the two metrics. `CANONICAL_SHORTCUTS` records `euclidean_distance`; no canonical Racket source changed. Current generator SHA-256 is `9032e3879713eb47d1b5ea69ae244ef714e110d59787a970be5187943f2e54e9`; canonical program SHA-256 is `02d0bfede126e5a0b759e8eab0ba63ccb685c1cb96899b04405d5e8cfea57213`.
++
++The focused suite passed 3/3. The reusable audit `workspace/audit_metric_shortcut.py` checked 2,048 ordinary draws across four difficulty values with no Manhattan/Euclidean collisions and replayed the three ambiguous demonstrations plus separating query through protected Racket (four evaluations). Scope is limited to this named rival; owner checked integration remains pending.
+diff --git a/repo/generators/42ccd1ff25f3/tests/test_metric_teaching.py b/repo/generators/42ccd1ff25f3/tests/test_metric_teaching.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/42ccd1ff25f3/tests/test_metric_teaching.py
+@@ -0,0 +1,99 @@
++"""Regression checks for the Manhattan-vs-Euclidean teaching surface."""
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root, normalize_grid
++
++
++TASK_ID = "42ccd1ff25f3"
++ROOT = find_root(__file__)
++SOURCE = ROOT / "generators" / TASK_ID / "generator.py"
++
++
++def _load_generator():
++    spec = importlib.util.spec_from_file_location(f"test_{TASK_ID}_generator", SOURCE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _program() -> str:
++    programs = set()
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        for line in handle:
++            if line.strip():
++                row = json.loads(line)
++                if row.get("task_id") == TASK_ID:
++                    programs.add(row["program_solution"])
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def _solve(grid, metric: str):
++    seeds = [(r, c, value) for r, row in enumerate(grid) for c, value in enumerate(row) if value]
++    output = []
++    for row_index, row in enumerate(grid):
++        out_row = []
++        for col_index, value in enumerate(row):
++            if value:
++                out_row.append(value)
++                continue
++            ranked = []
++            for seed_row, seed_col, seed_color in seeds:
++                delta_row = abs(row_index - seed_row)
++                delta_col = abs(col_index - seed_col)
++                if metric == "manhattan":
++                    distance = delta_row + delta_col
++                elif metric == "euclidean_squared":
++                    distance = delta_row * delta_row + delta_col * delta_col
++                else:
++                    raise ValueError(metric)
++                ranked.append((distance, seed_color))
++            ranked.sort()
++            out_row.append(0 if len(ranked) >= 2 and ranked[0][0] == ranked[1][0] else ranked[0][1])
++        output.append(out_row)
++    return output
++
++
++def _racket(bridge: RacketBridge, grid):
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return normalize_grid(bridge.eval_text(f"({wrap_rule(_program())} {literal})"))
++
++
++def test_default_draws_constructively_distinguish_manhattan_from_euclidean():
++    generator = _load_generator()
++    for difficulty in (None, "easy", "medium", "hard"):
++        for seed in range(64):
++            for sample_index in range(8):
++                grid = generator.generate(seed, sample_index, difficulty=difficulty)
++                assert _solve(grid, "manhattan") != _solve(grid, "euclidean_squared"), (
++                    difficulty,
++                    seed,
++                    sample_index,
++                    len(grid),
++                    len(grid[0]),
++                )
++
++
++def test_exact_dimension_overrides_remain_available_for_audits():
++    generator = _load_generator()
++    for height, width in ((6, 7), (6, 9), (8, 8)):
++        grid = generator.generate(5, 3, grid_h=height, grid_w=width)
++        assert (len(grid), len(grid[0])) == (height, width)
++        assert generator.self_check(grid) == []
++
++
++def test_postrepair_metric_witness_matches_protected_canonical_racket():
++    generator = _load_generator()
++    grid = generator.generate(176, 0)
++    expected = _solve(grid, "manhattan")
++    assert expected != _solve(grid, "euclidean_squared")
++    with RacketBridge(timeout=30, startup_timeout=60) as bridge:
++        assert _racket(bridge, grid) == expected
++        assert bridge.runtime_identity["protected"] is True
+diff --git a/repo/generators/42ccd1ff25f3/workspace/audit_metric_shortcut.py b/repo/generators/42ccd1ff25f3/workspace/audit_metric_shortcut.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/42ccd1ff25f3/workspace/audit_metric_shortcut.py
+@@ -0,0 +1,191 @@
++#!/usr/bin/env python3
++"""Source-bound Manhattan-vs-Euclidean teaching audit for 42ccd1ff25f3."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++from typing import Iterable
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root, normalize_grid
++
++TASK_ID = "42ccd1ff25f3"
++ASSIGNED_SOURCE_SHA256 = "56539199ddc6604a7ef04b4fb7cb57a6c5a026992c3b7e0c5168a980d60fd453"
++
++
++def load_generator(root: Path):
++    source = root / "generators" / TASK_ID / "generator.py"
++    spec = importlib.util.spec_from_file_location(f"audit_{TASK_ID}_generator", source)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load {source}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module, source
++
++
++def canonical_program(root: Path) -> str:
++    programs: set[str] = set()
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        for line in handle:
++            if not line.strip():
++                continue
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                programs.add(row["program_solution"])
++    if len(programs) != 1:
++        raise RuntimeError(f"expected one canonical program, got {len(programs)}")
++    return next(iter(programs))
++
++
++def solve(grid: list[list[int]], metric: str) -> list[list[int]]:
++    seeds = [(r, c, value) for r, row in enumerate(grid) for c, value in enumerate(row) if value]
++    output: list[list[int]] = []
++    for row_index, row in enumerate(grid):
++        out_row: list[int] = []
++        for col_index, value in enumerate(row):
++            if value:
++                out_row.append(value)
++                continue
++            ranked: list[tuple[int, int]] = []
++            for seed_row, seed_col, seed_color in seeds:
++                dr = abs(row_index - seed_row)
++                dc = abs(col_index - seed_col)
++                if metric == "manhattan":
++                    distance = dr + dc
++                elif metric == "euclidean_squared":
++                    distance = dr * dr + dc * dc
++                else:
++                    raise ValueError(metric)
++                ranked.append((distance, seed_color))
++            ranked.sort()
++            out_row.append(0 if ranked[0][0] == ranked[1][0] else ranked[0][1])
++        output.append(out_row)
++    return output
++
++
++def make_grid(height: int, width: int, colors: Iterable[int]) -> list[list[int]]:
++    colors = tuple(colors)
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    for (row, col), color in zip(((1, 1), (1, width - 2), (height - 2, 3)), colors, strict=True):
++        grid[row][col] = color
++    return grid
++
++
++def racket_eval(bridge: RacketBridge, wrapped: str, grid: list[list[int]]) -> list[list[int]]:
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return normalize_grid(bridge.eval_text(f"({wrapped} {literal})"))
++
++
++def differing_cells(a: list[list[int]], b: list[list[int]]) -> list[list[int]]:
++    return [[r, c, a[r][c], b[r][c]] for r in range(len(a)) for c in range(len(a[0])) if a[r][c] != b[r][c]]
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", type=int, default=64)
++    parser.add_argument("--samples", type=int, default=8)
++    args = parser.parse_args()
++
++    root = find_root(__file__)
++    generator, source = load_generator(root)
++    source_bytes = source.read_bytes()
++    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
++    program = canonical_program(root)
++    wrapped = wrap_rule(program)
++
++    lesson_specs = [
++        (6, 9, (2, 3, 4)),
++        (6, 7, (5, 7, 2)),
++        (6, 9, (6, 3, 8)),
++    ]
++    query_spec = (8, 8, (4, 2, 6))
++    lesson = [make_grid(*spec) for spec in lesson_specs]
++    query = make_grid(*query_spec)
++    lesson_rows = []
++    racket_evaluations = 0
++    with RacketBridge(timeout=30, startup_timeout=60) as bridge:
++        for grid in lesson:
++            manhattan = solve(grid, "manhattan")
++            euclidean = solve(grid, "euclidean_squared")
++            racket = racket_eval(bridge, wrapped, grid)
++            racket_evaluations += 1
++            if racket != manhattan or euclidean != manhattan:
++                raise AssertionError("historical demonstration does not preserve the ambiguity")
++            lesson_rows.append({"input": grid, "canonical_output": racket})
++        manhattan_query = solve(query, "manhattan")
++        euclidean_query = solve(query, "euclidean_squared")
++        racket_query = racket_eval(bridge, wrapped, query)
++        racket_evaluations += 1
++        if racket_query != manhattan_query or euclidean_query == manhattan_query:
++            raise AssertionError("query does not separate the two metrics")
++        runtime_identity = bridge.runtime_identity
++
++    difficulties = (None, "easy", "medium", "hard")
++    checked = 0
++    dimensions: dict[str, int] = {}
++    for difficulty in difficulties:
++        for seed in range(args.seeds):
++            for sample_index in range(args.samples):
++                grid = generator.generate(seed, sample_index, difficulty=difficulty)
++                if generator.self_check(grid) != []:
++                    raise AssertionError((difficulty, seed, sample_index, generator.self_check(grid)))
++                if solve(grid, "manhattan") == solve(grid, "euclidean_squared"):
++                    raise AssertionError(("ambiguous default after repair", difficulty, seed, sample_index))
++                key = f"{len(grid)}x{len(grid[0])}"
++                dimensions[key] = dimensions.get(key, 0) + 1
++                checked += 1
++
++    explicit_ambiguous = []
++    for height, width in ((6, 7), (6, 9)):
++        grid = generator.generate(5, 3, grid_h=height, grid_w=width)
++        if solve(grid, "manhattan") != solve(grid, "euclidean_squared"):
++            raise AssertionError("explicit legacy audit dimension unexpectedly stopped being ambiguous")
++        explicit_ambiguous.append([height, width])
++
++    report = {
++        "schema": "arcpuzzles-peer-metric-audit-v1",
++        "task_id": TASK_ID,
++        "status": "passed",
++        "assigned_source_sha256": ASSIGNED_SOURCE_SHA256,
++        "audited_source_sha256": source_sha256,
++        "generator_version": generator.VERSION,
++        "canonical_program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++        "historical_ambiguity": {
++            "rival": "euclidean_squared_nearest_seed",
++            "demonstrations": lesson_rows,
++            "query_input": query,
++            "canonical_query_output": manhattan_query,
++            "rival_query_output": euclidean_query,
++            "differing_cells": differing_cells(manhattan_query, euclidean_query),
++        },
++        "repair": {
++            "summary": "ordinary h=6 draws use width 8; explicit 6x7 and 6x9 overrides remain available for audits",
++            "default_draws_checked": checked,
++            "dimension_counts": dict(sorted(dimensions.items())),
++            "remaining_explicit_ambiguous_dimensions": explicit_ambiguous,
++        },
++        "racket": {
++            "evaluations": racket_evaluations,
++            "runtime_identity": runtime_identity,
++        },
++        "limits": "Finite Euclidean rival audit only; this is not a proof against every alternative distance rule.",
++    }
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({
++        "status": report["status"],
++        "out": str(args.out),
++        "default_draws_checked": checked,
++        "query_differing_cells": len(report["historical_ambiguity"]["differing_cells"]),
++        "racket_evaluations": racket_evaluations,
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/441c97bcdb07/SUMMARY.md b/repo/generators/441c97bcdb07/SUMMARY.md
+--- a/repo/generators/441c97bcdb07/SUMMARY.md
++++ b/repo/generators/441c97bcdb07/SUMMARY.md
+@@ -7,3 +7,5 @@
+ The public exact axes are `grid_h` (9–22), `grid_w` (9–22), and `shape_id` (0–9). The deterministic lesson schedule alternates four-cell canonical anchors with three- or five-cell counterexamples to the canonical-fitting `four_cell_only` shortcut.
+ 
+ Approval remains derived by the catalog from current code and retained evidence.
++
++A reviewer-ready native parametric prototype preserves the exact canonical `translate` default and adds `span_directed_turn`, where the input-derived dominant rectangle span selects clockwise versus counterclockwise completion. It supports 2–6 demonstrations and four stable queries, including a substantive 30×30 case; owner acceptance remains pending.
+diff --git a/repo/generators/441c97bcdb07/notes.md b/repo/generators/441c97bcdb07/notes.md
+--- a/repo/generators/441c97bcdb07/notes.md
++++ b/repo/generators/441c97bcdb07/notes.md
+@@ -80,3 +80,13 @@
+ ## D8 — Stop at a source-bound, replayable repair
+ 
+ No Racket authority, shared runtime, canonical row, or unrelated generator was edited. The remaining limitation is epistemic: the finite shape bank, tests, and named-rival census cannot certify uniqueness against every human- or model-invented rule. Catalog approval and training admission remain external and unverified even though this review's required gates are green.
++
++## Parametric admission review 1.0.0 (2026-10-24)
++
++This return adds a native parametric family under `workspace/parametric/`; it does **not** edit the production generator or canonical authority. The default setting, `completion_transform=translate`, preserves the exact 1,268-byte canonical Racket program with SHA-256 `a51bdd8a29a68d931403ff3d56792b2c53d8d8920dd22fecb3aa7af91c1abda7`. The nearby alternative, `span_directed_turn`, first infers whether the source-copy rectangle is horizontally or vertically dominant, then rotates the copied pivot shape clockwise or counterclockwise before painting the missing fourth corner. Its qualified program SHA-256 is `3733f13f0a1f36575ce061c3cadd7c9cf7e5a173cd89c84525755579ba4bd09f`.
++
++The family supports independently selected 2–6 demonstrations and 1–4 queries, with stable query prefixes and four stored queries. The first two demonstrations constructively show both horizontal- and vertical-dominant cases. The fourth query is a substantive 30×30 case containing three copies of a connected asymmetric 25-cell motif rather than a padded small puzzle. Inputs are matched across settings; private settings, programs, and query answers are excluded from public projections.
++
++The required sequential dependency is: (A) locate the TL/TR/BL copies and compare row-span with col-span; intermediate `dominant_span` is `horizontal` or `vertical`; (B) use that value to choose clockwise or counterclockwise rotation and paint the fourth copy. The native witness at `checks/441c97bcdb07/causal/witness.json` selects an exact qualified alternate-setting query and replaces the inferred horizontal intermediate with the vertical branch. Protected Racket changes the final output, so B cannot be selected before A for that case. The companion replay record is `checks/441c97bcdb07/causal/replay.json`.
++
++Focused changed-target tests passed 26/26. The finite self-audit rejected eight declared shortcuts across four two-demo/four-query episodes and 24 labelled pairs, executed 26 protected-Racket evaluations, checked four public projections, and swept 768 episodes / 5,888 pairs across demo counts 2, 3, and 6 with no failures. Native qualification passed both settings at seeds 0 and 17 with three demonstrations and four queries per job, totaling 40 protected-Racket evaluations. These are finite checks, not a universal identifiability or training-gain proof. The result is reviewer-ready only; exact-live-byte owner acceptance and any training admission remain pending.
+diff --git a/repo/generators/441c97bcdb07/tests/test_parameters.py b/repo/generators/441c97bcdb07/tests/test_parameters.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/tests/test_parameters.py
+@@ -0,0 +1,191 @@
++"""Focused native-parametric contract tests for 441c97bcdb07."""
++from __future__ import annotations
++
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root, normalize_grid, public_challenge_bytes, public_challenge_id
++
++
++TASK_ID = "441c97bcdb07"
++ROOT = find_root(__file__)
++PARAMETRIC = ROOT / "generators" / TASK_ID / "workspace" / "parametric"
++CANONICAL = "translate"
++ALTERNATE = "span_directed_turn"
++CANONICAL_SHA256 = "a51bdd8a29a68d931403ff3d56792b2c53d8d8920dd22fecb3aa7af91c1abda7"
++
++
++def _load(name: str):
++    path = PARAMETRIC / f"{name}.py"
++    assert path.is_file(), f"missing {path.relative_to(ROOT)}"
++    spec = importlib.util.spec_from_file_location(f"test_{TASK_ID}_{name}", path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _canonical_program() -> str:
++    programs = set()
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        for line in handle:
++            if line.strip():
++                row = json.loads(line)
++                if row.get("task_id") == TASK_ID:
++                    programs.add(row["program_solution"])
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def _inputs(episode: dict) -> list:
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def _racket(bridge: RacketBridge, source: str, grid: list[list[int]]) -> list[list[int]]:
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return normalize_grid(bridge.eval_text(f"({wrap_rule(source)} {literal})"))
++
++
++def test_adapter_contract_and_exact_canonical_default():
++    adapter = _load("adapter")
++    contract = json.loads((PARAMETRIC / "promotion.json").read_text(encoding="utf-8"))
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": f"generators/{TASK_ID}/workspace/parametric/adapter.py",
++        "parameters": {"completion_transform": [CANONICAL, ALTERNATE]},
++        "default": {"completion_transform": CANONICAL},
++        "limits": {"demos": [2, 6], "queries": [1, 4]},
++        "resources": [
++            f"generators/{TASK_ID}/workspace/parametric/prototype.py",
++            f"generators/{TASK_ID}/workspace/parametric/canonical.rkt",
++            f"generators/{TASK_ID}/workspace/parametric/audit_family.py",
++        ],
++    }
++    canonical = _canonical_program()
++    assert hashlib.sha256(canonical.encode()).hexdigest() == CANONICAL_SHA256
++    assert (PARAMETRIC / "canonical.rkt").read_bytes() == canonical.encode()
++    assert adapter.program({"completion_transform": CANONICAL}) == canonical
++    alternate = adapter.program({"completion_transform": ALTERNATE})
++    assert alternate != canonical
++    assert "row-span" in alternate and "col-span" in alternate and "turned" in alternate
++
++
++def test_settings_seed_and_counts_fail_closed():
++    adapter = _load("adapter")
++    for bad in (
++        {},
++        {"completion_transform": CANONICAL, "extra": 1},
++        {"completion_transform": "always_cw"},
++        {"completion_transform": 1},
++    ):
++        with pytest.raises(ValueError):
++            adapter.program(bad)
++    for seed in (True, -1, 1.0, "1", 2**63):
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(seed, {"completion_transform": CANONICAL}, 3, 4)
++    for demos, queries in ((1, 4), (7, 4), (True, 4), (3, 0), (3, 5), (3, True)):
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(1, {"completion_transform": CANONICAL}, demos, queries)
++
++
++def test_inputs_are_matched_distinct_and_every_label_changes_between_settings():
++    adapter = _load("adapter")
++    canonical = adapter.generate(23, {"completion_transform": CANONICAL}, 3, 4)
++    alternate = adapter.generate(23, {"completion_transform": ALTERNATE}, 3, 4)
++    assert _inputs(canonical) == _inputs(alternate)
++    signatures = [json.dumps(grid, separators=(",", ":")) for grid in _inputs(canonical)]
++    assert len(signatures) == len(set(signatures)) == 7
++    for left, right in zip(
++        canonical["train"] + canonical["test"],
++        alternate["train"] + alternate["test"],
++        strict=True,
++    ):
++        assert left["output"] != right["output"]
++
++
++def test_demo_and_query_counts_are_independent_prefixes():
++    adapter = _load("adapter")
++    setting = {"completion_transform": ALTERNATE}
++    minimum = adapter.generate(41, setting, 2, 1)
++    full_queries = adapter.generate(41, setting, 2, 4)
++    full_demos = adapter.generate(41, setting, 6, 4)
++    assert minimum["train"] == full_queries["train"] == full_demos["train"][:2]
++    assert minimum["test"] == full_queries["test"][:1]
++    assert full_queries["test"] == full_demos["test"]
++    assert len(full_demos["train"]) == 6
++    assert len(full_demos["test"]) == 4
++
++
++def test_two_demonstrations_identify_each_setting_and_refute_declared_shortcuts():
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    for selected in (CANONICAL, ALTERNATE):
++        episode = adapter.generate(57, {"completion_transform": selected}, 2, 4)
++        audit = prototype.audit_episode(episode, selected)
++        assert audit["surviving_declared_rules"] == [selected]
++        assert audit["query_disagreements_against_other_setting"] == 4
++        assert audit["surviving_shortcuts"] == []
++        assert {prototype.analyze_input(pair["input"])["dominant_span"] for pair in episode["train"]} == {
++            "horizontal",
++            "vertical",
++        }
++
++
++def test_four_queries_cover_boundaries_spread_and_exact_30x30_stress():
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    episode = adapter.generate(73, {"completion_transform": ALTERNATE}, 3, 4)
++    dims = [(len(pair["input"]), len(pair["input"][0])) for pair in episode["test"]]
++    assert dims == [(12, 18), (20, 15), (24, 29), (30, 30)]
++    metrics = [prototype.input_metrics(pair["input"]) for pair in episode["test"]]
++    assert {row["dominant_span"] for row in metrics} == {"horizontal", "vertical"}
++    assert any(row["boundary_sides"] for row in metrics)
++    stress = metrics[-1]
++    assert stress["height"] == stress["width"] == 30
++    assert stress["shape_cells"] >= 24
++    assert stress["occupied_cells"] >= 72
++    assert "top" in stress["boundary_sides"] and "left" in stress["boundary_sides"]
++    assert "bottom" in stress["boundary_sides"]
++
++
++def test_public_turn_masks_answers_program_setting_and_future_queries():
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    episode = adapter.generate(89, {"completion_transform": ALTERNATE}, 3, 4)
++    public = prototype.public_turn(episode, 0)
++    raw = public_challenge_bytes(public)
++    parsed = json.loads(raw)
++    assert len(parsed["test"]) == 1
++    assert all(set(pair) == {"input"} for pair in parsed["test"])
++    assert b"completion_transform" not in raw
++    assert b"program_solution" not in raw
++    assert ALTERNATE.encode() not in raw
++    assert public_challenge_id(public) == hashlib.sha256(raw).hexdigest()
++
++    mutated = copy.deepcopy(episode)
++    mutated["test"][0]["output"][0][0] = (mutated["test"][0]["output"][0][0] + 1) % 10
++    assert public_challenge_id(prototype.public_turn(mutated, 0)) == public_challenge_id(public)
++
++
++def test_python_claims_match_both_exact_racket_programs_on_boundary_and_stress_cases():
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    with RacketBridge(timeout=30, startup_timeout=60, max_calls_before_restart=32) as bridge:
++        for selected in (CANONICAL, ALTERNATE):
++            episode = adapter.generate(101, {"completion_transform": selected}, 2, 4)
++            source = adapter.program({"completion_transform": selected})
++            for pair in episode["train"] + episode["test"]:
++                assert _racket(bridge, source, pair["input"]) == pair["output"]
++        assert bridge.runtime_identity["protected"] is True
++
++    witness = prototype.causal_witness(101)
++    assert witness["intermediate"] in {"horizontal", "vertical"}
++    assert witness["wrong_intermediate"] != witness["intermediate"]
++    assert witness["differing_cells"] > 0
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/README.md b/repo/generators/441c97bcdb07/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/README.md
+@@ -0,0 +1,12 @@
++# 441c97bcdb07 completion-transform family
++
++`completion_transform=translate` is the exact canonical program. The alternative
++`span_directed_turn` first infers whether the source-copy rectangle is wider or
++taller, then rotates the missing fourth copy clockwise or counterclockwise.
++Inputs are sampled independently of the hidden setting. The adapter supports
++2–6 demonstrations and 1–4 queries; the fourth query is an exact 30×30 stress
++case with a 25-cell connected motif and source copies touching three boundaries.
++
++The bounded audit checks both exact Racket programs, declared finite shortcuts,
++visible-only public turns, prefix-stable counts, and a protected-Racket
++wrong-intermediate witness. It is finite evidence, not universal uniqueness.
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/adapter.py b/repo/generators/441c97bcdb07/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/adapter.py
+@@ -0,0 +1,41 @@
++"""Exact-path native adapter for the 441c97bcdb07 completion family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++from typing import Any
++
++
++_HERE = Path(__file__).resolve().parent
++_PROTOTYPE_PATH = _HERE / "prototype.py"
++_MODULE_NAME = "_parametric_441c97bcdb07_" + hashlib.sha256(
++    str(_PROTOTYPE_PATH).encode() + _PROTOTYPE_PATH.read_bytes()
++).hexdigest()
++
++
++def _load_prototype():
++    module = sys.modules.get(_MODULE_NAME)
++    if module is not None:
++        return module
++    spec = importlib.util.spec_from_file_location(_MODULE_NAME, _PROTOTYPE_PATH)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load adjacent prototype from {_PROTOTYPE_PATH}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[_MODULE_NAME] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++_PROTOTYPE = _load_prototype()
++
++
++def program(settings: Any) -> str:
++    selected = _PROTOTYPE.validate_settings(settings)
++    return _PROTOTYPE.program_for(selected)
++
++
++def generate(seed: int, settings: Any, demos: int, queries: int) -> dict[str, Any]:
++    selected = _PROTOTYPE.validate_settings(settings)
++    return _PROTOTYPE.generate_episode(seed, selected, demos, queries)
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/audit_family.py b/repo/generators/441c97bcdb07/workspace/parametric/audit_family.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/audit_family.py
+@@ -0,0 +1,169 @@
++#!/usr/bin/env python3
++"""Build compact protected-Racket and finite-rival evidence for this family."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import find_root, normalize_grid, public_challenge_bytes, public_challenge_id
++
++
++HERE = Path(__file__).resolve().parent
++TASK_ID = "441c97bcdb07"
++
++
++def _load_prototype():
++    path = HERE / "prototype.py"
++    spec = importlib.util.spec_from_file_location("_audit_parametric_441c97bcdb07", path)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _evaluate(bridge: RacketBridge, source: str, grid):
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return normalize_grid(bridge.eval_text(f"({wrap_rule(source)} {literal})"))
++
++
++def _sha256(value: str | bytes) -> str:
++    return hashlib.sha256(value.encode() if isinstance(value, str) else value).hexdigest()
++
++
++def build_report(out: Path, seeds: tuple[int, ...]) -> dict:
++    prototype = _load_prototype()
++    exact_checks = 0
++    finite_episodes = 0
++    finite_pairs = 0
++    settings = (prototype.CANONICAL, prototype.ALTERNATE)
++    public_ids = []
++    with RacketBridge(timeout=30, startup_timeout=60, max_calls_before_restart=96) as bridge:
++        for seed in seeds:
++            for selected in settings:
++                episode = prototype.generate_episode(seed, selected, 2, 4)
++                audit = prototype.audit_episode(episode, selected)
++                if audit["surviving_declared_rules"] != [selected] or audit["surviving_shortcuts"]:
++                    raise AssertionError({"seed": seed, "selected": selected, "audit": audit})
++                finite_episodes += 1
++                finite_pairs += len(episode["train"]) + len(episode["test"])
++                source = prototype.program_for(selected)
++                for pair in episode["train"] + episode["test"]:
++                    actual = _evaluate(bridge, source, pair["input"])
++                    if actual != pair["output"]:
++                        raise AssertionError({"seed": seed, "selected": selected, "input": pair["input"]})
++                    exact_checks += 1
++                public = prototype.public_turn(episode, 0)
++                raw = public_challenge_bytes(public)
++                forbidden = (b"completion_transform", b"program_solution", selected.encode())
++                if any(value in raw for value in forbidden):
++                    raise AssertionError("public projection leaked private metadata")
++                visible_id = public_challenge_id(public)
++                if visible_id != _sha256(raw):
++                    raise AssertionError("public ID is not the visible-byte SHA256")
++                public_ids.append(visible_id)
++
++        witness_input = prototype.build_input(seeds[0], "query", 2)
++        analysis = prototype.analyze_input(witness_input)
++        correct_source = prototype.alternate_program()
++        wrong_source = prototype.wrong_intermediate_program()
++        correct_output = _evaluate(bridge, correct_source, witness_input)
++        wrong_output = _evaluate(bridge, wrong_source, witness_input)
++        exact_checks += 2
++        differing_cells = sum(
++            left != right
++            for left_row, right_row in zip(correct_output, wrong_output, strict=True)
++            for left, right in zip(left_row, right_row, strict=True)
++        )
++        if differing_cells <= 0:
++            raise AssertionError("wrong-intermediate witness did not change the final output")
++        identity = bridge.runtime_identity
++
++    # Broader sampler/teaching sweep without multiplying Racket startup cost.
++    sampler_episodes = 0
++    sampler_pairs = 0
++    for seed in range(128):
++        for selected in settings:
++            for demos in (2, 3, 6):
++                episode = prototype.generate_episode(seed, selected, demos, 4)
++                audit = prototype.audit_episode(episode, selected)
++                if audit["surviving_declared_rules"] != [selected] or audit["surviving_shortcuts"]:
++                    raise AssertionError({"seed": seed, "selected": selected, "demos": demos, "audit": audit})
++                sampler_episodes += 1
++                sampler_pairs += demos + 4
++
++    report = {
++        "schema": "441c97bcdb07-parametric-audit-v1",
++        "task_id": TASK_ID,
++        "status": "passed",
++        "settings": list(settings),
++        "seeds": list(seeds),
++        "protected_racket": {
++            "evaluations": exact_checks,
++            "runtime_identity": identity,
++            "canonical_sha256": _sha256(prototype.canonical_program()),
++            "alternate_sha256": _sha256(prototype.alternate_program()),
++        },
++        "finite_self_review": {
++            "episodes": finite_episodes,
++            "pairs": finite_pairs,
++            "declared_shortcuts": list(prototype.DECLARED_SHORTCUTS),
++            "surviving_shortcuts": [],
++            "scope": "two-demo/four-query lessons for the listed seeds and declared finite rivals only",
++        },
++        "sampler_sweep": {
++            "episodes": sampler_episodes,
++            "pairs": sampler_pairs,
++            "seeds": [0, 127],
++            "demo_counts": [2, 3, 6],
++            "query_count": 4,
++            "failures": [],
++        },
++        "public_projection": {
++            "checked": len(public_ids),
++            "distinct_visible_ids": len(set(public_ids)),
++            "private_fields_absent": True,
++        },
++        "sequential_dependency": {
++            "step_a": "locate TL/TR/BL copies and compare row-span with col-span",
++            "intermediate": analysis["dominant_span"],
++            "step_b": "choose clockwise or counterclockwise quarter-turn and paint at the inferred fourth corner",
++            "why_b_depends_on_a": "the selected turn direction is the result of the span comparison and cannot be selected before it",
++            "wrong_intermediate": "vertical" if analysis["dominant_span"] == "horizontal" else "horizontal",
++            "input": witness_input,
++            "correct_program_sha256": _sha256(correct_source),
++            "wrong_program_sha256": _sha256(wrong_source),
++            "correct_output": correct_output,
++            "wrong_output": wrong_output,
++            "differing_cells": differing_cells,
++            "executed_with_protected_racket": True,
++        },
++    }
++    out.parent.mkdir(parents=True, exist_ok=True)
++    out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    return report
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", type=int, nargs="*", default=(0, 17))
++    args = parser.parse_args()
++    report = build_report(args.out, tuple(args.seeds))
++    print(json.dumps({
++        "status": report["status"],
++        "racket_evaluations": report["protected_racket"]["evaluations"],
++        "sampler_episodes": report["sampler_sweep"]["episodes"],
++        "witness_differing_cells": report["sequential_dependency"]["differing_cells"],
++        "out": str(args.out),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/canonical.rkt b/repo/generators/441c97bcdb07/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (fifth xs) (list-ref xs 4)) (define (e8b-list< a b) (cond ((empty? a) #f) ((< (first a) (first b)) #t) ((> (first a) (first b)) #f) (else (e8b-list< (rest a) (rest b))))) (define (t10-norm-cells cells) (let* ((bb (bbox-of-cells cells)) (r0 (first bb)) (c0 (second bb)) (r1 (third bb)) (c1 (fourth bb))) (list (map (lambda (p) (list (- (first p) r0) (- (second p) c0))) cells) (+ 1 (- r1 r0)) (+ 1 (- c1 c0)) r0 c0))) (define (t3-component-items grid) (map (lambda (obj) (let* ((info (t10-norm-cells (obj-cells obj))) (offs (first info)) (sh (second info)) (sw (third info)) (bb (obj-bbox obj))) (list (obj-color obj) offs sh sw (first bb) (second bb) obj))) (objects grid 0))) (let* ((items (t3-component-items g)) (pivot (first (sort items (lambda (a b) (e8b-list< (list (fifth a) (list-ref a 5)) (list (fifth b) (list-ref b 5))))))) (prow (fifth pivot)) (pcol (list-ref pivot 5)) (horiz (first (filter (lambda (it) (and (= (fifth it) prow) (not (= (list-ref it 5) pcol)))) items))) (vert (first (filter (lambda (it) (and (= (list-ref it 5) pcol) (not (= (fifth it) prow)))) items))) (mr (fifth vert)) (mc (list-ref horiz 5))) (paint-cells g (map (lambda (p) (list (+ mr (first p)) (+ mc (second p)))) (second pivot)) (first pivot)))))
+\ No newline at end of file
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/audit-command.json b/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/audit-command.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/audit-command.json
+@@ -0,0 +1,55 @@
++{
++  "delegated": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "/mnt/data/work_arc_181006_again/WORK/run_with_racket.py",
++      "/opt/pyvenv/bin/python3",
++      "generators/441c97bcdb07/workspace/parametric/audit_family.py",
++      "--out",
++      "../checks/441c97bcdb07/parametric-audit.json",
++      "--seeds",
++      "0",
++      "17"
++    ],
++    "cwd": "/mnt/data/work_arc_181006_again/WORK"
++  },
++  "elapsed_seconds": 8.065220717000045,
++  "evidence_directory": "checks/441c97bcdb07",
++  "exit_scope": "run_with_racket.py, which execs the payload after setup",
++  "invocation": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "/mnt/data/work_arc_181006_again/review.py",
++      "run",
++      "--receipt",
++      "checks/441c97bcdb07/audit-command.json",
++      "python3",
++      "generators/441c97bcdb07/workspace/parametric/audit_family.py",
++      "--out",
++      "../checks/441c97bcdb07/parametric-audit.json",
++      "--seeds",
++      "0",
++      "17"
++    ],
++    "cwd": "/mnt/data/work_arc_181006_again"
++  },
++  "limits": [
++    "Payload cwd is the launcher contract; setup or exec can fail before payload starts.",
++    "This receipt records process completion, not semantic validation or evidence contents."
++  ],
++  "payload": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "generators/441c97bcdb07/workspace/parametric/audit_family.py",
++      "--out",
++      "../checks/441c97bcdb07/parametric-audit.json",
++      "--seeds",
++      "0",
++      "17"
++    ],
++    "expected_cwd": "/mnt/data/work_arc_181006_again/WORK/repo"
++  },
++  "returncode": 0,
++  "schema": "arcpuzzles-run-command-v1",
++  "status": "completed"
++}
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/parametric-audit.json b/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/parametric-audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/parametric-audit.json
+@@ -0,0 +1,2336 @@
++{
++  "finite_self_review": {
++    "declared_shortcuts": [
++      "always_cw",
++      "always_ccw",
++      "reverse_span_turn",
++      "always_180",
++      "wide_only_turn",
++      "tall_only_turn",
++      "turn_large_only",
++      "turn_small_only"
++    ],
++    "episodes": 4,
++    "pairs": 24,
++    "scope": "two-demo/four-query lessons for the listed seeds and declared finite rivals only",
++    "surviving_shortcuts": []
++  },
++  "protected_racket": {
++    "alternate_sha256": "3733f13f0a1f36575ce061c3cadd7c9cf7e5a173cd89c84525755579ba4bd09f",
++    "canonical_sha256": "a51bdd8a29a68d931403ff3d56792b2c53d8d8920dd22fecb3aa7af91c1abda7",
++    "evaluations": 26,
++    "runtime_identity": {
++      "backend": "racket",
++      "binary_path": "/mnt/data/work_arc_181006_again/WORK/.review/racket-runtime/racket/bin/racket",
++      "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++      "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++      "bridge_path": "/mnt/data/work_arc_181006_again/WORK/repo/shared/runtime/arc_repl/racket_bridge.py",
++      "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++      "candidate_environment": "empty-environment-variables-v1",
++      "candidate_exit_handler": "deny-process-exit-v1",
++      "candidate_input": "empty-string-port-v1",
++      "candidate_output": "discard-string-ports-v1",
++      "candidate_symbol_policy_schema": "arc-racket-candidate-symbol-policy-v1",
++      "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++      "deterministic": true,
++      "evaluation_custodian": "fresh-per-eval-shutdown-before-reply-v1",
++      "evaluation_resource_limit": "nested-thread-512MiB-v1",
++      "prelude_path": "/mnt/data/work_arc_181006_again/WORK/repo/shared/runtime/arc_repl/racket_prelude/arc-prelude.rkt",
++      "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++      "protected": true,
++      "schema": "arc-protected-racket-runtime-v1",
++      "security_canary": {
++        "environment": "pass",
++        "exit": "pass",
++        "filesystem": "pass",
++        "input": "pass",
++        "memory": "pass",
++        "network": "pass",
++        "subprocess": "pass"
++      },
++      "security_guard": "deny-filesystem-network-link-v1",
++      "startup_handshake": "pass",
++      "subprocess_environment": "explicit-allowlist-v1"
++    }
++  },
++  "public_projection": {
++    "checked": 4,
++    "distinct_visible_ids": 4,
++    "private_fields_absent": true
++  },
++  "sampler_sweep": {
++    "demo_counts": [
++      2,
++      3,
++      6
++    ],
++    "episodes": 768,
++    "failures": [],
++    "pairs": 5888,
++    "query_count": 4,
++    "seeds": [
++      0,
++      127
++    ]
++  },
++  "schema": "441c97bcdb07-parametric-audit-v1",
++  "seeds": [
++    0,
++    17
++  ],
++  "sequential_dependency": {
++    "correct_output": [
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        6,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        6
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6
++      ],
++      [
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ]
++    ],
++    "correct_program_sha256": "3733f13f0a1f36575ce061c3cadd7c9cf7e5a173cd89c84525755579ba4bd09f",
++    "differing_cells": 12,
++    "executed_with_protected_racket": true,
++    "input": [
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ]
++    ],
++    "intermediate": "horizontal",
++    "step_a": "locate TL/TR/BL copies and compare row-span with col-span",
++    "step_b": "choose clockwise or counterclockwise quarter-turn and paint at the inferred fourth corner",
++    "why_b_depends_on_a": "the selected turn direction is the result of the span comparison and cannot be selected before it",
++    "wrong_intermediate": "vertical",
++    "wrong_output": [
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        6,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6,
++        6,
++        6
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6
++      ],
++      [
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        6
++      ],
++      [
++        0,
++        6,
++        6,
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ]
++    ],
++    "wrong_program_sha256": "ef0009f58c3db7b8963caf6af2df31b694e2466ecbba2666531138ecce506b28"
++  },
++  "settings": [
++    "translate",
++    "span_directed_turn"
++  ],
++  "status": "passed",
++  "task_id": "441c97bcdb07"
++}
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/task-tests-summary.json b/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/task-tests-summary.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/task-tests-summary.json
+@@ -0,0 +1,19 @@
++{
++  "evidence_sha256": {
++    "checks/task_tests.xml": "7c478ed6268513ed08d3e206e0409b0f5c7cf304c50dbcd1b92e0bf3d02e496a"
++  },
++  "exit_code": 0,
++  "passed": true,
++  "phase": "after",
++  "schema": "441c97bcdb07-task-tests-summary-v1",
++  "stdout": "..........................                                               [100%]\n26 passed in 3.63s\n",
++  "task_id": "441c97bcdb07",
++  "test_counts": {
++    "errors": 0,
++    "failed": 0,
++    "passed": 26,
++    "skipped": 0,
++    "tests": 26
++  },
++  "timed_out": false
++}
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/task-tests.xml b/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/task-tests.xml
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/evidence/current/task-tests.xml
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="26" time="3.627" timestamp="2026-10-24T19:07:25.245711+00:00" hostname="991ebabdf11a"><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_authority_is_pinned_and_python_mirror_matches_all_canonical_pairs" time="0.044" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_exact_override_boundaries_are_total_and_observable_in_every_band" time="0.003" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_unknown_and_invalid_overrides_reject_loudly[overrides0]" time="0.001" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_unknown_and_invalid_overrides_reject_loudly[overrides1]" time="0.001" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_unknown_and_invalid_overrides_reject_loudly[overrides2]" time="0.000" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_unknown_and_invalid_overrides_reject_loudly[overrides3]" time="0.000" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_unknown_and_invalid_overrides_reject_loudly[overrides4]" time="0.000" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_unknown_and_invalid_overrides_reject_loudly[overrides5]" time="0.001" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_unknown_and_invalid_overrides_reject_loudly[overrides6]" time="0.000" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_unknown_and_invalid_overrides_reject_loudly[overrides7]" time="0.001" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_unknown_and_invalid_overrides_reject_loudly[overrides8]" time="0.001" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_unknown_and_invalid_overrides_reject_loudly[overrides9]" time="0.000" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_default_schedule_has_a_non_four_cell_counterexample_in_every_three_demos" time="0.310" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_four_cell_only_shortcut_fits_canonical_but_generated_witnesses_refute_it" time="0.009" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_every_rotation_of_each_four_pair_window_remains_identifiable" time="0.230" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_self_check_rejects_minimal_and_task_specific_impostors" time="0.001" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_generated_distribution_is_lawful_diverse_and_spans_every_shape_id" time="0.059" /><testcase classname="generators.441c97bcdb07.tests.test_generator" name="test_replay_is_deterministic_fresh_and_does_not_touch_global_random_state" time="0.001" /><testcase classname="generators.441c97bcdb07.tests.test_parameters" name="test_adapter_contract_and_exact_canonical_default" time="0.038" /><testcase classname="generators.441c97bcdb07.tests.test_parameters" name="test_settings_seed_and_counts_fail_closed" time="0.001" /><testcase classname="generators.441c97bcdb07.tests.test_parameters" name="test_inputs_are_matched_distinct_and_every_label_changes_between_settings" time="0.005" /><testcase classname="generators.441c97bcdb07.tests.test_parameters" name="test_demo_and_query_counts_are_independent_prefixes" time="0.006" /><testcase classname="generators.441c97bcdb07.tests.test_parameters" name="test_two_demonstrations_identify_each_setting_and_refute_declared_shortcuts" time="0.010" /><testcase classname="generators.441c97bcdb07.tests.test_parameters" name="test_four_queries_cover_boundaries_spread_and_exact_30x30_stress" time="0.004" /><testcase classname="generators.441c97bcdb07.tests.test_parameters" name="test_public_turn_masks_answers_program_setting_and_future_queries" time="0.006" /><testcase classname="generators.441c97bcdb07.tests.test_parameters" name="test_python_claims_match_both_exact_racket_programs_on_boundary_and_stress_cases" time="2.768" /></testsuite></testsuites>
+\ No newline at end of file
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/evidence/manifest.json b/repo/generators/441c97bcdb07/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,92 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "a51bdd8a29a68d931403ff3d56792b2c53d8d8920dd22fecb3aa7af91c1abda7",
++  "canonical_rule_hash": "a51bdd8a29a6",
++  "default": {
++    "completion_transform": "translate"
++  },
++  "evidence_root": "generators/441c97bcdb07/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 18185,
++      "path": "generators/441c97bcdb07/generator.py",
++      "sha256": "1ff876f8be6890633bff538663e9ab3cf9225ae9731f49ef6aaa4de5e32800af"
++    },
++    {
++      "bytes": 8320,
++      "path": "generators/441c97bcdb07/tests/test_parameters.py",
++      "sha256": "05655e6aeecad4783f2d98274405a30e4c795c4b08ad9cb833f9e3344d0e1920"
++    },
++    {
++      "bytes": 1277,
++      "path": "generators/441c97bcdb07/workspace/parametric/adapter.py",
++      "sha256": "f914c3b32db4aee47a6befc5fe2f72c46dfdd246577e99ae372e2815af23f0ab"
++    },
++    {
++      "bytes": 7453,
++      "path": "generators/441c97bcdb07/workspace/parametric/audit_family.py",
++      "sha256": "065a0fdb9a571485e246b9a5c9da64aa4ce80be98bdf2fee1702ea38089f098e"
++    },
++    {
++      "bytes": 1268,
++      "path": "generators/441c97bcdb07/workspace/parametric/canonical.rkt",
++      "sha256": "a51bdd8a29a68d931403ff3d56792b2c53d8d8920dd22fecb3aa7af91c1abda7"
++    },
++    {
++      "bytes": 1619,
++      "path": "generators/441c97bcdb07/workspace/parametric/evidence/current/audit-command.json",
++      "sha256": "8f2b9ae3f23a01674e958b744250228dd5ebeec9e56e015ab0bc0acf1f10a54c"
++    },
++    {
++      "bytes": 27828,
++      "path": "generators/441c97bcdb07/workspace/parametric/evidence/current/parametric-audit.json",
++      "sha256": "e5edb50902fc8c4efe9faac9cc8597abce8ed538132f888de800da41f3f16f14"
++    },
++    {
++      "bytes": 511,
++      "path": "generators/441c97bcdb07/workspace/parametric/evidence/current/task-tests-summary.json",
++      "sha256": "14088a1d960a7c9dfaef95c56144f270ca1010708b3c7e760ddfcafa7f3bf2db"
++    },
++    {
++      "bytes": 4255,
++      "path": "generators/441c97bcdb07/workspace/parametric/evidence/current/task-tests.xml",
++      "sha256": "7c478ed6268513ed08d3e206e0409b0f5c7cf304c50dbcd1b92e0bf3d02e496a"
++    },
++    {
++      "bytes": 606,
++      "path": "generators/441c97bcdb07/workspace/parametric/promotion.json",
++      "sha256": "26ebac39dc288452e0f5fe4d2f2db02fe65274ca03b06aaefc29552930d4418b"
++    },
++    {
++      "bytes": 21281,
++      "path": "generators/441c97bcdb07/workspace/parametric/prototype.py",
++      "sha256": "81d4d5ca91d7da62843f3227ff12674d5c8287f5eb177f0bf6c996bc43997bbb"
++    }
++  ],
++  "generator_sha256": "1ff876f8be6890633bff538663e9ab3cf9225ae9731f49ef6aaa4de5e32800af",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "completion_transform": [
++      "translate",
++      "span_directed_turn"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "26/26 changed-target tests; protected Racket 26 evaluations on both settings and a wrong-intermediate witness; 768 finite-rival sampler episodes across demo counts 2, 3, and 6; visible-only public projection checks.",
++  "rule_task_id": "441c97bcdb07",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "441c97bcdb07",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/promotion.json b/repo/generators/441c97bcdb07/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/promotion.json
+@@ -0,0 +1,28 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/441c97bcdb07/workspace/parametric/adapter.py",
++  "parameters": {
++    "completion_transform": [
++      "translate",
++      "span_directed_turn"
++    ]
++  },
++  "default": {
++    "completion_transform": "translate"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "resources": [
++    "generators/441c97bcdb07/workspace/parametric/prototype.py",
++    "generators/441c97bcdb07/workspace/parametric/canonical.rkt",
++    "generators/441c97bcdb07/workspace/parametric/audit_family.py"
++  ]
++}
+diff --git a/repo/generators/441c97bcdb07/workspace/parametric/prototype.py b/repo/generators/441c97bcdb07/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/441c97bcdb07/workspace/parametric/prototype.py
+@@ -0,0 +1,546 @@
++"""Matched-input completion-transform family for task 441c97bcdb07.
++
++The canonical setting copies the pivot shape unchanged to the missing fourth
++corner.  The alternative first infers whether the rectangle of source copies is
++wider or taller, then turns the copied shape clockwise for a horizontal dominant
++span and counterclockwise for a vertical dominant span.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++from functools import lru_cache
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any, Iterable
++
++
++TASK_ID = "441c97bcdb07"
++FAMILY_VERSION = "1.0.0"
++CANONICAL = "translate"
++ALTERNATE = "span_directed_turn"
++ALLOWED_TRANSFORMS = (CANONICAL, ALTERNATE)
++CANONICAL_SHA256 = "a51bdd8a29a68d931403ff3d56792b2c53d8d8920dd22fecb3aa7af91c1abda7"
++DEMO_LIMITS = (2, 6)
++QUERY_LIMITS = (1, 4)
++
++# (height, width, shape_id, top, left, row_span, col_span)
++# The first two demos deliberately cover both dominant spans, so even the
++# minimum two-example lesson identifies the hidden setting and rejects fixed
++# clockwise/counterclockwise shortcuts.
++DEMO_PROFILES = (
++    (11, 15, 0, 0, 0, 5, 9),
++    (18, 14, 5, 0, 1, 10, 6),
++    (14, 20, 1, 1, 0, 7, 12),
++    (22, 16, 6, 0, 0, 12, 8),
++    (20, 26, 4, 0, 1, 11, 18),
++    (26, 20, 7, 0, 0, 17, 9),
++)
++QUERY_PROFILES = (
++    (12, 18, 2, 0, 0, 6, 13),
++    (20, 15, 4, 1, 0, 13, 8),
++    (24, 29, 6, 0, 1, 14, 20),
++    (30, 30, 7, 0, 0, 22, 18),
++)
++
++# Connected asymmetric shapes.  The final profile is a 25-cell 8x7 motif, so
++# the 30x30 query exercises the real object extraction and transformation logic
++# rather than padding a tiny canonical puzzle.
++_SHAPE_MASKS = (
++    ("111", "100", "110"),
++    ("1110", "0010", "0011"),
++    ("1100", "0110", "0011", "0001"),
++    ("11100", "00110", "00010", "00011"),
++    ("11000", "01110", "00010", "00011", "00001"),
++    ("11100", "00100", "00110", "00010", "00011", "00001"),
++    ("111000", "001000", "001100", "000100", "000110", "000010", "000011"),
++    (
++        "1111000",
++        "0111000",
++        "0011110",
++        "0011110",
++        "0001111",
++        "0000111",
++        "0000011",
++        "0000001",
++    ),
++)
++
++DECLARED_SHORTCUTS = (
++    "always_cw",
++    "always_ccw",
++    "reverse_span_turn",
++    "always_180",
++    "wide_only_turn",
++    "tall_only_turn",
++    "turn_large_only",
++    "turn_small_only",
++)
++
++_CANONICAL_PAINT = (
++    "(paint-cells g (map (lambda (p) (list (+ mr (first p)) "
++    "(+ mc (second p)))) (second pivot)) (first pivot))"
++)
++_ALTERNATE_PAINT = """(let* ((row-span (- mr prow))
++             (col-span (- mc pcol))
++             (sh (third pivot))
++             (sw (fourth pivot))
++             (turned
++               (if (> col-span row-span)
++                   (map (lambda (p)
++                          (list (second p) (- sh 1 (first p))))
++                        (second pivot))
++                   (map (lambda (p)
++                          (list (- sw 1 (second p)) (first p)))
++                        (second pivot)))))
++        (paint-cells g
++          (map (lambda (p)
++                 (list (+ mr (first p)) (+ mc (second p))))
++               turned)
++          (first pivot)))"""
++
++
++def _cells(mask: tuple[str, ...]) -> tuple[tuple[int, int], ...]:
++    return tuple(
++        (row, col)
++        for row, line in enumerate(mask)
++        for col, value in enumerate(line)
++        if value == "1"
++    )
++
++
++SHAPES = tuple(_cells(mask) for mask in _SHAPE_MASKS)
++
++
++def _normalize(cells: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
++    materialized = tuple(cells)
++    row0 = min(row for row, _ in materialized)
++    col0 = min(col for _, col in materialized)
++    return tuple(sorted((row - row0, col - col0) for row, col in materialized))
++
++
++def _shape_dims(shape: tuple[tuple[int, int], ...]) -> tuple[int, int]:
++    return max(row for row, _ in shape) + 1, max(col for _, col in shape) + 1
++
++
++def _rotate_cw(shape: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
++    height, _width = _shape_dims(shape)
++    return _normalize((col, height - 1 - row) for row, col in shape)
++
++
++def _rotate_ccw(shape: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
++    _height, width = _shape_dims(shape)
++    return _normalize((width - 1 - col, row) for row, col in shape)
++
++
++def _rotate_180(shape: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
++    height, width = _shape_dims(shape)
++    return _normalize((height - 1 - row, width - 1 - col) for row, col in shape)
++
++
++def _flip_lr(shape: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
++    _height, width = _shape_dims(shape)
++    return _normalize((row, width - 1 - col) for row, col in shape)
++
++
++def _validate_shape_bank() -> None:
++    for index, shape in enumerate(SHAPES):
++        if not shape:
++            raise RuntimeError(f"shape {index} is empty")
++        cells = set(shape)
++        seen = {next(iter(cells))}
++        stack = list(seen)
++        while stack:
++            row, col = stack.pop()
++            for neighbor in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)):
++                if neighbor in cells and neighbor not in seen:
++                    seen.add(neighbor)
++                    stack.append(neighbor)
++        if seen != cells:
++            raise RuntimeError(f"shape {index} is not 4-connected")
++        if shape == _rotate_cw(shape) or shape == _rotate_ccw(shape):
++            raise RuntimeError(f"shape {index} does not distinguish a quarter turn")
++        if _rotate_cw(shape) == _rotate_ccw(shape):
++            raise RuntimeError(f"shape {index} does not distinguish dominant-span direction")
++
++
++_validate_shape_bank()
++
++
++def _validate_seed(seed: Any) -> int:
++    if type(seed) is not int:
++        raise TypeError("seed must be an exact integer; bool is forbidden")
++    if not 0 <= seed <= 2**63 - 1:
++        raise ValueError("seed must be in 0..2**63-1")
++    return seed
++
++
++def _validate_counts(demos: Any, queries: Any) -> tuple[int, int]:
++    for name, value in (("demos", demos), ("queries", queries)):
++        if type(value) is not int:
++            raise TypeError(f"{name} must be an exact integer; bool is forbidden")
++    if not DEMO_LIMITS[0] <= demos <= DEMO_LIMITS[1]:
++        raise ValueError(f"demos must be in {DEMO_LIMITS[0]}..{DEMO_LIMITS[1]}")
++    if not QUERY_LIMITS[0] <= queries <= QUERY_LIMITS[1]:
++        raise ValueError(f"queries must be in {QUERY_LIMITS[0]}..{QUERY_LIMITS[1]}")
++    return demos, queries
++
++
++def validate_settings(settings: Any) -> str:
++    if type(settings) is not dict or set(settings) != {"completion_transform"}:
++        raise ValueError("settings must contain exactly completion_transform")
++    selected = settings["completion_transform"]
++    if type(selected) is not str or selected not in ALLOWED_TRANSFORMS:
++        raise ValueError(f"completion_transform must be one of {list(ALLOWED_TRANSFORMS)}")
++    return selected
++
++
++@lru_cache(maxsize=1)
++def canonical_program() -> str:
++    raw = Path(__file__).with_name("canonical.rkt").read_bytes()
++    digest = hashlib.sha256(raw).hexdigest()
++    if digest != CANONICAL_SHA256:
++        raise ValueError(f"canonical.rkt drifted: {digest}")
++    source = raw.decode("utf-8")
++    if source.count(_CANONICAL_PAINT) != 1:
++        raise ValueError("canonical paint site is not uniquely replaceable")
++    return source
++
++
++@lru_cache(maxsize=1)
++def alternate_program() -> str:
++    return canonical_program().replace(_CANONICAL_PAINT, _ALTERNATE_PAINT, 1)
++
++
++@lru_cache(maxsize=1)
++def wrong_intermediate_program() -> str:
++    source = alternate_program()
++    marker = "(> col-span row-span)"
++    if source.count(marker) != 1:
++        raise ValueError("dominant-span predicate is not uniquely replaceable")
++    return source.replace(marker, "(< col-span row-span)", 1)
++
++
++def program_for(selected: str) -> str:
++    if selected == CANONICAL:
++        return canonical_program()
++    if selected == ALTERNATE:
++        return alternate_program()
++    raise ValueError(f"unknown completion transform {selected!r}")
++
++
++def _stream_rng(seed: int, split: str, index: int) -> random.Random:
++    if split not in {"demo", "query"}:
++        raise ValueError("split must be demo or query")
++    material = f"{TASK_ID}|{FAMILY_VERSION}|{seed}|{split}|{index}".encode()
++    digest = hashlib.sha256(material).digest()
++    return random.Random(int.from_bytes(digest[:16], "big"))
++
++
++def _dimension_preserving_variant(
++    shape: tuple[tuple[int, int], ...], variant: int
++) -> tuple[tuple[int, int], ...]:
++    if variant == 0:
++        return shape
++    if variant == 1:
++        return _rotate_180(shape)
++    if variant == 2:
++        return _flip_lr(shape)
++    if variant == 3:
++        return _rotate_180(_flip_lr(shape))
++    raise ValueError("variant must be 0..3")
++
++
++def _paint(
++    grid: list[list[int]],
++    shape: tuple[tuple[int, int], ...],
++    origin: tuple[int, int],
++    color: int,
++) -> None:
++    row0, col0 = origin
++    for row, col in shape:
++        target_row, target_col = row0 + row, col0 + col
++        if not (0 <= target_row < len(grid) and 0 <= target_col < len(grid[0])):
++            raise ValueError("shape paint would leave the grid")
++        if grid[target_row][target_col] != 0:
++            raise ValueError("shape paint overlaps an existing object")
++        grid[target_row][target_col] = color
++
++
++def _profile(split: str, index: int) -> tuple[int, int, int, int, int, int, int]:
++    profiles = DEMO_PROFILES if split == "demo" else QUERY_PROFILES
++    if type(index) is not int or not 0 <= index < len(profiles):
++        raise ValueError(f"{split} index is outside the supported profile range")
++    return profiles[index]
++
++
++def build_input(seed: Any, split: str, index: Any) -> list[list[int]]:
++    seed = _validate_seed(seed)
++    if type(index) is not int:
++        raise TypeError("index must be an exact integer; bool is forbidden")
++    height, width, shape_id, top, left, row_span, col_span = _profile(split, index)
++    rng = _stream_rng(seed, split, index)
++    shape = _dimension_preserving_variant(SHAPES[shape_id], rng.randrange(4))
++    color = 1 + rng.randrange(9)
++
++    # Small span jitter adds layout variety without changing the scheduled
++    # dominant axis or the exact query dimensions.  The 30x30 stress case stays
++    # boundary-pinned so its bottom contact is guaranteed.
++    if not (split == "query" and index == 3):
++        height_shape, width_shape = _shape_dims(shape)
++        max_dim = max(height_shape, width_shape)
++        candidates: list[tuple[int, int]] = []
++        for row_delta in (-1, 0, 1):
++            for col_delta in (-1, 0, 1):
++                candidate_row = row_span + row_delta
++                candidate_col = col_span + col_delta
++                if candidate_row < height_shape + 1 or candidate_col < width_shape + 1:
++                    continue
++                if top + candidate_row + max_dim > height:
++                    continue
++                if left + candidate_col + max_dim > width:
++                    continue
++                if (col_span > row_span) != (candidate_col > candidate_row):
++                    continue
++                candidates.append((candidate_row, candidate_col))
++        if not candidates:
++            raise RuntimeError("profile has no legal jittered spans")
++        row_span, col_span = candidates[rng.randrange(len(candidates))]
++
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    for origin in ((top, left), (top, left + col_span), (top + row_span, left)):
++        _paint(grid, shape, origin, color)
++    analysis = analyze_input(grid)
++    expected = "horizontal" if col_span > row_span else "vertical"
++    if analysis["dominant_span"] != expected:
++        raise RuntimeError("constructed input did not preserve its scheduled dominant span")
++    return grid
++
++
++def _components(cells: set[tuple[int, int]]) -> list[set[tuple[int, int]]]:
++    remaining = set(cells)
++    result: list[set[tuple[int, int]]] = []
++    while remaining:
++        start = min(remaining)
++        remaining.remove(start)
++        component = {start}
++        stack = [start]
++        while stack:
++            row, col = stack.pop()
++            for neighbor in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)):
++                if neighbor in remaining:
++                    remaining.remove(neighbor)
++                    component.add(neighbor)
++                    stack.append(neighbor)
++        result.append(component)
++    return result
++
++
++def analyze_input(grid: Any) -> dict[str, Any]:
++    if not isinstance(grid, list) or not grid or not all(isinstance(row, list) and row for row in grid):
++        raise ValueError("grid must be a nonempty list of nonempty rows")
++    width = len(grid[0])
++    if any(len(row) != width for row in grid):
++        raise ValueError("grid must be rectangular")
++    if len(grid) > 30 or width > 30:
++        raise ValueError("grid dimensions must not exceed 30")
++
++    by_color: dict[int, set[tuple[int, int]]] = {}
++    for row_index, row in enumerate(grid):
++        for col_index, value in enumerate(row):
++            if type(value) is not int or not 0 <= value <= 9:
++                raise ValueError("every cell must be an exact ARC color 0..9")
++            if value:
++                by_color.setdefault(value, set()).add((row_index, col_index))
++    if len(by_color) != 1:
++        raise ValueError("input must use exactly one nonzero color")
++    color, cells = next(iter(by_color.items()))
++    components = _components(cells)
++    if len(components) != 3:
++        raise ValueError("input must contain exactly three four-connected copies")
++    shapes = [_normalize(component) for component in components]
++    if len(set(shapes)) != 1:
++        raise ValueError("the three components must be identical translated shapes")
++    shape = shapes[0]
++    origins = {
++        (min(row for row, _ in component), min(col for _, col in component))
++        for component in components
++    }
++    origin_rows = sorted({row for row, _ in origins})
++    origin_cols = sorted({col for _, col in origins})
++    if len(origin_rows) != 2 or len(origin_cols) != 2:
++        raise ValueError("component origins must define two rectangle rows and columns")
++    top, bottom = origin_rows
++    left, right = origin_cols
++    if origins != {(top, left), (top, right), (bottom, left)}:
++        raise ValueError("copies must occupy top-left, top-right, and bottom-left")
++    row_span = bottom - top
++    col_span = right - left
++    if row_span == col_span:
++        raise ValueError("span-directed family excludes square source rectangles")
++    shape_height, shape_width = _shape_dims(shape)
++    if row_span < shape_height + 1 or col_span < shape_width + 1:
++        raise ValueError("source copies must be separated by a blank gap")
++    target = (bottom, right)
++    for candidate in (shape, _rotate_cw(shape), _rotate_ccw(shape)):
++        candidate_height, candidate_width = _shape_dims(candidate)
++        if target[0] + candidate_height > len(grid) or target[1] + candidate_width > width:
++            raise ValueError("the translated/turned target would leave the grid")
++    return {
++        "height": len(grid),
++        "width": width,
++        "color": color,
++        "shape": shape,
++        "shape_height": shape_height,
++        "shape_width": shape_width,
++        "shape_cells": len(shape),
++        "top": top,
++        "left": left,
++        "bottom": bottom,
++        "right": right,
++        "row_span": row_span,
++        "col_span": col_span,
++        "dominant_span": "horizontal" if col_span > row_span else "vertical",
++        "target": target,
++        "components": components,
++    }
++
++
++def _shape_for_mode(shape: tuple[tuple[int, int], ...], dominant: str, mode: str):
++    if mode == CANONICAL:
++        return shape
++    if mode == ALTERNATE:
++        return _rotate_cw(shape) if dominant == "horizontal" else _rotate_ccw(shape)
++    if mode == "always_cw":
++        return _rotate_cw(shape)
++    if mode == "always_ccw":
++        return _rotate_ccw(shape)
++    if mode == "reverse_span_turn":
++        return _rotate_ccw(shape) if dominant == "horizontal" else _rotate_cw(shape)
++    if mode == "always_180":
++        return _rotate_180(shape)
++    if mode == "wide_only_turn":
++        return _rotate_cw(shape) if dominant == "horizontal" else shape
++    if mode == "tall_only_turn":
++        return shape if dominant == "horizontal" else _rotate_ccw(shape)
++    if mode == "turn_large_only":
++        return (_rotate_cw(shape) if dominant == "horizontal" else _rotate_ccw(shape)) if len(shape) >= 9 else shape
++    if mode == "turn_small_only":
++        return (_rotate_cw(shape) if dominant == "horizontal" else _rotate_ccw(shape)) if len(shape) < 9 else shape
++    raise ValueError(f"unknown solve mode {mode!r}")
++
++
++def solve(grid: list[list[int]], mode: str) -> list[list[int]]:
++    analysis = analyze_input(grid)
++    target_shape = _shape_for_mode(analysis["shape"], analysis["dominant_span"], mode)
++    output = deepcopy(grid)
++    _paint(output, target_shape, analysis["target"], analysis["color"])
++    return output
++
++
++def _pair(seed: int, split: str, index: int, selected: str) -> dict[str, Any]:
++    grid = build_input(seed, split, index)
++    return {"input": grid, "output": solve(grid, selected)}
++
++
++def generate_episode(seed: Any, selected: str, demos: Any, queries: Any) -> dict[str, Any]:
++    seed = _validate_seed(seed)
++    selected = validate_settings({"completion_transform": selected})
++    demos, queries = _validate_counts(demos, queries)
++    train = [_pair(seed, "demo", index, selected) for index in range(demos)]
++    test = [_pair(seed, "query", index, selected) for index in range(queries)]
++    signatures = [json.dumps(pair["input"], separators=(",", ":")) for pair in train + test]
++    if len(signatures) != len(set(signatures)):
++        raise RuntimeError("episode inputs are not distinct")
++    return {"train": train, "test": test, "program_solution": program_for(selected)}
++
++
++def audit_episode(episode: dict[str, Any], selected: str) -> dict[str, Any]:
++    selected = validate_settings({"completion_transform": selected})
++    train = episode.get("train")
++    test = episode.get("test")
++    if not isinstance(train, list) or not isinstance(test, list):
++        raise ValueError("episode must contain train and test lists")
++    declared = [
++        mode
++        for mode in ALLOWED_TRANSFORMS
++        if all(solve(pair["input"], mode) == pair["output"] for pair in train)
++    ]
++    shortcuts = [
++        mode
++        for mode in DECLARED_SHORTCUTS
++        if all(solve(pair["input"], mode) == pair["output"] for pair in train)
++    ]
++    other = ALTERNATE if selected == CANONICAL else CANONICAL
++    query_disagreements = sum(
++        solve(pair["input"], other) != pair["output"] for pair in test
++    )
++    return {
++        "selected": selected,
++        "surviving_declared_rules": declared,
++        "surviving_shortcuts": shortcuts,
++        "query_disagreements_against_other_setting": query_disagreements,
++        "demonstration_dominant_spans": [analyze_input(pair["input"])["dominant_span"] for pair in train],
++    }
++
++
++def input_metrics(grid: list[list[int]]) -> dict[str, Any]:
++    analysis = analyze_input(grid)
++    colored = {
++        (row, col)
++        for row, line in enumerate(grid)
++        for col, value in enumerate(line)
++        if value != 0
++    }
++    boundary_sides = []
++    if any(row == 0 for row, _ in colored):
++        boundary_sides.append("top")
++    if any(row == len(grid) - 1 for row, _ in colored):
++        boundary_sides.append("bottom")
++    if any(col == 0 for _, col in colored):
++        boundary_sides.append("left")
++    if any(col == len(grid[0]) - 1 for _, col in colored):
++        boundary_sides.append("right")
++    return {
++        "height": analysis["height"],
++        "width": analysis["width"],
++        "shape_cells": analysis["shape_cells"],
++        "occupied_cells": len(colored),
++        "row_span": analysis["row_span"],
++        "col_span": analysis["col_span"],
++        "dominant_span": analysis["dominant_span"],
++        "boundary_sides": boundary_sides,
++    }
++
++
++def public_turn(episode: dict[str, Any], query_index: Any) -> dict[str, Any]:
++    if type(query_index) is not int or not 0 <= query_index < len(episode.get("test", [])):
++        raise ValueError("query_index must select an existing query; bool is forbidden")
++    return {
++        "train": deepcopy(episode["train"]),
++        "test": [{"input": deepcopy(episode["test"][query_index]["input"])}],
++    }
++
++
++def causal_witness(seed: Any = 0) -> dict[str, Any]:
++    seed = _validate_seed(seed)
++    grid = build_input(seed, "query", 2)
++    analysis = analyze_input(grid)
++    correct = solve(grid, ALTERNATE)
++    wrong = solve(grid, "reverse_span_turn")
++    differing = sum(
++        left != right
++        for left_row, right_row in zip(correct, wrong, strict=True)
++        for left, right in zip(left_row, right_row, strict=True)
++    )
++    return {
++        "step_a": "locate the three source copies and compare their row and column spans",
++        "intermediate": analysis["dominant_span"],
++        "step_b": "choose clockwise for horizontal or counterclockwise for vertical, then paint the fourth copy",
++        "wrong_intermediate": "vertical" if analysis["dominant_span"] == "horizontal" else "horizontal",
++        "input": grid,
++        "correct_output": correct,
++        "wrong_output": wrong,
++        "differing_cells": differing,
++    }
+diff --git a/repo/generators/4c0f3760c653/SUMMARY.md b/repo/generators/4c0f3760c653/SUMMARY.md
+--- a/repo/generators/4c0f3760c653/SUMMARY.md
++++ b/repo/generators/4c0f3760c653/SUMMARY.md
+@@ -1,6 +1,6 @@
+ # 4c0f3760c653
+ 
+-0-bg grid (h~7-10, w~9-12) with 3 BLOBS of varied aspect ratios placed at scattered positions in distinct non-zero colors from a 3-color palette: (a) a 2×2 SQUARE-bbox blob (h == w); (b) a VERTICAL 1×3 line (h ≠ w); (c) a HORIZONTAL 1×3 line (h ≠ w). Blobs are 4-conn isolated with 1-cell padding. Rule: for EACH CONNECTED BLOB, compute its bbox (rmax-rmin+1, cmax-cmin+1). KEEP only blobs with SQUARE BBOX (h == w). CLEAR (set to 0) all non-square blobs. Net: square-bbox blobs survive at their original color; non-square blobs are erased.
++0-bg grid (h~7-10, w~9-12) with 3 BLOBS of varied aspect ratios placed at scattered positions in distinct non-zero colors from a 3-color palette: (a) a scheduled SQUARE-bbox blob (solid 2×2, L-triomino in a 2×2 box, or hollow 3×3); (b) a VERTICAL 1×3 line (h ≠ w); (c) a HORIZONTAL 1×3 line (h ≠ w). Blobs are 4-conn isolated with 1-cell padding. Rule: for EACH CONNECTED BLOB, compute its bbox (rmax-rmin+1, cmax-cmin+1). KEEP only blobs with SQUARE BBOX (h == w). CLEAR (set to 0) all non-square blobs. Net: square-bbox blobs survive at their original color; non-square blobs are erased.
+ 
+-Kind: `per_puzzle`. Imported version: `2.0.1`.
++Kind: `per_puzzle`. Reviewed version: `2.1.0`. The three-profile schedule makes every consecutive three-example lesson include non-solid square-bbox witnesses.
+ Approval is derived by the catalog from current code and retained evidence.
+diff --git a/repo/generators/4c0f3760c653/generator.py b/repo/generators/4c0f3760c653/generator.py
+--- a/repo/generators/4c0f3760c653/generator.py
++++ b/repo/generators/4c0f3760c653/generator.py
+@@ -12,15 +12,16 @@
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "4c0f3760c653"
+-VERSION = "2.0.1"
++VERSION = "2.1.0"
+ TASK_ID = "4c0f3760c653"
+ SUMMARY = (
+     "0-bg grid (h~7-10, w~9-12) with 3 BLOBS "
+     "of varied aspect ratios placed at "
+     "scattered positions in distinct non-zero "
+-    "colors from a 3-color palette: (a) a 2×2 "
+-    "SQUARE-bbox blob (h == w); (b) a "
+-    "VERTICAL 1×3 line (h ≠ w); (c) a "
++    "colors from a 3-color palette: (a) one "
++    "scheduled SQUARE-bbox blob (solid 2×2, "
++    "L-triomino in a 2×2 box, or hollow 3×3); "
++    "(b) a VERTICAL 1×3 line (h ≠ w); (c) a "
+     "HORIZONTAL 1×3 line (h ≠ w). Blobs are "
+     "4-conn isolated with 1-cell padding. Rule: "
+     "for EACH CONNECTED BLOB, compute its bbox "
+@@ -42,6 +43,27 @@
+ PALETTE_KINDS = ("default", "warm", "cool", "varied")
+ DEGENERATE_TEXTURES = ("all_squares", "no_squares", "single_square")
+ HELPFUL_TEXTURES = PALETTE_KINDS
++
++SQUARE_PROFILES = (
++    ("solid_2x2", ((0, 0), (0, 1), (1, 0), (1, 1))),
++    ("l_square_bbox", ((0, 0), (0, 1), (1, 0))),
++    (
++        "hollow_3x3",
++        ((0, 0), (0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1), (2, 2)),
++    ),
++)
++SCHEDULE_PROFILES = tuple(name for name, _cells in SQUARE_PROFILES)
++CANONICAL_SHORTCUTS = ("solid_2x2_only", "largest_area_only")
++
++
++def schedule_profile(seed, sample_index, *, difficulty=None):
++    """Return the deterministic teaching profile for a sample.
++
++    Cycling independently of the RNG guarantees that every consecutive
++    three-sample lesson contains both non-solid square-bbox witnesses.
++    """
++    del seed, difficulty
++    return SCHEDULE_PROFILES[int(sample_index) % len(SCHEDULE_PROFILES)]
+ 
+ AXES = {
+     "grid_h":         {"type": "int", "default": "rng 7..10", "valid": "6..14"},
+@@ -88,31 +110,42 @@
+     rng = ctx.draw_rng("layout")
+     g = full_grid(h, w, 0)
+     palette = rng.sample([1, 2, 3, 4, 5, 6, 7, 8, 9], 3)
+-    # square 2x2
+-    for _ in range(40):
+-        r1 = rng.randint(0, h - 2)
+-        c1 = rng.randint(0, w - 2)
+-        if _free(g, r1, c1, r1 + 1, c1 + 1):
+-            for r in range(r1, r1 + 2):
+-                for c in range(c1, c1 + 2):
+-                    g[r][c] = palette[0]
++
++    profile_name = schedule_profile(seed, sample_index, difficulty=difficulty)
++    square_cells = dict(SQUARE_PROFILES)[profile_name]
++    square_h = max(row for row, _col in square_cells) + 1
++    square_w = max(col for _row, col in square_cells) + 1
++    for _ in range(80):
++        r1 = rng.randint(0, h - square_h)
++        c1 = rng.randint(0, w - square_w)
++        if _free(g, r1, c1, r1 + square_h - 1, c1 + square_w - 1):
++            for dr, dc in square_cells:
++                g[r1 + dr][c1 + dc] = palette[0]
+             break
++    else:
++        raise RuntimeError(f"could not place square profile {profile_name!r}")
++
+     # vertical 1x3
+-    for _ in range(40):
++    for _ in range(80):
+         r1 = rng.randint(0, h - 3)
+         c1 = rng.randint(0, w - 1)
+         if _free(g, r1, c1, r1 + 2, c1):
+             for r in range(r1, r1 + 3):
+                 g[r][c1] = palette[1]
+             break
++    else:
++        raise RuntimeError("could not place vertical non-square witness")
++
+     # horizontal 1x3
+-    for _ in range(40):
++    for _ in range(80):
+         r1 = rng.randint(0, h - 1)
+         c1 = rng.randint(0, w - 3)
+         if _free(g, r1, c1, r1, c1 + 2):
+             for c in range(c1, c1 + 3):
+                 g[r1][c] = palette[2]
+             break
++    else:
++        raise RuntimeError("could not place horizontal non-square witness")
+     return g
+ 
+ 
+diff --git a/repo/generators/4c0f3760c653/notes.md b/repo/generators/4c0f3760c653/notes.md
+--- a/repo/generators/4c0f3760c653/notes.md
++++ b/repo/generators/4c0f3760c653/notes.md
+@@ -2,3 +2,11 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Optional peer repair 2.1.0 (2026-10-24)
++
++The assigned generator emitted a solid 2×2 block as its only square-bounding-box component in every ordinary sample. Consequently, the plausible shortcut “keep solid 2×2 components only” fit all generated demonstrations even though the canonical rule keeps any connected component whose bounding box is square.
++
++The repair cycles a deterministic three-profile teaching schedule: solid 2×2, an L-triomino with a 2×2 bounding box, and a hollow 3×3 ring. Every consecutive three-sample lesson therefore contains two non-solid square-bbox witnesses while retaining the original non-square vertical and horizontal distractors. `CANONICAL_SHORTCUTS` records `solid_2x2_only` and `largest_area_only`; no canonical Racket source changed. Current generator SHA-256 is `87c645182b58266b891439136b9de77f13c9e3b20b81dc1557ddc897c8ef1a69`; canonical program SHA-256 is `c481da706010209173351f6098451642b23d9ea3620e5286490d16d3cd2d7cf1`.
++
++The focused suite passed 3/3. The reusable audit `workspace/audit_square_bbox_shortcuts.py` checked 8,192 generated samples and 7,168 consecutive three-example windows across four difficulty values; both named rivals were rejected in every window, all samples passed `self_check`, and protected Racket matched one witness from each profile (three evaluations). This is finite evidence against the two named rivals, not a universal identifiability claim; owner checked integration remains pending.
+diff --git a/repo/generators/4c0f3760c653/tests/test_square_bbox_teaching.py b/repo/generators/4c0f3760c653/tests/test_square_bbox_teaching.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4c0f3760c653/tests/test_square_bbox_teaching.py
+@@ -0,0 +1,126 @@
++"""Regression checks for non-solid square-bbox teaching examples."""
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root, normalize_grid
++
++
++TASK_ID = "4c0f3760c653"
++ROOT = find_root(__file__)
++SOURCE = ROOT / "generators" / TASK_ID / "generator.py"
++
++
++def _load_generator():
++    spec = importlib.util.spec_from_file_location(f"test_{TASK_ID}_generator", SOURCE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _program() -> str:
++    programs = set()
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        for line in handle:
++            if line.strip():
++                row = json.loads(line)
++                if row.get("task_id") == TASK_ID:
++                    programs.add(row["program_solution"])
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def _components(grid):
++    height, width = len(grid), len(grid[0])
++    unseen = {(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value}
++    result = []
++    while unseen:
++        start = min(unseen)
++        color = grid[start[0]][start[1]]
++        unseen.remove(start)
++        cells = {start}
++        stack = [start]
++        while stack:
++            row, col = stack.pop()
++            for neighbor in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)):
++                rr, cc = neighbor
++                if 0 <= rr < height and 0 <= cc < width and neighbor in unseen and grid[rr][cc] == color:
++                    unseen.remove(neighbor)
++                    cells.add(neighbor)
++                    stack.append(neighbor)
++        result.append((color, cells))
++    return result
++
++
++def _bbox(cells):
++    rows = [row for row, _ in cells]
++    cols = [col for _, col in cells]
++    return min(rows), min(cols), max(rows), max(cols)
++
++
++def _is_square_bbox(cells):
++    r0, c0, r1, c1 = _bbox(cells)
++    return r1 - r0 == c1 - c0
++
++
++def _is_solid_2x2(cells):
++    r0, c0, r1, c1 = _bbox(cells)
++    return r1 - r0 == 1 and c1 - c0 == 1 and len(cells) == 4
++
++
++def _solve(grid, mode: str):
++    output = [[0 for _ in row] for row in grid]
++    for color, cells in _components(grid):
++        keep = _is_square_bbox(cells) if mode == "square_bbox" else _is_solid_2x2(cells)
++        if keep:
++            for row, col in cells:
++                output[row][col] = color
++    return output
++
++
++def _racket(bridge: RacketBridge, grid):
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return normalize_grid(bridge.eval_text(f"({wrap_rule(_program())} {literal})"))
++
++
++def _has_non_solid_square_witness(grid):
++    return any(_is_square_bbox(cells) and not _is_solid_2x2(cells) for _color, cells in _components(grid))
++
++
++def test_every_three_sample_window_contains_a_non_solid_square_bbox_witness():
++    generator = _load_generator()
++    for difficulty in (None, "easy", "medium", "hard"):
++        for seed in range(24):
++            samples = [generator.generate(seed, index, difficulty=difficulty) for index in range(15)]
++            for start in range(13):
++                assert any(_has_non_solid_square_witness(grid) for grid in samples[start : start + 3]), (
++                    difficulty,
++                    seed,
++                    start,
++                )
++
++
++def test_three_demo_windows_refute_solid_2x2_only_and_remain_lawful():
++    generator = _load_generator()
++    for seed in range(32):
++        samples = [generator.generate(seed, index) for index in range(8)]
++        assert all(generator.self_check(grid) == [] for grid in samples)
++        for start in range(6):
++            window = samples[start : start + 3]
++            assert any(_solve(grid, "square_bbox") != _solve(grid, "solid_2x2_only") for grid in window)
++
++
++def test_non_solid_square_witness_matches_protected_canonical_racket():
++    generator = _load_generator()
++    grid = generator.generate(7, 1)
++    assert _has_non_solid_square_witness(grid)
++    expected = _solve(grid, "square_bbox")
++    assert expected != _solve(grid, "solid_2x2_only")
++    with RacketBridge(timeout=30, startup_timeout=60) as bridge:
++        assert _racket(bridge, grid) == expected
++        assert bridge.runtime_identity["protected"] is True
+diff --git a/repo/generators/4c0f3760c653/workspace/audit_square_bbox_shortcuts.py b/repo/generators/4c0f3760c653/workspace/audit_square_bbox_shortcuts.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4c0f3760c653/workspace/audit_square_bbox_shortcuts.py
+@@ -0,0 +1,218 @@
++#!/usr/bin/env python3
++"""Source-bound teaching audit for square-bbox shortcut rivals."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root, normalize_grid
++
++TASK_ID = "4c0f3760c653"
++ASSIGNED_SOURCE_SHA256 = "7bd20564ddb727278030987a1bdf4738679270b772e3bfc9579e5570144acf2b"
++
++
++def load_generator(root: Path):
++    source = root / "generators" / TASK_ID / "generator.py"
++    spec = importlib.util.spec_from_file_location(f"audit_{TASK_ID}_generator", source)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load {source}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module, source
++
++
++def canonical_program(root: Path) -> str:
++    programs: set[str] = set()
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        for line in handle:
++            if not line.strip():
++                continue
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                programs.add(row["program_solution"])
++    if len(programs) != 1:
++        raise RuntimeError(f"expected one canonical program, got {len(programs)}")
++    return next(iter(programs))
++
++
++def components(grid: list[list[int]]) -> list[tuple[int, set[tuple[int, int]]]]:
++    height, width = len(grid), len(grid[0])
++    unseen = {(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value}
++    result: list[tuple[int, set[tuple[int, int]]]] = []
++    while unseen:
++        start = min(unseen)
++        color = grid[start[0]][start[1]]
++        unseen.remove(start)
++        cells = {start}
++        stack = [start]
++        while stack:
++            row, col = stack.pop()
++            for neighbor in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)):
++                rr, cc = neighbor
++                if 0 <= rr < height and 0 <= cc < width and neighbor in unseen and grid[rr][cc] == color:
++                    unseen.remove(neighbor)
++                    cells.add(neighbor)
++                    stack.append(neighbor)
++        result.append((color, cells))
++    return result
++
++
++def bbox(cells: set[tuple[int, int]]) -> tuple[int, int, int, int]:
++    rows = [row for row, _ in cells]
++    cols = [col for _, col in cells]
++    return min(rows), min(cols), max(rows), max(cols)
++
++
++def is_square_bbox(cells: set[tuple[int, int]]) -> bool:
++    r0, c0, r1, c1 = bbox(cells)
++    return r1 - r0 == c1 - c0
++
++
++def is_solid_2x2(cells: set[tuple[int, int]]) -> bool:
++    r0, c0, r1, c1 = bbox(cells)
++    return r1 - r0 == 1 and c1 - c0 == 1 and len(cells) == 4
++
++
++def solve(grid: list[list[int]], mode: str) -> list[list[int]]:
++    output = [[0 for _ in row] for row in grid]
++    comps = components(grid)
++    max_area = max((len(cells) for _color, cells in comps), default=0)
++    for color, cells in comps:
++        if mode == "square_bbox":
++            keep = is_square_bbox(cells)
++        elif mode == "solid_2x2_only":
++            keep = is_solid_2x2(cells)
++        elif mode == "largest_area_only":
++            keep = len(cells) == max_area
++        else:
++            raise ValueError(mode)
++        if keep:
++            for row, col in cells:
++                output[row][col] = color
++    return output
++
++
++def racket_eval(bridge: RacketBridge, wrapped: str, grid: list[list[int]]) -> list[list[int]]:
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return normalize_grid(bridge.eval_text(f"({wrapped} {literal})"))
++
++
++def differing_cells(a: list[list[int]], b: list[list[int]]) -> int:
++    return sum(a[r][c] != b[r][c] for r in range(len(a)) for c in range(len(a[0])))
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", type=int, default=32)
++    parser.add_argument("--samples", type=int, default=12)
++    args = parser.parse_args()
++
++    root = find_root(__file__)
++    generator, source = load_generator(root)
++    source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
++    program = canonical_program(root)
++    wrapped = wrap_rule(program)
++
++    difficulties = (None, "easy", "medium", "hard")
++    checked = 0
++    windows = 0
++    profile_counts: dict[str, int] = {}
++    witness_by_profile: dict[str, dict] = {}
++    for difficulty in difficulties:
++        for seed in range(args.seeds):
++            grids = []
++            for sample_index in range(args.samples):
++                grid = generator.generate(seed, sample_index, difficulty=difficulty)
++                errors = generator.self_check(grid)
++                if errors:
++                    raise AssertionError((difficulty, seed, sample_index, errors))
++                profile = generator.schedule_profile(seed, sample_index, difficulty=difficulty)
++                profile_counts[profile] = profile_counts.get(profile, 0) + 1
++                canonical = solve(grid, "square_bbox")
++                rivals = {
++                    "solid_2x2_only": solve(grid, "solid_2x2_only"),
++                    "largest_area_only": solve(grid, "largest_area_only"),
++                }
++                if profile not in witness_by_profile:
++                    witness_by_profile[profile] = {
++                        "input": grid,
++                        "canonical_output": canonical,
++                        "rival_differences": {name: differing_cells(canonical, output) for name, output in rivals.items()},
++                    }
++                grids.append(grid)
++                checked += 1
++            for start in range(len(grids) - 2):
++                window = grids[start : start + 3]
++                canonical_outputs = [solve(grid, "square_bbox") for grid in window]
++                for rival in ("solid_2x2_only", "largest_area_only"):
++                    rival_outputs = [solve(grid, rival) for grid in window]
++                    if canonical_outputs == rival_outputs:
++                        raise AssertionError(("ambiguous repaired window", rival, difficulty, seed, start))
++                windows += 1
++
++    racket_evaluations = 0
++    with RacketBridge(timeout=30, startup_timeout=60) as bridge:
++        for profile in generator.SCHEDULE_PROFILES:
++            grid = witness_by_profile[profile]["input"]
++            expected = solve(grid, "square_bbox")
++            actual = racket_eval(bridge, wrapped, grid)
++            racket_evaluations += 1
++            if actual != expected:
++                raise AssertionError((profile, "canonical Racket mismatch"))
++            witness_by_profile[profile]["racket_output"] = actual
++        runtime_identity = bridge.runtime_identity
++
++    solid = witness_by_profile["solid_2x2"]["input"]
++    non_solid = witness_by_profile["l_square_bbox"]["input"]
++    if solve(solid, "square_bbox") != solve(solid, "solid_2x2_only"):
++        raise AssertionError("solid teaching anchor should fit the shortcut")
++    if solve(non_solid, "square_bbox") == solve(non_solid, "solid_2x2_only"):
++        raise AssertionError("non-solid witness must refute the shortcut")
++
++    report = {
++        "schema": "arcpuzzles-peer-square-bbox-audit-v1",
++        "task_id": TASK_ID,
++        "status": "passed",
++        "assigned_source_sha256": ASSIGNED_SOURCE_SHA256,
++        "audited_source_sha256": source_sha256,
++        "generator_version": generator.VERSION,
++        "canonical_program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++        "historical_shortcut": {
++            "rival": "keep_solid_2x2_only",
++            "why_it_fit": "the assigned production generator emitted a solid 2x2 as its only square-bbox component in every ordinary sample",
++            "solid_anchor_input": solid,
++            "non_solid_counterexample_input": non_solid,
++            "counterexample_differing_cells": differing_cells(
++                solve(non_solid, "square_bbox"), solve(non_solid, "solid_2x2_only")
++            ),
++        },
++        "repair": {
++            "schedule_profiles": list(generator.SCHEDULE_PROFILES),
++            "samples_checked": checked,
++            "three_sample_windows_checked": windows,
++            "profile_counts": dict(sorted(profile_counts.items())),
++            "witnesses": witness_by_profile,
++        },
++        "racket": {"evaluations": racket_evaluations, "runtime_identity": runtime_identity},
++        "limits": "Finite checks for solid-2x2-only and largest-area-only rivals; no universal identifiability claim.",
++    }
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({
++        "status": report["status"],
++        "out": str(args.out),
++        "samples_checked": checked,
++        "windows_checked": windows,
++        "racket_evaluations": racket_evaluations,
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

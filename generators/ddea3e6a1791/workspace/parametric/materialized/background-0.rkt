@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (define (nonzero-cells grid) (filter (lambda (p) (not (= (at grid (first p) (second p)) 0))) (grid-positions grid))) (define (crop-nonzero grid) (let ((cells (nonzero-cells grid))) (if (empty? cells) (list (list 0)) (let* ((bb (bbox-of-cells cells))) (subgrid grid (first bb) (second bb) (third bb) (fourth bb)))))) (crop-nonzero g)))

@@ -1,0 +1,17 @@
+(rule! (lambda (g)
+  ;; Proposed variant: blue up-right from the blue bbox, red down-left from the red bbox.
+  (let* ((h (rows g))
+         (w (cols g))
+         (blue (find-color g 1))
+         (red (find-color g 2))
+         (blue-r0 (min-of fst blue))
+         (blue-c1 (max-of snd blue))
+         (red-r1 (max-of fst red))
+         (red-c0 (min-of snd red)))
+    (define (paint-ray out r c dr dc color)
+      (if (in-bounds? r c h w)
+          (paint-ray (set-cell out r c color) (+ r dr) (+ c dc) dr dc color)
+          out))
+    (paint-ray
+      (paint-ray g (- blue-r0 1) (+ blue-c1 1) -1 1 1)
+      (+ red-r1 1) (- red-c0 1) 1 -1 2))))

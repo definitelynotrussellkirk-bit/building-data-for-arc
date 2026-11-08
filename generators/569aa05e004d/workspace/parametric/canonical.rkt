@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (for*/fold ((out (empty-grid (rows g) (cols g) 0))) ((r (in-range (rows g))) (color (in-list (grid-colors g 0)))) (let ((cols-list (map second (filter (lambda (p) (= (first p) r)) (find-color g color))))) (if (= (length cols-list) 2) (for/fold ((acc out)) ((c (in-range (apply min cols-list) (+ (apply max cols-list) 1)))) (set-cell acc r c color)) out)))))

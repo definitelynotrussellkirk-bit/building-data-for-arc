@@ -1,0 +1,28 @@
+(rule! (let ((dummy 0))
+  (define (norm-cells cells) (sort (normalize-cells cells) cell<))
+  (define (objs-color grid color)
+    (filter (lambda (obj) (= (obj-color obj) color)) (objects grid 0)))
+  (define (horizontal? obj)
+    (equal? (norm-cells (obj-cells obj)) (list (list 0 0) (list 0 1))))
+  (define (vertical? obj)
+    (equal? (norm-cells (obj-cells obj)) (list (list 0 0) (list 1 0))))
+  (define (obj-distance a b)
+    (min-list
+      (for*/list ((ca (in-list (obj-cells a)))
+                  (cb (in-list (obj-cells b))))
+        (+ (abs (- (first ca) (first cb)))
+           (abs (- (second ca) (second cb)))))))
+  (define gray (objs-color g 5))
+  (define anchor (find-first vertical? gray))
+  (define targets (filter horizontal? gray))
+  (define chosen
+    (first
+      (sort targets
+        (lambda (a b)
+          (let ((da (obj-distance anchor a))
+                (db (obj-distance anchor b)))
+            (if (= da db)
+                (cell< (first (sort (obj-cells a) cell<))
+                       (first (sort (obj-cells b) cell<)))
+                (< da db)))))))
+  (paint-cells g (obj-cells chosen) 8)))

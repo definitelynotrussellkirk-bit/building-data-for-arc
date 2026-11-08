@@ -1,0 +1,129 @@
+"""Bounded source-bound semantic audit. Run with the packet's Racket wrapper."""
+import argparse
+from collections import Counter
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+
+BASE=Path(__file__).resolve().parent
+spec=importlib.util.spec_from_file_location("dock_audit_adapter",BASE/"adapter.py")
+a=importlib.util.module_from_spec(spec);spec.loader.exec_module(a)
+
+
+def rival(grid,finish,name):
+    if name=="other_setting":return a.model.solve(grid,"bridge_top" if finish=="dock" else "dock")
+    bg=a.model.background(grid)
+    if name=="skip_docking":return a.model.bridge_top(grid,bg) if finish=="bridge_top" else [r[:] for r in grid]
+    os=a.model.components(grid,bg,4 if name=="four_connected" else 8)
+    size_counts=Counter(len(cells) for _,cells in os)
+    color_counts=Counter(color for color,cells in os)
+    def area(cells):
+        return (max(r for r,c in cells)-min(r for r,c in cells)+1)*(max(c for r,c in cells)-min(c for r,c in cells)+1)
+    boxes=Counter(area(cells) for _,cells in os)
+    out=[[bg]*len(grid[0]) for _ in grid]
+    for color,cells in os:
+        up={"all_up":True,"all_down":False,"odd_up":len(cells)%2==1,
+            "color_repeat":color_counts[color]>1,"bbox_repeat":boxes[area(cells)]>1,
+            "fixed_areas":len(cells) in (3,7,9)}.get(name,size_counts[len(cells)]>1)
+        delta=-min(r for r,c in cells) if up else len(grid)-1-max(r for r,c in cells)
+        for r,c in cells:out[r+delta][c]=color
+    return a.model.bridge_top(out,bg) if finish=="bridge_top" else out
+
+
+NAMES=["other_setting","all_up","all_down","odd_up","color_repeat","bbox_repeat","four_connected","fixed_areas","skip_docking"]
+
+def candidate(finish,name):
+    if name=="other_setting":return a.program({"finish":"bridge_top" if finish=="dock" else "dock"})
+    text=a.program({"finish":finish})
+    condition="(> (count (lambda (other) (= (obj-size o) (obj-size other))) os) 1)"
+    substitutes={"all_up":"#t","all_down":"#f","odd_up":"(odd? (obj-size o))",
+        "fixed_areas":"(not (not (member (obj-size o) '(3 7 9))))",
+        "color_repeat":"(> (count (lambda (other) (= (obj-color o) (obj-color other))) os) 1)",
+        "bbox_repeat":"(> (count (lambda (other) (= (* (obj-h o) (obj-w o)) (* (obj-h other) (obj-w other)))) os) 1)"}
+    if name in substitutes:return text.replace(condition,substitutes[name])
+    if name=="four_connected":return text.replace("objects-8","objects")
+    if name=="skip_docking":
+        # Leave the source as the intermediate without changing the final bridge stage.
+        start=text.index("     (define stage-a")
+        suffix=text[text.index("(obj-color o))))))",start)+len("(obj-color o))))))"):]
+        return text[:start]+"     (define stage-a g)"+suffix
+    raise ValueError(name)
+
+
+def binding():
+    home=BASE.parents[1]
+    return {p.relative_to(home).as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(home.rglob("*")) if p.is_file() and "__pycache__" not in p.parts
+        and (p.suffix in (".py",".rkt") or p.name in ("promotion.json","public-parent.json"))}
+
+
+def run(out,seeds=32,racket_seeds=2):
+    from arcpuzzles.parametric_worker import _real_evaluator
+    root=BASE.parents[3];out=Path(out);out.mkdir(parents=True,exist_ok=False)
+    bind=binding(); failures=[];episodes=0;pairs=0;turns=0;rival_attempts=0;survivors=[];presentations=set()
+    for seed in range(seeds):
+        for finish in ("dock","bridge_top"):
+            for demos in (2,3,6):
+                ep=a.generate(seed,{"finish":finish},demos,4);episodes+=1;pairs+=demos+4
+                presentations.add(tuple(ep["private"]["query_source_indices"]))
+                for n in (1,2,3):
+                    assert a.generate(seed,{"finish":finish},demos,n)["test"]==ep["test"][:n]
+                for i in range(4):
+                    assert a.public_view(ep,i)["test"]==[{"input":ep["test"][i]["input"]}];turns+=1
+                for name in NAMES:
+                    rival_attempts+=1
+                    if all(rival(p["input"],finish,name)==p["output"] for p in ep["train"]):
+                        harmful=any(rival(p["input"],finish,name)!=p["output"] for p in ep["test"])
+                        row={"seed":seed,"finish":finish,"demos":demos,"rival":name,"harmful":harmful}
+                        survivors.append(row)
+                        if harmful:failures.append({**row,"episode":ep})
+    apply,identity,bridge=_real_evaluator(root/"shared/runtime"); evaluations=0;cache={};racket_checks=[]
+    def execute(text,grid):
+        nonlocal evaluations
+        key=text,json.dumps(grid)
+        if key not in cache:cache[key]=apply(text,grid);evaluations+=1
+        return cache[key]
+    public_episodes=[]
+    try:
+        for seed in [17,43][:racket_seeds]:
+            for finish in ("dock","bridge_top"):
+                ep=a.generate(seed,{"finish":finish},2,4);public_episodes.append(ep)
+                for split in ("train","test"):
+                    for p in ep[split]:assert execute(ep["program_solution"],p["input"])==p["output"]
+                for name in NAMES:
+                    mismatches=[]
+                    for i,p in enumerate(ep["train"]):
+                        value=execute(candidate(finish,name),p["input"])
+                        assert value==rival(p["input"],finish,name),(name,seed,finish)
+                        if value!=p["output"]:mismatches.append(i)
+                    racket_checks.append({"seed":seed,"finish":finish,"rival":name,"refuted_by_demo_indices":mismatches})
+        ep=a.generate(17,{"finish":"bridge_top"},2,4)
+        p=next(p for p in ep["test"] if len(p["input"])==30)
+        correct=execute(ep["program_solution"],p["input"])
+        wrong_program=(BASE/"wrong_intermediate.rkt").read_text(); wrong=execute(wrong_program,p["input"])
+        changed=sum(x!=y for r,s in zip(correct,wrong) for x,y in zip(r,s));assert changed>0
+        witness={"schema":"source-bound-causal-replay-v1","status":"reviewer_replayed",
+            "input":p["input"],"correct_output":correct,"counterfactual_output":wrong,"changed_cells":changed,
+            "step_a":"Size-frequency rigid docking", "intermediate":"Docked canvas with repeated-size objects at its top edge",
+            "step_b":"Fill background gaps between occupied top-edge extremes",
+            "counterfactual":"Keep the correctly docked canvas, but derive bridge anchors from the original top edge",
+            "correct_program_sha256":hashlib.sha256(ep["program_solution"].encode()).hexdigest(),
+            "counterfactual_program_sha256":hashlib.sha256(wrong_program.encode()).hexdigest(),"source_binding":bind,"racket":identity}
+        (out/"causal.json").write_text(json.dumps(witness,indent=2)+"\n")
+    finally:bridge.close()
+    exports=a.public_io.export(public_episodes,out/"public");checked=a.public_io.verify(out/"public")
+    assert len(presentations)>1,"Query ordinal leaked into presentation"
+    report={"status":"passed" if not failures else "failed","source_binding":bind,"episodes":episodes,
+        "labeled_pairs":pairs,"public_turns":turns,"rival_attempts":rival_attempts,"survivors":survivors,
+        "failures":failures,"protected_racket_evaluations":evaluations,"racket":identity,"racket_checks":racket_checks,
+        "query_permutations":len(presentations),"export":exports,"export_verification":checked,
+        "limitations":"Finite seeded grammar and named rivals only; no universal induction or owner acceptance."}
+    assert binding()==bind,"Source changed during audit"
+    (out/"audit.json").write_text(json.dumps(report,indent=2)+"\n")
+    print(json.dumps({k:report[k] for k in ["status","episodes","labeled_pairs","protected_racket_evaluations"]}))
+    return 0 if not failures else 1
+
+if __name__=="__main__":
+    p=argparse.ArgumentParser();p.add_argument("--out",required=True);p.add_argument("--seeds",type=int,default=32)
+    args=p.parse_args();raise SystemExit(run(args.out,args.seeds))

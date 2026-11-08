@@ -1,0 +1,2 @@
+Review only pairs 0–3 in blind.json. Before revealing, save prediction.json with one-sentence "rule" and exact integer-grid "predicted_output" for pair 4.
+Run python3 assignment.py nvarc reveal --prediction PATH. Then compare pair 4 and skim pairs 5 through the actual end. Budget: three authoring minutes, no heavy probe. Return ok/ambiguous/inconsistent/trivial/broken, or blocked/uncertain with status blocked/unknown. Unknown does not imply ambiguity or noise. No source program is required.

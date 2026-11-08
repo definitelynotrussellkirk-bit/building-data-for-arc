@@ -1,0 +1,10 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (cellmap g
+                    (r c v)
+                    (let* ((pair-start (- c (remainder c 2)))
+                           (offset (remainder c 2))
+                           (old-pair (- (- w 2) pair-start))
+                           (old-c (+ old-pair offset)))
+                      (at g r old-c))))))

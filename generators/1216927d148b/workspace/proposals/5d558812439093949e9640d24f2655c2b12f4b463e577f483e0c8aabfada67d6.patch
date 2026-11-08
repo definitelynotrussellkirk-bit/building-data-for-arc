@@ -1,0 +1,1692 @@
+diff --git a/repo/generators/109a03554ed3/generator.py b/repo/generators/109a03554ed3/generator.py
+--- a/repo/generators/109a03554ed3/generator.py
++++ b/repo/generators/109a03554ed3/generator.py
+@@ -13,7 +13,7 @@
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "109a03554ed3"
+-VERSION = "2.1.0"  # enforce nonempty, in-bounds, visible XOR stamp at the cyan anchor.
++VERSION = "2.2.0"  # guarantee a union-refuting overlap witness in every four-sample window.
+ TASK_ID = "109a03554ed3"
+ SUMMARY = (
+     "0-bg grid (h~10-15, w~"
+@@ -156,7 +156,15 @@
+         blue_offsets = place_anchored(g, placed_bboxes, 1)
+         if blue_offsets is None:
+             continue
++        # Every four consecutive sample indices contain exactly one multiple
++        # of EXAMPLES_NEEDED.  Those scheduled examples must expose at least
++        # one shared relative offset, so the tempting union shortcut cannot
++        # survive a complete four-demonstration lesson.
++        requires_overlap = sample_index % EXAMPLES_NEEDED == 0
++        if requires_overlap and not (red_offsets & blue_offsets):
++            continue
+         xor_offsets = red_offsets ^ blue_offsets
++        placement_offsets = (red_offsets | blue_offsets) if requires_overlap else xor_offsets
+         if not xor_offsets:
+             continue
+         # Place cyan(8) anchor only where the full XOR stamp is in-bounds and
+@@ -171,7 +179,7 @@
+                        and g[cr + dr][cc + dc] != 0
+                        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1))):
+                     continue
+-                targets = [(cr + dr, cc + dc) for dr, dc in xor_offsets]
++                targets = [(cr + dr, cc + dc) for dr, dc in placement_offsets]
+                 if any(not (0 <= r < h and 0 <= c < w) for r, c in targets):
+                     continue
+                 if any(g[r][c] != 0 for r, c in targets):
+@@ -273,3 +281,100 @@
+                 errors.append("XOR stamp target is already nonzero in input")
+                 break
+     return errors
++
++
++
++def _render_offsets(grid, offsets, *, clip=False):
++    """Render an anchored-offset answer on the canonical empty output canvas."""
++    target = _positions(grid, 8)
++    if len(target) != 1:
++        raise ValueError("expected exactly one cyan target anchor")
++    h = len(grid)
++    w = len(grid[0]) if h else 0
++    tr, tc = target[0]
++    output = full_grid(h, w, 0)
++    for dr, dc in offsets:
++        row, col = tr + dr, tc + dc
++        if not (0 <= row < h and 0 <= col < w):
++            if clip:
++                continue
++            raise ValueError("anchored stamp leaves the grid")
++        output[row][col] = 3
++    return output
++
++
++def rule_mirror(grid):
++    """Independent Python mirror of the selected anchored-XOR Racket rule."""
++    errors = self_check(grid)
++    if errors:
++        raise ValueError("invalid XOR-stamp input: " + "; ".join(errors))
++    red = _anchored_offsets(grid, 2)
++    blue = _anchored_offsets(grid, 1)
++    assert red is not None and blue is not None
++    return _render_offsets(grid, red ^ blue)
++
++
++def _rival_union(grid):
++    """Plausible wrong rule: stamp the union instead of symmetric difference."""
++    errors = self_check(grid)
++    if errors:
++        raise ValueError("invalid union-rival input: " + "; ".join(errors))
++    red = _anchored_offsets(grid, 2)
++    blue = _anchored_offsets(grid, 1)
++    assert red is not None and blue is not None
++    return _render_offsets(grid, red | blue, clip=True)
++
++
++SEMANTIC_RIVALS = {"union": _rival_union}
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
++CANONICAL_SHORTCUTS = dict(SEMANTIC_RIVALS)
++
++
++def lesson_identifiable(demos, query):
++    """Return concrete reasons when a declared competitor survives the lesson."""
++    if not isinstance(demos, (list, tuple)) or len(demos) < EXAMPLES_NEEDED:
++        return [f"need at least {EXAMPLES_NEEDED} demonstrations"]
++
++    reasons = []
++    refuted = {name: False for name in LESSON_COMPETITORS}
++    valid_demos = []
++    for index, pair in enumerate(demos):
++        if not isinstance(pair, dict) or not {"input", "output"} <= set(pair):
++            reasons.append(f"demo {index} must contain input and output")
++            continue
++        errors = self_check(pair["input"])
++        if errors:
++            reasons.append(f"demo {index} input invalid: {errors[0]}")
++            continue
++        truth = rule_mirror(pair["input"])
++        if pair["output"] != truth:
++            reasons.append(f"demo {index} output disagrees with the selected rule")
++            continue
++        valid_demos.append(pair)
++        for name, competitor in LESSON_COMPETITORS.items():
++            if competitor(pair["input"]) != truth:
++                refuted[name] = True
++
++    for name, was_refuted in refuted.items():
++        if not was_refuted:
++            reasons.append(f"demonstrations do not refute competitor {name!r}")
++
++    if not isinstance(query, dict) or "input" not in query:
++        reasons.append("query must contain an input grid")
++        return reasons
++    query_errors = self_check(query["input"])
++    if query_errors:
++        reasons.append(f"query input invalid: {query_errors[0]}")
++        return reasons
++    truth = rule_mirror(query["input"])
++    if query.get("output") is not None and query["output"] != truth:
++        reasons.append("query output disagrees with the selected rule")
++    for name, competitor in LESSON_COMPETITORS.items():
++        if (valid_demos
++                and all(competitor(pair["input"]) == pair["output"]
++                        for pair in valid_demos)
++                and competitor(query["input"]) != truth):
++            reasons.append(
++                f"competitor {name!r} fits every valid demo but changes the query answer"
++            )
++    return reasons
+diff --git a/repo/generators/109a03554ed3/notes.md b/repo/generators/109a03554ed3/notes.md
+--- a/repo/generators/109a03554ed3/notes.md
++++ b/repo/generators/109a03554ed3/notes.md
+@@ -1,4 +1,35 @@
+ # Working notes: 109a03554ed3
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Review `review-60f652c3e40fcdc9`
++
++Repaired the retained union-versus-XOR teaching defect on generator version
++2.1.0 (`7a50a0aa...`). The old consecutive lesson at seed 0, medium, demos
++1–4 had no shared red/blue anchored offsets, so a union shortcut fit every
++demonstration and failed only on query 5.
++
++Version 2.2.0 schedules an overlap witness at every sample index divisible by
++`EXAMPLES_NEEDED` (4). Every four consecutive integer indices therefore contain
++one such witness. Scheduled witnesses also require the full union footprint to
++be in bounds and empty at the cyan target, so the cancellation is visibly
++label-distinguishing rather than clipped or overwritten.
++
++Added:
++
++- an independent Python mirror of the canonical anchored-XOR rule;
++- an executable clipped-union lesson competitor;
++- `CANONICAL_SHORTCUTS`, `LESSON_COMPETITORS`, and `lesson_identifiable`;
++- focused regression tests covering the historical lesson, consecutive-window
++  coverage across all three bands, and executable rival disagreement;
++- reusable `workspace/check_union_lesson.py` for bounded Racket-backed replay.
++
++Verification:
++
++- 3/3 portable task tests pass;
++- six lessons (easy/medium/hard × seeds 0 and 17), 30 direct generated inputs,
++  and 30 public Racket labels pass;
++- every checked lesson has an overlap demonstration, refutes union from the
++  demonstrations alone, passes the lesson gate, and matches the independent XOR
++  mirror.
++
++The retained check is finite; it does not prove uniqueness against arbitrary
++rules or all seeds. The production canonical Racket rule is unchanged.
+diff --git a/repo/generators/109a03554ed3/tests/test_union_lesson.py b/repo/generators/109a03554ed3/tests/test_union_lesson.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/109a03554ed3/tests/test_union_lesson.py
+@@ -0,0 +1,48 @@
++"""Regression coverage for the union-versus-XOR teaching defect."""
++from __future__ import annotations
++
++from reviewer_support import find_root, load_selected_generator
++
++ROOT = find_root(__file__)
++GEN, _SOURCE, _SOURCE_SHA = load_selected_generator("109a03554ed3", root=ROOT)
++
++
++def _overlap_count(grid) -> int:
++    red = GEN._anchored_offsets(grid, 2)
++    blue = GEN._anchored_offsets(grid, 1)
++    assert red is not None and blue is not None
++    return len(red & blue)
++
++
++def _pair(seed: int, index: int, band: str) -> dict:
++    grid = GEN.generate(seed, index, difficulty=band)
++    return {"input": grid, "output": GEN.rule_mirror(grid)}
++
++
++def test_historical_four_demo_window_refutes_union_rival():
++    demos = [_pair(0, index, "medium") for index in range(1, 5)]
++    query = _pair(0, 5, "medium")
++
++    assert any(_overlap_count(pair["input"]) > 0 for pair in demos)
++    assert "union" in GEN.LESSON_COMPETITORS
++    assert GEN.lesson_identifiable(demos, query) == []
++
++
++def test_every_four_consecutive_indices_include_overlap_witness():
++    for band in ("easy", "medium", "hard"):
++        for seed in range(4):
++            for start in range(8):
++                grids = [GEN.generate(seed, index, difficulty=band)
++                         for index in range(start, start + GEN.EXAMPLES_NEEDED)]
++                assert any(_overlap_count(grid) > 0 for grid in grids), (
++                    band, seed, start
++                )
++
++
++def test_rule_and_union_rival_are_executable_and_distinct_on_overlap():
++    grid = GEN.generate(0, 4, difficulty="medium")
++    assert _overlap_count(grid) > 0
++    truth = GEN.rule_mirror(grid)
++    union = GEN.LESSON_COMPETITORS["union"](grid)
++    assert truth != union
++    assert GEN.self_check(grid, difficulty="medium") == []
+diff --git a/repo/generators/109a03554ed3/workspace/check_union_lesson.py b/repo/generators/109a03554ed3/workspace/check_union_lesson.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/109a03554ed3/workspace/check_union_lesson.py
+@@ -0,0 +1,180 @@
++#!/usr/bin/env python3
++"""Build/replay a bounded Racket-backed check for the repaired union teaching hole."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++
++from reviewer_support import find_root, load_selected_generator
++
++TASK_ID = "109a03554ed3"
++BANDS = ("easy", "medium", "hard")
++SEEDS = (0, 17)
++START = 1
++
++
++def _raw(value) -> bytes:
++    return (json.dumps(value, sort_keys=True, ensure_ascii=False, indent=2) + "\n").encode()
++
++
++def _write(path: Path, value) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_bytes(_raw(value))
++
++
++def _sha(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def prepare(out: Path) -> None:
++    if out.exists():
++        raise FileExistsError(f"choose a fresh output directory: {out}")
++    root = find_root(__file__)
++    gen, source, source_sha = load_selected_generator(TASK_ID, root=root)
++    records = []
++    inputs = []
++    for band in BANDS:
++        for seed in SEEDS:
++            lesson = []
++            for index in range(START, START + gen.EXAMPLES_NEEDED + 1):
++                grid = gen.generate(seed, index, difficulty=band)
++                red = gen._anchored_offsets(grid, 2)
++                blue = gen._anchored_offsets(grid, 1)
++                if red is None or blue is None:
++                    raise AssertionError("generated source offsets are not recoverable")
++                lesson.append({
++                    "seed": seed,
++                    "difficulty": band,
++                    "sample_index": index,
++                    "role": "demo" if index < START + gen.EXAMPLES_NEEDED else "query",
++                    "input": grid,
++                    "self_check": gen.self_check(grid, difficulty=band),
++                    "overlap_count": len(red & blue),
++                    "rule_mirror": gen.rule_mirror(grid),
++                    "union_rival": gen.LESSON_COMPETITORS["union"](grid),
++                })
++                inputs.append(grid)
++            records.append({"difficulty": band, "seed": seed, "start": START, "pairs": lesson})
++    out.mkdir(parents=True)
++    _write(out / "source.json", {
++        "schema": "arc-union-lesson-repair-source-v1",
++        "task_id": TASK_ID,
++        "generator_path": source.relative_to(root).as_posix(),
++        "generator_sha256": source_sha,
++        "generator_version": gen.VERSION,
++        "examples_needed": gen.EXAMPLES_NEEDED,
++        "lesson_count": len(records),
++        "pair_count": len(inputs),
++        "scope": {"bands": list(BANDS), "seeds": list(SEEDS), "start": START},
++        "lessons": records,
++    })
++    _write(out / "inputs.json", inputs)
++    print(json.dumps({
++        "status": "prepared",
++        "lessons": len(records),
++        "inputs": len(inputs),
++        "generator_sha256": source_sha,
++    }))
++
++
++def compare(out: Path) -> None:
++    root = find_root(__file__)
++    gen, source, source_sha = load_selected_generator(TASK_ID, root=root)
++    source_record = json.loads((out / "source.json").read_bytes())
++    racket = json.loads((out / "racket.json").read_bytes())
++    if source_record["generator_sha256"] != source_sha:
++        raise AssertionError("generator changed after preparation")
++    if racket.get("generator_sha256") != source_sha:
++        raise AssertionError("Racket application used different generator bytes")
++    results = racket.get("results")
++    if not isinstance(results, list) or len(results) != source_record["pair_count"]:
++        raise AssertionError("Racket receipt has the wrong result count")
++
++    cursor = 0
++    failures = []
++    summarized = []
++    for lesson in source_record["lessons"]:
++        pairs = lesson["pairs"]
++        demos = []
++        actual_pairs = []
++        for pair in pairs:
++            result = results[cursor]
++            cursor += 1
++            actual = result.get("output")
++            if result.get("error") is not None or not result.get("valid_output"):
++                failures.append(f"invalid Racket label at {lesson['difficulty']}/{lesson['seed']}/{pair['sample_index']}")
++            if result.get("input") != pair["input"]:
++                failures.append("Racket receipt input mismatch")
++            if actual != pair["rule_mirror"]:
++                failures.append(f"Python XOR mirror differs from Racket at sample {pair['sample_index']}")
++            actual_pair = {"input": pair["input"], "output": actual}
++            actual_pairs.append(actual_pair)
++            if pair["role"] == "demo":
++                demos.append(actual_pair)
++        query = actual_pairs[-1]
++        overlap_demos = [pair["sample_index"] for pair in pairs[:-1] if pair["overlap_count"] > 0]
++        union_refuters = [pair["sample_index"] for pair, actual_pair in zip(pairs[:-1], actual_pairs[:-1], strict=True)
++                          if pair["union_rival"] != actual_pair["output"]]
++        reasons = gen.lesson_identifiable(demos, query)
++        if not overlap_demos:
++            failures.append(f"no overlap witness in {lesson['difficulty']}/{lesson['seed']}")
++        if not union_refuters:
++            failures.append(f"union rival survives {lesson['difficulty']}/{lesson['seed']}")
++        if reasons:
++            failures.append(f"lesson gate failed {lesson['difficulty']}/{lesson['seed']}: {reasons}")
++        summarized.append({
++            "difficulty": lesson["difficulty"],
++            "seed": lesson["seed"],
++            "demo_indices": [pair["sample_index"] for pair in pairs[:-1]],
++            "query_index": pairs[-1]["sample_index"],
++            "overlap_demo_indices": overlap_demos,
++            "union_refuting_demo_indices": union_refuters,
++            "lesson_identifiable_reasons": reasons,
++        })
++
++    report = {
++        "schema": "arc-union-lesson-repair-check-v1",
++        "task_id": TASK_ID,
++        "status": "passed" if not failures else "failed",
++        "source_binding": {
++            "path": source.relative_to(root).as_posix(),
++            "sha256": source_sha,
++            "version": gen.VERSION,
++        },
++        "scope": source_record["scope"],
++        "lesson_count": len(summarized),
++        "pair_count": source_record["pair_count"],
++        "racket_evaluations": len(results),
++        "checks": {
++            "all_inputs_self_check": all(pair["self_check"] == [] for lesson in source_record["lessons"] for pair in lesson["pairs"]),
++            "all_racket_labels_match_xor_mirror": not any("mirror differs" in failure for failure in failures),
++            "every_lesson_has_overlap_demo": all(row["overlap_demo_indices"] for row in summarized),
++            "every_lesson_refutes_union": all(row["union_refuting_demo_indices"] for row in summarized),
++            "every_lesson_gate_passes": all(not row["lesson_identifiable_reasons"] for row in summarized),
++        },
++        "lessons": summarized,
++        "failures": failures,
++        "racket_receipt_sha256": _sha(out / "racket.json"),
++        "limits": "Six fixed lessons only; no universal rival or all-seed claim.",
++    }
++    _write(out / "report.json", report)
++    print(json.dumps({"status": report["status"], "lessons": len(summarized), "racket_evaluations": len(results), "failures": failures}))
++    if failures or not all(report["checks"].values()):
++        raise AssertionError("bounded union lesson repair check failed")
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("action", choices=("prepare", "compare"))
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    if args.action == "prepare":
++        prepare(args.out)
++    else:
++        compare(args.out)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/repo/generators/1216927d148b/notes.md b/repo/generators/1216927d148b/notes.md
+--- a/repo/generators/1216927d148b/notes.md
++++ b/repo/generators/1216927d148b/notes.md
+@@ -1,4 +1,49 @@
+ # Working notes: 1216927d148b
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Review `review-60f652c3e40fcdc9`
++
++The production generator and canonical Racket authority remain unchanged. The
++new native parametric family lives in `workspace/parametric/` and varies one
++rule axis, `gallery_order`:
++
++- `fixed_pairs` is the exact canonical AB, AC, BC gallery and returns the
++  canonical program byte-for-byte.
++- `largest_overlap_first` derives the same three pairwise intersections, counts
++  their occupied cells, stably orders them by decreasing count (AB before AC
++  before BC on ties), and concatenates them in that input-dependent order.
++
++Inputs are matched across settings. Episodes support independent 2–6
++illustrations and 1–4 queries; prefixes are stable, four queries are distinct,
++and the last query is a substantive 30×17 case touching all four boundaries.
++The canonical grammar has three fixed five-column panels plus two separator
++columns, so an exact 30×30 input would require ignored columns or a visible
++change of grammar and was deliberately not fabricated.
++
++The first two demonstrations constructively teach both rank ordering and stable
++tie-breaking. A protected-Racket audit tested nine executable shortcuts against
++both settings using the minimum two demonstrations and four queries: all nine
++were rejected (50 evaluations). Native qualification passed two settings at
++seeds 0 and 17 (four jobs, 32 protected-Racket evaluations).
++
++Sequential dependency: step A computes the AB/AC/BC masks and their counts; the
++intermediate is the source-ordered `(pair, mask, count)` list; step B sorts that
++list and lays out the final gallery. The retained qualified witness has counts
++3/5/4, so the selected order is AC/BC/AB. Replacing the intermediate with the
++fixed AB/AC/BC order changes the final protected-Racket output.
++
++The complete portable task suite initially exposed an inherited test-only path
++bug: two tests looked for canonical data beneath a fixed parent depth. They now
++use `reviewer_support.find_root` and `canonical_path`; 42/42 isolated task tests
++pass. This did not change the production generator or native program bytes.
++
++Evidence:
++
++- `WORK/checks/1216927d148b/self-audit/report.json`
++- `WORK/checks/1216927d148b/qualification/qualification.json`
++- `WORK/checks/1216927d148b/qualification/execution.json`
++- `WORK/checks/1216927d148b/causal/witness.json`
++- `WORK/checks/1216927d148b/causal/replay.json`
++- `WORK/checks/1216927d148b-tests/result.json`
++
++Status is reviewer-ready only. Owner exact-source integration, fresh native
++qualification, acceptance, and any training admission remain pending.
+diff --git a/repo/generators/1216927d148b/tests/test_generator_1216927d148b.py b/repo/generators/1216927d148b/tests/test_generator_1216927d148b.py
+--- a/repo/generators/1216927d148b/tests/test_generator_1216927d148b.py
++++ b/repo/generators/1216927d148b/tests/test_generator_1216927d148b.py
+@@ -16,7 +16,9 @@
+ import unittest
+ from pathlib import Path
+ 
+-ROOT = Path(__file__).resolve().parents[1]
++from reviewer_support import canonical_path, find_root
++
++ROOT = find_root(__file__)
+ TASK_ID = "1216927d148b"
+ 
+ gen = importlib.import_module(
+@@ -87,7 +89,7 @@
+ class TestRuleHashPin(unittest.TestCase):
+     def test_rule_hash_matches_canonical(self):
+         src = None
+-        with open(ROOT / "data/canonical/puzzles.jsonl") as fh:
++        with canonical_path(ROOT).open(encoding="utf-8") as fh:
+             for line in fh:
+                 row = json.loads(line)
+                 if row.get("task_id") == TASK_ID:
+@@ -146,7 +148,7 @@
+         return gen.generate(4, 4, difficulty="medium")
+ 
+     def test_accepts_canonical_inputs(self):
+-        with open(ROOT / "data/canonical/puzzles.jsonl") as fh:
++        with canonical_path(ROOT).open(encoding="utf-8") as fh:
+             for line in fh:
+                 row = json.loads(line)
+                 if row.get("task_id") == TASK_ID:
+diff --git a/repo/generators/1216927d148b/tests/test_parametric_gallery_order.py b/repo/generators/1216927d148b/tests/test_parametric_gallery_order.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/tests/test_parametric_gallery_order.py
+@@ -0,0 +1,173 @@
++"""Native parametric family for the pairwise-intersection gallery."""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from arcpuzzles.parametric_worker import evaluate_contract
++from reviewer_support import canonical_path, find_root, public_challenge_bytes
++
++TASK_ID = "1216927d148b"
++HOME = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
++PARAMETRIC = HOME / "workspace" / "parametric"
++SETTINGS = (
++    {"gallery_order": "fixed_pairs"},
++    {"gallery_order": "largest_overlap_first"},
++)
++
++
++def _load_adapter():
++    path = PARAMETRIC / "adapter.py"
++    assert path.is_file(), "the MAIN native adapter has not been built"
++    spec = importlib.util.spec_from_file_location("_tested_1216927d148b_adapter", path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _canonical_program() -> str:
++    programs = set()
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        for row in map(json.loads, handle):
++            if row.get("task_id") == TASK_ID:
++                programs.add(row["program_solution"])
++    assert len(programs) == 1
++    return programs.pop()
++
++
++def _inputs(episode):
++    return [pair["input"] for split in ("train", "test") for pair in episode[split]]
++
++
++def test_default_program_is_byte_exact_and_alternate_is_distinct():
++    adapter = _load_adapter()
++    canonical = _canonical_program()
++    assert adapter.program(SETTINGS[0]) == canonical
++    assert adapter.program(SETTINGS[1]) != canonical
++    assert adapter.program(SETTINGS[1]).startswith("(rule!")
++
++
++@pytest.mark.parametrize("demos", (2, 3, 6))
++@pytest.mark.parametrize("queries", (1, 4))
++def test_counts_matched_inputs_stable_prefixes_and_distinctness(demos, queries):
++    adapter = _load_adapter()
++    fixed = adapter.generate(17, SETTINGS[0], demos=demos, queries=queries)
++    ranked = adapter.generate(17, SETTINGS[1], demos=demos, queries=queries)
++    full = adapter.generate(17, SETTINGS[0], demos=6, queries=4)
++
++    assert len(fixed["train"]) == demos and len(fixed["test"]) == queries
++    assert _inputs(fixed) == _inputs(ranked)
++    assert fixed["train"] == full["train"][:demos]
++    assert fixed["test"] == full["test"][:queries]
++    assert any(
++        left["output"] != right["output"]
++        for split in ("train", "test")
++        for left, right in zip(fixed[split], ranked[split], strict=True)
++    )
++
++    fingerprints = {
++        json.dumps(grid, separators=(",", ":")) for grid in _inputs(fixed)
++    }
++    assert len(fingerprints) == demos + queries
++    public_challenge_bytes(fixed)
++
++
++def test_first_two_demonstrations_teach_order_and_tie_breaking():
++    adapter = _load_adapter()
++    fixed = adapter.generate(0, SETTINGS[0], demos=2, queries=4)
++    ranked = adapter.generate(0, SETTINGS[1], demos=2, queries=4)
++    assert all(
++        a["output"] != b["output"]
++        for a, b in zip(fixed["train"], ranked["train"], strict=True)
++    )
++
++    analysis = [adapter.analyze_input(pair["input"]) for pair in ranked["train"]]
++    assert len(set(analysis[0]["intersection_counts"])) == 3
++    counts = analysis[1]["intersection_counts"]
++    assert counts[1] == counts[2] > counts[0]
++    assert analysis[1]["ranked_pair_names"][:2] == ["AC", "BC"]
++
++
++def test_maximum_query_is_substantive_30_by_17_and_hits_all_boundaries():
++    adapter = _load_adapter()
++    grid = adapter.generate(2**63 - 1, SETTINGS[1], demos=2, queries=4)["test"][-1]["input"]
++    assert (len(grid), len(grid[0])) == (30, 17)
++    assert sum(value != 0 for row in grid for value in row) >= 210
++    assert any(grid[0][c] != 0 for c in range(17))
++    assert any(grid[-1][c] != 0 for c in range(17))
++    assert any(row[0] != 0 for row in grid)
++    assert any(row[-1] != 0 for row in grid)
++    assert all(row[5] == row[11] == 0 for row in grid)
++
++
++def test_public_turn_omits_private_answers_settings_program_and_future_queries():
++    adapter = _load_adapter()
++    episode = adapter.generate(23, SETTINGS[1], demos=3, queries=4)
++    first = adapter.public_turn(episode, 0)
++    one = adapter.generate(23, SETTINGS[1], demos=3, queries=1)
++    assert first == adapter.public_turn(one, 0)
++    assert set(first) == {"train", "test"}
++    assert len(first["test"]) == 1 and set(first["test"][0]) == {"input"}
++
++    encoded = adapter.public_turn_bytes(episode, 0)
++    assert adapter.public_turn_id(episode, 0) == hashlib.sha256(encoded).hexdigest()
++    changed = deepcopy(episode)
++    changed.update(settings={"gallery_order": "fixed_pairs"}, seed=999,
++                   program_solution="PRIVATE PROGRAM", private_note="PRIVATE")
++    for pair in changed["test"]:
++        pair["output"] = [[9]]
++    assert adapter.public_turn_bytes(changed, 0) == encoded
++
++    assert adapter.public_turn(episode, 3) == {
++        "train": episode["train"],
++        "test": [{"input": episode["test"][3]["input"]}],
++    }
++    for bad in (-1, 4, True, 1.0, "1", None):
++        with pytest.raises((TypeError, ValueError)):
++            adapter.public_turn(episode, bad)
++
++
++def test_protected_racket_labels_and_demo_only_identification():
++    _load_adapter()
++    contract = json.loads((PARAMETRIC / "promotion.json").read_text())
++    jobs = [
++        {"seed": seed, "settings": setting, "demos": demos, "queries": 4}
++        for seed, demos in ((0, 2), (17, 6))
++        for setting in SETTINGS
++    ]
++    result = evaluate_contract(ROOT, TASK_ID, contract, jobs)
++    assert result["racket"]["backend"] == "racket"
++    assert result["racket"]["protected"] is True
++    assert [check["survivors"] for check in result["checks"]] == [
++        [job["settings"]] for job in jobs
++    ]
++    assert [check["label_count"] for check in result["checks"]] == [
++        job["demos"] + 4 for job in jobs
++    ]
++
++
++@pytest.mark.parametrize(
++    "patch",
++    [
++        {"seed": True}, {"seed": -1}, {"seed": 2**63}, {"seed": 1.0},
++        {"settings": None}, {"settings": {}},
++        {"settings": {"gallery_order": True}},
++        {"settings": {"gallery_order": "unknown"}},
++        {"settings": {"gallery_order": "fixed_pairs", "extra": 1}},
++        {"demos": 1}, {"demos": 7}, {"demos": True}, {"demos": 3.0},
++        {"queries": 0}, {"queries": 5}, {"queries": True}, {"queries": 4.0},
++    ],
++)
++def test_invalid_controls_fail_closed(patch):
++    adapter = _load_adapter()
++    request = {"seed": 17, "settings": SETTINGS[0], "demos": 3, "queries": 4}
++    request.update(patch)
++    with pytest.raises((TypeError, ValueError)):
++        adapter.generate(**request)
+diff --git a/repo/generators/1216927d148b/workspace/parametric/README.md b/repo/generators/1216927d148b/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/README.md
+@@ -0,0 +1,61 @@
++# Pairwise-intersection gallery order
++
++This native proposal keeps the exact canonical program as
++`gallery_order=fixed_pairs` and adds `largest_overlap_first`.
++
++The canonical rule computes the three binary intersections `AB`, `AC`, and
++`BC`, paints them cyan, and emits them in that fixed order. The alternative
++computes the same three masks, counts their occupied cells, and stably sorts
++those derived masks by decreasing count with canonical `AB < AC < BC` ties.
++Inputs are identical across settings; only demonstration outputs reveal the
++private episode-fixed rule.
++
++## Causal dependency
++
++1. **A:** compute all three pairwise intersection masks and their occupied-cell
++   counts from the three input panels.
++2. **Intermediate:** the ordered source list `[(AB, mask, count),
++   (AC, mask, count), (BC, mask, count)]`.
++3. **B:** under `largest_overlap_first`, sort those derived records by count and
++   stable pair identity, then hstack the masks.
++
++B cannot choose its output order before A supplies the input-dependent overlap
++counts. The retained protected-Racket witness replaces those counts with a
++wrong fixed ranking and changes the final gallery.
++
++## Supported requests and stress
++
++`generate(seed, settings, demos=3, queries=4)` accepts exact seeds in
++`0..2**63-1`, 2–6 demonstrations, and 1–4 queries independently. Query and
++training prefixes are stable and setting-independent. The first demonstration
++has three distinct overlap sizes; the second has an `AC/BC` tie that teaches the
++stable tie break. Four queries cover heights 5, 13, 23, and 30. The 30×17 query
++contains more than 210 foreground cells and touches every outer boundary.
++
++Exact 30×30 is not lawful for the exact canonical authority: it slices three
++fixed five-column panels at columns `0..4`, `6..10`, and `12..16`, so its
++semantic input width is 17. The separate sampler therefore extends the natural
++height boundary to 30 without adding ignored columns or making the private
++setting visible from input dimensions.
++
++`public_turn` exposes all demonstrations and exactly one selected query input.
++It includes no settings, program, answer, future query, query index, or total
++query count; the first turn is byte-identical for one-query and four-query
++requests.
++
++## Reproduce
++
++From the outer packet folder:
++
++```bash
++python3 review.py run python3 -m pytest -q \
++  generators/1216927d148b/tests/test_parametric_gallery_order.py
++python3 review.py run python3 \
++  generators/1216927d148b/workspace/parametric/audit.py \
++  --seed 19 --out ../checks/1216927d148b/self-audit
++python3 review.py run python3 -m arcpuzzles parametric qualify 1216927d148b \
++  --out ../checks/1216927d148b/qualification --summary
++```
++
++Qualification and bounded self-audit are reviewer evidence only. Exact-source
++owner acceptance remains pending, and training admission remains false.
+diff --git a/repo/generators/1216927d148b/workspace/parametric/adapter.py b/repo/generators/1216927d148b/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/adapter.py
+@@ -0,0 +1,24 @@
++"""Thin native adapter loading this task's exact adjacent prototype."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_NAME = "_gallery_order_1216927d148b_" + hashlib.sha256(str(_PATH).encode()).hexdigest()
++_SPEC = importlib.util.spec_from_file_location(_NAME, _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(f"cannot load gallery-order prototype from {_PATH}")
++_MODULE = importlib.util.module_from_spec(_SPEC)
++sys.modules[_NAME] = _MODULE
++_SPEC.loader.exec_module(_MODULE)
++
++program = _MODULE.program
++generate = _MODULE.generate
++claimed_output = _MODULE.claimed_output
++analyze_input = _MODULE.analyze_input
++public_turn = _MODULE.public_turn
++public_turn_bytes = _MODULE.public_turn_bytes
++public_turn_id = _MODULE.public_turn_id
+diff --git a/repo/generators/1216927d148b/workspace/parametric/audit.py b/repo/generators/1216927d148b/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/audit.py
+@@ -0,0 +1,244 @@
++#!/usr/bin/env python3
++"""Bounded protected-Racket self-audit for the gallery-order family."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++from arcpuzzles.parametric_worker import _real_evaluator
++from reviewer_support import find_root
++
++TASK_ID = "1216927d148b"
++HERE = Path(__file__).resolve().parent
++ROOT = find_root(__file__)
++SETTINGS = (
++    {"gallery_order": "fixed_pairs"},
++    {"gallery_order": "largest_overlap_first"},
++)
++
++
++def _load_adapter():
++    path = HERE / "adapter.py"
++    spec = importlib.util.spec_from_file_location("_audit_gallery_order_adapter", path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _raw(value):
++    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
++                       ensure_ascii=False, allow_nan=False) + "\n").encode()
++
++
++def _common(body: str) -> str:
++    return f"""(rule! (let ((dummy 0))
++  (define (paste grid pat top left)
++    (for*/fold ((out grid)) ((r (in-range (rows pat))) (c (in-range (cols pat))))
++      (let ((v (at pat r c)) (rr (+ top r)) (cc (+ left c)))
++        (if (and (not (= v 0)) (in-bounds? rr cc (rows out) (cols out)))
++            (set-cell out rr cc v) out))))
++  (define (hstack grids (gap 1))
++    (let* ((h (apply max (map rows grids)))
++           (w (+ (apply + (map cols grids)) (* gap (- (length grids) 1)))))
++      (let loop ((xs grids) (left 0) (out (empty-grid h w 0)))
++        (if (empty? xs) out
++            (let* ((piece (first xs)) (top (quotient (- h (rows piece)) 2)))
++              (loop (rest xs) (+ left (cols piece) gap)
++                    (paste out piece top left)))))))
++  (define (inter a b)
++    (grid-from-fn (rows a) (cols a)
++      (lambda (r c) (if (and (not (= (at a r c) 0))
++                              (not (= (at b r c) 0))) 8 0))))
++  (define (union-mask a b)
++    (grid-from-fn (rows a) (cols a)
++      (lambda (r c) (if (or (not (= (at a r c) 0))
++                             (not (= (at b r c) 0))) 8 0))))
++  (define (triple a b c)
++    (grid-from-fn (rows a) (cols a)
++      (lambda (r col) (if (and (not (= (at a r col) 0))
++                                (not (= (at b r col) 0))
++                                (not (= (at c r col) 0))) 8 0))))
++  (define (occupied grid)
++    (length (filter (lambda (v) (not (= v 0))) (apply append grid))))
++  (define (first-color grid)
++    (first (filter (lambda (v) (not (= v 0))) (apply append grid))))
++  (define (descending a b)
++    (if (= (third a) (third b)) (< (first a) (first b)) (> (third a) (third b))))
++  (define (ascending a b)
++    (if (= (third a) (third b)) (< (first a) (first b)) (< (third a) (third b))))
++  (define (reverse-ties a b)
++    (if (= (third a) (third b)) (> (first a) (first b)) (> (third a) (third b))))
++  (let* ((panels (for/list ((i (in-range 3)))
++                   (subgrid g 0 (* i 6) (- (rows g) 1) (+ (* i 6) 4))))
++         (a (first panels)) (b (second panels)) (c (third panels))
++         (ab (inter a b)) (ac (inter a c)) (bc (inter b c)))
++    {body})))"""
++
++
++def rival_programs() -> dict[str, str]:
++    return {
++        "reverse_fixed_pairs": _common("(hstack (list bc ac ab) 1)"),
++        "ascending_overlap": _common(
++            "(let ((items (list (list 0 ab (occupied ab)) "
++            "(list 1 ac (occupied ac)) (list 2 bc (occupied bc))))) "
++            "(hstack (map second (sort items ascending)) 1))"
++        ),
++        "largest_overlap_reverse_ties": _common(
++            "(let ((items (list (list 0 ab (occupied ab)) "
++            "(list 1 ac (occupied ac)) (list 2 bc (occupied bc))))) "
++            "(hstack (map second (sort items reverse-ties)) 1))"
++        ),
++        "panel_sum_descending": _common(
++            "(let ((items (list "
++            "(list 0 ab (+ (occupied a) (occupied b))) "
++            "(list 1 ac (+ (occupied a) (occupied c))) "
++            "(list 2 bc (+ (occupied b) (occupied c)))))) "
++            "(hstack (map second (sort items descending)) 1))"
++        ),
++        "panel_max_descending": _common(
++            "(let ((items (list "
++            "(list 0 ab (max (occupied a) (occupied b))) "
++            "(list 1 ac (max (occupied a) (occupied c))) "
++            "(list 2 bc (max (occupied b) (occupied c)))))) "
++            "(hstack (map second (sort items descending)) 1))"
++        ),
++        "numeric_color_pair_order": _common(
++            "(let ((items (list "
++            "(list 0 ab (+ (first-color a) (first-color b))) "
++            "(list 1 ac (+ (first-color a) (first-color c))) "
++            "(list 2 bc (+ (first-color b) (first-color c)))))) "
++            "(hstack (map second (sort items descending)) 1))"
++        ),
++        "pairwise_union_fixed": _common(
++            "(hstack (list (union-mask a b) (union-mask a c) (union-mask b c)) 1)"
++        ),
++        "triple_intersection_repeated": _common(
++            "(let ((t (triple a b c))) (hstack (list t t t) 1))"
++        ),
++        "largest_intersection_repeated": _common(
++            "(let* ((items (list (list 0 ab (occupied ab)) "
++            "(list 1 ac (occupied ac)) (list 2 bc (occupied bc)))) "
++            "(winner (second (first (sort items descending))))) "
++            "(hstack (list winner winner winner) 1))"
++        ),
++    }
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--seed", type=int, default=19)
++    parser.add_argument("--demos", type=int, default=2)
++    parser.add_argument("--queries", type=int, default=4)
++    parser.add_argument("--out", required=True)
++    args = parser.parse_args(argv)
++    out = Path(args.out)
++    if out.exists() or out.is_symlink():
++        raise FileExistsError(out)
++    out.mkdir(parents=True)
++
++    adapter = _load_adapter()
++    rivals = rival_programs()
++    apply, identity, bridge = _real_evaluator(ROOT / "shared/runtime")
++    evaluations = 0
++    setting_reports = []
++    receipt = {"schema": "arcpuzzles-gallery-order-self-audit-v1", "task_id": TASK_ID,
++               "seed": args.seed, "demos": args.demos, "queries": args.queries,
++               "racket": identity, "settings": [], "rivals": sorted(rivals)}
++    try:
++        for settings in SETTINGS:
++            episode = adapter.generate(args.seed, settings, args.demos, args.queries)
++            chosen_program = adapter.program(settings)
++            for split in ("train", "test"):
++                for pair in episode[split]:
++                    actual = apply(chosen_program, pair["input"]); evaluations += 1
++                    if actual != pair["output"]:
++                        raise AssertionError(f"chosen Racket label mismatch: {settings} {split}")
++
++            rival_rows = []
++            for name, source in rivals.items():
++                demo_outputs = []
++                for pair in episode["train"]:
++                    demo_outputs.append(apply(source, pair["input"])); evaluations += 1
++                survives = all(got == pair["output"]
++                               for got, pair in zip(demo_outputs, episode["train"], strict=True))
++                query_disagreements = []
++                if survives:
++                    for index, pair in enumerate(episode["test"]):
++                        got = apply(source, pair["input"]); evaluations += 1
++                        if got != pair["output"]:
++                            query_disagreements.append(index)
++                rival_rows.append({"name": name, "survives_demos": survives,
++                                   "query_disagreements": query_disagreements,
++                                   "program_sha256": hashlib.sha256(source.encode()).hexdigest()})
++            harmful = [row for row in rival_rows
++                       if row["survives_demos"] and row["query_disagreements"]]
++            if harmful:
++                raise AssertionError(f"harmful visible-demo survivors for {settings}: {harmful}")
++            setting_reports.append({"settings": settings, "rivals": rival_rows})
++            receipt["settings"].append({
++                "settings": settings,
++                "program": chosen_program,
++                "program_sha256": hashlib.sha256(chosen_program.encode()).hexdigest(),
++                "episode": episode,
++                "rivals": rival_rows,
++            })
++
++        # Retain a source-exact causal case from the alternate's largest query.
++        alt = adapter.generate(args.seed, SETTINGS[1], args.demos, args.queries)
++        pair = alt["test"][-1]
++        program = adapter.program(SETTINGS[1])
++        counterfactual = adapter.program(SETTINGS[0])
++        output = apply(program, pair["input"]); evaluations += 1
++        counter_output = apply(counterfactual, pair["input"]); evaluations += 1
++        if output == counter_output:
++            raise AssertionError("causal case did not change under fixed pseudo-ranking")
++        analysis = adapter.analyze_input(pair["input"])
++        causal = {
++            "schema": "arcpuzzles-gallery-order-audited-case-v1",
++            "task_id": TASK_ID,
++            "settings": SETTINGS[1],
++            "input": pair["input"],
++            "program": program,
++            "output": output,
++            "counterfactual_program": counterfactual,
++            "counterfactual_output": counter_output,
++            "intermediate_value": {
++                "pair_names": ["AB", "AC", "BC"],
++                "intersection_counts": analysis["intersection_counts"],
++                "ranked_pair_names": analysis["ranked_pair_names"],
++                "counterfactual_fixed_order": ["AB", "AC", "BC"],
++            },
++            "ablation": "wrong_intermediate",
++        }
++    finally:
++        bridge.close()
++
++    receipt["racket_evaluations"] = evaluations
++    report = {
++        "schema": "arcpuzzles-gallery-order-self-audit-report-v1",
++        "task_id": TASK_ID,
++        "status": "passed",
++        "scope": "Two settings, minimum two-demo lessons, four queries, and nine finite executable rivals; not universal uniqueness.",
++        "racket": identity,
++        "racket_evaluations": evaluations,
++        "settings": setting_reports,
++        "causal_case": "causal_case.json",
++    }
++    (out / "report.json").write_bytes(_raw(report))
++    (out / "racket_receipt.json").write_bytes(_raw(receipt))
++    (out / "causal_case.json").write_bytes(_raw(causal))
++    print(json.dumps({"status": "passed", "racket_evaluations": evaluations,
++                      "settings": len(SETTINGS), "rivals": len(rivals),
++                      "out": str(out)}, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/1216927d148b/workspace/parametric/canonical.rkt b/repo/generators/1216927d148b/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (e8b-paste grid pat top left) (for*/fold ((out grid)) ((r (in-range (rows pat))) (c (in-range (cols pat)))) (let ((v (at pat r c)) (rr (+ top r)) (cc (+ left c))) (if (and (not (= v 0)) (in-bounds? rr cc (rows out) (cols out))) (set-cell out rr cc v) out)))) (define (f14b-hstack-center grids (gap 1)) (if (empty? grids) (list (list)) (let* ((h (apply max (map rows grids))) (w (+ (apply + (map cols grids)) (* gap (- (length grids) 1))))) (let loop ((xs grids) (left 0) (out (empty-grid h w 0))) (if (empty? xs) out (let* ((piece (first xs)) (top (quotient (- h (rows piece)) 2))) (loop (rest xs) (+ left (cols piece) gap) (e8b-paste out piece top left)))))))) (define (f14b-intersection a b) (grid-from-fn (rows a) (cols a) (lambda (r c) (if (and (not (= (at a r c) 0)) (not (= (at b r c) 0))) 8 0)))) (let* ((panels (for/list ((i (in-range 3))) (subgrid g 0 (* i 6) (- (rows g) 1) (+ (* i 6) 4)))) (items (list (f14b-intersection (first panels) (second panels)) (f14b-intersection (first panels) (third panels)) (f14b-intersection (second panels) (third panels))))) (f14b-hstack-center items 1))))
+\ No newline at end of file
+diff --git a/repo/generators/1216927d148b/workspace/parametric/evidence/current/causal-case.json b/repo/generators/1216927d148b/workspace/parametric/evidence/current/causal-case.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/evidence/current/causal-case.json
+@@ -0,0 +1 @@
++{"ablation":"wrong_intermediate","counterfactual_output":[[8,8,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,0,0,0,0,0,0,0,0,8,0,0,0,8,0,0],[8,8,8,0,0,0,0,0,8,8,8,0,0,0,8,0,0],[8,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[8,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[8,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[8,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,8,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,0]],"counterfactual_program":"(rule! (let ((dummy 0)) (define (e8b-paste grid pat top left) (for*/fold ((out grid)) ((r (in-range (rows pat))) (c (in-range (cols pat)))) (let ((v (at pat r c)) (rr (+ top r)) (cc (+ left c))) (if (and (not (= v 0)) (in-bounds? rr cc (rows out) (cols out))) (set-cell out rr cc v) out)))) (define (f14b-hstack-center grids (gap 1)) (if (empty? grids) (list (list)) (let* ((h (apply max (map rows grids))) (w (+ (apply + (map cols grids)) (* gap (- (length grids) 1))))) (let loop ((xs grids) (left 0) (out (empty-grid h w 0))) (if (empty? xs) out (let* ((piece (first xs)) (top (quotient (- h (rows piece)) 2))) (loop (rest xs) (+ left (cols piece) gap) (e8b-paste out piece top left)))))))) (define (f14b-intersection a b) (grid-from-fn (rows a) (cols a) (lambda (r c) (if (and (not (= (at a r c) 0)) (not (= (at b r c) 0))) 8 0)))) (let* ((panels (for/list ((i (in-range 3))) (subgrid g 0 (* i 6) (- (rows g) 1) (+ (* i 6) 4)))) (items (list (f14b-intersection (first panels) (second panels)) (f14b-intersection (first panels) (third panels)) (f14b-intersection (second panels) (third panels))))) (f14b-hstack-center items 1))))","input":[[9,9,0,0,9,0,2,2,2,0,0,0,0,0,0,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,0,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,0,8],[9,9,0,0,9,0,2,2,2,0,0,0,0,0,8,0,8],[9,9,9,9,9,0,2,2,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,2,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,2,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,2,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,2,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,0,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,0,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,0,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,0,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,0,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,0,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,0,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,0,0,2,0,0,0,0,0,8,8,8],[9,0,0,9,9,0,0,0,2,0,0,0,0,0,0,8,8],[9,0,0,9,9,0,0,0,2,0,0,0,0,0,0,8,8],[0,0,0,9,9,0,0,0,0,0,0,0,0,0,0,8,8]],"intermediate_value":{"counterfactual_fixed_order":["AB","AC","BC"],"intersection_counts":[35,47,25],"pair_names":["AB","AC","BC"],"ranked_pair_names":["AC","AB","BC"]},"output":[[0,0,0,0,8,0,8,8,0,0,0,0,0,0,0,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,0,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,0,0,8,0,8,8,0,0,0,0,0,0,8,0,0],[0,0,8,8,8,0,8,8,8,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,8,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,8,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,8,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,8,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,8,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0]],"program":"(rule! (let ((dummy 0))\n  (define (gallery-paste grid pat top left)\n    (for*/fold ((out grid))\n               ((r (in-range (rows pat)))\n                (c (in-range (cols pat))))\n      (let ((v (at pat r c))\n            (rr (+ top r))\n            (cc (+ left c)))\n        (if (and (not (= v 0))\n                 (in-bounds? rr cc (rows out) (cols out)))\n            (set-cell out rr cc v)\n            out))))\n  (define (gallery-hstack-center grids (gap 1))\n    (if (empty? grids)\n        (list (list))\n        (let* ((h (apply max (map rows grids)))\n               (w (+ (apply + (map cols grids))\n                     (* gap (- (length grids) 1)))))\n          (let loop ((xs grids) (left 0) (out (empty-grid h w 0)))\n            (if (empty? xs)\n                out\n                (let* ((piece (first xs))\n                       (top (quotient (- h (rows piece)) 2)))\n                  (loop (rest xs)\n                        (+ left (cols piece) gap)\n                        (gallery-paste out piece top left))))))))\n  (define (gallery-intersection a b)\n    (grid-from-fn (rows a) (cols a)\n      (lambda (r c)\n        (if (and (not (= (at a r c) 0))\n                 (not (= (at b r c) 0)))\n            8\n            0))))\n  (define (occupied-count grid)\n    (length\n      (filter (lambda (v) (not (= v 0)))\n              (apply append grid))))\n  (define (ranked-before? a b)\n    (let ((ac (third a))\n          (bc (third b)))\n      (if (= ac bc)\n          (< (first a) (first b))\n          (> ac bc))))\n  (let* ((panels\n           (for/list ((i (in-range 3)))\n             (subgrid g 0 (* i 6) (- (rows g) 1) (+ (* i 6) 4))))\n         (ab (gallery-intersection (first panels) (second panels)))\n         (ac (gallery-intersection (first panels) (third panels)))\n         (bc (gallery-intersection (second panels) (third panels)))\n         (items\n           (list (list 0 ab (occupied-count ab))\n                 (list 1 ac (occupied-count ac))\n                 (list 2 bc (occupied-count bc))))\n         (ordered (sort items ranked-before?)))\n    (gallery-hstack-center (map second ordered) 1))))\n","schema":"arcpuzzles-gallery-order-audited-case-v1","settings":{"gallery_order":"largest_overlap_first"},"task_id":"1216927d148b"}
+diff --git a/repo/generators/1216927d148b/workspace/parametric/evidence/current/focused-tests-command.json b/repo/generators/1216927d148b/workspace/parametric/evidence/current/focused-tests-command.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/evidence/current/focused-tests-command.json
+@@ -0,0 +1,52 @@
++{
++  "delegated": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "/mnt/data/arc_review_191853/input/WORK/run_with_racket.py",
++      "/opt/pyvenv/bin/python3",
++      "-m",
++      "pytest",
++      "-q",
++      "generators/1216927d148b/tests/test_parametric_gallery_order.py",
++      "--junitxml=generators/1216927d148b/workspace/parametric/evidence/current/focused-tests.junit.xml"
++    ],
++    "cwd": "/mnt/data/arc_review_191853/input/WORK"
++  },
++  "elapsed_seconds": 18.754091048000078,
++  "evidence_directory": "checks/1216927d148b",
++  "exit_scope": "run_with_racket.py, which execs the payload after setup",
++  "invocation": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "/mnt/data/arc_review_191853/input/review.py",
++      "run",
++      "--receipt",
++      "checks/1216927d148b/focused-tests-command.json",
++      "python3",
++      "-m",
++      "pytest",
++      "-q",
++      "generators/1216927d148b/tests/test_parametric_gallery_order.py",
++      "--junitxml=generators/1216927d148b/workspace/parametric/evidence/current/focused-tests.junit.xml"
++    ],
++    "cwd": "/mnt/data/arc_review_191853/input"
++  },
++  "limits": [
++    "Payload cwd is the launcher contract; setup or exec can fail before payload starts.",
++    "This receipt records process completion, not semantic validation or evidence contents."
++  ],
++  "payload": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "-m",
++      "pytest",
++      "-q",
++      "generators/1216927d148b/tests/test_parametric_gallery_order.py",
++      "--junitxml=generators/1216927d148b/workspace/parametric/evidence/current/focused-tests.junit.xml"
++    ],
++    "expected_cwd": "/mnt/data/arc_review_191853/input/WORK/repo"
++  },
++  "returncode": 0,
++  "schema": "arcpuzzles-run-command-v1",
++  "status": "completed"
++}
+diff --git a/repo/generators/1216927d148b/workspace/parametric/evidence/current/focused-tests.junit.xml b/repo/generators/1216927d148b/workspace/parametric/evidence/current/focused-tests.junit.xml
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/evidence/current/focused-tests.junit.xml
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="28" time="12.874" timestamp="2026-10-24T19:27:26.287236+00:00" hostname="99dcc3bf595e"><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_default_program_is_byte_exact_and_alternate_is_distinct" time="0.225" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_counts_matched_inputs_stable_prefixes_and_distinctness[1-2]" time="0.011" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_counts_matched_inputs_stable_prefixes_and_distinctness[1-3]" time="0.011" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_counts_matched_inputs_stable_prefixes_and_distinctness[1-6]" time="0.014" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_counts_matched_inputs_stable_prefixes_and_distinctness[4-2]" time="0.032" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_counts_matched_inputs_stable_prefixes_and_distinctness[4-3]" time="0.016" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_counts_matched_inputs_stable_prefixes_and_distinctness[4-6]" time="0.036" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_first_two_demonstrations_teach_order_and_tie_breaking" time="0.054" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_maximum_query_is_substantive_30_by_17_and_hits_all_boundaries" time="0.030" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_public_turn_omits_private_answers_settings_program_and_future_queries" time="0.013" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_protected_racket_labels_and_demo_only_identification" time="12.136" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch0]" time="0.008" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch1]" time="0.005" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch2]" time="0.004" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch3]" time="0.005" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch4]" time="0.005" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch5]" time="0.004" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch6]" time="0.005" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch7]" time="0.005" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch8]" time="0.005" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch9]" time="0.005" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch10]" time="0.006" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch11]" time="0.004" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch12]" time="0.007" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch13]" time="0.008" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch14]" time="0.010" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch15]" time="0.005" /><testcase classname="generators.1216927d148b.tests.test_parametric_gallery_order" name="test_invalid_controls_fail_closed[patch16]" time="0.006" /></testsuite></testsuites>
+\ No newline at end of file
+diff --git a/repo/generators/1216927d148b/workspace/parametric/evidence/current/self-audit-command.json b/repo/generators/1216927d148b/workspace/parametric/evidence/current/self-audit-command.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/evidence/current/self-audit-command.json
+@@ -0,0 +1,52 @@
++{
++  "delegated": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "/mnt/data/arc_review_191853/input/WORK/run_with_racket.py",
++      "/opt/pyvenv/bin/python3",
++      "generators/1216927d148b/workspace/parametric/audit.py",
++      "--seed",
++      "19",
++      "--out",
++      "../checks/1216927d148b/self-audit"
++    ],
++    "cwd": "/mnt/data/arc_review_191853/input/WORK"
++  },
++  "elapsed_seconds": 7.196473975999993,
++  "evidence_directory": "checks/1216927d148b",
++  "exit_scope": "run_with_racket.py, which execs the payload after setup",
++  "invocation": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "/mnt/data/arc_review_191853/input/review.py",
++      "run",
++      "--receipt",
++      "checks/1216927d148b/self-audit-command.json",
++      "python3",
++      "generators/1216927d148b/workspace/parametric/audit.py",
++      "--seed",
++      "19",
++      "--out",
++      "../checks/1216927d148b/self-audit"
++    ],
++    "cwd": "/mnt/data/arc_review_191853/input"
++  },
++  "limits": [
++    "Payload cwd is the launcher contract; setup or exec can fail before payload starts.",
++    "This receipt records process completion, not semantic validation or evidence contents."
++  ],
++  "payload": {
++    "argv": [
++      "/opt/pyvenv/bin/python3",
++      "generators/1216927d148b/workspace/parametric/audit.py",
++      "--seed",
++      "19",
++      "--out",
++      "../checks/1216927d148b/self-audit"
++    ],
++    "expected_cwd": "/mnt/data/arc_review_191853/input/WORK/repo"
++  },
++  "returncode": 0,
++  "schema": "arcpuzzles-run-command-v1",
++  "status": "completed"
++}
+diff --git a/repo/generators/1216927d148b/workspace/parametric/evidence/current/self-audit-report.json b/repo/generators/1216927d148b/workspace/parametric/evidence/current/self-audit-report.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/evidence/current/self-audit-report.json
+@@ -0,0 +1 @@
++{"causal_case":"causal_case.json","racket":{"backend":"racket","binary_sha256":"bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9","boot_script_sha256":"67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3","bridge_sha256":"4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323","candidate_symbol_policy_sha256":"509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8","prelude_sha256":"953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0","protected":true,"schema":"arc-protected-racket-runtime-v1"},"racket_evaluations":50,"schema":"arcpuzzles-gallery-order-self-audit-report-v1","scope":"Two settings, minimum two-demo lessons, four queries, and nine finite executable rivals; not universal uniqueness.","settings":[{"rivals":[{"name":"reverse_fixed_pairs","program_sha256":"bde5add6982c09b9ceb787514ab52104c902d6cefda95f4a584c49a0e0c4d120","query_disagreements":[],"survives_demos":false},{"name":"ascending_overlap","program_sha256":"0e83cc0f112f18f07e0592bab032c610b21655e539e33f56aaae023117d3c242","query_disagreements":[],"survives_demos":false},{"name":"largest_overlap_reverse_ties","program_sha256":"bbf0ddabe779366a537bbccda3c75db781d6068a8bfae9c5fca5fa20d948c4de","query_disagreements":[],"survives_demos":false},{"name":"panel_sum_descending","program_sha256":"b81bf8f0c7884132814d14636a7aa02b74ccbf24e95f56e619afeb3de7e8ba97","query_disagreements":[],"survives_demos":false},{"name":"panel_max_descending","program_sha256":"e049d26593fc3cde355a6118ecd5fa8bba6666b3dc2c5a879ada81f38d5aff68","query_disagreements":[],"survives_demos":false},{"name":"numeric_color_pair_order","program_sha256":"04a22710e6d11ed1e9215b01038c6d492cfad012d6345770b05599d5140be6f8","query_disagreements":[],"survives_demos":false},{"name":"pairwise_union_fixed","program_sha256":"90d25edabde30004eb0554fca121a5eaa83ddf126bf78b7ce3a732505725df2d","query_disagreements":[],"survives_demos":false},{"name":"triple_intersection_repeated","program_sha256":"0ad1ccd4863754b5d4ac0dce144d533bb154a232ac7072bee43f05a6c841342c","query_disagreements":[],"survives_demos":false},{"name":"largest_intersection_repeated","program_sha256":"39048d0f1cf61c6851f03a81d04cfa0a710bf6bca08973987cb894e6bc77e7b1","query_disagreements":[],"survives_demos":false}],"settings":{"gallery_order":"fixed_pairs"}},{"rivals":[{"name":"reverse_fixed_pairs","program_sha256":"bde5add6982c09b9ceb787514ab52104c902d6cefda95f4a584c49a0e0c4d120","query_disagreements":[],"survives_demos":false},{"name":"ascending_overlap","program_sha256":"0e83cc0f112f18f07e0592bab032c610b21655e539e33f56aaae023117d3c242","query_disagreements":[],"survives_demos":false},{"name":"largest_overlap_reverse_ties","program_sha256":"bbf0ddabe779366a537bbccda3c75db781d6068a8bfae9c5fca5fa20d948c4de","query_disagreements":[],"survives_demos":false},{"name":"panel_sum_descending","program_sha256":"b81bf8f0c7884132814d14636a7aa02b74ccbf24e95f56e619afeb3de7e8ba97","query_disagreements":[],"survives_demos":false},{"name":"panel_max_descending","program_sha256":"e049d26593fc3cde355a6118ecd5fa8bba6666b3dc2c5a879ada81f38d5aff68","query_disagreements":[],"survives_demos":false},{"name":"numeric_color_pair_order","program_sha256":"04a22710e6d11ed1e9215b01038c6d492cfad012d6345770b05599d5140be6f8","query_disagreements":[],"survives_demos":false},{"name":"pairwise_union_fixed","program_sha256":"90d25edabde30004eb0554fca121a5eaa83ddf126bf78b7ce3a732505725df2d","query_disagreements":[],"survives_demos":false},{"name":"triple_intersection_repeated","program_sha256":"0ad1ccd4863754b5d4ac0dce144d533bb154a232ac7072bee43f05a6c841342c","query_disagreements":[],"survives_demos":false},{"name":"largest_intersection_repeated","program_sha256":"39048d0f1cf61c6851f03a81d04cfa0a710bf6bca08973987cb894e6bc77e7b1","query_disagreements":[],"survives_demos":false}],"settings":{"gallery_order":"largest_overlap_first"}}],"status":"passed","task_id":"1216927d148b"}
+diff --git a/repo/generators/1216927d148b/workspace/parametric/evidence/manifest.json b/repo/generators/1216927d148b/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,102 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "cc8b8a179b6598b89e295c58371a2683aafc65e3335dae2bcd5047228c6fc464",
++  "canonical_rule_hash": "cc8b8a179b65",
++  "default": {
++    "gallery_order": "fixed_pairs"
++  },
++  "evidence_root": "generators/1216927d148b/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 13487,
++      "path": "generators/1216927d148b/generator.py",
++      "sha256": "466e0590bf7046e6d0df179f37992e8096ec2f246419d723a6e5a601599f32b9"
++    },
++    {
++      "bytes": 6605,
++      "path": "generators/1216927d148b/tests/test_parametric_gallery_order.py",
++      "sha256": "be666260ffad94f20e54d06f025a393502004d99599e65a2558ad1c0b844d518"
++    },
++    {
++      "bytes": 873,
++      "path": "generators/1216927d148b/workspace/parametric/adapter.py",
++      "sha256": "c5d7094cdad54bb1aec1ed620076a8d55c8c25242eec69f7d01dd15fa7bf9aa0"
++    },
++    {
++      "bytes": 10691,
++      "path": "generators/1216927d148b/workspace/parametric/audit.py",
++      "sha256": "d00780d38027c3e50a8562c19f1f5cbe6dcdda67437193223fdf97bbe1c31552"
++    },
++    {
++      "bytes": 1132,
++      "path": "generators/1216927d148b/workspace/parametric/canonical.rkt",
++      "sha256": "cc8b8a179b6598b89e295c58371a2683aafc65e3335dae2bcd5047228c6fc464"
++    },
++    {
++      "bytes": 6950,
++      "path": "generators/1216927d148b/workspace/parametric/evidence/current/causal-case.json",
++      "sha256": "e63f500f1da50f4cace680a3f52d0cfc1deb539f613700c8b866e64c88f296f5"
++    },
++    {
++      "bytes": 1755,
++      "path": "generators/1216927d148b/workspace/parametric/evidence/current/focused-tests-command.json",
++      "sha256": "2b79e2dac1eb7f8fb47c428de49e851ea83e003a772985cac75e0daf6f69b649"
++    },
++    {
++      "bytes": 4594,
++      "path": "generators/1216927d148b/workspace/parametric/evidence/current/focused-tests.junit.xml",
++      "sha256": "68b192a0971bdce3f42d4ff28c1ff2c891cbb5bfaf5544c53aa2063866d6190b"
++    },
++    {
++      "bytes": 1544,
++      "path": "generators/1216927d148b/workspace/parametric/evidence/current/self-audit-command.json",
++      "sha256": "8e74ebe19365107c946c2141ac9f4b3cdbb39690f47ed860f3180a9e75f3719b"
++    },
++    {
++      "bytes": 3949,
++      "path": "generators/1216927d148b/workspace/parametric/evidence/current/self-audit-report.json",
++      "sha256": "ef6858ff2c3f9c4aa77f1b306b1526de5ca7cc0a3fbbc40e4a17ba7433aaf87e"
++    },
++    {
++      "bytes": 2102,
++      "path": "generators/1216927d148b/workspace/parametric/largest_overlap_first.rkt",
++      "sha256": "8be178b480c4904eeff2f7230f32039b6af0f4d7d5d1efcc15bb1641fe3df2a0"
++    },
++    {
++      "bytes": 555,
++      "path": "generators/1216927d148b/workspace/parametric/promotion.json",
++      "sha256": "690179cd9a3b0f1d812019f3a94a1ccc75e2783da54bc4bd232820ef5f437024"
++    },
++    {
++      "bytes": 12818,
++      "path": "generators/1216927d148b/workspace/parametric/prototype.py",
++      "sha256": "e2c7ec91fc7a4f73b4c63ff8df13f9754345ca3418e9c12db2620cce3b2ad5c1"
++    }
++  ],
++  "generator_sha256": "466e0590bf7046e6d0df179f37992e8096ec2f246419d723a6e5a601599f32b9",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "gallery_order": [
++      "fixed_pairs",
++      "largest_overlap_first"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "28 focused tests passed; protected Racket self-audit executed both settings on the minimum two-demo/four-query lessons against nine finite rivals (50 evaluations), rejecting every rival and retaining a differing causal case. Exact 30x30 is outside the fixed 17-column canonical grammar; the sampler instead exercises a substantive 30x17 boundary case.",
++  "rule_task_id": "1216927d148b",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "1216927d148b",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/1216927d148b/workspace/parametric/largest_overlap_first.rkt b/repo/generators/1216927d148b/workspace/parametric/largest_overlap_first.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/largest_overlap_first.rkt
+@@ -0,0 +1,55 @@
++(rule! (let ((dummy 0))
++  (define (gallery-paste grid pat top left)
++    (for*/fold ((out grid))
++               ((r (in-range (rows pat)))
++                (c (in-range (cols pat))))
++      (let ((v (at pat r c))
++            (rr (+ top r))
++            (cc (+ left c)))
++        (if (and (not (= v 0))
++                 (in-bounds? rr cc (rows out) (cols out)))
++            (set-cell out rr cc v)
++            out))))
++  (define (gallery-hstack-center grids (gap 1))
++    (if (empty? grids)
++        (list (list))
++        (let* ((h (apply max (map rows grids)))
++               (w (+ (apply + (map cols grids))
++                     (* gap (- (length grids) 1)))))
++          (let loop ((xs grids) (left 0) (out (empty-grid h w 0)))
++            (if (empty? xs)
++                out
++                (let* ((piece (first xs))
++                       (top (quotient (- h (rows piece)) 2)))
++                  (loop (rest xs)
++                        (+ left (cols piece) gap)
++                        (gallery-paste out piece top left))))))))
++  (define (gallery-intersection a b)
++    (grid-from-fn (rows a) (cols a)
++      (lambda (r c)
++        (if (and (not (= (at a r c) 0))
++                 (not (= (at b r c) 0)))
++            8
++            0))))
++  (define (occupied-count grid)
++    (length
++      (filter (lambda (v) (not (= v 0)))
++              (apply append grid))))
++  (define (ranked-before? a b)
++    (let ((ac (third a))
++          (bc (third b)))
++      (if (= ac bc)
++          (< (first a) (first b))
++          (> ac bc))))
++  (let* ((panels
++           (for/list ((i (in-range 3)))
++             (subgrid g 0 (* i 6) (- (rows g) 1) (+ (* i 6) 4))))
++         (ab (gallery-intersection (first panels) (second panels)))
++         (ac (gallery-intersection (first panels) (third panels)))
++         (bc (gallery-intersection (second panels) (third panels)))
++         (items
++           (list (list 0 ab (occupied-count ab))
++                 (list 1 ac (occupied-count ac))
++                 (list 2 bc (occupied-count bc))))
++         (ordered (sort items ranked-before?)))
++    (gallery-hstack-center (map second ordered) 1))))
+diff --git a/repo/generators/1216927d148b/workspace/parametric/promotion.json b/repo/generators/1216927d148b/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/promotion.json
+@@ -0,0 +1,19 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/1216927d148b/workspace/parametric/adapter.py",
++  "parameters": {
++    "gallery_order": ["fixed_pairs", "largest_overlap_first"]
++  },
++  "default": {
++    "gallery_order": "fixed_pairs"
++  },
++  "limits": {
++    "demos": [2, 6],
++    "queries": [1, 4]
++  },
++  "resources": [
++    "generators/1216927d148b/workspace/parametric/prototype.py",
++    "generators/1216927d148b/workspace/parametric/canonical.rkt",
++    "generators/1216927d148b/workspace/parametric/largest_overlap_first.rkt"
++  ]
++}
+diff --git a/repo/generators/1216927d148b/workspace/parametric/prototype.py b/repo/generators/1216927d148b/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/workspace/parametric/prototype.py
+@@ -0,0 +1,330 @@
++"""Native gallery-order family for ARC generator 1216927d148b.
++
++The default setting preserves the exact canonical fixed AB/AC/BC gallery.
++The alternate setting first derives all three pairwise intersections and their
++occupied-cell counts, then stably orders the derived masks by decreasing area.
++Inputs are matched across settings and keep the source task's three-panel
++reasoning while extending height to a substantive 30-row query.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++from collections import deque
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any
++
++HERE = Path(__file__).resolve().parent
++TASK_ID = "1216927d148b"
++PARAMETER = "gallery_order"
++ORDERS = ("fixed_pairs", "largest_overlap_first")
++PAIR_NAMES = ("AB", "AC", "BC")
++PANEL_STARTS = (0, 6, 12)
++PANEL_WIDTH = 5
++
++# height, pair-only branch lengths (AB, AC, BC), panel-exclusive lengths (A,B,C)
++# The first two demonstrations are constructive teaching cases: the first has
++# three distinct overlap sizes; the second has an AC/BC tie whose stable
++# canonical pair-order tie break is visible.
++_DEMOS = (
++    (9,  (3, 12, 6),  (0, 10, 0)),
++    (12, (5, 9, 9),   (12, 0, 0)),
++    (15, (18, 7, 11), (2, 8, 5)),
++    (18, (14, 25, 8), (15, 3, 6)),
++    (21, (30, 17, 15),(0, 10, 2)),
++    (24, (20, 34, 22),(12, 0, 9)),
++)
++_QUERIES = (
++    (5,  (2, 4, 3),   (0, 1, 1)),
++    (13, (14, 5, 10), (6, 7, 3)),
++    (23, (12, 31, 17),(14, 4, 8)),
++    (30, (34, 46, 24),(10, 4, 12)),
++)
++
++
++def _integer(name: str, value: int, low: int, high: int) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be an exact integer, not bool or a coercion")
++    if not low <= value <= high:
++        raise ValueError(f"{name} must be in {low}..{high}")
++    return value
++
++
++def _setting(settings: dict[str, str]) -> str:
++    if (
++        type(settings) is not dict
++        or set(settings) != {PARAMETER}
++        or type(settings[PARAMETER]) is not str
++        or settings[PARAMETER] not in ORDERS
++    ):
++        raise ValueError(
++            "settings must be exactly "
++            "{'gallery_order': 'fixed_pairs'|'largest_overlap_first'}"
++        )
++    return settings[PARAMETER]
++
++
++def program(settings: dict[str, str]) -> str:
++    order = _setting(settings)
++    name = "canonical.rkt" if order == "fixed_pairs" else "largest_overlap_first.rkt"
++    return (HERE / name).read_text(encoding="utf-8")
++
++
++def _rng(seed: int, split: str, index: int) -> random.Random:
++    raw = json.dumps([TASK_ID, "gallery-order-v1", seed, split, index],
++                     separators=(",", ":")).encode()
++    return random.Random(int.from_bytes(hashlib.sha256(raw).digest(), "big"))
++
++
++def _neighbors_in_region(cell: tuple[int, int], height: int, columns: set[int]):
++    row, col = cell
++    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
++        nxt = (row + dr, col + dc)
++        if 0 <= nxt[0] < height and nxt[1] in columns:
++            yield nxt
++
++
++def _side_path(height: int, side: str, reverse_rows: bool) -> list[tuple[int, int]]:
++    """Hamiltonian branch path whose every prefix remains hub-connected.
++
++    The path reaches both row boundaries and the outer panel edge before its
++    final quarter, so the large profile is genuine full-extent stress rather
++    than a compact middle glyph inside a tall canvas.
++    """
++    hub = height // 2
++    inner, outer = ((1, 0) if side == "left" else (3, 4))
++    if not reverse_rows:
++        order = (
++            [(row, inner) for row in range(hub, -1, -1)]
++            + [(0, outer)]
++            + [(row, outer) for row in range(1, height)]
++            + [(height - 1, inner)]
++            + [(row, inner) for row in range(height - 2, hub, -1)]
++        )
++    else:
++        order = (
++            [(row, inner) for row in range(hub, height)]
++            + [(height - 1, outer)]
++            + [(row, outer) for row in range(height - 2, -1, -1)]
++            + [(0, inner)]
++            + [(row, inner) for row in range(1, hub)]
++        )
++    if len(order) != 2 * height or len(set(order)) != 2 * height:
++        raise AssertionError("side branch did not cover its two-column region once")
++    return order
++
++
++def _center_path(height: int, reverse_rows: bool) -> list[tuple[int, int]]:
++    hub = height // 2
++    rows = []
++    for distance in range(1, height + 1):
++        candidates = [hub - distance, hub + distance]
++        if reverse_rows:
++            candidates.reverse()
++        rows.extend(row for row in candidates if 0 <= row < height)
++    result = [(row, 2) for row in rows]
++    if len(result) != height - 1:
++        raise AssertionError("center branch did not cover its column")
++    return result
++
++
++def _profile(split: str, index: int):
++    specs = _DEMOS if split == "train" else _QUERIES
++    _integer("index", index, 0, len(specs) - 1)
++    return specs[index]
++
++
++def _input(seed: int, split: str, index: int) -> list[list[int]]:
++    height, shared_values, unique_values = _profile(split, index)
++    rng = _rng(seed, split, index)
++    shared = dict(zip(PAIR_NAMES, shared_values, strict=True))
++    unique = dict(zip(("A", "B", "C"), unique_values, strict=True))
++    pair_tail = {"AB": unique["A"], "AC": unique["C"], "BC": unique["B"]}
++
++    reverse_rows = bool(rng.randrange(2))
++    paths = {
++        "left": _side_path(height, "left", reverse_rows),
++        "right": _side_path(height, "right", not reverse_rows),
++        "center": _center_path(height, reverse_rows),
++    }
++    capacities = {name: len(path) for name, path in paths.items()}
++    valid = []
++    import itertools
++    for names in itertools.permutations(paths):
++        assignment = dict(zip(PAIR_NAMES, names, strict=True))
++        if all(shared[pair] + pair_tail[pair] <= capacities[assignment[pair]]
++               for pair in PAIR_NAMES):
++            valid.append(assignment)
++    if not valid:
++        raise ValueError(f"profile {split}[{index}] does not fit branch capacities")
++    hub = (height // 2, 2)
++
++    def panels_for(assignment, flip_horizontal):
++        pair_cells: dict[str, set[tuple[int, int]]] = {}
++        tail_cells: dict[str, set[tuple[int, int]]] = {}
++        for pair in PAIR_NAMES:
++            path = paths[assignment[pair]]
++            length = shared[pair]
++            pair_cells[pair] = set(path[:length])
++            tail_cells[pair] = set(path[length:length + pair_tail[pair]])
++        result = {
++            "A": {hub} | pair_cells["AB"] | pair_cells["AC"] | tail_cells["AB"],
++            "B": {hub} | pair_cells["AB"] | pair_cells["BC"] | tail_cells["BC"],
++            "C": {hub} | pair_cells["AC"] | pair_cells["BC"] | tail_cells["AC"],
++        }
++        if flip_horizontal:
++            result = {
++                name: {(row, PANEL_WIDTH - 1 - col) for row, col in cells}
++                for name, cells in result.items()
++            }
++        return result
++
++    configurations = [
++        (assignment, flip_horizontal, panels_for(assignment, flip_horizontal))
++        for assignment in valid
++        for flip_horizontal in (False, True)
++    ]
++    if split == "test" and index == len(_QUERIES) - 1:
++        configurations = [
++            item for item in configurations
++            if any(col == 0 for _row, col in item[2]["A"])
++            and any(col == PANEL_WIDTH - 1 for _row, col in item[2]["C"])
++        ]
++        if not configurations:
++            raise AssertionError("large profile has no all-boundary branch assignment")
++    assignment, flip_horizontal, panels = configurations[rng.randrange(len(configurations))]
++
++    # The same semantic scene may also be reflected vertically. Reflection
++    # happens after role assignment, so branch position is not a stable proxy
++    # for pair identity or overlap rank.
++    flip_vertical = bool(rng.randrange(2))
++    if flip_vertical:
++        panels = {
++            name: {(height - 1 - row, col) for row, col in cells}
++            for name, cells in panels.items()
++        }
++
++    palette = rng.sample(range(1, 10), 3)
++    grid = [[0] * 17 for _ in range(height)]
++    for start, name, color in zip(PANEL_STARTS, ("A", "B", "C"), palette, strict=True):
++        for row, col in panels[name]:
++            grid[row][start + col] = color
++    return grid
++
++
++def _validate_grid(grid: list[list[int]]) -> list[list[int]]:
++    if type(grid) is not list or not 1 <= len(grid) <= 30 or type(grid[0]) is not list:
++        raise ValueError("grid must have 1..30 rows")
++    width = len(grid[0])
++    if not 1 <= width <= 30:
++        raise ValueError("grid must have 1..30 columns")
++    if any(type(row) is not list or len(row) != width for row in grid):
++        raise ValueError("grid must be rectangular")
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        raise ValueError("grid cells must be exact ARC integers 0..9")
++    return [row[:] for row in grid]
++
++
++def analyze_input(grid: list[list[int]]) -> dict[str, Any]:
++    source = _validate_grid(grid)
++    height, width = len(source), len(source[0])
++    if width != 17:
++        raise ValueError("gallery input must be exactly 17 columns wide")
++    if any(source[row][5] or source[row][11] for row in range(height)):
++        raise ValueError("gallery separator columns must be background")
++    masks = []
++    for start in PANEL_STARTS:
++        mask = {(row, col) for row in range(height) for col in range(PANEL_WIDTH)
++                if source[row][start + col] != 0}
++        if not mask:
++            raise ValueError("all three gallery panels must be nonempty")
++        masks.append(mask)
++    intersections = (
++        masks[0] & masks[1],
++        masks[0] & masks[2],
++        masks[1] & masks[2],
++    )
++    counts = [len(cells) for cells in intersections]
++    ranked = sorted(range(3), key=lambda i: (-counts[i], i))
++    return {
++        "height": height,
++        "panel_masks": masks,
++        "intersections": intersections,
++        "intersection_counts": counts,
++        "ranked_pair_names": [PAIR_NAMES[i] for i in ranked],
++        "ranked_indices": ranked,
++    }
++
++
++def _mask_grid(height: int, cells: set[tuple[int, int]]) -> list[list[int]]:
++    return [[8 if (row, col) in cells else 0 for col in range(PANEL_WIDTH)]
++            for row in range(height)]
++
++
++def _hstack(grids: list[list[list[int]]], gap: int = 1) -> list[list[int]]:
++    height = max(len(grid) for grid in grids)
++    result = []
++    for row in range(height):
++        values = []
++        for index, grid in enumerate(grids):
++            if index:
++                values.extend([0] * gap)
++            values.extend(grid[row] if row < len(grid) else [0] * len(grid[0]))
++        result.append(values)
++    return result
++
++
++def claimed_output(grid: list[list[int]], settings: dict[str, str]) -> list[list[int]]:
++    order = _setting(settings)
++    analysis = analyze_input(grid)
++    indices = [0, 1, 2] if order == "fixed_pairs" else analysis["ranked_indices"]
++    pieces = [_mask_grid(analysis["height"], analysis["intersections"][i]) for i in indices]
++    return _hstack(pieces, 1)
++
++
++def generate(seed: int, settings: dict[str, str], demos: int = 3, queries: int = 4):
++    _integer("seed", seed, 0, 2**63 - 1)
++    _setting(settings)
++    _integer("demos", demos, 2, 6)
++    _integer("queries", queries, 1, 4)
++    episode = {"train": [], "test": [], "program_solution": program(settings)}
++    seen = set()
++    for split, count in (("train", demos), ("test", queries)):
++        for index in range(count):
++            grid = _input(seed, split, index)
++            fingerprint = json.dumps(grid, separators=(",", ":"))
++            if fingerprint in seen:
++                raise ValueError(f"duplicate input at {split}[{index}]")
++            seen.add(fingerprint)
++            episode[split].append({
++                "input": grid,
++                "output": claimed_output(grid, settings),
++            })
++    return episode
++
++
++def public_turn(episode: dict[str, Any], query_index: int) -> dict[str, Any]:
++    _integer("query_index", query_index, 0, 3)
++    if type(episode) is not dict or type(episode.get("train")) is not list \
++            or type(episode.get("test")) is not list:
++        raise ValueError("episode must contain train and test lists")
++    if query_index >= len(episode["test"]):
++        raise ValueError("query_index exceeds the episode's stored query bank")
++    return {
++        "train": [
++            {"input": deepcopy(pair["input"]), "output": deepcopy(pair["output"])}
++            for pair in episode["train"]
++        ],
++        "test": [{"input": deepcopy(episode["test"][query_index]["input"])}],
++    }
++
++
++def public_turn_bytes(episode: dict[str, Any], query_index: int) -> bytes:
++    from reviewer_support import public_challenge_bytes
++    return public_challenge_bytes(public_turn(episode, query_index))
++
++
++def public_turn_id(episode: dict[str, Any], query_index: int) -> str:
++    return hashlib.sha256(public_turn_bytes(episode, query_index)).hexdigest()

@@ -1,0 +1,103 @@
+FILE review.py
+SHA256 d4e6086ce6e1e09364bfda3c382244763fbdf521393d06d69731fd6f9c5e6c49
+96:     if command == "verify":
+97:         changed = []
+98:         for name, digest in value["files"].items():
+99:             path = WORK / name
+100:             if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+101:                 changed.append(name)
+102:         if changed:
+103:             print("Files differ from the issued packet (expected after edits):\n" + "\n".join(changed))
+104:             return 1
+105:         print(f"Verified {len(value['files'])} workspace files and both outer entry files.")
+106:         return 0
+FILE WORK/repo/src/arcpuzzles/review_full_draw.py
+SHA256 1d0795faef11f4fc71f7c2b997d882d8dd464f9bd576b787296e71f428635518
+47: def _base_paths(packet_root: Path, manifest: dict, task_id: str) -> list[str]:
+48:     row = manifest["generators"][task_id]
+49:     home = f"repo/generators/{task_id}/"
+50:     paths = [name for name in manifest["files"] if name.startswith(home)]
+51:     canonical = "repo/shared/data/canonical/puzzles.jsonl"
+52:     paths.append(canonical)
+53:     mapping = json.loads(_verify(packet_root, manifest, "repo/catalog/runtime_files.json"))
+54:     authorities = json.loads(_verify(packet_root, manifest, "repo/catalog/authority_files.json"))
+55:     bound = {task_id, row["rule_task_id"]}
+56:     for item in mapping:
+57:         if item["target"].startswith("data/base/solutions/") and authorities.get(item["target"]) in bound:
+58:             paths.append("repo/" + item["path"])
+59:     return sorted(set(paths))
+197:             saved_seed = _seed(bytes.fromhex(saved["seed"]))
+198:         except (KeyError, TypeError, ValueError) as error:
+199:             raise ValueError("Invalid pending draw seed") from error
+200:         if seed is not None and _seed(seed) != saved_seed:
+201:             raise ValueError("Explicit seed conflicts with pending draw; resume without a new seed")
+202:         seed = saved_seed
+203:     else:
+204:         existing = packet_root / ".review/baseline"
+205:         if existing.is_symlink() or (existing.exists() and any(existing.rglob("*"))):
+206:             raise ValueError("Unjournaled partial baseline requires explicit recovery; refusing a new draw")
+207:     seed = _seed(seed)
+208:     pool = manifest["main_ids"]
+209:     if not pool:
+210:         raise ValueError("Empty main draw pool")
+211:     task_id = pool[int.from_bytes(seed, "big") % len(pool)]
+212:     row = manifest["generators"][task_id]
+213:     paths = _base_paths(packet_root, manifest, task_id)
+214:     baseline = {name: _sha(_verify(packet_root, manifest, name)) for name in paths}
+215:     questions = sorted(manifest["questions"], key=lambda x: x["id"])
+216:     question = questions[int.from_bytes(hashlib.sha256(seed + b":question").digest(), "big") % len(questions)]
+217:     _verify(packet_root, manifest, f"repo/REVIEW/questions/{question['id']}.json")
+218:     assignment_id = "review-" + _sha(bytes.fromhex(packet_id) + seed)[:16]
+219:     contract = {"schema": "arcpuzzles-full-assignment-v2", "assignment_id": assignment_id,
+220:                 "packet_id": packet_id, "seed": seed.hex(), "task_id": task_id,
+221:                 "generator": row, "question": question, "baseline_sha256": baseline}
+222:     prepared = {"schema": "arcpuzzles-pending-main-draw-v1", "contract": contract}
+223:     if pending is not None and pending != prepared:
+224:         raise ValueError("Pending draw contract no longer matches the verified packet")
+225:     # Commit the exact seed/task/question/source bindings before the first copy.
+226:     _write_draw_bytes(pending_path, _draw_json(prepared), staging)
+227:     baseline_root = packet_root / ".review/baseline"
+228:     for name in paths:
+229:         _copy_draw_baseline(packet_root / name, baseline_root / name, baseline[name], staging)
+230:     _write_draw_bytes(contract_path, _draw_json(contract), staging)
+FILE WORK/repo/src/arcpuzzles/review_full_return.py
+SHA256 a021d00ec056acbdf0958955f5d08f110bff934375a6dac397fc3f86089a2f74
+367:     if contract.get("packet_id") != _sha(canonical_json(manifest)):
+368:         raise ValueError("Assignment packet ID mismatch")
+369:     tid = contract["task_id"]
+370:     for path, digest in contract["baseline_sha256"].items():
+371:         frozen = packet_root / ".review/baseline" / path
+372:         if not frozen.is_file() or frozen.is_symlink() or _sha(frozen.read_bytes()) != digest:
+373:             raise ValueError(f"Frozen baseline changed: {path}")
+374:     changes = []
+375:     home = f"repo/generators/{tid}/"
+376:     candidates = set(contract["baseline_sha256"])
+377:     candidates.update(path.relative_to(packet_root).as_posix() for path in
+378:                       (packet_root / home).rglob("*")
+379:                       if (path.is_file() or path.is_symlink())
+380:                       and not any(part in {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+381:                                   for part in path.relative_to(packet_root).parts)
+382:                       and path.suffix not in {".pyc", ".pyo"})
+383:     for path in sorted(candidates):
+384:         if path not in manifest["files"] and not path.startswith(home):
+385:             raise ValueError(f"Unexpected new source path: {path}")
+386:         target = packet_root / path
+387:         if target.is_symlink() or (target.exists() and (not target.is_file() or target.stat().st_mode & 0o111)):
+388:             raise ValueError(f"Unsafe changed source: {path}")
+389:         baseline = packet_root / ".review/baseline" / path
+390:         before = baseline.read_bytes() if baseline.is_file() else None
+391:         after = target.read_bytes() if target.is_file() else None
+392:         if after == before:
+393:             continue
+394:         if not _allowed(path, contract) or after is None:
+395:             raise ValueError(f"Changed source outside allowed task scope: {path}")
+396:         if path == "repo/shared/data/canonical/puzzles.jsonl":
+397:             _canonical_only_task(before, after, contract["generator"]["rule_task_id"])
+398:         changes.append(_diff(path, before, after))
+399:     # Detect edits to the rest of the packaged repository, including helpers.
+400:     for path, digest in manifest["files"].items():
+401:         if path.startswith("repo/") and path not in candidates:
+402:             target = packet_root / path
+403:             if not target.is_file() or target.is_symlink() or _sha(target.read_bytes()) != digest:
+404:                 raise ValueError(f"Changed or missing shared packet source: {path}")
+405:     for target in (packet_root / "repo").rglob("*"):

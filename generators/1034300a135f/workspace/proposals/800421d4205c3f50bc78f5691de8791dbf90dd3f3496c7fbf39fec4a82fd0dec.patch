@@ -1,0 +1,1833 @@
+diff --git a/repo/generators/0a1bba9e3d93/notes.md b/repo/generators/0a1bba9e3d93/notes.md
+--- a/repo/generators/0a1bba9e3d93/notes.md
++++ b/repo/generators/0a1bba9e3d93/notes.md
+@@ -18,6 +18,31 @@
+ ## Current reviewer considerations
+ 
+ Source SHA-256: `b16cab45787ea7e24357080bd6b8e173650fbd7d87a04152f9adc2c0ae7e3b0e`.
++
++The bounded optional peer check in `workspace/peer_rival_probe.py` leaves the
++selected generator unchanged. It reuses the lesson materializer and obtains
++labels from protected Racket: 12 four-demo lessons (seeds 0–3 in easy, medium,
++hard; production start 0), 40 unique labeled inputs including three canonical
++pairs and one manual coverage witness. All six rivals fit the canonical pairs.
++The demonstrations refute `copy_after_shape`, `reject_partial_clip`,
++`overlay_after`, `panel_absolute_delta`, and `after_absolute_delta` in every
++sampled lesson. `clamp_outside` survives all 12 demonstration sets but agrees
++with all 12 generated queries, so this check found no generated-query ambiguity
++against the named finite rival set.
++
++One current coverage limit is now executable: clipping and differing QUERY
++support are separate sampler branches. A 3×11 manually constructed input
++combining both passes `self_check`; protected Racket clips the overflow, while
++the surviving clamp rival instead paints an extra bottom-left query cell.
++This input is not emitted by the selected sampler, so it is a coverage witness,
++not a claim of a failing generated lesson. Retain the witness and consider a
++combined branch in a future owner-reviewed distribution change; do not broaden
++the present approval claim. No generator or Racket source, approval identity,
++or audit metadata was changed. Evidence is
++`checks/0a1bba9e3d93/peer_rival_probe.json`; its command receipt is
++`checks/0a1bba9e3d93/peer_rival_probe_command.json` (exit 0). This optional evidence
++and probe remain reviewer proposals pending owner review; finite rivals and
++seeds do not establish universal rule identification.
+ 
+ # Design decisions for 0a1bba9e3d93
+ 
+diff --git a/repo/generators/0a1bba9e3d93/workspace/peer_rival_probe.py b/repo/generators/0a1bba9e3d93/workspace/peer_rival_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0a1bba9e3d93/workspace/peer_rival_probe.py
+@@ -0,0 +1,159 @@
++#!/usr/bin/env python3
++"""Bounded peer review: protected-Racket labels, six named geometric rivals.
++
++Run from the packet outer root:
++WORK/.venv/bin/python review.py run python3 \
++  generators/0a1bba9e3d93/workspace/peer_rival_probe.py \
++  --out ../checks/0a1bba9e3d93/peer_rival_probe.json
++
++This is optional reviewer evidence, not owner approval or a universal proof.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++
++from arc_repl.racket_bridge import RacketBridge
++from lesson_probe import _materialize_lesson
++from reference_probe import cells, load_generator, normalize, split_panels
++
++HOME = Path(__file__).resolve().parents[1]
++REPO = HOME.parents[1]
++TASK = "0a1bba9e3d93"
++
++
++def digest(path):
++    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
++
++
++def alternative(grid, mode):
++    before, after, query = split_panels(grid)
++    bc, ac, qc = map(cells, (before, after, query))
++    bn, an = normalize(bc), normalize(ac)
++    qrow, qcol = min(r for r, c in qc), min(c for r, c in qc)
++    color = query[qc[0][0]][qc[0][1]]
++    out = [row[:] for row in query]
++    if mode == "overlay_after":
++        stamps = [(qrow + r, qcol + c) for r, c in an]
++    elif mode == "panel_absolute_delta":
++        brow, bcol = min(r for r, c in bc), min(c for r, c in bc)
++        stamps = [(qrow + r - brow, qcol + c - bcol)
++                  for r, c in set(ac) - set(bc)]
++    elif mode == "after_absolute_delta":
++        arow, acol = min(r for r, c in ac), min(c for r, c in ac)
++        stamps = [(arow + r, acol + c) for r, c in an - bn]
++    else:
++        stamps = [(qrow + r, qcol + c) for r, c in an - bn]
++    for r, c in stamps:
++        if mode == "clamp_outside":
++            r, c = min(max(r, 0), len(out) - 1), min(max(c, 0), len(out[0]) - 1)
++        if 0 <= r < len(out) and 0 <= c < len(out[0]):
++            out[r][c] = color
++    return out
++
++
++def hybrid_clip_query():
++    """Small accepted input combining different QUERY support and clipping.
++
++    The selected generator's clip branch always uses QUERY == BEFORE support,
++    so it never draws this valid combination. It is not a generated query.
++    """
++    grid = [[0] * 11 for _ in range(3)]
++    for row in grid:
++        row[3] = row[7] = 8
++    for r, c in {(0, 0), (0, 1), (1, 0)}:
++        grid[r][c] = 2
++    for r, c in {(0, 0), (0, 1), (1, 0), (1, 1), (2, 0)}:
++        grid[r][4 + c] = 2
++    for c in range(3):
++        grid[1][8 + c] = 5
++    return grid
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    generator = load_generator()
++    ledger = REPO / "shared/data/canonical/puzzles.jsonl"
++    row = next(json.loads(line) for line in ledger.read_text().splitlines()
++               if json.loads(line).get("task_id") == TASK)
++    program = row["program_solution"]
++    assert program.startswith("(rule! ") and program.endswith(")")
++    rivals = dict(generator.LESSON_COMPETITORS)
++    for name in ("overlay_after", "panel_absolute_delta", "after_absolute_delta", "clamp_outside"):
++        rivals[name] = lambda grid, mode=name: alternative(grid, mode)
++    counts = {name: {"demo_surviving_lessons": 0, "surviving_query_disagreements": 0}
++              for name in rivals}
++    cache = {}
++    bridge = RacketBridge()
++    try:
++        bridge.eval_text("(define (peer-rule g) " + program[len("(rule! "):-1] + ")")
++
++        def label(grid):
++            key = json.dumps(grid, separators=(",", ":"))
++            if key not in cache:
++                bridge.define_grid("peer-grid", grid)
++                cache[key] = bridge.eval_text("(peer-rule peer-grid)")
++                assert cache[key] == generator.rule_mirror(grid)
++            return cache[key]
++
++        canonical = [*row["train"], row["test"]]
++        canonical_fit = {name: all(fn(pair["input"]) == pair["output"] for pair in canonical)
++                         for name, fn in rivals.items()}
++        assert all(canonical_fit.values())
++        assert all(label(pair["input"]) == pair["output"] for pair in canonical)
++        lessons = []
++        for band in ("easy", "medium", "hard"):
++            for seed in range(4):
++                demos, query, meta = _materialize_lesson(generator, label, seed=seed, band=band, start=0)
++                assert not generator.lesson_identifiable(demos, query)
++                survivors = [name for name, fn in rivals.items()
++                             if all(fn(pair["input"]) == pair["output"] for pair in demos)]
++                disagreements = [name for name in survivors
++                                 if rivals[name](query["input"]) != query["output"]]
++                for name in survivors:
++                    counts[name]["demo_surviving_lessons"] += 1
++                for name in disagreements:
++                    counts[name]["surviving_query_disagreements"] += 1
++                lessons.append({"band": band, "seed": seed, **meta,
++                                "survivors": survivors, "query_disagreements": disagreements})
++        witness = hybrid_clip_query()
++        assert not generator.self_check(witness)
++        expected = label(witness)
++        clamped = rivals["clamp_outside"](witness)
++        assert expected != clamped
++        report = {
++            "schema": "arcpuzzles-peer-rival-probe-v1", "task_id": TASK,
++            "status": "no_generated_query_counterexample_in_bounded_probe",
++            "approval_status": "optional_reviewer_evidence_only",
++            "generator_sha256": digest(HOME / "generator.py"),
++            "probe_sha256": digest(__file__),
++            "reference_probe_sha256": digest(Path(__file__).with_name("reference_probe.py")),
++            "lesson_probe_sha256": digest(Path(__file__).with_name("lesson_probe.py")),
++            "canonical_ledger_sha256": digest(ledger),
++            "rule_hash": generator.RULE_HASH,
++            "program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++            "racket_runtime": bridge.runtime_identity,
++            "racket_labeled_unique_inputs": len(cache),
++            "lesson_count": len(lessons), "demo_count_per_lesson": 4,
++            "canonical_fit": canonical_fit, "rivals": counts, "lessons": lessons,
++            "coverage_witness": {"kind": "accepted_but_not_sampler_generated_input",
++                "input": witness, "racket_output": expected, "clamp_rival_output": clamped,
++                "self_check": [], "reason": "QUERY support differs from BEFORE while growth clips"},
++            "limits": "Only six rivals, seeds 0..3, three bands, production start 0. Clamp survives but agrees on every sampled generated query; the retained mismatch is manually constructed, not a generated-lesson defect. No generator, canonical rule, or approval metadata changed."
++        }
++        args.out.parent.mkdir(parents=True, exist_ok=True)
++        args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
++        print(json.dumps({"status": report["status"], "lessons": len(lessons),
++                          "racket_labels": len(cache), "rivals": counts, "out": str(args.out)}, indent=2))
++    finally:
++        bridge.shutdown()
++    assert not any(value["surviving_query_disagreements"] for value in counts.values())
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/1034300a135f/notes.md b/repo/generators/1034300a135f/notes.md
+--- a/repo/generators/1034300a135f/notes.md
++++ b/repo/generators/1034300a135f/notes.md
+@@ -1,4 +1,42 @@
+ # Working notes: 1034300a135f
++
++## Native parametric candidate — current review
++
++The native adapter now preserves the exact canonical DSL bytes for
++`near_to_far` and changes only the stable distance sort key for `far_to_near`.
++The separate constructive sampler supports 2–6 demos (default 3), 1–4 queries
++(default 4), matched inputs across settings, independent count-invariant query
++streams, and 5×5 through substantive 30×30 cases. The large mandatory demo uses
++all 15 ranks; this deliberately spends one 29×30 demonstration to rule out
++marker truncation at 8 or 14 before larger queries. Production and canonical
++source remain unchanged. Earlier two-demo/one-query standalone evidence below
++is historical; the native API is the current qualification candidate.
++
++Self-review found and repaired a real two-demo teaching hole: both mandatory
++distance ties originally had descending numeric color order, so a
++color-descending tie-breaker fit both demos and failed a retained query at seed 17
++under both settings. Keep the compact demo's descending tie and construct the
++large demo's tie in ascending order. Both numeric tie-break alternatives are
++now in the executable rival audit. The retained pre-repair witness is
++`checks/1034300a135f/tie-shortcut-before.json`; final protected-Racket evidence
++and qualification are linked in the return's RESULTS.json. Current verification:
++57 focused tests pass; the minimum/maximum lesson probes reject 11 rivals under
++both settings, and native qualification passes all four setting/seed jobs.
++The source-bound four-case causal witness passes native schema validation.
++
++The causal dependency is global spatial ranking → ordered marker identities →
++rank-indexed output rings. A paired relocation leaves row-major color order
++unchanged but changes several other markers' ring assignments; the executable
++skip-sort ablation isolates this dependency. This is not claimed to be an
++iterative simulation. Public bundles use exact visible-byte hashes, and the
++single-query projection carries no future inputs or total-count metadata.
++Answer-then-advance gating belongs to the caller, not this stateless projection.
++
++Limits: finite rivals and bounded seeds, intentionally constructed lesson
++profiles, a fixed menu of shapes, and no measured training benefit. Reviewer
++qualification does not grant exact-source owner acceptance or training
++admission. The inherited fixed-depth production test fixture is outside this
++prototype-only change; no new whole-production-suite claim is made.
+ 
+ ## Current intended rule
+ 
+diff --git a/repo/generators/1034300a135f/tests/test_native_marker_order.py b/repo/generators/1034300a135f/tests/test_native_marker_order.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/tests/test_native_marker_order.py
+@@ -0,0 +1,323 @@
++"""Bounded behavioral checks for the native marker-order parametric adapter.
++
++These tests cover the opt-in family, not the unchanged production sampler.
++The hand-built ordering witness is labelled through the protected Racket bridge.
++"""
++from __future__ import annotations
++
++from collections import Counter
++from copy import deepcopy
++from functools import lru_cache
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++import pytest
++
++from reviewer_support import canonical_path, find_root
++
++
++TASK = "1034300a135f"
++ROOT = find_root(__file__)
++ORDERS = ("near_to_far", "far_to_near")
++
++
++def _source_path(filename):
++    """Find this task's exact source in either the library or a copied runtime."""
++    identity = f"generators/{TASK}/workspace/parametric/{filename}"
++    manifest = ROOT / "RUNTIME_MANIFEST.json"
++    if manifest.is_file():
++        entries = [
++            row for row in json.loads(manifest.read_text())["files"]
++            if row.get("library_path") == identity
++        ]
++        entries.sort(key=lambda row: row.get("runtime_path") == identity)
++        if entries:
++            return ROOT / entries[0]["runtime_path"]
++    return ROOT / identity
++
++
++def _load(filename):
++    source = _source_path(filename)
++    assert source.is_file(), f"missing native family source: {source}"
++    name = f"native_marker_order_1034300a135f_{source.stem}"
++    spec = importlib.util.spec_from_file_location(name, source)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture(scope="module")
++def proto():
++    return _load("prototype.py")
++
++
++@pytest.fixture(scope="module")
++def adapter():
++    return _load("adapter.py")
++
++
++@pytest.fixture(scope="module")
++def episode(proto):
++    @lru_cache(maxsize=None)
++    def make(order="near_to_far", seed=17, demos=3, queries=4):
++        return proto.native_generate(
++            seed, {"marker_order": order}, demos=demos, queries=queries,
++        )
++    return make
++
++
++@pytest.fixture(scope="module")
++def racket():
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    bridge = RacketBridge()
++    identity = bridge.runtime_identity
++    assert identity["backend"] == "racket" and identity["protected"] is True
++
++    def apply(program, grid):
++        literal = "'(" + " ".join(
++            "(" + " ".join(map(str, row)) + ")" for row in grid
++        ) + ")"
++        return bridge.eval_text(f"({wrap_rule(program)} {literal})")
++
++    try:
++        yield apply
++    finally:
++        bridge.close()
++
++
++def _visible_inputs(ep):
++    return {split: [pair["input"] for pair in ep[split]] for split in ("train", "test")}
++
++
++def _rings(height, width, colors, background):
++    """Independent expected grid: draw nested rectangular perimeters."""
++    grid = [[background] * width for _ in range(height)]
++    for rank, color in enumerate(colors):
++        bottom, right = height - rank - 1, width - rank - 1
++        if rank > bottom or rank > right:
++            break
++        for col in range(rank, right + 1):
++            grid[rank][col] = color
++            grid[bottom][col] = color
++        for row in range(rank, bottom + 1):
++            grid[row][rank] = color
++            grid[row][right] = color
++    return grid
++
++
++def _markers(grid):
++    counts = Counter(value for row in grid for value in row if value != 0)
++    background = counts.most_common(1)[0][0]
++    height, width = len(grid), len(grid[0])
++    markers = [
++        (min(row, col, height - 1 - row, width - 1 - col), row, col, value)
++        for row, cells in enumerate(grid)
++        for col, value in enumerate(cells)
++        if value != background
++    ]
++    return background, markers
++
++
++def test_native_default_preserves_exact_authority_bytes(proto, adapter):
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        programs = {
++            row["program_solution"]
++            for row in map(json.loads, handle)
++            if row.get("task_id") == TASK
++        }
++    assert len(programs) == 1
++    canonical = programs.pop()
++    assert proto.native_program({"marker_order": "near_to_far"}) == canonical
++    assert adapter.program({"marker_order": "near_to_far"}) == canonical
++    alternate = adapter.program({"marker_order": "far_to_near"})
++    assert alternate != canonical
++    assert alternate == proto.native_program({"marker_order": "far_to_near"})
++
++
++@pytest.mark.parametrize("order,first,second", [
++    ("near_to_far", [2, 1, 8, 4, 6], [2, 6, 1, 8, 4]),
++    ("far_to_near", [6, 4, 8, 2, 1], [4, 8, 2, 6, 1]),
++])
++def test_input_dependent_global_ranking_is_needed_before_ring_painting(
++    proto, racket, order, first, second,
++):
++    original = [[7] * 11 for _ in range(11)]
++    for row, col, color in ((0, 9, 2), (1, 3, 8), (2, 4, 4), (3, 5, 6), (8, 10, 1)):
++        original[row][col] = color
++    moved = deepcopy(original)
++    moved[3][5], moved[3][10] = 7, 6
++    assert [m[3] for m in _markers(original)[1]] == [2, 8, 4, 6, 1]
++    assert [m[3] for m in _markers(moved)[1]] == [2, 8, 4, 6, 1]
++    program = proto.native_program({"marker_order": order})
++    output = racket(program, original)
++    moved_output = racket(program, moved)
++    assert output == _rings(11, 11, first, 7)
++    assert moved_output == _rings(11, 11, second, 7)
++    assert output != moved_output
++    skip_sort = _rings(11, 11, [2, 8, 4, 6, 1], 7)
++    assert skip_sort != output and skip_sort != moved_output
++
++
++@pytest.mark.parametrize("order", ORDERS)
++def test_native_episode_labels_execute_in_protected_racket(proto, episode, racket, order):
++    ep = episode(order)
++    assert ep["program_solution"] == proto.native_program({"marker_order": order})
++    for pair in ep["train"] + ep["test"]:
++        assert racket(ep["program_solution"], pair["input"]) == pair["output"]
++
++
++@pytest.mark.parametrize("demos", range(2, 7))
++@pytest.mark.parametrize("queries", (1, 4))
++def test_independent_requested_counts_and_distinct_typed_grids(episode, demos, queries):
++    ep = episode(demos=demos, queries=queries)
++    assert (len(ep["train"]), len(ep["test"])) == (demos, queries)
++    pairs = ep["train"] + ep["test"]
++    fingerprints = {tuple(map(tuple, pair["input"])) for pair in pairs}
++    assert len(fingerprints) == len(pairs)
++    for pair in pairs:
++        for grid in (pair["input"], pair["output"]):
++            assert type(grid) is list and 5 <= len(grid) <= 30
++            assert type(grid[0]) is list and 5 <= len(grid[0]) <= 30
++            assert all(type(row) is list and len(row) == len(grid[0]) for row in grid)
++            assert all(type(value) is int and 0 <= value <= 9 for row in grid for value in row)
++
++
++@pytest.mark.parametrize("name,bad", [
++    ("seed", True), ("seed", False), ("seed", 1.0), ("seed", "17"),
++    ("seed", None), ("seed", -1), ("seed", 2**63),
++    ("demos", True), ("demos", 3.0), ("demos", "3"), ("demos", None),
++    ("demos", 1), ("demos", 7),
++    ("queries", True), ("queries", 1.0), ("queries", "4"), ("queries", None),
++    ("queries", 0), ("queries", 5),
++])
++def test_bad_scalar_requests_fail_closed(proto, name, bad):
++    request = {"seed": 17, "settings": {"marker_order": "near_to_far"}, "demos": 3, "queries": 4}
++    request[name] = bad
++    with pytest.raises((TypeError, ValueError)):
++        proto.native_generate(**request)
++
++
++@pytest.mark.parametrize("settings", [
++    None, {}, [], "near_to_far", {"marker_order": True},
++    {"marker_order": "unknown"}, {"marker_order": "near_to_far", "extra": 1},
++])
++def test_settings_are_an_exact_bounded_contract(proto, settings):
++    with pytest.raises((TypeError, ValueError)):
++        proto.native_program(settings)
++    with pytest.raises((TypeError, ValueError)):
++        proto.native_generate(17, settings, demos=2, queries=1)
++
++
++def test_seed_endpoints_and_replay_are_supported(proto):
++    settings = {"marker_order": "near_to_far"}
++    for seed in (0, 2**63 - 1):
++        ep = proto.native_generate(seed, settings, demos=2, queries=1)
++        assert ep == proto.native_generate(seed, settings, demos=2, queries=1)
++
++
++def test_setting_and_count_changes_preserve_input_streams(episode):
++    near, far = episode("near_to_far"), episode("far_to_near")
++    assert _visible_inputs(near) == _visible_inputs(far)
++    assert any(a["output"] != b["output"] for a, b in zip(near["train"], far["train"]))
++    short, long = episode(demos=2), episode(demos=6)
++    assert _visible_inputs(short)["test"] == _visible_inputs(long)["test"]
++    assert short["train"] == long["train"][:2]
++    one = episode(queries=1)
++    assert one["train"] == near["train"]
++    assert one["test"] == near["test"][:1]
++
++
++def test_full_canvas_boundary_is_substantive_and_taught(episode):
++    ep = episode(demos=2)
++    assert sorted((len(ep["train"][0]["input"]), len(ep["train"][0]["input"][0]))) == [11, 13]
++    assert sorted((len(ep["train"][1]["input"]), len(ep["train"][1]["input"][0]))) == [29, 30]
++    assert [sorted((len(p["input"]), len(p["input"][0]))) for p in ep["test"]] == [
++        [5, 5], [17, 25], [23, 29], [30, 30],
++    ]
++    for pair in (ep["train"][1], ep["test"][-1]):
++        grid = pair["input"]
++        background, markers = _markers(grid)
++        assert len(markers) == 15
++        assert max(m[0] for m in markers) == 14
++        assert len({m[3] for m in markers}) < len(markers)
++        assert 0 in {m[3] for m in markers}
++        assert max(m[1] for m in markers) - min(m[1] for m in markers) >= 20
++        assert max(m[2] for m in markers) - min(m[2] for m in markers) >= 20
++        assert sum(a != b for old, new in zip(grid, pair["output"]) for a, b in zip(old, new)) > 600
++        assert pair["output"][14][14] != background
++
++
++def test_public_bytes_and_identifier_ignore_all_private_metadata(proto, episode):
++    ep = episode()
++    encoded = proto.native_challenge_bytes(ep)
++    assert type(encoded) is bytes
++    assert proto.native_challenge_id(ep) == hashlib.sha256(encoded).hexdigest()
++    public = json.loads(encoded)
++    assert set(public) == {"train", "test"}
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert all(set(pair) == {"input"} for pair in public["test"])
++    changed = deepcopy(ep)
++    changed.update(seed=12345, settings={"marker_order": "far_to_near"},
++                   program_solution="PRIVATE PROGRAM SENTINEL", private_note="PRIVATE NOTE SENTINEL")
++    for split in ("train", "test"):
++        for pair in changed[split]:
++            pair["private_setting"] = "PRIVATE PAIR SENTINEL"
++    for pair in changed["test"]:
++        pair["output"] = [[9]]
++    assert proto.native_challenge_bytes(changed) == encoded
++    assert proto.native_challenge_id(changed) == proto.native_challenge_id(ep)
++    changed["train"][0]["output"][0][0] = (changed["train"][0]["output"][0][0] + 1) % 10
++    assert proto.native_challenge_id(changed) != proto.native_challenge_id(ep)
++
++
++def test_public_turn_has_only_current_query_and_no_future_count_cues(proto, episode):
++    ep = episode()
++    first = proto.native_public_turn(ep, query_index=0)
++    assert first == proto.native_public_turn(episode(queries=1), query_index=0)
++    expected_train = [
++        {"input": pair["input"], "output": pair["output"]} for pair in ep["train"]
++    ]
++    for index in range(4):
++        visible = proto.native_public_turn(ep, query_index=index)
++        assert visible == {"train": expected_train, "test": [{"input": ep["test"][index]["input"]}]}
++    for bad in (-1, 4, True, 1.0, "1", None):
++        with pytest.raises((TypeError, ValueError)):
++            proto.native_public_turn(ep, query_index=bad)
++
++
++@pytest.mark.parametrize("order", ORDERS)
++def test_two_demos_reject_rank_caps_and_simple_ordering_shortcuts(episode, order):
++    ep = episode(order, demos=2)
++    names = ("cap8", "cap14", "row_major", "reverse_ties", "numeric_ties_ascending",
++             "numeric_ties_descending", "ignore_zero", "deduplicate", "numeric", "extend_last")
++    rejected = {name: False for name in names}
++    for pair in ep["train"]:
++        grid = pair["input"]
++        height, width = len(grid), len(grid[0])
++        background, markers = _markers(grid)
++        sign = 1 if order == "near_to_far" else -1
++        ordered = sorted(markers, key=lambda m: sign * m[0])
++        colors = [m[3] for m in ordered]
++        reversed_ties = sorted(markers, key=lambda m: (sign * m[0], -m[1], -m[2]))
++        rivals = {
++            "cap8": colors[:8],
++            "cap14": colors[:14],
++            "row_major": [m[3] for m in markers],
++            "reverse_ties": [m[3] for m in reversed_ties],
++            "numeric_ties_ascending": [m[3] for m in sorted(markers, key=lambda m: (sign * m[0], m[3]))],
++            "numeric_ties_descending": [m[3] for m in sorted(markers, key=lambda m: (sign * m[0], -m[3]))],
++            "ignore_zero": [color for color in colors if color != 0],
++            "deduplicate": list(dict.fromkeys(colors)),
++            "numeric": sorted(colors),
++            "extend_last": colors + [colors[-1]] * 15,
++        }
++        for name, sequence in rivals.items():
++            rejected[name] |= _rings(height, width, sequence, background) != pair["output"]
++    assert all(rejected.values()), rejected
+diff --git a/repo/generators/1034300a135f/tests/test_native_probe.py b/repo/generators/1034300a135f/tests/test_native_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/tests/test_native_probe.py
+@@ -0,0 +1,119 @@
++"""The task-local probe must fail closed and retain demo-only certificates."""
++from copy import deepcopy
++from contextlib import contextmanager
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++
++SOURCE = Path(__file__).resolve().parents[1] / "workspace/parametric/native_probe.py"
++
++
++@pytest.fixture(scope="module")
++def probe():
++    spec = importlib.util.spec_from_file_location("marker_native_probe_tests", SOURCE)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture
++def episode():
++    return {"program_solution": "chosen", "train": [
++        {"input": [[1]], "output": [[2]]},
++        {"input": [[5]], "output": [[6]]}],
++        "test": [{"input": [[3]], "output": [[4]]}]}
++
++
++def test_demo_survivor_that_harms_query_is_rejected(probe, episode):
++    calls = []
++    def execute(program, grid):
++        calls.append((program, grid[0][0]))
++        return [[9 if program == "rival" and grid == [[3]] else grid[0][0] + 1]]
++    with pytest.raises(ValueError, match="surviving rival"):
++        probe.audit_episode(episode, execute, {"shortcut": "rival"})
++    assert calls.index(("rival", 5)) < calls.index(("rival", 3))
++
++
++def test_refuted_rival_is_fitted_to_all_demos_only(probe, episode):
++    calls = []
++    def execute(program, grid):
++        calls.append((program, grid[0][0]))
++        return [[grid[0][0] + 1 if program == "chosen" else 0]]
++    report = probe.audit_episode(episode, execute, {"shortcut": "rival"})
++    row = report["rivals"][0]
++    assert row["demo_refutations"] == [0, 1]
++    assert row["query_checks"] == []
++    assert ("rival", 3) not in calls
++    assert report["verified_label_count"] == 3
++
++
++def test_rival_runtime_error_is_not_a_refutation(probe, episode):
++    def execute(program, grid):
++        if program == "broken":
++            raise RuntimeError("protected Racket error")
++        return [[grid[0][0] + 1]]
++    with pytest.raises(RuntimeError, match="protected Racket error"):
++        probe.audit_episode(episode, execute, {"shortcut": "broken"})
++
++
++def test_python_label_claim_must_match_execution(probe, episode):
++    changed = deepcopy(episode)
++    changed["test"][0]["output"] = [[9]]
++    with pytest.raises(ValueError, match="label mismatch"):
++        probe.audit_episode(changed, lambda _program, grid: [[grid[0][0] + 1]], {})
++
++
++def test_export_refuses_existing_destination_before_generation(probe, tmp_path, monkeypatch):
++    def forbidden(*_args):
++        pytest.fail("Existing destination must be rejected before generation")
++    monkeypatch.setattr(probe, "build_probe", forbidden)
++    with pytest.raises(FileExistsError):
++        probe.export_probe(0, 3, 4, tmp_path)
++
++
++def test_witness_moves_geometry_without_changing_row_major_colors(probe):
++    grids = probe.witness_inputs()
++    expected = {
++        "near_to_far": [[2, 1, 8, 4, 6], [2, 6, 1, 8, 4]],
++        "far_to_near": [[6, 4, 8, 2, 1], [4, 8, 2, 6, 1]],
++    }
++    for order, sequences in expected.items():
++        for grid, sequence in zip(grids, sequences):
++            value = probe.intermediate_value(grid, {"marker_order": order})
++            assert value["row_major_colors"] == [2, 8, 4, 6, 1]
++            assert value["ranked_colors"] == sequence
++
++
++def test_witness_receipt_matches_exact_admission_runtime_schema(probe, tmp_path, monkeypatch):
++    """Receipt plumbing only; mocked labels are never retained as real evidence."""
++    prototype = probe._prototype()
++    programs = {probe.raw(setting).decode().strip(): probe.digest(prototype.native_program(setting).encode())
++                for setting in probe.SETTINGS}
++    qualification = tmp_path / "test-only-qualification.json"
++    qualification.write_text(json.dumps({"schema": "arcpuzzles-parametric-qualification-v1",
++        "status": "qualified", "task_id": probe.TASK_ID, "source_binding": {"test_only": True},
++        "programs": programs}))
++    identity = {"backend": "racket", "protected": True, "binary_sha256": "a" * 64}
++    counts = {"evaluations": 0}
++    def execute(program, grid):
++        counts["evaluations"] += 1
++        if "(sorted cells)" in program:
++            value = probe.intermediate_value(grid, probe.SETTINGS[0])
++            colors, bg = value["row_major_colors"], value["background"]
++            return [[colors[min(r, c, 10-r, 10-c)] if min(r, c, 10-r, 10-c) < len(colors) else bg
++                     for c in range(11)] for r in range(11)]
++        order = "near_to_far" if program == prototype.native_program(probe.SETTINGS[0]) else "far_to_near"
++        return prototype.python_reference(grid, marker_order=order)
++    @contextmanager
++    def fake_runtime():
++        yield {"execute": execute, "identity": identity, "counts": counts}
++    monkeypatch.setattr(probe, "protected_racket", fake_runtime)
++    monkeypatch.setattr(probe, "_check_source_binding", lambda _binding: None)
++    witness = probe.write_witness(qualification, tmp_path / "test-only-witness.json")
++    assert witness["racket"] == {"backend": "racket", "protected": True}
++    assert witness["racket_runtime_identity"] == identity
++    assert witness["racket_evaluations"] == 8
++    assert len(witness["cases"]) == 4
+diff --git a/repo/generators/1034300a135f/workspace/parametric/README.md b/repo/generators/1034300a135f/workspace/parametric/README.md
+--- a/repo/generators/1034300a135f/workspace/parametric/README.md
++++ b/repo/generators/1034300a135f/workspace/parametric/README.md
+@@ -1,22 +1,100 @@
+-# Proposed marker-order parameter (prototype only)
++# Native marker-order family
+ 
+-This workspace tests one episode-level parameter without changing production authority:
++This proposed family retains the canonical spatial reasoning and varies one
++episode-fixed rule:
+ 
+-- `near_to_far` — canonical/default: stably order markers by increasing minimum edge distance.
+-- `far_to_near` — proposed alternative: stably order markers by decreasing minimum edge distance.
++| `marker_order` | Meaning |
++| --- | --- |
++| `near_to_far` | Canonical/default: stable increasing minimum edge distance |
++| `far_to_near` | Stable decreasing minimum edge distance |
+ 
+-Both settings keep the same nonzero modal background rule, include zero as a marker, preserve row-major order inside ties, and paint the ordered colors onto output rings from outside inward. The parameter is selected once from the episode seed and shared by two demonstrations and one query. Every retained input uses the production `teaching_combined` grammar and is required to distinguish both settings.
++Both infer the unique nonzero modal background, treat every other cell (including
++zero) as a separate marker, retain row-major ordering inside distance ties, and
++assign the ordered colors to output rings from outside inward. Unfilled inner
++rings retain the background. Repeated colors remain separate markers.
+ 
+-Run the exact Python/Racket evidence check from the packet root:
++`adapter.py` is the native entry point. Its default program is byte-identical to
++the selected canonical Racket authority. The alternative changes only the sort
++key. The older two-demo/one-query standalone authoring API remains available in
++`prototype.py`; the native API and protected evidence below supersede that small
++example as the qualification candidate.
++
++## Counts, grammar and construction
++
++`generate(seed, settings, demos=3, queries=4)` independently supports **2–6
++demonstrations and 1–4 queries**, with four queries for training/qualification.
++Seeds are literal integers in `0..2**63-1`; counts reject booleans and coercions.
++Inputs are matched across settings. Separate demonstration and query streams
++keep the query prefix unchanged when requesting more demonstrations or queries.
++No rejection loop or silent count truncation is used.
++
++The semantic domain is rectangular 5–30-cell sides, a unique nonzero modal
++background, and at most one marker per available output-ring rank. Every marker
++may occupy any cell; equal distances, repeated colors and zero are lawful. The
++current constructive sampler covers the explicit shapes below, not every size
++or every lawful marker placement.
++
++The first two demonstrations construct the teaching evidence: an 11×13 scene
++combines tied distances, a distance gap, a zero marker, repeated colors and an
++unfilled center; a 29×30 scene uses all 15 output ranks and the opposite
++numeric tie orientation. This rejects both increasing- and decreasing-color
++tie-break shortcuts using only two demonstrations. Optional demonstrations
++add four intermediate rectangular sizes. Four queries cover 5×5, 17×25, 23×29
++and 30×30 (some rectangles transpose). The 30×30 case contains 15 spatially
++distributed markers through edge distance 14, and paints every ring. This is a
++separate sampler extension, not a change to production's more restrictive
++profile validator. Every non-background cell has a role under this rule, so
++unlabelled foreground distractors would change the task rather than add noise.
++
++## Why the intermediate matters
++
++**A:** stably rank all marker identities by their edge distance.
++**Intermediate:** an ordered list of coordinates, distances and colors.
++**B:** choose each output ring's color by its position in that list.
++
++A marker relocation can change the ranks and output rings of several *other*
++markers. A fixed per-cell recoloring cannot implement this dependency. The
++retained paired witness moves one marker while preserving the row-major color
++sequence, so a skip-sort program stays unchanged while the qualified program
++changes. This establishes a nonlocal data dependency; it does not claim an
++iterative simulation or prove a minimum amount of model reasoning.
++
++## Reproduce bounded evidence
++
++From the outer packet folder, using the interpreter that passed `python-check`:
+ 
+ ```bash
+ python3 review.py run python3 \
+-  generators/1034300a135f/workspace/parametric/prototype.py \
+-  --seed 19 \
+-  --out ../checks/parametric/marker-order-seed19.json \
+-  --write-public generators/1034300a135f/workspace/parametric/examples
++  generators/1034300a135f/workspace/parametric/native_probe.py \
++  --seed 19 --demos 3 --queries 4 --out ../checks/1034300a135f/native
++
++python3 review.py run python3 -m pytest -q \
++  generators/1034300a135f/tests/test_native_marker_order.py
++
++python3 review.py run python3 -m arcpuzzles parametric qualify 1034300a135f \
++  --out ../checks/1034300a135f/qualification --summary
+ ```
+ 
+-The command materializes setting-specific standalone Racket programs under `rules/`, executes both on all retained pairs, checks Python parity, checks canonical-default parity with the selected production generator, and writes public challenges with the parameter and query answer redacted.
++The probe executes both settings and its declared shortcut programs through
++protected Racket. It fits rivals to demonstrations only, checks surviving
++predictions on each query, and refuses harmful survivors or execution errors.
++The finite rival list is documented by the executable probe; it is not a claim
++of universal uniqueness. The native manifest binds current source and compact
++evidence before qualification.
+ 
+-Public challenge filenames use hashes of visible challenge content. Private evidence retains settings and answers separately. The original reviewer source and gallery are retained under `evidence/reviewer-original/`.
++## Public and private data
++
++The export's `public/` files contain demonstrations and masked query inputs;
++their exact bytes and filenames use the shared public-content hashing helper.
++They are a controller-side evaluation bundle, **not a multi-query user turn**.
++Use `native_public_turn(episode, query_index)` to expose exactly one query at a
++time with the same demonstrations, without a total-count or future-input hint.
++The first turn is identical for a one-query or four-query request. The caller
++controls when to advance after receiving the preceding answer; this stateless
++projection does not implement an interaction controller.
++
++Private settings, programs, seed, answers and source/runtime evidence remain
++outside those files. Changing private fields cannot change a public identifier.
++Source inventory and native qualification are review evidence. Exact-source
++acceptance after owner integration remains required; training admission remains
++false.
+diff --git a/repo/generators/1034300a135f/workspace/parametric/adapter.py b/repo/generators/1034300a135f/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/workspace/parametric/adapter.py
+@@ -0,0 +1,20 @@
++"""Thin native adapter, loading this task's exact adjacent prototype."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++_path = Path(__file__).resolve().with_name("prototype.py")
++_spec = importlib.util.spec_from_file_location("_marker_order_1034300a135f_native", _path)
++if _spec is None or _spec.loader is None:
++    raise ImportError(f"Cannot load marker-order prototype: {_path}")
++_prototype = importlib.util.module_from_spec(_spec)
++_spec.loader.exec_module(_prototype)
++
++
++def program(settings):
++    return _prototype.native_program(settings)
++
++
++def generate(seed, settings, demos=3, queries=4):
++    return _prototype.native_generate(seed, settings, demos, queries)
+diff --git a/repo/generators/1034300a135f/workspace/parametric/evidence/manifest.json b/repo/generators/1034300a135f/workspace/parametric/evidence/manifest.json
+--- a/repo/generators/1034300a135f/workspace/parametric/evidence/manifest.json
++++ b/repo/generators/1034300a135f/workspace/parametric/evidence/manifest.json
+@@ -1,80 +1,76 @@
+ {
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "4e51401fbef6fa5cffddd489ce63f88d347c274cfce5bb489785f76f101cbca4",
+   "canonical_rule_hash": "4e51401fbef6",
++  "default": {
++    "marker_order": "near_to_far"
++  },
++  "evidence_root": "generators/1034300a135f/workspace/parametric/evidence/native-current",
+   "files": [
+     {
+-      "bytes": 1570,
+-      "path": "generators/1034300a135f/workspace/parametric/README.md",
+-      "sha256": "ae5e0b4de79bac2b86662b51385b1bc392d3bec65d3ddbd421f97bfef5c2f32e"
++      "bytes": 21978,
++      "path": "generators/1034300a135f/generator.py",
++      "sha256": "0294ac0f781379c431b6e7d9319d78f7e6dcdc75856857c779544520a64d546b"
+     },
+     {
+-      "bytes": 2007,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/owner-correction/additional-tests-collection-blocked.log",
+-      "sha256": "4545c3b0eed609dfa3b2419bb627ae0bebf40f2b1d65f09653474ed50f8c6709"
++      "bytes": 13195,
++      "path": "generators/1034300a135f/tests/test_native_marker_order.py",
++      "sha256": "475c9f354ec7fc9886251ec3b5f493a30fcfd3067192d0814460578bfc7ffd0f"
+     },
+     {
+-      "bytes": 98,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/owner-correction/green.log",
+-      "sha256": "654623d92d3a1c8afeb6c5367b5f100a5e4b23eb178f6ee893f5afb8b0a320c5"
++      "bytes": 5160,
++      "path": "generators/1034300a135f/tests/test_native_probe.py",
++      "sha256": "09fbd5337dc19c4dfc017b4135d79cdfcca966e80d1c3280dffb5ec734b5f81f"
+     },
+     {
+-      "bytes": 596,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/owner-correction/public-export.log",
+-      "sha256": "4ab05cd90b74042c24a7601e9ecd3d54f4dce71826b2765d4a80d205b6dd3ce7"
++      "bytes": 2053,
++      "path": "generators/1034300a135f/tests/test_parametric_public_names.py",
++      "sha256": "06a4d2ed330f8e338357cefc298453bfd6be5a7b95b870e1496a0671d4a3dba7"
+     },
+     {
+-      "bytes": 1289,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/owner-correction/receipt.json",
+-      "sha256": "f395e4ce00159189899961d0aae77c1c58a0a04a09eb66945b8cf9b3e7a6709d"
++      "bytes": 5267,
++      "path": "generators/1034300a135f/workspace/parametric/README.md",
++      "sha256": "fd25b727fc6bdbad01a4aeb26ac290274b0a3f157ee9c36d66238f494eb727f4"
+     },
+     {
+-      "bytes": 3088,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/owner-correction/red.log",
+-      "sha256": "0b0ee31c49de152f203927fb7779f2b3995834fd8eda874c04f588f7f5f91120"
++      "bytes": 702,
++      "path": "generators/1034300a135f/workspace/parametric/adapter.py",
++      "sha256": "dcdd5f7a84506d9d0f40c46fcb45adfea6779fb3ff52c48e8b915b89a66215bd"
+     },
+     {
+-      "bytes": 120570,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/owner-current/report.json",
+-      "sha256": "e36923a7c495af08637a1b1c0a2b9388dd494c8ec3d4d033db877f11043cbf6f"
++      "bytes": 31370,
++      "path": "generators/1034300a135f/workspace/parametric/evidence/native-current/maximum-lesson.json",
++      "sha256": "8c9107797a853d8934708bb0587a7781f74c1e70d25e8b80a9958c543dcfc89d"
+     },
+     {
+-      "bytes": 1352,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/reviewer-original/README.md",
+-      "sha256": "dd9237d0c1bc78e6dd924339caab2e05c3bb3e6c169d421fcf184c0faf955ad3"
++      "bytes": 24968,
++      "path": "generators/1034300a135f/workspace/parametric/evidence/native-current/minimum-lesson.json",
++      "sha256": "7e235f7e66e9a889977eaa33cafce2e6e539ff6b061e7e84a9c7fabdd5253749"
+     },
+     {
+-      "bytes": 9888,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/reviewer-original/examples/marker_far_to_near_public.json",
+-      "sha256": "ade88cfe55805c435da1aaf9083003523151ac94899ecb369a3bb9da4d8d617e"
++      "bytes": 257,
++      "path": "generators/1034300a135f/workspace/parametric/evidence/native-current/tests.log",
++      "sha256": "6d35ee0b5b3b58bb5e1a0648ff7310ccbeff5cc024d401a5e33d2830904644f9"
+     },
+     {
+-      "bytes": 9888,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/reviewer-original/examples/marker_near_to_far_public.json",
+-      "sha256": "0e85ad017f9ad650391f04d42e5f170c13c4321b387f5d390dbf3b8ea42ef661"
++      "bytes": 15274,
++      "path": "generators/1034300a135f/workspace/parametric/evidence/native-current/tie-shortcut-before.json",
++      "sha256": "ff7a33689da36e621901cd02aaeb03615332f9f25274a7347f967b1cad26fb43"
+     },
+     {
+-      "bytes": 15542,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/reviewer-original/prototype.py",
+-      "sha256": "d46977fbc765428bae2617b770f590c9a43cb584df2f02548e1bcf17080a4fc3"
++      "bytes": 20210,
++      "path": "generators/1034300a135f/workspace/parametric/native_probe.py",
++      "sha256": "4f24c713a04f32e482cf822993b6a886cac32af290fd71041a9b1191df290f9a"
+     },
+     {
+-      "bytes": 120594,
+-      "path": "generators/1034300a135f/workspace/parametric/evidence/reviewer-original/reported-evidence.json",
+-      "sha256": "53719187e38328cf58712579f5854e9cf012bb855a5393299a0d232e9d254a72"
++      "bytes": 468,
++      "path": "generators/1034300a135f/workspace/parametric/promotion.json",
++      "sha256": "6043a95ed4419e66edc5ea3c11d971d0b460259db8f6cb27bef36058c7aa4023"
+     },
+     {
+-      "bytes": 9888,
+-      "path": "generators/1034300a135f/workspace/parametric/examples/challenge-29a38ebbb60d7876d83c1eb5c16974db053c31f10aa17d69c0cba44b707009eb.json",
+-      "sha256": "0e85ad017f9ad650391f04d42e5f170c13c4321b387f5d390dbf3b8ea42ef661"
+-    },
+-    {
+-      "bytes": 9888,
+-      "path": "generators/1034300a135f/workspace/parametric/examples/challenge-af4b7bca95dd21a4e25fe83f797a1cfd7d6b300bb54f63173ba2e6f858bd1cc9.json",
+-      "sha256": "ade88cfe55805c435da1aaf9083003523151ac94899ecb369a3bb9da4d8d617e"
+-    },
+-    {
+-      "bytes": 15835,
++      "bytes": 21969,
+       "path": "generators/1034300a135f/workspace/parametric/prototype.py",
+-      "sha256": "c883a69e8c9a4f379b8915fbcedbdc7f73d8f2c0641c1afb7d4078d8f0c00197"
++      "sha256": "272b156aebf0c2f813d2c791d189429f4d5b8ccc741c215f160b6ebf856b3e9c"
+     },
+     {
+       "bytes": 1402,
+@@ -87,13 +83,27 @@
+       "sha256": "7a18ff00c5133e9e5ad945ef46b753eedd85f84539af731dde7b4a468c93156d"
+     },
+     {
+-      "bytes": 2053,
+-      "path": "generators/1034300a135f/tests/test_parametric_public_names.py",
+-      "sha256": "06a4d2ed330f8e338357cefc298453bfd6be5a7b95b870e1496a0671d4a3dba7"
++      "bytes": 478,
++      "path": "generators/1034300a135f/workspace/parametric/rules/native_far_to_near.rkt",
++      "sha256": "b57a48d2834074e503c036c04e72727af748b3aaeaed808d10f0f3a1f12f7b7a"
++    },
++    {
++      "bytes": 472,
++      "path": "generators/1034300a135f/workspace/parametric/rules/native_near_to_far.rkt",
++      "sha256": "4e51401fbef6fa5cffddd489ce63f88d347c274cfce5bb489785f76f101cbca4"
+     }
+   ],
+   "generator_sha256": "0294ac0f781379c431b6e7d9319d78f7e6dcdc75856857c779544520a64d546b",
+-  "owner_correction_verification_status": "independently_exercised",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
+   "parameters": {
+     "marker_order": [
+       "near_to_far",
+@@ -101,12 +111,12 @@
+     ]
+   },
+   "production_parametric_api": false,
+-  "return_id": "review-a70ce13a9b78aaa3:v0001",
+-  "return_zip_sha256": "453ae586e8c965669746b944838e28e4626c2a5b1fa2a9e428ea349998445eb0",
++  "reported_checks": "57 focused tests pass. Protected Racket: two settings at seed17/demos2/queries4 (12 chosen labels,56 evaluations) and seed0/demos6/queries4 (20 chosen labels,152 evaluations); all11 declared rivals refuted by demonstrations. Both numeric tie alternatives included after repairing a reproduced two-demo ambiguity. Four controller bundles and16 single-query exports pass public checks. Finite scope; no acceptance or training admission.",
++  "rule_task_id": "1034300a135f",
+   "schema": "arcpuzzles-parametric-prototype-evidence-v1",
+-  "scope": "Accepted version3.1.0 strict literal-integer seed/index validation, nonnegative index and supported difficulty validation. Signed integer seeds remain legal. Retains four exact public and ten prior generalized profiles, adds teaching_combined on even slots with the other14 profiles cycling odd slots (period28). Every three-demo rotation retains a combined witness against six declared rivals: reversed equal-distance ties, raw-distance indexing, extended center, ignoring zero, deduplicating colors and numeric color sorting. Canonical Racket remains unchanged (4e51401fbef6). Reviewer reports12/12 final battery stages,600/600 strict and8/8 canonical support,300 lessons/1200 rotations with no declared-rival ambiguity (1018 unique inputs), and all28 residues across three bands (84 lessons/336 rotations). These are finite checks; schedule parity is observable. The official aggregate task tests exit2 before pytest because the unchanged frozen fixture uses a fixed-depth canonical path. The intermediate36-test run used a temporary migrated fixture and is not a final aggregate pass. Final source-bound probe passes6/6, also after fresh full-packet replay. The separate marker_order near_to_far/far_to_near prototype selects once per episode and provides two demonstrations plus one query per setting, live Racket labels and opposite-setting refutation. Default parity is against the canonical mirror; standalone prototype source is not claimed byte-identical to canonical. Owner replaced literal-setting public filenames with visible-content hashes, passed two focused tests and regenerated both Racket exports. Original reviewer source and evidence are preserved. No production parameter API, variant approval, training admission or owner repair battery rerun.",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
+   "task_id": "1034300a135f",
++  "training_admitted": false,
+   "variant_approved": false,
+-  "verification_scope": "Variant semantics remain reviewer-reported; the separate owner correction and two tests cover public identifiers and actual Racket export.",
+   "verification_status": "reviewer_reported"
+ }
+diff --git a/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/maximum-lesson.json b/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/maximum-lesson.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/maximum-lesson.json
+@@ -0,0 +1 @@
++{"counts":{"demos":6,"queries":4},"files":{"episodes.private.jsonl":{"bytes":39546,"sha256":"4fbe7b684e15266f194d5f1ac5649a617c46f443451e034a2fb50435099c4b49"},"public/challenge-6d62948b88d21bfaa42bc3e9cdff53d550b68719809f254a96cb53cb4169d799.json":{"bytes":14415,"sha256":"6d62948b88d21bfaa42bc3e9cdff53d550b68719809f254a96cb53cb4169d799"},"public/challenge-7a57da4bd71ecd518e0cc30d9b74fd09c5d449d78fe93c5bd3c4a86b4c8bcbe9.json":{"bytes":14415,"sha256":"7a57da4bd71ecd518e0cc30d9b74fd09c5d449d78fe93c5bd3c4a86b4c8bcbe9"},"turns/challenge-1dd9089ffc15270dda1b484236cea1001a38916028ac919ec53696d46bf02400.json":{"bytes":11575,"sha256":"1dd9089ffc15270dda1b484236cea1001a38916028ac919ec53696d46bf02400"},"turns/challenge-38d2b3ef704dc9b561800f3d0eef8a9a3ce8e3f58d8c678248a2d4e145b206fd.json":{"bytes":11575,"sha256":"38d2b3ef704dc9b561800f3d0eef8a9a3ce8e3f58d8c678248a2d4e145b206fd"},"turns/challenge-392c6a8a2dfacbb8d33332c2d521ac232e9cccaf18e5c9756e2814189b55f767.json":{"bytes":12043,"sha256":"392c6a8a2dfacbb8d33332c2d521ac232e9cccaf18e5c9756e2814189b55f767"},"turns/challenge-3dd9d6ce6aba7f46ca46d24b0547f1347a706ee8b677d377d49eb97b145e5a69.json":{"bytes":10243,"sha256":"3dd9d6ce6aba7f46ca46d24b0547f1347a706ee8b677d377d49eb97b145e5a69"},"turns/challenge-97ace89298aa968833bc3abf0acaa1abd3c1e1ff7719830ab2371296130132b1.json":{"bytes":11067,"sha256":"97ace89298aa968833bc3abf0acaa1abd3c1e1ff7719830ab2371296130132b1"},"turns/challenge-a014567facadc9f9f172cb6563171fb2a407b3a6864044a68d23a8d3d29aaf38.json":{"bytes":10243,"sha256":"a014567facadc9f9f172cb6563171fb2a407b3a6864044a68d23a8d3d29aaf38"},"turns/challenge-cba8d4471621c14578112c2dca13e040c9bf26997a106ca0a9fc2b27d46ff2b9.json":{"bytes":11067,"sha256":"cba8d4471621c14578112c2dca13e040c9bf26997a106ca0a9fc2b27d46ff2b9"},"turns/challenge-dbb2d6dad0fb9ab1656eb5176ade19115f89c0d65ec787c75d09666d835f7416.json":{"bytes":12043,"sha256":"dbb2d6dad0fb9ab1656eb5176ade19115f89c0d65ec787c75d09666d835f7416"}},"limits":["Finite rival programs and this seed/count request only; no universal uniqueness claim.","Rivals are fitted on demonstrations only; only survivors are checked on queries.","Every executed output uses protected Racket; runtime errors abort the probe.","No native acceptance, production approval or training admission is conferred."],"matched_inputs_across_settings":true,"public_scope":"public/ holds masked four-query controller bundles; expose only one turns/ file per model turn.","racket":{"backend":"racket","binary_sha256":"bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9","boot_script_sha256":"67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3","bridge_sha256":"4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323","candidate_symbol_policy_sha256":"509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8","prelude_sha256":"953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0","protected":true,"schema":"arc-protected-racket-runtime-v1"},"racket_evaluations":152,"schema":"arcpuzzles-marker-native-probe-v1","seed":0,"settings":[{"all_inputs_distinct":true,"dimensions":{"test":[{"input":[5,5],"markers":3,"output":[5,5]},{"input":[17,25],"markers":8,"output":[17,25]},{"input":[29,23],"markers":11,"output":[29,23]},{"input":[30,30],"markers":15,"output":[30,30]}],"train":[{"input":[11,13],"markers":4,"output":[11,13]},{"input":[29,30],"markers":15,"output":[29,30]},{"input":[9,15],"markers":3,"output":[9,15]},{"input":[15,19],"markers":7,"output":[15,19]},{"input":[19,21],"markers":9,"output":[19,21]},{"input":[21,27],"markers":10,"output":[21,27]}]},"harmful_demo_survivors":[],"limits":["Finite rival programs and this seed/count request only; no universal uniqueness claim.","Rivals are fitted on demonstrations only; only survivors are checked on queries.","Every executed output uses protected Racket; runtime errors abort the probe.","No native acceptance, production approval or training admission is conferred."],"public_file":"public/challenge-6d62948b88d21bfaa42bc3e9cdff53d550b68719809f254a96cb53cb4169d799.json","rivals":[{"demo_output_sha256":["372ece71bfec62317185bb0f2662896cd220791b19e147c62794c8ea632c7eae","70f6e94ad7734f4d006eb31d18fa159fc6dffa845f31fa915e123c3043786344","a66e5e99cf006733fcb8a698eb49f27f800a7cae3174fc1426a973901162dc53","d9d76879a0f49f4bdc0d9805107c8720123a24f4f49b3c99f85bb13bd40301ce","7be02e1bea0705fdecd56e445335b3cabf93efb589b361594e2776e6937229a3","a4e0bb8994d85f79be4b0fb0fce33a8b5361dde1878b53782bb6c202a0f48696"],"demo_refutations":[0,1,2,3,4,5],"name":"opposite_setting","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"b57a48d2834074e503c036c04e72727af748b3aaeaed808d10f0f3a1f12f7b7a","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["84e4b9f3ef49cde9015490cf578770f47ad23d99e89e64a2db7538cbaec8f29f","fa88d2269d202a2eac877ab9ff2303605270cc049cc69fed2ac25482a89c04a1","a66e5e99cf006733fcb8a698eb49f27f800a7cae3174fc1426a973901162dc53","88155934bca39d82af420ce51770760574bbd21d0c9d4d3d334fd8a067f66be7","86c8da8952958725ef204794359e36ac9dd38dbf9036e1c78a8e8402a4088489","15904660ecf4f4a7dfeaad00ccce6cdae97b2afbb1401decfcb26ecde6538462"],"demo_refutations":[0,1,2,3,4,5],"name":"skip_spatial_sort","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted cells) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"b55d10d0f7be904cf3a89f3f072087f43fa7e878d5e8fb3fd8911f45f3babc4b","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["8c196b541fbffba83aac918fbdf79969f978edeb6539b089c84260dddeb16e65","9351568e06509c916adb3f95ee98cf71afaff0a8c71d85fd410354990da11c1f","ac962a3bc4e867ecc27b26c6498879aacdb0cd4134a836cd9f3908180f09c2f5","f97a7f5212db3642347f80da5d28b66f2da54792e950f0da02e4069fa8f737f3","2bd783101f49aeb19fe18cd642ae2c8f8283c672ca23e5d28483a34c33f3f59f","291dc83aac18dfe6b0ef6d7356d6779a6748d2589bfe098eb247213baff5a945"],"demo_refutations":[0,1,2,3,4,5],"name":"reverse_equal_distance_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (reverse cells) (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"6824ce4428cc600b46f1eb0139e7ab53f34a794b73ba92522d6cbcf510a0875d","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["8c196b541fbffba83aac918fbdf79969f978edeb6539b089c84260dddeb16e65","9fd6ed00f9f23a50fa1b4c0903130512429dc4c044f6e636c4ab9e51d6500dfd","0b525a3dab60f2e0a81a7ac335357d3126db0ed152f67ce6ecd5257d50b934e9","f97a7f5212db3642347f80da5d28b66f2da54792e950f0da02e4069fa8f737f3","53df9c5be4d178ade5c9b1290bd3d7aa43df5369c140efd6b948bd63bf25cc42","291dc83aac18dfe6b0ef6d7356d6779a6748d2589bfe098eb247213baff5a945"],"demo_refutations":[0,3,5],"name":"ascending_color_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (sort-by cells (lambda (q) (second q))) (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"f0105f2e1faeb2f24f152ff54660773e338ee2fcd50143c8fa37c91244665dca","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["8e1a200dfd96728ffb6508078a5098f447a6edccb07c152d22c498d7cbf1d19f","9351568e06509c916adb3f95ee98cf71afaff0a8c71d85fd410354990da11c1f","ac962a3bc4e867ecc27b26c6498879aacdb0cd4134a836cd9f3908180f09c2f5","35dddcb3c8fd682c9ae294f9795a9c3fa7f7e926cd5e1f6ea382931cb06f936c","2bd783101f49aeb19fe18cd642ae2c8f8283c672ca23e5d28483a34c33f3f59f","4b4834edc59af91a0b577bbfe7a3512ab1eed0b20d462f9186f680627d02ba68"],"demo_refutations":[1,2,4],"name":"descending_color_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (sort-by cells (lambda (q) (- 0 (second q)))) (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"6d5efc35138bd67aea19c4edb05fe4edc384db80969c0e3a07fcfe3f4ab6a91b","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["7b8bf8a74d502615b7900e1ea2c8ea9922c95d543ec74a76caa72738fa79fdd8","399ae65b1889676c7e7cccbbb5f68add3ea6c0ef479073e8336d0598d0d01148","33f2af534da4eccd64b89e8442c3f471e0042ce4909b2c0646da7f8da72bce97","153e1a112b0970f198d82a4e7476b0d8fd64d1badc9bbdb375edf4d705e1b2ef","196ec09b77be7668db02c30630f52d1f978f864a7ce490dc4da08c1cc0e8b34d","f25f4da31be7bc99c8b979bb6acf50424d861321f5a09783ee5931d09b6c910a"],"demo_refutations":[0,1,2,3,4,5],"name":"ignore_zero_markers","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (or (= (at g r c) bg) (= (at g r c) 0)) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"c566d158dac54db5c388511601ce21dcf47c038518adeb6bb8a0d19e1a3a6766","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["ae3286d03743ef4039c913c62b292ea5b41616376081663f80aed42edeb87a0d","15fa3af6708c68bec04a7c83e01d526d2926851443a4b76d83afe29f3dd122ba","0b525a3dab60f2e0a81a7ac335357d3126db0ed152f67ce6ecd5257d50b934e9","35dddcb3c8fd682c9ae294f9795a9c3fa7f7e926cd5e1f6ea382931cb06f936c","53df9c5be4d178ade5c9b1290bd3d7aa43df5369c140efd6b948bd63bf25cc42","ea3ab5096a8f4fe50f98fdf0011ba61987e01b3d88bc44db01e25f98b4cb6eb4"],"demo_refutations":[0,1,5],"name":"deduplicate_colors","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (remove-duplicates (map second sorted))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"08d25eae43334a8dba69c00ef473c1984d22fe454ce47ff57a3ed472b8fa666e","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["6d365652675d4b24f4fde63d5967aad2c37f8453cccf10e1a74f63815219bcff","3b18055886af81557366bfe4a9522b70b6a83a304d55f41a7c4e64c4de128ec3","0b525a3dab60f2e0a81a7ac335357d3126db0ed152f67ce6ecd5257d50b934e9","9e23f329ba185e9904c57e83948651e7795be220c9d27b0bdf172c13b8dfd80c","87a03c80ccb3bfc89c8a84ca6ec29c91432ba6568bfaea705f5750a7e706a6b4","7b576d22b15fa8865e4ddddb90a0baad781a771b6a7a8d2c8ccb2251b7c5ae61"],"demo_refutations":[0,1,3,4,5],"name":"numeric_color_sort","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (sort-by (map second sorted) (lambda (color) color))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"241dd576ccae7beab7af78c68f85dcb05249e958522b999c6d98efcb00581b13","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["a67079cb27a07e69da2c75a7a1a2727edecc685fc22710e8cc436223154edd98","9fd6ed00f9f23a50fa1b4c0903130512429dc4c044f6e636c4ab9e51d6500dfd","173abb4e14330b63d88045572d120a228d915f1c7bd49443735cf5ee2327be12","3d464534093da56b345d11d5e3ae7660ca25432e7e8d1fdd178763e0f9545bfa","c457651e77a44781aba05f996ed13ec7e8875ab37252100381062a811f65b06a","fa1bd691e6f585009c271a41d89970e0258d2385945767230f6fb2c7f82fdca3"],"demo_refutations":[0,2,3,4,5],"name":"extend_final_color","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (= n 0) bg (nth sorted-colors (min d (- n 1))))))))))","program_sha256":"a6dcf817e22f1c12619182dc4c61617c4f948b7f39f6dceab7197de624dca93d","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["8e1a200dfd96728ffb6508078a5098f447a6edccb07c152d22c498d7cbf1d19f","601519fc32a79033d6c7c3f51675c4bd5818566fe945e3b3970ccf964123c761","0b525a3dab60f2e0a81a7ac335357d3126db0ed152f67ce6ecd5257d50b934e9","35dddcb3c8fd682c9ae294f9795a9c3fa7f7e926cd5e1f6ea382931cb06f936c","98758f154aa56fc4b3a44a1a17b26af445752c8b070070becd39c361481fa951","261b86616958033efe441ffc32bf1cd40286e548cc4b7295078ecce7317e9426"],"demo_refutations":[1,4,5],"name":"truncate_markers_at_8","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (take (map second sorted) (min 8 (length sorted)))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"9728a6bd66dc41d8adb2e4d605ebf6a85c7094faa0286b01d57fc95257d27f22","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["8e1a200dfd96728ffb6508078a5098f447a6edccb07c152d22c498d7cbf1d19f","380fbfc6906d4a55501478c0fece9c1ac0087ec0a623a41fa8d171c8c5a5e857","0b525a3dab60f2e0a81a7ac335357d3126db0ed152f67ce6ecd5257d50b934e9","35dddcb3c8fd682c9ae294f9795a9c3fa7f7e926cd5e1f6ea382931cb06f936c","53df9c5be4d178ade5c9b1290bd3d7aa43df5369c140efd6b948bd63bf25cc42","4b4834edc59af91a0b577bbfe7a3512ab1eed0b20d462f9186f680627d02ba68"],"demo_refutations":[1],"name":"truncate_markers_at_14","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (take (map second sorted) (min 14 (length sorted)))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"01f6bb5f38f0b85d9e0e69d877e23c98ceaaca81a1ea5299556c184a53b58237","query_checks":[],"survives_demonstrations":false}],"settings":{"marker_order":"near_to_far"},"verified_label_count":10},{"all_inputs_distinct":true,"dimensions":{"test":[{"input":[5,5],"markers":3,"output":[5,5]},{"input":[17,25],"markers":8,"output":[17,25]},{"input":[29,23],"markers":11,"output":[29,23]},{"input":[30,30],"markers":15,"output":[30,30]}],"train":[{"input":[11,13],"markers":4,"output":[11,13]},{"input":[29,30],"markers":15,"output":[29,30]},{"input":[9,15],"markers":3,"output":[9,15]},{"input":[15,19],"markers":7,"output":[15,19]},{"input":[19,21],"markers":9,"output":[19,21]},{"input":[21,27],"markers":10,"output":[21,27]}]},"harmful_demo_survivors":[],"limits":["Finite rival programs and this seed/count request only; no universal uniqueness claim.","Rivals are fitted on demonstrations only; only survivors are checked on queries.","Every executed output uses protected Racket; runtime errors abort the probe.","No native acceptance, production approval or training admission is conferred."],"public_file":"public/challenge-7a57da4bd71ecd518e0cc30d9b74fd09c5d449d78fe93c5bd3c4a86b4c8bcbe9.json","rivals":[{"demo_output_sha256":["8e1a200dfd96728ffb6508078a5098f447a6edccb07c152d22c498d7cbf1d19f","9fd6ed00f9f23a50fa1b4c0903130512429dc4c044f6e636c4ab9e51d6500dfd","0b525a3dab60f2e0a81a7ac335357d3126db0ed152f67ce6ecd5257d50b934e9","35dddcb3c8fd682c9ae294f9795a9c3fa7f7e926cd5e1f6ea382931cb06f936c","53df9c5be4d178ade5c9b1290bd3d7aa43df5369c140efd6b948bd63bf25cc42","4b4834edc59af91a0b577bbfe7a3512ab1eed0b20d462f9186f680627d02ba68"],"demo_refutations":[0,1,2,3,4,5],"name":"opposite_setting","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"4e51401fbef6fa5cffddd489ce63f88d347c274cfce5bb489785f76f101cbca4","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["84e4b9f3ef49cde9015490cf578770f47ad23d99e89e64a2db7538cbaec8f29f","fa88d2269d202a2eac877ab9ff2303605270cc049cc69fed2ac25482a89c04a1","a66e5e99cf006733fcb8a698eb49f27f800a7cae3174fc1426a973901162dc53","88155934bca39d82af420ce51770760574bbd21d0c9d4d3d334fd8a067f66be7","86c8da8952958725ef204794359e36ac9dd38dbf9036e1c78a8e8402a4088489","15904660ecf4f4a7dfeaad00ccce6cdae97b2afbb1401decfcb26ecde6538462"],"demo_refutations":[0,1,3,4,5],"name":"skip_spatial_sort","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted cells) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"b55d10d0f7be904cf3a89f3f072087f43fa7e878d5e8fb3fd8911f45f3babc4b","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["39f33533c252a2dc8173dd6505fc27a8101a8b4c7ffa40ea6ec2f841e5b42623","0ef7d5216146e5c53dffeb94e88307897ee765a47e85901a0994a3a536b15cec","8bff84c8995acf61366c687c58c21970b211a516f929166f1c4710aa0660cd4a","d38321db07840e87806751db46c9ff422cfc1453a2c93dfc3965b4a80e20bf42","f42a1f3ef1386fa34c3eae0add519c40d029a147d461155b751b5ce5e5c3d1af","3f5616514b933233dea960fa4020810698b7e012a882638cc6bd1915e1fbf184"],"demo_refutations":[0,1,2,3,4,5],"name":"reverse_equal_distance_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (reverse cells) (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"9d005d58f2cf957af25513c9d8d04442335d3b7e1e8a3e3f70f3d25db7404802","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["39f33533c252a2dc8173dd6505fc27a8101a8b4c7ffa40ea6ec2f841e5b42623","70f6e94ad7734f4d006eb31d18fa159fc6dffa845f31fa915e123c3043786344","a66e5e99cf006733fcb8a698eb49f27f800a7cae3174fc1426a973901162dc53","d38321db07840e87806751db46c9ff422cfc1453a2c93dfc3965b4a80e20bf42","7be02e1bea0705fdecd56e445335b3cabf93efb589b361594e2776e6937229a3","3f5616514b933233dea960fa4020810698b7e012a882638cc6bd1915e1fbf184"],"demo_refutations":[0,3,5],"name":"ascending_color_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (sort-by cells (lambda (q) (second q))) (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"04dd7e4993d658e30db8dd69fd973e70f8f7757ba2c221ea8d8ce3f6d3febeb9","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["372ece71bfec62317185bb0f2662896cd220791b19e147c62794c8ea632c7eae","0ef7d5216146e5c53dffeb94e88307897ee765a47e85901a0994a3a536b15cec","8bff84c8995acf61366c687c58c21970b211a516f929166f1c4710aa0660cd4a","d9d76879a0f49f4bdc0d9805107c8720123a24f4f49b3c99f85bb13bd40301ce","f42a1f3ef1386fa34c3eae0add519c40d029a147d461155b751b5ce5e5c3d1af","a4e0bb8994d85f79be4b0fb0fce33a8b5361dde1878b53782bb6c202a0f48696"],"demo_refutations":[1,2,4],"name":"descending_color_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (sort-by cells (lambda (q) (- 0 (second q)))) (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"bd14f6b46b0affa3941fe3f7232ee0a211d4d6319a21a4150fda2405bc5b8c79","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["1374d2ef8458b47663dbf8a14f4e8d82faca279286f06ebee5eef94da9bb567b","0cd2e27df0e3e3e24fa3012acef237466db1fc9af8eba543dbb5580c290873a0","33f2af534da4eccd64b89e8442c3f471e0042ce4909b2c0646da7f8da72bce97","1319a4366c221725756c538df7c0aba8bd87310b680ffb9258c7d69d86382a2b","db2e79ef99d61fd641acc186e18e4f4064f01b5a7527c3a5255bd7160928ca66","f7c7938c61369183e4008d62f1e24dff38f3190d6470081fe23f6d607f786552"],"demo_refutations":[0,1,2,3,4,5],"name":"ignore_zero_markers","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (or (= (at g r c) bg) (= (at g r c) 0)) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"6769b5565cf0f9767db058245f9f05cc7927aaddbe9fa6691410920940c2728c","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["40f37b675a1b5ec620e47bf3fed3e8111a2c91b0d2650cdc9459bfc8be87056d","4078e43ab1cae3e49fc79a5317d6212020de0cb2852cac1d46eae22c2d872734","a66e5e99cf006733fcb8a698eb49f27f800a7cae3174fc1426a973901162dc53","d9d76879a0f49f4bdc0d9805107c8720123a24f4f49b3c99f85bb13bd40301ce","7be02e1bea0705fdecd56e445335b3cabf93efb589b361594e2776e6937229a3","00db5c21285d284815fabe495bf7c2a610202d9e9b19a3d7f2780d87e0bd7da2"],"demo_refutations":[0,1,5],"name":"deduplicate_colors","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (remove-duplicates (map second sorted))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"74b16b1902711a2464e870f87f0218e9f2363f4d9056b464d132f3aeccad81e0","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["6d365652675d4b24f4fde63d5967aad2c37f8453cccf10e1a74f63815219bcff","3b18055886af81557366bfe4a9522b70b6a83a304d55f41a7c4e64c4de128ec3","0b525a3dab60f2e0a81a7ac335357d3126db0ed152f67ce6ecd5257d50b934e9","9e23f329ba185e9904c57e83948651e7795be220c9d27b0bdf172c13b8dfd80c","87a03c80ccb3bfc89c8a84ca6ec29c91432ba6568bfaea705f5750a7e706a6b4","7b576d22b15fa8865e4ddddb90a0baad781a771b6a7a8d2c8ccb2251b7c5ae61"],"demo_refutations":[0,1,2,3,4,5],"name":"numeric_color_sort","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (sort-by (map second sorted) (lambda (color) color))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"e2a19d675094e80dd02e23f2dd6067a10cf1239683debb61349d2a42f5d94caa","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["cd260b115d443ff2da8aa302d381777a2aec1a2eb4a8edd02f523a4917bed5e6","70f6e94ad7734f4d006eb31d18fa159fc6dffa845f31fa915e123c3043786344","2df7c634a24e9a232f97632068c1ecefb479e0d1132013a68ce8423ed1ec225d","5db66dea3c8291d0b48c192d8be7736140dd2e5e8e8469f07815f4273f569a13","536cdba502974699dcc9ce89212d3b48d06a9e7c67ae31a6412fe2a3bbfc9df8","4b4e937bca74a531dfc65bac11fe3a217c843724ba8315c11fdd3dd7daaddd47"],"demo_refutations":[0,2,3,4,5],"name":"extend_final_color","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (= n 0) bg (nth sorted-colors (min d (- n 1))))))))))","program_sha256":"2190bce0700577a160498d645d498e64016704857f31318e432ac6e935b33242","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["372ece71bfec62317185bb0f2662896cd220791b19e147c62794c8ea632c7eae","e3f2bd22a3b0f8eafb774ea5fa5b8b203783f83d60f61c5b32d78ea9f6edc859","a66e5e99cf006733fcb8a698eb49f27f800a7cae3174fc1426a973901162dc53","d9d76879a0f49f4bdc0d9805107c8720123a24f4f49b3c99f85bb13bd40301ce","e444223fdfb90711a6844471d31b6d8af052c691c013e9f1e440e9388bdf8407","d0f1f9d94d6676feac553500c2788a37a68c8eed48d78afac908a50172f956ea"],"demo_refutations":[1,4,5],"name":"truncate_markers_at_8","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (take (map second sorted) (min 8 (length sorted)))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"d06a84deda5b7a8c975f611362f95741eec7da354daa87ef985642b67350a6fb","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["372ece71bfec62317185bb0f2662896cd220791b19e147c62794c8ea632c7eae","b87d24ecfe2a65d4c0fcd4b693a61b288bb365517c1e9a4c4a4e67ca67a155a3","a66e5e99cf006733fcb8a698eb49f27f800a7cae3174fc1426a973901162dc53","d9d76879a0f49f4bdc0d9805107c8720123a24f4f49b3c99f85bb13bd40301ce","7be02e1bea0705fdecd56e445335b3cabf93efb589b361594e2776e6937229a3","a4e0bb8994d85f79be4b0fb0fce33a8b5361dde1878b53782bb6c202a0f48696"],"demo_refutations":[1],"name":"truncate_markers_at_14","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (take (map second sorted) (min 14 (length sorted)))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"455c14a4d7fb504c4a5956caf4a20e06ba4ed72ab2bd8670bd377af049f49590","query_checks":[],"survives_demonstrations":false}],"settings":{"marker_order":"far_to_near"},"verified_label_count":10}],"source_sha256":{"generators/1034300a135f/generator.py":"0294ac0f781379c431b6e7d9319d78f7e6dcdc75856857c779544520a64d546b","generators/1034300a135f/tests/test_native_probe.py":"09fbd5337dc19c4dfc017b4135d79cdfcca966e80d1c3280dffb5ec734b5f81f","generators/1034300a135f/workspace/parametric/adapter.py":"dcdd5f7a84506d9d0f40c46fcb45adfea6779fb3ff52c48e8b915b89a66215bd","generators/1034300a135f/workspace/parametric/native_probe.py":"4f24c713a04f32e482cf822993b6a886cac32af290fd71041a9b1191df290f9a","generators/1034300a135f/workspace/parametric/promotion.json":"6043a95ed4419e66edc5ea3c11d971d0b460259db8f6cb27bef36058c7aa4023","generators/1034300a135f/workspace/parametric/prototype.py":"272b156aebf0c2f813d2c791d189429f4d5b8ccc741c215f160b6ebf856b3e9c","generators/1034300a135f/workspace/parametric/rules/native_far_to_near.rkt":"b57a48d2834074e503c036c04e72727af748b3aaeaed808d10f0f3a1f12f7b7a","generators/1034300a135f/workspace/parametric/rules/native_near_to_far.rkt":"4e51401fbef6fa5cffddd489ce63f88d347c274cfce5bb489785f76f101cbca4","shared/runtime/reviewer_support.py":"1806fe007fcdfa99c9306c5743489c388c103d08c398eeb1282f6fe4056e99c8","src/arcpuzzles/parametric_worker.py":"2a6970eb5b6abf565044efdcc05364ea51f6ca8a200ab7619977bc321a95e275"},"status":"passed","task_id":"1034300a135f","training_admitted":false,"verified_label_count":20}
+diff --git a/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/minimum-lesson.json b/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/minimum-lesson.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/minimum-lesson.json
+@@ -0,0 +1 @@
++{"counts":{"demos":2,"queries":4},"files":{"episodes.private.jsonl":{"bytes":27828,"sha256":"627cce66b812c68c26d0f1babdf7bfb323b454bbc3749cff2573f7270ad9d66e"},"public/challenge-91073180276680cd8b0a9ef204df567c593e08f6fc8f6faf3c35f7e7f386660c.json":{"bytes":8539,"sha256":"91073180276680cd8b0a9ef204df567c593e08f6fc8f6faf3c35f7e7f386660c"},"public/challenge-947af3072799cc4c1b4a60a0c9ff347749039368b9babeeaaa80e6cd79b9f37c.json":{"bytes":8539,"sha256":"947af3072799cc4c1b4a60a0c9ff347749039368b9babeeaaa80e6cd79b9f37c"},"turns/challenge-1e25f159d57f61becb223b3a386f605e7124f80db235bfc9704128980fda72ef.json":{"bytes":6151,"sha256":"1e25f159d57f61becb223b3a386f605e7124f80db235bfc9704128980fda72ef"},"turns/challenge-48e88441bed561600b7cdda0a33328c572d20c6f5f9b658ea7fe0768d3745361.json":{"bytes":6151,"sha256":"48e88441bed561600b7cdda0a33328c572d20c6f5f9b658ea7fe0768d3745361"},"turns/challenge-5938a19fd6bb1516237a14a9f78259ebf01a4d9636c6a562df3fb7080ee70d5f.json":{"bytes":4351,"sha256":"5938a19fd6bb1516237a14a9f78259ebf01a4d9636c6a562df3fb7080ee70d5f"},"turns/challenge-67a73d49262400c996e15f3c92d028c8e774792fe8bb6eb62943ce47ef911eb8.json":{"bytes":5191,"sha256":"67a73d49262400c996e15f3c92d028c8e774792fe8bb6eb62943ce47ef911eb8"},"turns/challenge-c5e797d02e5b3e6ba8a5c38dc417b7a6bf6fd1f1a9deb94006a2d424408e6dce.json":{"bytes":5683,"sha256":"c5e797d02e5b3e6ba8a5c38dc417b7a6bf6fd1f1a9deb94006a2d424408e6dce"},"turns/challenge-ddb4e5911b01a82a4c5f962a7c505545d59e5bb6c446ef9b06d523824e41c68b.json":{"bytes":5191,"sha256":"ddb4e5911b01a82a4c5f962a7c505545d59e5bb6c446ef9b06d523824e41c68b"},"turns/challenge-e9d900cf19d3abc0911efed54dfd092031aedaa904b67570ebad256d8aa1319f.json":{"bytes":5683,"sha256":"e9d900cf19d3abc0911efed54dfd092031aedaa904b67570ebad256d8aa1319f"},"turns/challenge-ed3034b10231a203d5c81f21160cd3c3d3b885ee4c2e5b3bc696d7526b87f853.json":{"bytes":4351,"sha256":"ed3034b10231a203d5c81f21160cd3c3d3b885ee4c2e5b3bc696d7526b87f853"}},"limits":["Finite rival programs and this seed/count request only; no universal uniqueness claim.","Rivals are fitted on demonstrations only; only survivors are checked on queries.","Every executed output uses protected Racket; runtime errors abort the probe.","No native acceptance, production approval or training admission is conferred."],"matched_inputs_across_settings":true,"public_scope":"public/ holds masked four-query controller bundles; expose only one turns/ file per model turn.","racket":{"backend":"racket","binary_sha256":"bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9","boot_script_sha256":"67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3","bridge_sha256":"4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323","candidate_symbol_policy_sha256":"509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8","prelude_sha256":"953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0","protected":true,"schema":"arc-protected-racket-runtime-v1"},"racket_evaluations":56,"schema":"arcpuzzles-marker-native-probe-v1","seed":17,"settings":[{"all_inputs_distinct":true,"dimensions":{"test":[{"input":[5,5],"markers":3,"output":[5,5]},{"input":[25,17],"markers":7,"output":[25,17]},{"input":[29,23],"markers":10,"output":[29,23]},{"input":[30,30],"markers":15,"output":[30,30]}],"train":[{"input":[11,13],"markers":4,"output":[11,13]},{"input":[29,30],"markers":15,"output":[29,30]}]},"harmful_demo_survivors":[],"limits":["Finite rival programs and this seed/count request only; no universal uniqueness claim.","Rivals are fitted on demonstrations only; only survivors are checked on queries.","Every executed output uses protected Racket; runtime errors abort the probe.","No native acceptance, production approval or training admission is conferred."],"public_file":"public/challenge-91073180276680cd8b0a9ef204df567c593e08f6fc8f6faf3c35f7e7f386660c.json","rivals":[{"demo_output_sha256":["a9ee87e6c6591dcceebbc511fdfccd033083a0bbc913ef70dc38142c77580a47","1f8543a72755b0172f56491ad56f89807c66345713113c1d9c4242554c464dbe"],"demo_refutations":[0,1],"name":"opposite_setting","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"b57a48d2834074e503c036c04e72727af748b3aaeaed808d10f0f3a1f12f7b7a","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["7164c88df0faa4338a45244dcfd7e7f730dea432b8d91085c0f700d6671e127a","9fd637c9a2d229eee1800a71a4ef4c5408b626ef0cdf69c9a00ca0269daa5508"],"demo_refutations":[0,1],"name":"skip_spatial_sort","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted cells) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"b55d10d0f7be904cf3a89f3f072087f43fa7e878d5e8fb3fd8911f45f3babc4b","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["2c538a94fef48e437d70dadf596cfdfc17debadc1e5400b25f182623f39aad94","596ff99011a8291c9ade11655d5be410d46ed528acca8a253c58073787941da9"],"demo_refutations":[0,1],"name":"reverse_equal_distance_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (reverse cells) (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"6824ce4428cc600b46f1eb0139e7ab53f34a794b73ba92522d6cbcf510a0875d","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["2c538a94fef48e437d70dadf596cfdfc17debadc1e5400b25f182623f39aad94","4d84f5938190e69bc6f02ecaafad4927e88b7e4431803b40d7eef5ecf64ca9a6"],"demo_refutations":[0],"name":"ascending_color_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (sort-by cells (lambda (q) (second q))) (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"f0105f2e1faeb2f24f152ff54660773e338ee2fcd50143c8fa37c91244665dca","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["c1b217072c3654c011b1a152cdcd8ea868b181c2f82a5639e538815a425208e1","596ff99011a8291c9ade11655d5be410d46ed528acca8a253c58073787941da9"],"demo_refutations":[1],"name":"descending_color_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (sort-by cells (lambda (q) (- 0 (second q)))) (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"6d5efc35138bd67aea19c4edb05fe4edc384db80969c0e3a07fcfe3f4ab6a91b","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["ea555b4e7b254efc85048844a6274567477905ee820ba673e41ded0f728714d5","68deb801a3b31b4f183b74637e49c5d4e0c9fb24d56671d3da438058af43fe4d"],"demo_refutations":[0,1],"name":"ignore_zero_markers","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (or (= (at g r c) bg) (= (at g r c) 0)) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"c566d158dac54db5c388511601ce21dcf47c038518adeb6bb8a0d19e1a3a6766","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["090732aa2723cffb9a5f2997647da5e166f7603f394786da02650f88b03f38df","7ce46c59b9d81e7feebfbcb71908d854d5048712037b16c8d534f1cfea78b526"],"demo_refutations":[0,1],"name":"deduplicate_colors","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (remove-duplicates (map second sorted))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"08d25eae43334a8dba69c00ef473c1984d22fe454ce47ff57a3ed472b8fa666e","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["fe12f9f46dabec7a538a6b39193efff76933cf5705322aa613e3d56ccf76b339","896eb73a8168df91c8d8d8e21c1a80949dce6999a445f0a07f2aae81ceba568e"],"demo_refutations":[0,1],"name":"numeric_color_sort","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (sort-by (map second sorted) (lambda (color) color))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"241dd576ccae7beab7af78c68f85dcb05249e958522b999c6d98efcb00581b13","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["9a961a8e275f85f897ef4d8bcff505cff9b13e933fce45d4b6abf5fc19c8ad62","4d84f5938190e69bc6f02ecaafad4927e88b7e4431803b40d7eef5ecf64ca9a6"],"demo_refutations":[0],"name":"extend_final_color","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (= n 0) bg (nth sorted-colors (min d (- n 1))))))))))","program_sha256":"a6dcf817e22f1c12619182dc4c61617c4f948b7f39f6dceab7197de624dca93d","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["c1b217072c3654c011b1a152cdcd8ea868b181c2f82a5639e538815a425208e1","166cd258d436ab791cdaac6d5358e27842b7e6f55a52dc6aec475298338fdde4"],"demo_refutations":[1],"name":"truncate_markers_at_8","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (take (map second sorted) (min 8 (length sorted)))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"9728a6bd66dc41d8adb2e4d605ebf6a85c7094faa0286b01d57fc95257d27f22","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["c1b217072c3654c011b1a152cdcd8ea868b181c2f82a5639e538815a425208e1","4670f56e811248c55739b14eb60cce2c5490da6d94ce0bdb413f5fdf13b202bf"],"demo_refutations":[1],"name":"truncate_markers_at_14","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (take (map second sorted) (min 14 (length sorted)))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"01f6bb5f38f0b85d9e0e69d877e23c98ceaaca81a1ea5299556c184a53b58237","query_checks":[],"survives_demonstrations":false}],"settings":{"marker_order":"near_to_far"},"verified_label_count":6},{"all_inputs_distinct":true,"dimensions":{"test":[{"input":[5,5],"markers":3,"output":[5,5]},{"input":[25,17],"markers":7,"output":[25,17]},{"input":[29,23],"markers":10,"output":[29,23]},{"input":[30,30],"markers":15,"output":[30,30]}],"train":[{"input":[11,13],"markers":4,"output":[11,13]},{"input":[29,30],"markers":15,"output":[29,30]}]},"harmful_demo_survivors":[],"limits":["Finite rival programs and this seed/count request only; no universal uniqueness claim.","Rivals are fitted on demonstrations only; only survivors are checked on queries.","Every executed output uses protected Racket; runtime errors abort the probe.","No native acceptance, production approval or training admission is conferred."],"public_file":"public/challenge-947af3072799cc4c1b4a60a0c9ff347749039368b9babeeaaa80e6cd79b9f37c.json","rivals":[{"demo_output_sha256":["c1b217072c3654c011b1a152cdcd8ea868b181c2f82a5639e538815a425208e1","4d84f5938190e69bc6f02ecaafad4927e88b7e4431803b40d7eef5ecf64ca9a6"],"demo_refutations":[0,1],"name":"opposite_setting","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"4e51401fbef6fa5cffddd489ce63f88d347c274cfce5bb489785f76f101cbca4","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["7164c88df0faa4338a45244dcfd7e7f730dea432b8d91085c0f700d6671e127a","9fd637c9a2d229eee1800a71a4ef4c5408b626ef0cdf69c9a00ca0269daa5508"],"demo_refutations":[0,1],"name":"skip_spatial_sort","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted cells) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"b55d10d0f7be904cf3a89f3f072087f43fa7e878d5e8fb3fd8911f45f3babc4b","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["b252846ab204b4b25a5c4234da109334f1799647a049df2e6d360b8df250697b","90d75f52724cff52e9637f5297764afa870d36ef8f61ac12e94f12d8a5087d23"],"demo_refutations":[0,1],"name":"reverse_equal_distance_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (reverse cells) (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"9d005d58f2cf957af25513c9d8d04442335d3b7e1e8a3e3f70f3d25db7404802","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["b252846ab204b4b25a5c4234da109334f1799647a049df2e6d360b8df250697b","1f8543a72755b0172f56491ad56f89807c66345713113c1d9c4242554c464dbe"],"demo_refutations":[0],"name":"ascending_color_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (sort-by cells (lambda (q) (second q))) (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"04dd7e4993d658e30db8dd69fd973e70f8f7757ba2c221ea8d8ce3f6d3febeb9","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["a9ee87e6c6591dcceebbc511fdfccd033083a0bbc913ef70dc38142c77580a47","90d75f52724cff52e9637f5297764afa870d36ef8f61ac12e94f12d8a5087d23"],"demo_refutations":[1],"name":"descending_color_ties","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by (sort-by cells (lambda (q) (- 0 (second q)))) (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"bd14f6b46b0affa3941fe3f7232ee0a211d4d6319a21a4150fda2405bc5b8c79","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["1a690ba25be525cd27c72bc0ffc4628dd60e93c30bd9f4ee32d20a74817fa961","dcd74ce2d4e064288c9a04f802749fe9975c033642ab78652f73b9297d9b0fa7"],"demo_refutations":[0,1],"name":"ignore_zero_markers","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (or (= (at g r c) bg) (= (at g r c) 0)) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"6769b5565cf0f9767db058245f9f05cc7927aaddbe9fa6691410920940c2728c","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["e27fe000e29e41369454247be9537bec9da1482c0a9cabd3868d03162b3da779","f32657c23218cced9559c0ff20405abf43718670033ef753733c7cb3a96affbf"],"demo_refutations":[0,1],"name":"deduplicate_colors","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (remove-duplicates (map second sorted))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"74b16b1902711a2464e870f87f0218e9f2363f4d9056b464d132f3aeccad81e0","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["fe12f9f46dabec7a538a6b39193efff76933cf5705322aa613e3d56ccf76b339","896eb73a8168df91c8d8d8e21c1a80949dce6999a445f0a07f2aae81ceba568e"],"demo_refutations":[0,1],"name":"numeric_color_sort","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (sort-by (map second sorted) (lambda (color) color))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"e2a19d675094e80dd02e23f2dd6067a10cf1239683debb61349d2a42f5d94caa","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["87cf8b78ef92e0a94e60e942620bef2715d87fa12e3554ebc6aa134cae68db61","1f8543a72755b0172f56491ad56f89807c66345713113c1d9c4242554c464dbe"],"demo_refutations":[0],"name":"extend_final_color","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (= n 0) bg (nth sorted-colors (min d (- n 1))))))))))","program_sha256":"2190bce0700577a160498d645d498e64016704857f31318e432ac6e935b33242","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["a9ee87e6c6591dcceebbc511fdfccd033083a0bbc913ef70dc38142c77580a47","f68747790cadd12eb2bdb0cd5b68d0633880b4f5dc328a56caffc26fdc44b455"],"demo_refutations":[1],"name":"truncate_markers_at_8","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (take (map second sorted) (min 8 (length sorted)))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"d06a84deda5b7a8c975f611362f95741eec7da354daa87ef985642b67350a6fb","query_checks":[],"survives_demonstrations":false},{"demo_output_sha256":["a9ee87e6c6591dcceebbc511fdfccd033083a0bbc913ef70dc38142c77580a47","74db7578c12ab04f39d705d4763c3338d615523c6ce2a34cd543ead3da3b8a0f"],"demo_refutations":[1],"name":"truncate_markers_at_14","program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (take (map second sorted) (min 14 (length sorted)))) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","program_sha256":"455c14a4d7fb504c4a5956caf4a20e06ba4ed72ab2bd8670bd377af049f49590","query_checks":[],"survives_demonstrations":false}],"settings":{"marker_order":"far_to_near"},"verified_label_count":6}],"source_sha256":{"generators/1034300a135f/generator.py":"0294ac0f781379c431b6e7d9319d78f7e6dcdc75856857c779544520a64d546b","generators/1034300a135f/tests/test_native_probe.py":"09fbd5337dc19c4dfc017b4135d79cdfcca966e80d1c3280dffb5ec734b5f81f","generators/1034300a135f/workspace/parametric/adapter.py":"dcdd5f7a84506d9d0f40c46fcb45adfea6779fb3ff52c48e8b915b89a66215bd","generators/1034300a135f/workspace/parametric/native_probe.py":"4f24c713a04f32e482cf822993b6a886cac32af290fd71041a9b1191df290f9a","generators/1034300a135f/workspace/parametric/promotion.json":"6043a95ed4419e66edc5ea3c11d971d0b460259db8f6cb27bef36058c7aa4023","generators/1034300a135f/workspace/parametric/prototype.py":"272b156aebf0c2f813d2c791d189429f4d5b8ccc741c215f160b6ebf856b3e9c","generators/1034300a135f/workspace/parametric/rules/native_far_to_near.rkt":"b57a48d2834074e503c036c04e72727af748b3aaeaed808d10f0f3a1f12f7b7a","generators/1034300a135f/workspace/parametric/rules/native_near_to_far.rkt":"4e51401fbef6fa5cffddd489ce63f88d347c274cfce5bb489785f76f101cbca4","shared/runtime/reviewer_support.py":"1806fe007fcdfa99c9306c5743489c388c103d08c398eeb1282f6fe4056e99c8","src/arcpuzzles/parametric_worker.py":"2a6970eb5b6abf565044efdcc05364ea51f6ca8a200ab7619977bc321a95e275"},"status":"passed","task_id":"1034300a135f","training_admitted":false,"verified_label_count":12}
+diff --git a/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/tests.log b/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/tests.log
+@@ -0,0 +1,4 @@
++effective cwd: /workspace/scratch/e5032b3913c4/arc_review/WORK/repo
++Payload paths are relative to repo; use generators/TASK/..., not repo/generators/TASK/...
++.........................................................                [100%]
++57 passed in 7.32s
+diff --git a/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/tie-shortcut-before.json b/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/tie-shortcut-before.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/workspace/parametric/evidence/native-current/tie-shortcut-before.json
+@@ -0,0 +1 @@
++{"demos":2,"execution_status":"verified_protected_racket","inputs":{"query":[[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,0,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,6,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,3,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,4,9,9,9,9,9,9,9,9,9],[9,9,2,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,7,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[1,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9],[9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9]],"train":[[[5,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,8,5,5],[5,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,1,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,0,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,5,5,5],[5,5,5,5,5,5,5,5,5,5,5,5,8]],[[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,7,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,7,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,9,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,0,8,8,8,8,3,8,5,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[7,8,8,8,8,8,8,8,8,8,1,8,8,8,8,7,8,8,8,8,2,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,4,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,5,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,6,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,3,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]]]},"prototype_sha256":"53ba959a5bf31211dcc182e9af51a57684de26095427da1da0cd1086d83a4266","query_index":1,"racket":{"backend":"racket","binary_sha256":"bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9","boot_script_sha256":"67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3","bridge_sha256":"4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323","candidate_symbol_policy_sha256":"509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8","prelude_sha256":"953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0","protected":true,"schema":"arc-protected-racket-runtime-v1"},"racket_evaluations":12,"rival":"distance_order_then_decreasing_numeric_color_ties","seed":17,"settings":[{"program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","query_output":[[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],[1,0,2,2,2,2,2,2,2,2,2,2,2,2,2,0,1],[1,0,2,3,3,3,3,3,3,3,3,3,3,3,2,0,1],[1,0,2,3,7,7,7,7,7,7,7,7,7,3,2,0,1],[1,0,2,3,7,4,4,4,4,4,4,4,7,3,2,0,1],[1,0,2,3,7,4,6,6,6,6,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,9,9,9,6,4,7,3,2,0,1],[1,0,2,3,7,4,6,6,6,6,6,4,7,3,2,0,1],[1,0,2,3,7,4,4,4,4,4,4,4,7,3,2,0,1],[1,0,2,3,7,7,7,7,7,7,7,7,7,3,2,0,1],[1,0,2,3,3,3,3,3,3,3,3,3,3,3,2,0,1],[1,0,2,2,2,2,2,2,2,2,2,2,2,2,2,0,1],[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]],"rival_changes_query":true,"rival_matches_demos":[true,true],"rival_program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- (* 10 (first p)) (second p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","rival_query_output":[[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],[1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],[1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1],[1,2,0,3,3,3,3,3,3,3,3,3,3,3,0,2,1],[1,2,0,3,7,7,7,7,7,7,7,7,7,3,0,2,1],[1,2,0,3,7,4,4,4,4,4,4,4,7,3,0,2,1],[1,2,0,3,7,4,6,6,6,6,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,9,9,9,6,4,7,3,0,2,1],[1,2,0,3,7,4,6,6,6,6,6,4,7,3,0,2,1],[1,2,0,3,7,4,4,4,4,4,4,4,7,3,0,2,1],[1,2,0,3,7,7,7,7,7,7,7,7,7,3,0,2,1],[1,2,0,3,3,3,3,3,3,3,3,3,3,3,0,2,1],[1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1],[1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1],[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]],"settings":{"marker_order":"near_to_far"},"train_outputs":[[[8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,0,0,0,0,0,0,0,0,0,8,8],[8,8,0,1,1,1,1,1,1,1,0,8,8],[8,8,0,1,5,5,5,5,5,1,0,8,8],[8,8,0,1,5,5,5,5,5,1,0,8,8],[8,8,0,1,5,5,5,5,5,1,0,8,8],[8,8,0,1,1,1,1,1,1,1,0,8,8],[8,8,0,0,0,0,0,0,0,0,0,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8],[8,8,8,8,8,8,8,8,8,8,8,8,8]],[[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7],[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7],[7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7],[7,7,0,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,0,7,7],[7,7,0,7,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,7,0,7,7],[7,7,0,7,3,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,3,7,0,7,7],[7,7,0,7,3,5,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,2,2,2,2,2,2,2,2,2,2,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,1,1,1,1,1,1,1,1,1,1,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,1,4,4,4,4,4,4,4,4,1,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,1,4,7,7,7,7,7,7,4,1,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,1,4,7,3,3,3,3,7,4,1,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,1,4,7,3,5,5,3,7,4,1,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,1,4,7,3,3,3,3,7,4,1,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,1,4,7,7,7,7,7,7,4,1,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,1,4,4,4,4,4,4,4,4,1,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,1,1,1,1,1,1,1,1,1,1,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,2,2,2,2,2,2,2,2,2,2,2,2,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,6,5,3,7,0,7,7],[7,7,0,7,3,5,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,5,3,7,0,7,7],[7,7,0,7,3,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,3,7,0,7,7],[7,7,0,7,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,7,0,7,7],[7,7,0,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,0,7,7],[7,7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7],[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7],[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7]]]},{"program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","query_output":[[6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6],[6,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,6],[6,4,7,7,7,7,7,7,7,7,7,7,7,7,7,4,6],[6,4,7,3,3,3,3,3,3,3,3,3,3,3,7,4,6],[6,4,7,3,0,0,0,0,0,0,0,0,0,3,7,4,6],[6,4,7,3,0,2,2,2,2,2,2,2,0,3,7,4,6],[6,4,7,3,0,2,1,1,1,1,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,9,9,9,1,2,0,3,7,4,6],[6,4,7,3,0,2,1,1,1,1,1,2,0,3,7,4,6],[6,4,7,3,0,2,2,2,2,2,2,2,0,3,7,4,6],[6,4,7,3,0,0,0,0,0,0,0,0,0,3,7,4,6],[6,4,7,3,3,3,3,3,3,3,3,3,3,3,7,4,6],[6,4,7,7,7,7,7,7,7,7,7,7,7,7,7,4,6],[6,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,6],[6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6]],"rival_changes_query":true,"rival_matches_demos":[true,true],"rival_program":"(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- (* -10 (first p)) (second p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))","rival_query_output":[[6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6],[6,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,6],[6,4,7,7,7,7,7,7,7,7,7,7,7,7,7,4,6],[6,4,7,3,3,3,3,3,3,3,3,3,3,3,7,4,6],[6,4,7,3,2,2,2,2,2,2,2,2,2,3,7,4,6],[6,4,7,3,2,0,0,0,0,0,0,0,2,3,7,4,6],[6,4,7,3,2,0,1,1,1,1,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,9,9,9,1,0,2,3,7,4,6],[6,4,7,3,2,0,1,1,1,1,1,0,2,3,7,4,6],[6,4,7,3,2,0,0,0,0,0,0,0,2,3,7,4,6],[6,4,7,3,2,2,2,2,2,2,2,2,2,3,7,4,6],[6,4,7,3,3,3,3,3,3,3,3,3,3,3,7,4,6],[6,4,7,7,7,7,7,7,7,7,7,7,7,7,7,4,6],[6,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,6],[6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6]],"settings":{"marker_order":"far_to_near"},"train_outputs":[[[1,1,1,1,1,1,1,1,1,1,1,1,1],[1,8,8,8,8,8,8,8,8,8,8,8,1],[1,8,0,0,0,0,0,0,0,0,0,8,1],[1,8,0,8,8,8,8,8,8,8,0,8,1],[1,8,0,8,5,5,5,5,5,8,0,8,1],[1,8,0,8,5,5,5,5,5,8,0,8,1],[1,8,0,8,5,5,5,5,5,8,0,8,1],[1,8,0,8,8,8,8,8,8,8,0,8,1],[1,8,0,0,0,0,0,0,0,0,0,8,1],[1,8,8,8,8,8,8,8,8,8,8,8,1],[1,1,1,1,1,1,1,1,1,1,1,1,1]],[[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5],[5,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,5],[5,3,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,3,5],[5,3,7,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,7,3,5],[5,3,7,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,4,7,3,5],[5,3,7,4,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,4,7,3,5],[5,3,7,4,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,6,6,6,6,6,6,6,6,6,6,6,6,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,5,5,5,5,5,5,5,5,5,5,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,3,3,3,3,3,3,3,3,3,3,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,3,7,7,7,7,7,7,7,7,3,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,3,7,7,7,7,7,7,7,7,3,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,3,7,7,0,0,0,0,7,7,3,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,3,7,7,0,7,7,0,7,7,3,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,3,7,7,0,0,0,0,7,7,3,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,3,7,7,7,7,7,7,7,7,3,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,3,7,7,7,7,7,7,7,7,3,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,3,3,3,3,3,3,3,3,3,3,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,5,5,5,5,5,5,5,5,5,5,5,5,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,6,6,6,6,6,6,6,6,6,6,6,6,6,6,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,0,2,1,4,7,3,5],[5,3,7,4,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,1,4,7,3,5],[5,3,7,4,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,4,7,3,5],[5,3,7,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,4,7,3,5],[5,3,7,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,7,3,5],[5,3,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,3,5],[5,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,5],[5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5]]]}],"task_id":"1034300a135f","verification_source_sha256":{"generators/1034300a135f/generator.py":"0294ac0f781379c431b6e7d9319d78f7e6dcdc75856857c779544520a64d546b","generators/1034300a135f/tests/test_native_probe.py":"09fbd5337dc19c4dfc017b4135d79cdfcca966e80d1c3280dffb5ec734b5f81f","generators/1034300a135f/workspace/parametric/adapter.py":"dcdd5f7a84506d9d0f40c46fcb45adfea6779fb3ff52c48e8b915b89a66215bd","generators/1034300a135f/workspace/parametric/native_probe.py":"4f24c713a04f32e482cf822993b6a886cac32af290fd71041a9b1191df290f9a","generators/1034300a135f/workspace/parametric/promotion.json":"6043a95ed4419e66edc5ea3c11d971d0b460259db8f6cb27bef36058c7aa4023","generators/1034300a135f/workspace/parametric/prototype.py":"272b156aebf0c2f813d2c791d189429f4d5b8ccc741c215f160b6ebf856b3e9c","generators/1034300a135f/workspace/parametric/rules/native_far_to_near.rkt":"b57a48d2834074e503c036c04e72727af748b3aaeaed808d10f0f3a1f12f7b7a","generators/1034300a135f/workspace/parametric/rules/native_near_to_far.rkt":"4e51401fbef6fa5cffddd489ce63f88d347c274cfce5bb489785f76f101cbca4","shared/runtime/reviewer_support.py":"1806fe007fcdfa99c9306c5743489c388c103d08c398eeb1282f6fe4056e99c8","src/arcpuzzles/parametric_worker.py":"2a6970eb5b6abf565044efdcc05364ea51f6ca8a200ab7619977bc321a95e275"}}
+diff --git a/repo/generators/1034300a135f/workspace/parametric/native_probe.py b/repo/generators/1034300a135f/workspace/parametric/native_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/workspace/parametric/native_probe.py
+@@ -0,0 +1,384 @@
++#!/usr/bin/env python3
++"""Bounded protected-Racket teaching audit, public export and causal witness.
++
++Run through ``review.py run`` or ``WORK/run_with_racket.py``.  Public files are
++masked controller bundles; only the separately serialized single-query turns
++are model-facing.  Reports, episode answers and witness programs are private.
++"""
++from __future__ import annotations
++
++import argparse
++from collections import Counter
++from contextlib import contextmanager
++from copy import deepcopy
++import hashlib
++import importlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++
++HOME = Path(__file__).resolve().parent
++ROOT = HOME.parents[3]
++TASK_ID = "1034300a135f"
++SETTINGS = [{"marker_order": name} for name in ("near_to_far", "far_to_near")]
++LIMITS = [
++    "Finite rival programs and this seed/count request only; no universal uniqueness claim.",
++    "Rivals are fitted on demonstrations only; only survivors are checked on queries.",
++    "Every executed output uses protected Racket; runtime errors abort the probe.",
++    "No native acceptance, production approval or training admission is conferred.",
++]
++DEPENDENCY = {
++    "step_a": "Globally rank individual marker identities by minimum distance from the input edge, with stable row-major ties and the episode's near/far ordering.",
++    "intermediate": "The input-dependent ordered marker identities, coordinates, edge distances and colors; each identity's rank selects an output ring.",
++    "step_b": "For each output cell, use its ring depth as an index into A's ranked colors, or use the background after the markers are exhausted.",
++    "why_b_depends_on_a": "A marker's geometry can change its rank relative to other markers while preserving row-major color order. B must know those global ranks before choosing each ring's color. The paired witness moves one marker, changing other markers' ring assignments; skipping A preserves the same wrong row-major answer on both inputs. This is a data dependency, not an iterative state simulation.",
++}
++
++
++def raw(value):
++    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
++                       ensure_ascii=False, allow_nan=False) + "\n").encode()
++
++
++def digest(value):
++    return hashlib.sha256(value).hexdigest()
++
++
++def _prototype():
++    path = HOME / "prototype.py"
++    spec = importlib.util.spec_from_file_location("_marker_probe_prototype_" + digest(path.read_bytes()), path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _worker():
++    source = ROOT / "src"
++    if str(source) not in sys.path:
++        sys.path.insert(0, str(source))
++    module = importlib.import_module("arcpuzzles.parametric_worker")
++    if Path(module.__file__).resolve() != source / "arcpuzzles/parametric_worker.py":
++        raise ValueError("Probe worker must come from this checkout")
++    return module
++
++
++@contextmanager
++def protected_racket():
++    """Use the native worker's protected evaluator and exact grid validator."""
++    worker = _worker()
++    with worker._local_imports(ROOT / "shared/runtime", HOME):
++        apply, identity, bridge = worker._real_evaluator(ROOT / "shared/runtime")
++        counts = {"evaluations": 0}
++        def execute(program, grid):
++            counts["evaluations"] += 1
++            return worker._grid(apply(program, worker._grid(grid)))
++        try:
++            yield {"execute": execute, "identity": identity, "counts": counts}
++        finally:
++            bridge.close()
++
++
++def _replace(program, before, after):
++    if program.count(before) != 1:
++        raise ValueError(f"Expected one exact native rule clause: {before}")
++    return program.replace(before, after, 1)
++
++
++def _sort_clause(program):
++    clauses = ["(sorted (sort-by cells (lambda (p) (first p))))",
++               "(sorted (sort-by cells (lambda (p) (- 0 (first p)))))",
++               "(sorted (sort-by cells (lambda (p) (- (first p)))))"]
++    found = [clause for clause in clauses if clause in program]
++    if len(found) != 1:
++        raise ValueError("Native spatial sort clause is missing or ambiguous")
++    return found[0]
++
++
++def skip_sort_program(program):
++    return _replace(program, _sort_clause(program), "(sorted cells)")
++
++
++def rival_programs(program, opposite):
++    """Eleven total executable shortcuts, including both numeric tie breakers."""
++    colors = "(sorted-colors (map second sorted))"
++    rivals = {
++        "opposite_setting": opposite,
++        "skip_spatial_sort": skip_sort_program(program),
++        "reverse_equal_distance_ties": _replace(program, "sort-by cells", "sort-by (reverse cells)"),
++        "ascending_color_ties": _replace(program, "sort-by cells",
++            "sort-by (sort-by cells (lambda (q) (second q)))"),
++        "descending_color_ties": _replace(program, "sort-by cells",
++            "sort-by (sort-by cells (lambda (q) (- 0 (second q))))"),
++        "ignore_zero_markers": _replace(program, "(if (= (at g r c) bg)",
++            "(if (or (= (at g r c) bg) (= (at g r c) 0))"),
++        "deduplicate_colors": _replace(program, colors,
++            "(sorted-colors (remove-duplicates (map second sorted)))"),
++        "numeric_color_sort": _replace(program, colors,
++            "(sorted-colors (sort-by (map second sorted) (lambda (color) color)))"),
++        "extend_final_color": _replace(program,
++            "(if (< d n) (nth sorted-colors d) bg)",
++            "(if (= n 0) bg (nth sorted-colors (min d (- n 1))))"),
++    }
++    for cap in (8, 14):
++        rivals[f"truncate_markers_at_{cap}"] = _replace(program, colors,
++            f"(sorted-colors (take (map second sorted) (min {cap} (length sorted))))")
++    return rivals
++
++
++def audit_episode(episode, execute, rivals):
++    """Verify all claims, fit rivals on every demo, then test only survivors."""
++    grid = _worker()._grid
++    program = episode["program_solution"]
++    pairs = [pair for split in ("train", "test") for pair in episode[split]]
++    if len({raw(grid(pair["input"])) for pair in pairs}) != len(pairs):
++        raise ValueError("Demonstration and query inputs must all be distinct")
++    for split in ("train", "test"):
++        for index, pair in enumerate(episode[split]):
++            if grid(execute(program, pair["input"])) != grid(pair["output"]):
++                raise ValueError(f"Racket label mismatch: {split}[{index}]")
++    rows = []
++    for name, rival in rivals.items():
++        outputs = [grid(execute(rival, pair["input"])) for pair in episode["train"]]
++        refutations = [i for i, (output, pair) in enumerate(zip(outputs, episode["train"]))
++                       if output != pair["output"]]
++        row = {"name": name, "program": rival, "program_sha256": digest(rival.encode()),
++               "demo_refutations": refutations,
++               "demo_output_sha256": [digest(raw(output)) for output in outputs],
++               "survives_demonstrations": not refutations, "query_checks": []}
++        if not refutations:
++            for index, pair in enumerate(episode["test"]):
++                output = grid(execute(rival, pair["input"]))
++                if output != pair["output"]:
++                    raise ValueError(f"Demonstration-surviving rival {name!r} harms query {index}")
++                row["query_checks"].append({"query_index": index,
++                    "matches": True, "output_sha256": digest(raw(output))})
++        rows.append(row)
++    return {"verified_label_count": len(pairs), "all_inputs_distinct": True,
++            "rivals": rows, "harmful_demo_survivors": [], "limits": LIMITS}
++
++
++def _background(grid):
++    counts = Counter(value for row in grid for value in row if value)
++    modes = [color for color, count in counts.items() if count == max(counts.values())]
++    if len(modes) != 1:
++        raise ValueError("Expected a unique nonzero modal background")
++    return modes[0]
++
++
++def pair_dimensions(pair):
++    source, output = pair["input"], pair["output"]
++    background = _background(source)
++    return {"input": [len(source), len(source[0])], "output": [len(output), len(output[0])],
++            "markers": sum(value != background for row in source for value in row)}
++
++
++def source_hashes():
++    paths = [ROOT / f"generators/{TASK_ID}/generator.py",
++             ROOT / f"generators/{TASK_ID}/tests/test_native_probe.py",
++             ROOT / "src/arcpuzzles/parametric_worker.py",
++             ROOT / "shared/runtime/reviewer_support.py"]
++    paths += [HOME / name for name in ("prototype.py", "adapter.py", "promotion.json", "native_probe.py")]
++    paths += [HOME / "rules" / f"native_{setting['marker_order']}.rkt" for setting in SETTINGS]
++    return {path.relative_to(ROOT).as_posix(): digest(path.read_bytes()) for path in sorted(paths)}
++
++
++def _public_bytes(prototype, episode):
++    expected = {"train": [{"input": p["input"], "output": p["output"]} for p in episode["train"]],
++                "test": [{"input": p["input"]} for p in episode["test"]]}
++    payload = prototype.native_challenge_bytes(episode)
++    identity = prototype.native_challenge_id(episode)
++    if json.loads(payload) != expected or identity != digest(payload):
++        raise ValueError("Public bytes must be the exact visible projection and hash identity")
++    return f"challenge-{identity}.json", payload
++
++
++def build_probe(seed, demos, queries):
++    if type(seed) is not int or not 0 <= seed < 2**63:
++        raise ValueError("seed must be an exact integer in 0..2**63-1")
++    if type(demos) is not int or not 2 <= demos <= 6 or type(queries) is not int or queries != 4:
++        raise ValueError("The retained probe requires 2..6 demos and exactly four queries")
++    before = source_hashes()
++    prototype = _prototype()
++    episodes, settings_reports, public, turns = [], [], {}, {}
++    matched_inputs = None
++    with protected_racket() as runtime:
++        for setting in SETTINGS:
++            episode = prototype.native_generate(seed, deepcopy(setting), demos=demos, queries=queries)
++            program = prototype.native_program(setting)
++            if (episode.get("program_solution") != program or len(episode["train"]) != demos
++                    or len(episode["test"]) != queries):
++                raise ValueError("Native episode differs from the requested setting/counts")
++            inputs = [p["input"] for split in ("train", "test") for p in episode[split]]
++            if matched_inputs is not None and inputs != matched_inputs:
++                raise ValueError("Matched seed/count settings must use identical input draws")
++            matched_inputs = deepcopy(inputs)
++            opposite = next(s for s in SETTINGS if s != setting)
++            audit = audit_episode(episode, runtime["execute"],
++                                  rival_programs(program, prototype.native_program(opposite)))
++            dimensions = {split: [pair_dimensions(pair) for pair in episode[split]]
++                          for split in ("train", "test")}
++            if not any(p["input"] == [30, 30] and p["output"] == [30, 30] and p["markers"] == 15
++                       for p in dimensions["test"]):
++                raise ValueError("Four-query probe needs a substantive 30x30, 15-marker case")
++            filename, payload = _public_bytes(prototype, episode)
++            if filename in public:
++                raise ValueError("Duplicate visible controller bundle")
++            public[filename] = payload
++            turn_files = []
++            for index in range(queries):
++                turn = prototype.native_public_turn(episode, query_index=index)
++                expected = {"train": deepcopy(episode["train"]),
++                            "test": [{"input": episode["test"][index]["input"]}]}
++                if turn != expected:
++                    raise ValueError("Model turn leaks metadata, answers or future queries")
++                turn_name, turn_bytes = _public_bytes(prototype, turn)
++                if turn_name in turns:
++                    raise ValueError("Duplicate visible model turn")
++                turns[turn_name] = turn_bytes
++                turn_files.append("turns/" + turn_name)
++            private = {"task_id": TASK_ID, "seed": seed, "settings": deepcopy(setting),
++                       "program": program, "program_sha256": digest(program.encode()),
++                       "train": episode["train"], "test": episode["test"],
++                       "public_file": "public/" + filename, "turn_files": turn_files}
++            episodes.append(private)
++            settings_reports.append({"settings": deepcopy(setting), "dimensions": dimensions,
++                                     "public_file": private["public_file"], **audit})
++        report = {"schema": "arcpuzzles-marker-native-probe-v1", "status": "passed",
++                  "task_id": TASK_ID, "seed": seed, "counts": {"demos": demos, "queries": queries},
++                  "source_sha256": before, "racket": runtime["identity"],
++                  "racket_evaluations": runtime["counts"]["evaluations"],
++                  "verified_label_count": sum(row["verified_label_count"] for row in settings_reports),
++                  "matched_inputs_across_settings": True, "settings": settings_reports,
++                  "public_scope": "public/ holds masked four-query controller bundles; expose only one turns/ file per model turn.",
++                  "training_admitted": False, "limits": LIMITS}
++    if source_hashes() != before:
++        raise ValueError("Probe sources changed during execution")
++    return public, turns, episodes, report
++
++
++def export_probe(seed, demos, queries, out):
++    out = Path(out)
++    if out.exists() or out.is_symlink():
++        raise FileExistsError(out)
++    public, turns, episodes, report = build_probe(seed, demos, queries)
++    # All checks precede publication. Sorted opaque paths prevent setting ordinals.
++    files = {**{"public/" + name: data for name, data in public.items()},
++             **{"turns/" + name: data for name, data in turns.items()},
++             "episodes.private.jsonl": b"".join(raw(e) for e in sorted(episodes, key=lambda e: e["public_file"]))}
++    report["files"] = {name: {"sha256": digest(data), "bytes": len(data)} for name, data in sorted(files.items())}
++    out.mkdir(parents=True, exist_ok=False)
++    for name, data in sorted(files.items()):
++        path = out / name
++        path.parent.mkdir(parents=True, exist_ok=True)
++        with path.open("xb") as handle:
++            handle.write(data)
++    with (out / "report.json").open("xb") as handle:
++        handle.write(raw(report))
++    return report
++
++
++def witness_inputs():
++    first = [[7] * 11 for _ in range(11)]
++    for row, col, color in ((0, 9, 2), (1, 3, 8), (2, 4, 4), (3, 5, 6), (8, 10, 1)):
++        first[row][col] = color
++    second = deepcopy(first)
++    second[3][5], second[3][10] = 7, 6
++    return [first, second]
++
++
++def intermediate_value(grid, settings):
++    height, width, background = len(grid), len(grid[0]), _background(grid)
++    markers = [{"position": [r, c], "edge_distance": min(r, c, height - 1 - r, width - 1 - c),
++                "color": value} for r, row in enumerate(grid) for c, value in enumerate(row) if value != background]
++    sign = 1 if settings["marker_order"] == "near_to_far" else -1
++    ranked = sorted(markers, key=lambda marker: sign * marker["edge_distance"])
++    return {"background": background, "row_major_colors": [m["color"] for m in markers],
++            "ranked_colors": [m["color"] for m in ranked],
++            "ranked_markers": [{"rank": rank, **m} for rank, m in enumerate(ranked)]}
++
++
++def _check_source_binding(binding):
++    if binding.get("task_id") != TASK_ID or not binding.get("files") or not binding.get("executor"):
++        raise ValueError("Qualification needs this task's native source binding")
++    files = [(entry["path"], entry["sha256"]) for entry in binding["files"]]
++    files += [("src/arcpuzzles/" + name, sha) for name, sha in binding["executor"].items()]
++    for name, expected in files:
++        path = ROOT / name
++        if not path.resolve().is_relative_to(ROOT) or path.is_symlink() or digest(path.read_bytes()) != expected:
++            raise ValueError(f"Qualified source changed or escaped checkout: {name}")
++
++
++def write_witness(qualification, destination):
++    destination, qualification = Path(destination), Path(qualification)
++    if destination.exists() or destination.is_symlink():
++        raise FileExistsError(destination)
++    qualified = json.loads(qualification.read_bytes())
++    if (qualified.get("schema") != "arcpuzzles-parametric-qualification-v1"
++            or qualified.get("status") != "qualified" or qualified.get("task_id") != TASK_ID):
++        raise ValueError("Witness requires a successful native qualification for this task")
++    binding = qualified["source_binding"]
++    _check_source_binding(binding)
++    prototype, cases = _prototype(), []
++    with protected_racket() as runtime:
++        for setting in SETTINGS:
++            program = prototype.native_program(setting)
++            if qualified["programs"].get(raw(setting).decode().strip()) != digest(program.encode()):
++                raise ValueError("Witness rule must be an exact native qualified setting program")
++            counterfactual = skip_sort_program(program)
++            outputs, wrong_outputs = [], []
++            for grid in witness_inputs():
++                output = runtime["execute"](program, grid)
++                wrong = runtime["execute"](counterfactual, grid)
++                if output == wrong:
++                    raise ValueError("Skip-A counterfactual must change the final output")
++                outputs.append(output)
++                wrong_outputs.append(wrong)
++                cases.append({"input": grid, "settings": deepcopy(setting),
++                              "intermediate_value": intermediate_value(grid, setting),
++                              "program": program, "output": output,
++                              "counterfactual_program": counterfactual,
++                              "counterfactual_output": wrong, "ablation": "skip_a"})
++            if outputs[0] == outputs[1] or wrong_outputs[0] != wrong_outputs[1]:
++                raise ValueError("Paired witness must change spatial ranks while preserving the skip-sort output")
++        witness = {"schema": "arcpuzzles-sequential-dependency-witness-v1", "task_id": TASK_ID,
++                   "source_binding": deepcopy(binding), **DEPENDENCY,
++                   "racket": {"backend": "racket", "protected": True},
++                   "racket_runtime_identity": runtime["identity"],
++                   "racket_evaluations": runtime["counts"]["evaluations"], "cases": cases,
++                   "limits": "Four bounded Racket cases establish the stated dependency, not universal algorithmic depth or iterative state reasoning."}
++    _check_source_binding(binding)
++    destination.parent.mkdir(parents=True, exist_ok=True)
++    with destination.open("xb") as handle:
++        handle.write(raw(witness))
++    return witness
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seed", type=int, default=19)
++    parser.add_argument("--demos", type=int, default=3)
++    parser.add_argument("--queries", type=int, default=4)
++    parser.add_argument("--out", type=Path)
++    parser.add_argument("--qualification", type=Path)
++    parser.add_argument("--witness", type=Path)
++    args = parser.parse_args(argv)
++    if args.qualification or args.witness:
++        if not args.qualification or not args.witness or args.out:
++            parser.error("Use --qualification PATH --witness PATH together, without --out")
++        result = write_witness(args.qualification, args.witness)
++        summary = {"status": "passed", "cases": len(result["cases"]), "out": str(args.witness)}
++    else:
++        if args.out is None:
++            parser.error("Probe export requires --out PATH")
++        result = export_probe(args.seed, args.demos, args.queries, args.out)
++        summary = {"status": result["status"], "verified_label_count": result["verified_label_count"],
++                   "racket_evaluations": result["racket_evaluations"], "out": str(args.out)}
++    print(json.dumps(summary, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/1034300a135f/workspace/parametric/promotion.json b/repo/generators/1034300a135f/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/workspace/parametric/promotion.json
+@@ -0,0 +1,11 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/1034300a135f/workspace/parametric/adapter.py",
++  "parameters": {"marker_order": ["near_to_far", "far_to_near"]},
++  "default": {"marker_order": "near_to_far"},
++  "limits": {"demos": [2, 6], "queries": [1, 4]},
++  "resources": [
++    "generators/1034300a135f/workspace/parametric/rules/native_near_to_far.rkt",
++    "generators/1034300a135f/workspace/parametric/rules/native_far_to_near.rkt"
++  ]
++}
+diff --git a/repo/generators/1034300a135f/workspace/parametric/prototype.py b/repo/generators/1034300a135f/workspace/parametric/prototype.py
+--- a/repo/generators/1034300a135f/workspace/parametric/prototype.py
++++ b/repo/generators/1034300a135f/workspace/parametric/prototype.py
+@@ -17,6 +17,7 @@
+ import hashlib
+ import json
+ from pathlib import Path
++import random
+ import shutil
+ import subprocess
+ import sys
+@@ -202,6 +203,143 @@
+             for pair in episode["test"]
+         ],
+     }
++
++
++# Native promotion uses the same marker semantics with a broader constructive
++# sampler.  Keep the older standalone API above available for retained evidence.
++NATIVE_DEMO_SHAPES = ((11, 13), (29, 30), (9, 15), (15, 19), (19, 21), (21, 27))
++NATIVE_QUERY_SHAPES = ((5, 5), (17, 25), (23, 29), (30, 30))
++
++
++def _native_integer(name: str, value: int, low: int, high: int) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be a literal integer, not bool or a coercion")
++    if not low <= value <= high:
++        raise ValueError(f"{name} must be in {low}..{high}")
++    return value
++
++
++def _native_settings(settings: dict[str, str]) -> str:
++    if type(settings) is not dict or set(settings) != {PARAMETER_NAME}:
++        raise ValueError("settings must contain exactly marker_order")
++    return _validate_marker_order(settings[PARAMETER_NAME])
++
++
++def native_program(settings: dict[str, str]) -> str:
++    """Exact native DSL source; default bytes are the canonical authority."""
++    order = _native_settings(settings)
++    return (RULE_DIR / f"native_{order}.rkt").read_text(encoding="utf-8")
++
++
++def _native_input(episode_seed: int, split: str, index: int) -> list[list[int]]:
++    """Construct a lawful scene without label-dependent retries or settings."""
++    tag = f"1034300a135f-native-v1:{episode_seed}:{split}:{index}"
++    rng = random.Random(int.from_bytes(hashlib.sha256(tag.encode()).digest(), "big"))
++    height, width = (NATIVE_DEMO_SHAPES if split == "train" else NATIVE_QUERY_SHAPES)[index]
++    if split == "test" and index in (1, 2) and rng.randrange(2):
++        height, width = width, height
++    capacity = (min(height, width) + 1) // 2
++    background = rng.randint(1, 9)
++    nonzero = [value for value in range(1, 10) if value != background]
++    anchor, extra = rng.sample(nonzero, 2)
++    grid = [[background] * width for _ in range(height)]
++
++    if split == "train" and index == 0:
++        # A compact simultaneous witness: gap 1, tied depth 2, repeated color,
++        # zero as a marker, nonnumeric order, and two unfilled central rings.
++        # The crossing tie coordinates also refute column-major tie handling.
++        for row, col, color in ((height - 1, width - 1, anchor),
++                                (2, width - 3, anchor),
++                                (height - 3, 2, 0), (4, 4, extra)):
++            grid[row][col] = color
++        return grid
++
++    full_size = (split == "train" and index == 1) or (split == "test" and index == 3)
++    if capacity == 3:
++        distances = [0, 1, 2]
++    else:
++        count = capacity if full_size else rng.randint(max(3, capacity - 2), capacity)
++        # Every full-size scene uses all fifteen output ranks and reaches the
++        # center of the input; repeated depth 2 is compensated by missing 1.
++        distances = [0, 2, 2]
++        if count > 3:
++            distances += sorted(rng.sample(list(range(3, capacity - 1)), count - 4)
++                                + [capacity - 1])
++    palette = [value for value in range(10) if value != background]
++    rng.shuffle(palette)
++    colors = [palette[i % len(palette)] for i in range(len(distances))]
++    if full_size:
++        # Explicit zero and repeated marker colors on the largest scenes.
++        colors[:3] = [anchor, anchor, 0]
++        if split == "train":
++            # The small mandatory demo's row-major tie descends numerically.
++            # This ascending tie prevents a color-sorted tie breaker from
++            # fitting both demos and failing on a novel query.
++            colors[1], colors[2] = colors[2], colors[1]
++    elif 0 not in colors:
++        colors[rng.randrange(len(colors))] = 0
++
++    groups: dict[int, list[int]] = {}
++    for distance, color in zip(distances, colors):
++        groups.setdefault(distance, []).append(color)
++    for distance, group_colors in groups.items():
++        if full_size and distance == 2:
++            positions = [(2, width - 3), (height - 3, 2)]
++        else:
++            candidates = [(row, col) for row in range(height) for col in range(width)
++                          if _edge_distance(row, col, height, width) == distance]
++            positions = sorted(rng.sample(candidates, len(group_colors)))
++        for (row, col), color in zip(positions, group_colors):
++            grid[row][col] = color
++    return grid
++
++
++def native_generate(
++    seed: int,
++    settings: dict[str, str],
++    demos: int = 3,
++    queries: int = 4,
++) -> dict[str, Any]:
++    """Create one fixed-setting episode; native workers verify claimed labels.
++
++    Separate indexed RNG streams make query prefixes independent of both the
++    setting and requested counts. Shape separation guarantees all inputs are
++    distinct without rejection sampling.
++    """
++    _native_integer("seed", seed, 0, 2**63 - 1)
++    _native_integer("demos", demos, 2, 6)
++    _native_integer("queries", queries, 1, 4)
++    order = _native_settings(settings)
++    episode: dict[str, Any] = {
++        "seed": seed,
++        "settings": {PARAMETER_NAME: order},
++        "program_solution": native_program(settings),
++    }
++    for split, count in (("train", demos), ("test", queries)):
++        pairs = []
++        for index in range(count):
++            grid = _native_input(seed, split, index)
++            pairs.append({"input": grid, "output": python_reference(grid, marker_order=order)})
++        episode[split] = pairs
++    return episode
++
++
++def native_challenge_bytes(episode: dict[str, Any]) -> bytes:
++    """Controller-side masked bundle; all private metadata is projected away."""
++    from reviewer_support import public_challenge_bytes
++    return public_challenge_bytes(episode)
++
++
++def native_challenge_id(episode: dict[str, Any]) -> str:
++    return hashlib.sha256(native_challenge_bytes(episode)).hexdigest()
++
++
++def native_public_turn(episode: dict[str, Any], query_index: int = 0) -> dict[str, Any]:
++    """Expose one query without revealing future inputs or a total-count hint."""
++    _native_integer("query_index", query_index, 0, len(episode["test"]) - 1)
++    return json.loads(native_challenge_bytes({
++        "train": episode["train"], "test": [episode["test"][query_index]],
++    }))
+ 
+ 
+ def public_filename(episode: dict[str, Any]) -> str:
+diff --git a/repo/generators/1034300a135f/workspace/parametric/rules/native_far_to_near.rkt b/repo/generators/1034300a135f/workspace/parametric/rules/native_far_to_near.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/workspace/parametric/rules/native_far_to_near.rkt
+@@ -0,0 +1 @@
++(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (- 0 (first p))))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))
+\ No newline at end of file
+diff --git a/repo/generators/1034300a135f/workspace/parametric/rules/native_near_to_far.rkt b/repo/generators/1034300a135f/workspace/parametric/rules/native_near_to_far.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1034300a135f/workspace/parametric/rules/native_near_to_far.rkt
+@@ -0,0 +1 @@
++(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg (mode g)) (cells (flatmap (lambda (r) (flatmap (lambda (c) (if (= (at g r c) bg) (list) (let ((d (min r c (- h 1 r) (- w 1 c)))) (list (list d (at g r c)))))) (range 0 w))) (range 0 h))) (sorted (sort-by cells (lambda (p) (first p)))) (sorted-colors (map second sorted)) (n (length sorted-colors))) (cellmap g (rr cc v) (let ((d (min rr cc (- h 1 rr) (- w 1 cc)))) (if (< d n) (nth sorted-colors d) bg)))))))
+\ No newline at end of file
+diff --git a/repo/generators/1216927d148b/notes.md b/repo/generators/1216927d148b/notes.md
+--- a/repo/generators/1216927d148b/notes.md
++++ b/repo/generators/1216927d148b/notes.md
+@@ -1,4 +1,51 @@
+ # Working notes: 1216927d148b
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Current learnability assessment
++
++The canonical rule remains the cyan gallery of aligned intersections AB, AC,
++BC. A bounded optional peer probe left the selected generator and Racket rule
++unchanged. Audited generator SHA-256:
++`466e0590bf7046e6d0df179f37992e8096ec2f246419d723a6e5a601599f32b9`;
++normalized canonical rule identity: `cc8b8a179b65`.
++There was no current `evidence/review_index.json` in this packet.
++
++The four canonical demonstrations reject all 17 named finite rivals checked
++(common intersection, repeated single pair, pair reorderings, union, XOR,
++copying a panel, color ordering, exact-two support and bounding-box overlap).
++This is a finite no-finding for the canonical lesson, not a proof against every
++possible shortcut.
++
++An open teaching ambiguity is retained for an explicitly selected boundary
++lesson. At seed 0, easy difficulty, height 5, `panel_cell_count=1`, indices
++0, 1 and 2 produce three distinct lawful demonstrations. Panel A has one cell;
++B/C may contain more cells, but AB, AC and BC are the same singleton in each
++demonstration. The simpler rule “repeat the common intersection of all three
++panels” fits all three. The lawful query at seed 0, index 100, easy difficulty,
++height 5, `panel_cell_count=5` disagrees: its three intersections have 3, 2 and 2
++cells. Ten of the 17 tested rivals fit these demonstrations and disagree on
++this query; one further pair reordering fits both. All 17 inputs inspected
++(five canonical and twelve bounded generated candidates) were labeled through
++the public canonical Racket runner, with matching rule identities and no
++reference errors. The focused command exited 0.
++
++Recommendation: before admitting a generated lesson that moves from these
++small examples to a larger query, require a demonstration distinguishing the
++three pairwise intersections from their common intersection and the intended
++gallery order. Keep singleton draws as lawful edge cases. This probe does not
++measure default-episode incidence and does not justify changing the canonical
++rule, approving source, or claiming the whole generator is unlearnable.
++
++Reusable probe: `tests/learnability_probe.py`. From the outer packet root:
++
++```sh
++WORK/.venv/bin/python review.py run --receipt checks/1216927d148b/learnability-command.json python3 generators/1216927d148b/tests/learnability_probe.py --out ../checks/1216927d148b/learnability
++```
++
++Use a fresh output/receipt path when replaying. Retained evidence (relative to
++`WORK`): `checks/1216927d148b/learnability/report.json`,
++`racket_receipt.json`, `inputs.json`, `boundary.public.json`, and
++`boundary.private.json` under the same directory; command status is in
++`checks/1216927d148b/learnability-command.json`. This remains source-bound peer
++audit evidence pending owner assessment; no repair or approval was applied.
+diff --git a/repo/generators/1216927d148b/tests/learnability_probe.py b/repo/generators/1216927d148b/tests/learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/1216927d148b/tests/learnability_probe.py
+@@ -0,0 +1,156 @@
++"""Bounded, source-bound peer audit; run through review.py run.
++
++Checks 17 named rivals on canonical demos and a deliberately selected boundary
++lesson. This is finite evidence, not an incidence estimate or approval gate.
++All labels come from the public canonical Racket runner.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import itertools
++import json
++from pathlib import Path
++
++from arcpuzzles import Catalog
++from reviewer_support import canonical_path, find_root, load_selected_generator
++
++TASK = "1216927d148b"
++EXPECTED_SOURCE = "466e0590bf7046e6d0df179f37992e8096ec2f246419d723a6e5a601599f32b9"
++PAIRS = ((0, 1), (0, 2), (1, 2))
++
++
++def masks(grid):
++    return [{(r, c) for r in range(len(grid)) for c in range(5)
++             if grid[r][start + c]} for start in (0, 6, 12)]
++
++
++def gallery(grid, pieces):
++    out = [[0] * 17 for _ in grid]
++    for start, piece in zip((0, 6, 12), pieces):
++        for r, c in piece:
++            out[r][start + c] = 8
++    return out
++
++
++def predictions(grid):
++    a, b, c = panel = masks(grid)
++    pairwise = [panel[i] & panel[j] for i, j in PAIRS]
++    triple = a & b & c
++    values = {
++        "triple_intersection_repeated": [triple] * 3,
++        "pairwise_union": [panel[i] | panel[j] for i, j in PAIRS],
++        "pairwise_xor": [panel[i] ^ panel[j] for i, j in PAIRS],
++        "copy_earlier_panel": [a, a, b],
++        "copy_later_panel": [b, c, c],
++        "exactly_two_panel_intersection": [s - triple for s in pairwise],
++        "same_color_overlap": [set()] * 3,
++    }
++    for i, name in enumerate(("AB", "AC", "BC")):
++        values[f"repeat_{name}"] = [pairwise[i]] * 3
++    for perm in itertools.permutations(range(3)):
++        if perm != (0, 1, 2):
++            values["pair_order_" + "".join(map(str, perm))] = [pairwise[i] for i in perm]
++    colors = [next(grid[r][start + col] for r, col in part)
++              for start, part in zip((0, 6, 12), panel)]
++    ordered = [panel[i] for i in sorted(range(3), key=colors.__getitem__)]
++    values["sort_panels_by_color"] = [ordered[i] & ordered[j] for i, j in PAIRS]
++    boxes = [{(r, col) for r in range(min(x[0] for x in s), max(x[0] for x in s) + 1)
++              for col in range(min(x[1] for x in s), max(x[1] for x in s) + 1)}
++             for s in panel]
++    values["bounding_box_intersection"] = [boxes[i] & boxes[j] for i, j in PAIRS]
++    return {name: gallery(grid, pieces) for name, pieces in values.items()}
++
++
++def evaluate(demos, queries):
++    names = sorted(predictions(demos[0]["input"]))
++    survivors = [name for name in names
++                 if all(predictions(p["input"])[name] == p["output"] for p in demos)]
++    return {"named_rivals": names, "fits_all_demonstrations": survivors,
++            "query_disagreements": {name: [i for i, p in enumerate(queries)
++                                              if predictions(p["input"])[name] != p["output"]]
++                                    for name in survivors}}
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    args.out.mkdir(parents=True, exist_ok=False)
++    root = find_root(__file__)
++    gen, source, digest = load_selected_generator(TASK, root=root)
++    assert digest == EXPECTED_SOURCE, "Source changed; re-review before rebinding this audit."
++    rows = [json.loads(line) for line in canonical_path(root).read_text().splitlines()
++            if json.loads(line).get("task_id") == TASK]
++    assert len(rows) == 1
++    canonical = rows[0]
++    records = [{"input": p["input"], "recorded_output": p["output"],
++                "role": "canonical_" + split, "index": i}
++               for split in ("train", "test") for i, p in enumerate(canonical[split])]
++    # Explicit small boundary selection, not a random or default-episode census.
++    for index, count in [(i, 1) for i in range(8)] + [(100 + i, 5) for i in range(4)]:
++        recipe = {"seed": 0, "sample_index": index, "difficulty": "easy",
++                  "grid_h": 5, "panel_cell_count": count}
++        grid = gen.generate(**recipe)
++        assert gen.self_check(grid) == []
++        records.append({"input": grid, "recipe": recipe,
++                        "role": "boundary_demo_candidate" if count == 1 else "boundary_query_candidate"})
++    receipt = Catalog(root).apply(TASK, [r["input"] for r in records],
++                                  reference="canonical", timeout=120)
++    assert receipt["generator_sha256"] == digest
++    assert receipt["rule_hash_matches_catalog"] is True
++    assert len(receipt["results"]) == len(records)
++    for record, result in zip(records, receipt["results"]):
++        assert result["error"] is None, result
++        record["output"] = result["output"]
++        expected = gallery(record["input"], [masks(record["input"])[i] & masks(record["input"])[j]
++                                             for i, j in PAIRS])
++        assert record["output"] == expected
++        if "recorded_output" in record:
++            assert record.pop("recorded_output") == record["output"]
++    canonical_demos = [r for r in records if r["role"] == "canonical_train"]
++    canonical_queries = [r for r in records if r["role"] == "canonical_test"]
++    rival = "triple_intersection_repeated"
++    demos, seen = [], set()
++    for r in records:
++        if r["role"] != "boundary_demo_candidate":
++            continue
++        key = json.dumps(r["input"])
++        if key not in seen and predictions(r["input"])[rival] == r["output"]:
++            demos.append(r)
++            seen.add(key)
++    queries = [r for r in records if r["role"] == "boundary_query_candidate"
++               and predictions(r["input"])[rival] != r["output"]]
++    assert len(demos) >= 3 and queries, "Bounded selection did not produce the intended witness."
++    demos, queries = demos[:3], queries[:1]
++    boundary = evaluate(demos, queries)
++    assert boundary["query_disagreements"][rival] == [0]
++    report = {
++        "schema": "task-bounded-learnability-audit-v1", "task_id": TASK,
++        "generator_sha256": digest,
++        "canonical_program_text_sha256": hashlib.sha256(canonical["program_solution"].encode()).hexdigest(),
++        "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        "review_index_present": (source.parent / "evidence/review_index.json").exists(),
++        "reference_labeled_input_count": len(records),
++        "canonical_lesson": evaluate(canonical_demos, canonical_queries),
++        "selected_boundary_lesson": boundary,
++        "finding": "Three lawful, distinct generated singleton-panel demonstrations fit the simpler repeated triple-intersection rule, but a lawful five-cell query refutes it.",
++        "status": "open_source_bound_teaching_evidence; selected generator unchanged; no approval",
++        "limits": ["17 named rivals only; no universal identifiability claim.",
++                   "Boundary lesson is deliberately selected using explicit input controls; default episode incidence unmeasured.",
++                   "No generator, reference rule, shared runtime or owner approval metadata changed."]}
++    public = {"train": [{k: r[k] for k in ("input", "output")} for r in demos],
++              "test": [{"input": r["input"]} for r in queries]}
++    private = {"demonstrations": demos, "queries": queries,
++               "rival": rival, "rival_query_output": predictions(queries[0]["input"])[rival]}
++    for name, data in (("report.json", report), ("racket_receipt.json", receipt),
++                       ("inputs.json", records), ("boundary.public.json", public),
++                       ("boundary.private.json", private)):
++        (args.out / name).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({"task_id": TASK, "labeled_inputs": len(records),
++                      "canonical": report["canonical_lesson"], "boundary": boundary,
++                      "evidence": str(args.out)}, indent=2))
++
++
++if __name__ == "__main__":
++    main()

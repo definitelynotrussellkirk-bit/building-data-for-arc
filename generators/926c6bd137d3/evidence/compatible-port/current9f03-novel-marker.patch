@@ -1,0 +1,184 @@
+--- a/generators/926c6bd137d3/generator.py
++++ b/generators/926c6bd137d3/generator.py
+@@ -15,7 +15,7 @@
+ 
+ GENERATOR_ID = "926c6bd137d3"
+ TASK_ID = "926c6bd137d3"
+-VERSION = "3.0.0"
++VERSION = "3.0.1"
+ RULE_HASH = "575c55ee70e4"
+ 
+ SUMMARY = (
+@@ -38,6 +38,7 @@
+ ]
+ 
+ MARKER_COLORS = (1, 2, 3, 5, 6, 7, 8, 9)
++_CANONICAL_MARKER_COLORS = (1, 2, 3, 6, 8)
+ HELPFUL_TEXTURES: tuple[str, ...] = ()
+ DEGENERATE_TEXTURES: tuple[str, ...] = ()
+ INCOMPATIBLE_OVERRIDE_COMBINATIONS: list[dict[str, Any]] = []
+@@ -107,6 +108,12 @@
+     ordered = MARKER_COLORS[offset:] + MARKER_COLORS[:offset]
+     unique_needed = {1: 1, 2: 2, 3: 2, 4: 3}[n_frames]
+     distinct = list(ordered[:unique_needed])
++    # Two controls in each four-row period survive every single holdout in a
++    # five-pair lesson. Keep the existing per-row palette cardinality.
++    if (sample_index % LESSON_SCHEDULE_PERIOD in (2, 3)
++            and all(color in _CANONICAL_MARKER_COLORS for color in distinct)):
++        distinct[-1] = next(color for color in ordered
++                            if color not in _CANONICAL_MARKER_COLORS)
+     markers = [distinct[index % unique_needed] for index in range(n_frames)]
+     exterior_color = next(color for color in ordered if color not in distinct)
+     return markers, exterior_color
+@@ -460,16 +467,30 @@
+     return output
+ 
+ 
++def _rival_canonical_marker_palette(grid: Grid) -> Grid:
++    """Fill only marker colors demonstrated by the canonical task."""
++    output = [list(row) for row in grid]
++    info, errors = _analyse(grid)
++    if not errors:
++        for frame, color in zip(info["frames"], info["marker_colors"]):
++            if color in _CANONICAL_MARKER_COLORS:
++                _fill_interior(output, frame, color)
++    return output
++
++
+ SEMANTIC_RIVALS: dict[str, Callable[[Grid], Grid]] = {
+     "erase_exterior": _rival_erase_exterior,
+     "single_marker_color": _rival_single_marker_color,
+     "leave_interiors_blank": _rival_leave_interiors_blank,
+     "fixed_blue_fill": _rival_fixed_blue_fill,
++    "canonical_marker_palette": _rival_canonical_marker_palette,
+ }
+ LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
+-# None of the named rivals fits every canonical pair. They are lesson-level
+-# competitors, not canonical-equivalent shortcuts.
+-CANONICAL_SHORTCUTS: dict[str, Callable[[Grid], Grid]] = {}
++# The palette restriction fits the canonical labels; generated controls must
++# teach the additional legal marker colors.
++CANONICAL_SHORTCUTS: dict[str, Callable[[Grid], Grid]] = {
++    "canonical_marker_palette": _rival_canonical_marker_palette,
++}
+ 
+ 
+ def _valid_info(grid: Grid) -> dict[str, Any] | None:
+@@ -506,17 +527,25 @@
+     return bool(info and any(color != 2 for color in info["marker_colors"]))
+ 
+ 
++def _witness_novel_marker_color(grid: Grid) -> bool:
++    info = _valid_info(grid)
++    return bool(info and any(color not in _CANONICAL_MARKER_COLORS
++                             for color in info["marker_colors"]))
++
++
+ SEMANTIC_WITNESSES: dict[str, Callable[[Grid], bool]] = {
+     "preserve_exterior": _witness_preserve_exterior,
+     "multiple_marker_colors": _witness_multiple_marker_colors,
+     "fill_entire_interior": _witness_fill_entire_interior,
+     "marker_not_blue": _witness_marker_not_blue,
++    "novel_marker_color": _witness_novel_marker_color,
+ }
+ WITNESS_RIVALS = {
+     "preserve_exterior": ["erase_exterior"],
+     "multiple_marker_colors": ["single_marker_color"],
+     "fill_entire_interior": ["leave_interiors_blank"],
+     "marker_not_blue": ["fixed_blue_fill"],
++    "novel_marker_color": ["canonical_marker_palette"],
+ }
+ 
+ 
+--- a/generators/926c6bd137d3/tests/test_generator_926c6bd137d3.py
++++ b/generators/926c6bd137d3/tests/test_generator_926c6bd137d3.py
+@@ -35,7 +35,7 @@
+     assert len(SOURCE_SHA256) == 64
+     assert GEN.GENERATOR_ID == TASK_ID
+     assert GEN.TASK_ID == TASK_ID
+-    assert GEN.VERSION == "3.0.0"
++    assert GEN.VERSION == "3.0.1"
+     assert GEN.RULE_HASH == "575c55ee70e4"
+     assert GEN.MIN_STRICT_FRAC == 1.0
+     assert GEN.EXAMPLES_NEEDED == 4
+@@ -172,7 +172,8 @@
+ 
+ def test_every_four_demo_window_refutes_all_named_rivals() -> None:
+     assert set(GEN.LESSON_COMPETITORS) == set(GEN.SEMANTIC_RIVALS)
+-    assert GEN.CANONICAL_SHORTCUTS == {}
++    assert all(shortcut(pair["input"]) == pair["output"]
++               for shortcut in GEN.CANONICAL_SHORTCUTS.values() for pair in _pairs())
+     assert set(GEN.SEMANTIC_WITNESSES) == set(GEN.WITNESS_RIVALS)
+     for difficulty in BANDS:
+         for start in range(12):
+--- /dev/null
++++ b/generators/926c6bd137d3/tests/test_canonical_marker_palette.py
+@@ -0,0 +1,53 @@
++from itertools import combinations
++from reviewer_support import find_root, load_selected_generator, canonical_pairs
++
++ROOT = find_root(__file__)
++GEN, SOURCE, SHA = load_selected_generator("926c6bd137d3", root=ROOT)
++CANONICAL_COLORS = {1, 2, 3, 6, 8}
++
++def palette_restricted_rival(grid):
++    output = [row[:] for row in grid]
++    info, errors = GEN._analyse(grid)
++    assert not errors
++    for frame, marker_color in zip(info["frames"], info["marker_colors"]):
++        if marker_color in CANONICAL_COLORS:
++            for r in range(frame[0]+1, frame[2]):
++                for c in range(frame[1]+1, frame[3]):
++                    if output[r][c] == 0:
++                        output[r][c] = marker_color
++    return output
++
++def lesson(seed, start, band):
++    pairs = []
++    for i in range(start, start+5):
++        grid = GEN.generate(seed, i, difficulty=band)
++        pairs.append({"input":grid,"output":GEN.rule_mirror(grid)})
++    return pairs
++
++def test_indices_three_to_seven_demonstrate_novel_marker_semantics():
++    pairs = lesson(0, 3, "easy")
++    assert any(palette_restricted_rival(p["input"]) != p["output"] for p in pairs[:4]), \
++        "canonical-only palette rival fits every demo in seed0 indices3..6"
++
++def test_novel_marker_control_survives_every_query_holdout():
++    for seed in (0, 1, 7):
++        for band in (None, "easy", "medium", "hard"):
++            for start in range(8):
++                pairs = lesson(seed, start, band)
++                assert all(GEN.self_check(p["input"]) == [] for p in pairs)
++                for qi in range(5):
++                    demos = pairs[:qi] + pairs[qi+1:]
++                    assert any(palette_restricted_rival(p["input"]) != p["output"] for p in demos)
++                    assert GEN.lesson_identifiable(demos, pairs[qi]) == []
++
++def test_canonical_palette_rival_is_truthfully_declared():
++    rival = GEN.CANONICAL_SHORTCUTS["canonical_marker_palette"]
++    pairs = canonical_pairs("926c6bd137d3", root=ROOT, labeled_only=True)
++    assert len(pairs) == 5
++    assert all(rival(p["input"]) == p["output"] for p in pairs)
++
++def test_marker_assignment_preserves_exact_controls_with_added_rival():
++    for frames in (1,2,3,4):
++        grid = GEN.generate(17, 2, grid_h=10, grid_w=18, n_frames=frames, n_exterior_distractors=4)
++        assert GEN.observe_overrides(grid) == {"grid_h":10,"grid_w":18,"n_frames":frames,"n_exterior_distractors":4}
++        assert GEN.generation_check(grid) == []
+--- a/generators/926c6bd137d3/notes.md
++++ b/generators/926c6bd137d3/notes.md
+@@ -166,3 +166,12 @@
+ ## D10 — Preserve failed iterations as evidence
+ 
+ The first after run exposed a one-to-one count proxy; an isolated defect-lint run then exposed dead difficulty; the second complete battery exposed a missing exhaustive schedule receipt. These were not deleted or relabeled as passes. The final run uses the unchanged final generator plus `checks/schedule-census.json` and is the only aggregate claimed green.
++
++
++## Compatible canonical marker palette control (3.0.1)
++
++This revision ports one bounded improvement from the separate review-134d82626bc7bd77 proposal onto the current accepted four-demonstration generator. The alternate three-demonstration candidate is not adopted. Existing dimensions, frame and exterior-distractor axes, all four prior rivals, placement, and complete lesson validation are preserved.
++
++A `canonical_marker_palette` rival fills only frames whose marker color appeared in the five canonical pairs. That shortcut fits all five canonical pairs. Scheduled samples at residues 2 and 3 use a noncanonical marker color when the planned palette would otherwise contain only canonical colors. Each five-sample consecutive window therefore has at least two such controls, leaving one in four demonstrations after any query holdout. The new rival and lawful novel-marker witness join the existing semantic hooks.
++
++Qualification is finite and task-local: the original indices 3 through 7 regression failed before the change; the staged 3.0.1 candidate passed all 52 existing task cases and four new cases. Actual public Racket authority labelled the 20 seed-0 inputs at indices 3 through 7 across default/easy/medium/hard plus five canonical inputs, and matched the candidate mirror on all 25. This is not a full census or training admission. The maintainer receipt binds these checks to the exact source hash.

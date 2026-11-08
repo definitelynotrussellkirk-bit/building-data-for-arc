@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let ((ctr (quotient (rows g) 2))) (for/fold ((out g)) ((p (in-list (find-color g 2)))) (let loop ((k 0) (rr (first p)) (cc (second p)) (acc out)) (if (= k 3) acc (let* ((dr (- rr ctr)) (dc (- cc ctr)) (nr (+ ctr dc)) (nc (- ctr dr))) (loop (+ k 1) nr nc (set-cell acc nr nc 2)))))))))

@@ -1,0 +1,6 @@
+# 85f0fcea28c0
+
+0-bg grid (h~11-20, w~11-20) with: (a) ONE CHIRAL SOURCE in COLOR 1 — a 5-6 cell shape drawn from _CHIRAL_SOURCES bank (L-5/Z-5/zigzag-5/F-shape) where the shape's REFLECTION is NOT one of its rotations (chiral property guaranteed); (b) 2-3 CANDIDATE SHAPES in COLOR 2 placed at non-touching positions, each either a REFLECTION-then-ROTATION of source (in dihedral closure but NOT in rotation closure) or a ROTATION-ONLY of source or a DECOY (shape not in source's dihedral closure). At least 1 candidate is a true MIRROR (in dihedral closure, not in rotation closure); at least 1 is not. Rule (RECOLOR TO CYAN ONLY THE COLOR-2 CANDIDATES THAT ARE TRUE MIRRORS OF SOURCE — DIHEDRALLY MATCHING BUT NOT ROTATIONALLY MATCHING): for EACH 4-connected color-2 COMPONENT: NORMALIZE its cells. CHECK (a) does the normalized set match source under SOME dihedral transform (rotation + reflection)? AND CHECK (b) does it NOT match source under rotation ALONE? If BOTH (a) AND (b): RECOLOR to COLOR 8 (cyan). Otherwise stay color 2. The color-1 source stays. Net: only the true-mirror candidates (reflections that aren't also rotations) get highlighted cyan.
+
+Kind: `per_puzzle`. Imported version: `2.1.0`.
+Approval is derived by the catalog from current code and retained evidence.

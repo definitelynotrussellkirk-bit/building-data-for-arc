@@ -1,0 +1,6 @@
+# a428d8270ca3
+
+0-bg grid (h, w ~ 8-12) with: (a) ONE STRAIGHT SPINE — 3 SINGLETON CELLS at positions (top, mid, bottom) along ONE AXIS (vertical: at rows 1, h//2, h-2 in a single column; horizontal: at cols 1, w//2, w-2 in a single row). The 3 spine cells are painted in 3 DISTINCT non-0 colors C0, C1, C2 from a palette of 5; (b) OPTIONAL DOMINO MARKERS — with probability 2/3, a 2-cell domino of COLOR C3 placed perpendicular to the spine at one of the spine endpoints; (c) OPTIONAL second domino — with probability 1/2, another 2-cell domino of COLOR C4 placed at the spine's middle endpoint in a perpendicular direction. Rule (EACH SPINE SINGLETON EMITS DIAGONAL RAYS — OPTIONAL DOMINO MARKERS ADD WEDGE FIELDS): for EACH SINGLETON on the SPINE: paint a DIAGONAL RAY in BOTH diagonal directions outward from the spine, using the singleton's color, until the ray hits the grid border or another non-bg cell. For EACH OPTIONAL DOMINO MARKER: paint a WEDGE FIELD — a triangular region adjacent to the domino in the perpendicular direction, filled with the domino's color. The spine singletons and dominoes stay. Net: the input's sparse spine + dominoes blooms into a network of diagonal colored rays plus optional filled wedges.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

@@ -1,0 +1,8 @@
+(rule! (lambda (g)
+  (let* ((colors (filter (lambda (v) (!= v 0)) (grid-colors g)))
+         (anchor (pick-max colors (lambda (color) (count-color g color))))
+         (box (color-bbox g anchor))
+         (axis (if (> (shape-w box) (shape-h box)) 'lr 'ud)))
+    (for/fold ((out g))
+      ((color colors))
+      (layer-flip out color axis)))))

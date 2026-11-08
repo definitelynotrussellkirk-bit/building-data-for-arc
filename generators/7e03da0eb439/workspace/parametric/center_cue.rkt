@@ -1,0 +1,1 @@
+(rule! (lambda (g) (let ((cue (at g (quotient (rows g) 2) (quotient (cols g) 2)))) (self-tile g (lambda (v) (= v cue))))))

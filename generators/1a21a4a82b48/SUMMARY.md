@@ -1,0 +1,6 @@
+# 1a21a4a82b48
+
+0-bg grid (h ∈ 9-20, w ∈ 11-22, by difficulty) with: (a) ONE COLOR-2 RED SOURCE SHAPE drawn from _SHAPES bank (5 variants of 4-cell L/S/T/P shapes) — placed at a random non-overlapping position via _place (1-cell padding); (b) ONE MATCHING CANDIDATE in colors[0] (drawn from {3,4,5,6}) with the SAME shape (translation-only equivalent) placed elsewhere; (c) THREE DISTRACTOR CANDIDATES in colors[1:] (each a DIFFERENT shape from _SHAPES \ {source}), all placed at non-overlapping positions. Rule (FIND THE CANDIDATE WHOSE NORMALIZED CELL OFFSETS MATCH THE COLOR-2 SOURCE'S, CROP TO ITS BBOX, RECOLOR TO CYAN-8, OUTPUT): FIND the unique COLOR-2 component → extract its NORMALIZED OFFSETS (subtract min row/col). FOR EACH non-2 non-bg COMPONENT: COMPUTE its normalized offsets. SELECT the unique component whose offsets EQUAL the source's offsets. CROP it to its bbox. RECOLOR every cell of that crop to COLOR 8 (cyan). OUTPUT the cyan crop. Net: same-shape matching across colors yields a cyan version of the matched candidate. Flagged intrinsic-low (uniq_out=5): 5 source shapes × cyan recolor = 5 canonical outputs.
+
+Kind: `per_puzzle`. Imported version: `2.1.1`.
+Approval is derived by the catalog from current code and retained evidence.

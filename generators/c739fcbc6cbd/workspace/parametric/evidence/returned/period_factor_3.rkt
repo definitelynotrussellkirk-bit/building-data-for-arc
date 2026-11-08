@@ -1,0 +1,21 @@
+(rule!
+  ;; Proposed variant: preserve the canonical selection/axis/prefix rule and
+  ;; vary only the active-distance period multiplier for the whole episode.
+  (let* ((dots (for*/list ((color (in-list (range 1 10)))
+                           (p (in-list (find-color g color))))
+                 (list (first p) (second p) color)))
+         (a (first dots))
+         (b (second dots))
+         (r1 (first a)) (c1 (second a)) (color1 (third a))
+         (r2 (first b)) (c2 (second b)) (color2 (third b))
+         (dr (abs (- r2 r1)))
+         (dc (abs (- c2 c1))))
+    (define (phase x x1 x2 period)
+      (cond ((zero? (mod (- x x1) period)) color1)
+            ((zero? (mod (- x x2) period)) color2)
+            (else 0)))
+    (if (or (zero? dc) (and (> dr 0) (< dr dc)))
+        (cellmap g (r c v)
+          (if (< r (min r1 r2)) 0 (phase r r1 r2 (* 3 dr))))
+        (cellmap g (r c v)
+          (if (< c (min c1 c2)) 0 (phase c c1 c2 (* 3 dc)))))))

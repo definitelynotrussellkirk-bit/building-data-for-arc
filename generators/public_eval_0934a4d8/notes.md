@@ -1,0 +1,11 @@
+# Current design: 0934a4d8 orbit repair and extraction
+
+Canonical rule: color 8 is a solid rectangular occluder in a square of side `4b-2`. The visible pattern comes from a `2b × 2b` seed reflected across both far axes; the seed's two off-diagonal `b × b` blocks are transposes. Each hidden cell is recovered from the union of its horizontal/vertical reflection orbit and, when it lies in an off-diagonal block, the transposed orbit. Every visible orbit in all four public training inputs and the hidden public test input is conflict-free, and every hidden cell has a visible representative. The recovered occluded rectangle is the output.
+
+Parameter `output_mode` is `patch` (canonical) or `marker_bbox`. Generated hidden patches contain a color occurring exactly twice and less often than every other patch color. Step A performs the full orbit repair, producing the recovered patch. Step B finds the unique rare color only in that recovered result and crops its two-marker bounding box. The marker positions are hidden under color 8, so their crop cannot be selected before repair.
+
+The setting-blind grammar varies `b=4..8`, occluder placement/shape, palettes and orbit content. Two demonstrations reject nine finite shortcut rules, including mirror-only recovery. Four independently shuffled queries include a dense 30×30 input and a left-edge occluder requiring transpose-augmented orbits. Labels are checked through protected Racket during authoring preflight; this remains unapproved until owner registration, native qualification and acceptance.
+
+## Current repeated-return reconciliation
+
+Preserve exact incumbent patch/rare-marker-bbox programs/default and sampler. Add the exact incoming transpose-first program; it is executable and distinct on incumbent inputs. The incoming broad-axis sampler conflicts with the incumbent 4b-2 symmetry-orbit grammar and is excluded, with concrete examples retained. Do not claim arbitrary-axis canonical equivalence or generalize the accepted default from those examples. Evidence: `evidence/reconcile-13/`. Private native qualification, fresh private acceptance and a fresh accepted episode passed. Live owner publication and training admission remain separate.

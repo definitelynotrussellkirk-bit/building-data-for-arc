@@ -1,0 +1,111 @@
+--- a/src/arcpuzzles/review_witness.py
++++ b/src/arcpuzzles/review_witness.py
+@@ -246,6 +246,11 @@
+                                     program=selected['program'], program_sha256=_sha_text(selected['program']),
+                                     input=deepcopy(pair['input']), output=deepcopy(pair['output'])),
+               'receipt_alternatives': alternatives,
++              'syntax_examples': {'identity': {
++                  'program': '(rule! (lambda (g) g))',
++                  'limits': 'Standalone identity syntax, not a causal claim or a preselected ablation. '
++                            'Use only if it tests your dependency; build must still show different final output. '
++                            'A bare (rule! g) leaves g unbound at top level.'}},
+               'limits': 'Private authoring context. Alternatives are recorded in the source receipt on their own sampled inputs; '
+                         'none is claimed to change this selected pair or prove causal dependency. '
+                         'No new qualification or acceptance is claimed. Fill the recipe and use build for protected replay.'}
+--- a/src/arcpuzzles/review_base_preflight.py
++++ b/src/arcpuzzles/review_base_preflight.py
+@@ -163,7 +163,8 @@
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('task_id')
+     parser.add_argument('--root', type=Path, default=Path('.'))
+-    parser.add_argument('--out', type=Path, required=True)
++    parser.add_argument('--out', type=Path, required=True, metavar='NEW_DIR',
++                        help='output directory must not exist (even empty); writes qualification.json and execution.json')
+     parser.add_argument('--demos', type=int)
+     args = parser.parse_args()
+     report = preflight(args.root, args.task_id, args.out, demos=args.demos)
+--- a/shared/tools/README.md
++++ b/shared/tools/README.md
+@@ -59,6 +59,27 @@
+ Payload paths are relative to `WORK/repo`, for example
+ `--qualification ../checks/TASK/qualification/qualification.json`.
+ These flags retain the existing source validation and approval boundaries.
++
++Keep command logs and later reviewer-only validation reports outside the
++inventoried `generators/TASK/workspace/parametric/evidence/` directory. From the
++outer packet, `review.py run --receipt checks/TASK/manifest-command.json ...`
++places the command receipt in `WORK/checks/TASK/`; payload output paths use
++`../checks/TASK/...` from `WORK/repo`. Do not tee manifest output into its own
++`--evidence` tree: that log changes while its inventory is being hashed. After
++manifest/preflight, place new tamper/export reports under `checks/TASK/` too.
++If bound source or inventoried evidence needs editing, rebuild its inventory
++and refresh affected receipts using the existing guarded commands; moving a
++report does not repair already-stale evidence.
++
++`review_base_preflight --out NEW_DIR` requires a path that does not exist, even
++as an empty directory. Create its parent if needed and let preflight create the
++leaf with `qualification.json` and `execution.json`; retain old runs separately.
++
++Witness templates include `(rule! (lambda (g) g))` as a standalone identity
++syntax example. It is not selected automatically and does not establish a valid
++skip-A argument; authors still supply the dependency, intermediate and ablation,
++and protected build/replay must show different final output. A bare `(rule! g)`
++has no top-level binding for `g`.
+ 
+ For concise authoring coverage, `python3 -m arcpuzzles.review_base_preflight`
+ prints job/setting counts, parametric labelled-pair counts, canonical base-pair
+--- /dev/null
++++ b/tests/test_review_authoring_guidance.py
+@@ -0,0 +1,52 @@
++"""Authoring hints do not fill causal claims or weaken output freshness."""
++import json
++import sys
++
++import pytest
++
++from arcpuzzles import review_base_preflight as author
++from arcpuzzles import review_witness as witness
++from test_parametric_promotion import candidate
++from test_review_witness import qualified, recipe
++from test_review_sequential_replay import runtime
++
++
++def test_template_identity_example_is_guidance_until_authored_and_replayed(qualified, tmp_path):
++    root, qualification = qualified
++    draft_path = tmp_path/'recipe.json'
++    witness.write_template(root, qualification, draft_path)
++    draft = json.loads(draft_path.read_text())
++    example = draft['syntax_examples']['identity']
++    assert example['program'] == '(rule! (lambda (g) g))'
++    assert 'not a causal claim' in example['limits']
++    assert draft['cases'][0]['counterfactual_program'] == ''
++    assert draft['cases'][0]['intermediate_value'] is None
++    with pytest.raises(ValueError, match='Fill all four'):
++        witness.build_witness(root, qualification, draft, tmp_path/'unfilled')
++    assert not (tmp_path/'unfilled').exists()
++    draft.update({key: recipe()[key] for key in witness.FIELDS})
++    draft['cases'][0].update(counterfactual_program=example['program'],
++                             intermediate_value={'order': 'reversed'}, ablation='skip_a')
++    result = witness.build_witness(root, qualification, draft, tmp_path/'built')
++    saved = json.loads((tmp_path/'built/witness.json').read_text())
++    assert saved['cases'][0]['counterfactual_output'] == saved['cases'][0]['input']
++    assert saved['cases'][0]['counterfactual_output'] != saved['cases'][0]['output']
++    assert result['training_admitted'] is False
++    assert result['replay']['evaluations'] == 2
++
++
++def test_preflight_help_states_directory_must_not_exist(monkeypatch, capsys):
++    monkeypatch.setattr(sys, 'argv', ['review_base_preflight', '--help'])
++    with pytest.raises(SystemExit) as status:
++        author.main()
++    assert status.value.code == 0
++    output = capsys.readouterr().out
++    assert 'must not exist' in output and 'qualification.json' in output
++
++
++def test_preflight_still_refuses_existing_empty_directory(tmp_path):
++    out = tmp_path/'preflight'
++    out.mkdir()
++    with pytest.raises(FileExistsError):
++        author.preflight(tmp_path, 'fixture', out)
++    assert list(out.iterdir()) == []

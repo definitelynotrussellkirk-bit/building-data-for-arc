@@ -1,0 +1,1 @@
+(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((bg 7) (objs (objects g bg))) (reduce (lambda (acc obj) (let* ((drop (if (>= (obj-size obj) 5) (- (- h 1) (obj-r2 obj)) 0)) (cells (map (lambda (p) (list (+ (first p) drop) (second p))) (obj-cells obj)))) (paint-cells acc cells (obj-color obj)))) (empty-grid h w bg) objs)))))

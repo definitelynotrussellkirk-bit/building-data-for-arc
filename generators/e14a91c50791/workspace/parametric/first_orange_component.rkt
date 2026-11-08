@@ -1,0 +1,32 @@
+(rule!
+  (let ((dummy 0))
+    (define red-objs (filter (lambda (obj) (= (obj-color obj) 2)) (objects g 0)))
+    (define (same-pos? a b) (and (= (fst a) (fst b)) (= (snd a) (snd b))))
+    (define (has-cell? p cells) (any? (lambda (q) (same-pos? p q)) cells))
+    (define (same-cells? a b)
+      (and (= (length a) (length b)) (all? (lambda (p) (has-cell? p b)) a)))
+    (define (rotations cells)
+      (let* ((r0 (normalize-cells cells))
+             (r1 (normalize-cells (rotate-cells-cw r0)))
+             (r2 (normalize-cells (rotate-cells-cw r1)))
+             (r3 (normalize-cells (rotate-cells-cw r2))))
+        (list r0 r1 r2 r3)))
+    (define (same-rot-shape? a b)
+      (let ((sa (normalize-cells (obj-cells a))) (rots (rotations (obj-cells b))))
+        (any? (lambda (rb) (same-cells? sa rb)) rots)))
+    (define (same-count obj)
+      (count-where (lambda (other) (same-rot-shape? obj other)) red-objs))
+    (define targets (filter (lambda (obj) (= (remainder (same-count obj) 2) 1)) red-objs))
+    (define intermediate
+      (grid-from-fn h w
+        (lambda (r c)
+          (if (any? (lambda (obj)
+                      (and (>= r (obj-r1 obj)) (<= r (obj-r2 obj))
+                           (>= c (obj-c1 obj)) (<= c (obj-c2 obj))))
+                    targets)
+              7
+              (cell-at g r c)))))
+    (define selected
+      (first (filter (lambda (obj) (= (obj-color obj) 7)) (objects intermediate 0))))
+    (for/fold ([out intermediate]) ([p (in-list (obj-cells selected))])
+      (set-cell out (first p) (second p) 4))))

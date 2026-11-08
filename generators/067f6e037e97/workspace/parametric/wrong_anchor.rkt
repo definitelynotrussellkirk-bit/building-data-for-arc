@@ -1,0 +1,22 @@
+(rule!
+ (let* ((ranked (sort (objects g 0)
+                      (lambda (a b) (> (obj-size a) (obj-size b)))))
+        (anchor-color (obj-color (second ranked)))
+        (centers (map (lambda (cell) (list (first cell) (second cell)))
+                      (filter (lambda (cell) (= (third cell) anchor-color))
+                              (grid-cells g))))
+        (offsets (for*/list ((dr (in-range -1 2))
+                             (dc (in-range -1 2)))
+                   (list dr dc)))
+        (grown (remove-duplicates
+                (filter (lambda (p)
+                          (in-bounds? (first p) (second p)
+                                      (rows g) (cols g)))
+                        (flatmap
+                         (lambda (p)
+                           (map (lambda (d)
+                                  (list (+ (first p) (first d))
+                                        (+ (second p) (second d))))
+                                offsets))
+                         centers)))))
+   (paint-cells (empty-grid (rows g) (cols g) 0) grown 8)))

@@ -1,0 +1,8 @@
+# SDD ledger — plan: generators/14c5c68b0201/workspace/parametric/IMPLEMENTATION-PLAN.md
+Ruling: the packet is an immutable extracted workspace without `.git`; use the extraction itself as the isolated worktree and retain command evidence instead of commits — cost if wrong: no git-range review, mitigated by source.patch packaging and hashes.
+Pre-flight: Task 2 consumes Task 1's exact rule/evaluator interfaces; Task 3 consumes Task 2's episode/public interfaces. Names and signatures match the plan.
+Baseline: existing selected test wrapper is blocked at collection by absent `scripts.canonical_profile_gate`; retained in `baseline-selected-tests.log`. Proceed with task-local tests using shipped `reviewer_support`, as the assignment permits for a blocked wrapper.
+Task 1: complete (tests: `python review.py run pytest -q generators/14c5c68b0201/tests/test_parametric_tiling_axes.py` -> 2 passed; canonical SHA-256 fa934e93825cfb3338263045d7d27ce5d7f56f9ced48bbb04d897159bb8a112a).
+Task 2: complete (tests: `python review.py run pytest -q generators/14c5c68b0201/tests/test_parametric_tiling_axes.py` -> 16 passed; three settings each had 3 demonstrations, 4 queries, and demonstration-refuted rivals).
+Task 3: complete (tests: `python3 ../run_with_racket.py pytest -q generators/14c5c68b0201/tests/test_parametric_tiling_axes.py` -> 21 passed in 99.44s; retained evidence: 3 settings, 9 demos, 12 queries, 8/8 canonical labels, 0 ambiguities; replay verifier passed 15 files).
+Final review: self-review (no subagent tool). Fixed two Important verifier findings through RED→GREEN tests: exact canonical public-byte reconstruction after receipt rewrite, and rejection of rule paths outside the evidence tree. Final suite 21/21 green.

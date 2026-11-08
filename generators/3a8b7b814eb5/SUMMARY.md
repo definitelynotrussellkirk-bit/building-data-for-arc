@@ -1,0 +1,6 @@
+# 3a8b7b814eb5
+
+0-bg grid (h~7-18, w~8-20) with 2-5 PAIRS (one pair per distinct color). For EACH PAIR: pick a color from a shuffled palette of n_pairs distinct values from {1..9}, pick two cells at OPPOSITE DIAGONAL CORNERS of an axis-aligned rectangle: top-left (r1, c1) and bottom-right (r2, c2) where r2 > r1 and c2 > c1. The bbox rectangles do NOT overlap (overlap check via _bb_overlap). Place these 2 cells in the chosen color; the rest of each rectangle's interior + border are bg-0. Each color appears at exactly 2 cells. Rule (FOR EACH COLOR WITH EXACTLY 2 CELLS, FILL THE SOLID RECTANGLE BETWEEN THEM TREATING THEM AS DIAGONAL CORNERS): for EACH non-bg COLOR in the grid: COUNT its occurrences. IF count = 2 AND the two cells are at distinct rows AND distinct columns (forming diagonal corners of a non-degenerate rectangle): COMPUTE the bbox (r1, c1, r2, c2) from the two corner positions. FILL every cell (r, c) with r1 ≤ r ≤ r2 AND c1 ≤ c ≤ c2 with the pair's color. Colors with count ≠ 2 or with axis-aligned cells stay unchanged. Net: each color-pair grows into a solid filled rectangle.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

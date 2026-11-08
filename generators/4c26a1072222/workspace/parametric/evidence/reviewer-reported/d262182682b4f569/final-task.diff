@@ -1,0 +1,1633 @@
+diff -ruN .review/baseline/repo/generators/4c26a1072222/SUMMARY.md repo/generators/4c26a1072222/SUMMARY.md
+--- .review/baseline/repo/generators/4c26a1072222/SUMMARY.md	2026-10-23 17:01:47.350311558 +0000
++++ repo/generators/4c26a1072222/SUMMARY.md	2026-10-23 17:28:16.430745175 +0000
+@@ -4,10 +4,16 @@
+ authority searches all eight 2x2 D4 transforms, keeps functional A→B color maps,
+ maximizes exact color matches, breaks ties by transform index, and applies the
+ selected transform and map to C. The generator constructs against that actual
+-selector, covers every D4 branch, and emits canonical-size/palette profiles.
++selector, covers every D4 branch, emits canonical-size/palette profiles, and no
++longer lets the two/three-color A count identify the transpose family.
+ 
+-Kind: `per_puzzle`. Reviewed version: `2.0.0`.
++Kind: `per_puzzle`. Reviewed version: `2.1.0`.
+ Rule hash: `a86a18b84011`.
+ Final reviewed generator SHA-256:
+-`c55bd10cff6e9f5846e33302b895c6316effa805d46c5b85f77bcdcbd1d99580`.
+-Approval remains catalog-owned; this review only reports retained evidence.
++`5816599d9ed224a6d95f56745292449c464b6e708cac9373db58e8671b8aa22d`.
++
++A task-local forward/inverse application-direction prototype is retained under
++`workspace/parametric/`. It has four demonstrations and four distinct queries,
++protected-Racket labels for both settings, and separate public/private exports.
++It is proposed evidence only: canonical behavior, catalog approval, and
++production wiring remain unchanged and catalog-owned.
+diff -ruN .review/baseline/repo/generators/4c26a1072222/generator.py repo/generators/4c26a1072222/generator.py
+--- .review/baseline/repo/generators/4c26a1072222/generator.py	2026-10-23 17:01:47.356087313 +0000
++++ repo/generators/4c26a1072222/generator.py	2026-10-23 17:07:06.578205444 +0000
+@@ -22,7 +22,7 @@
+ GENERATOR_ID = "4c26a1072222"
+ TASK_ID = GENERATOR_ID
+ RULE_HASH = "a86a18b84011"
+-VERSION = "2.0.0"
++VERSION = "2.1.0"
+ SUMMARY = (
+     "Three or four two-row A/B/C bands.  In each band, the authority selects "
+     "the highest-exact-score consistent 2x2 D4 transform from A to B, learns "
+@@ -245,10 +245,33 @@
+     return transforms
+ 
+ 
+-def _band_blocks(ctx, palette: tuple[int, ...], band: int, transform: int, mode: str):
+-    # Transpose/anti-transpose need three colors.  The second band is always one
+-    # of those branches, so every generated grid contains a three-color witness.
+-    n_colors = 3 if transform in (6, 7) else 2
++def _scheduled_source_color_counts(transforms: list[int]) -> list[int]:
++    """Decorrelate source-color count from transpose-family membership.
++
++    The transpose branches require three colors to be authority-selectable.  One
++    non-transpose band also uses a verified three-color template, while remaining
++    non-transpose bands stay at the canonical two-color scale.
++    """
++    counts = [3 if transform in (6, 7) else 2 for transform in transforms]
++    for band, transform in enumerate(transforms):
++        if transform not in (0, 6, 7):
++            counts[band] = 3
++            return counts
++    for band, transform in enumerate(transforms):
++        if transform == 0:
++            counts[band] = 3
++            return counts
++    raise RuntimeError("scheduled lesson has no non-transpose band")
++
++
++def _band_blocks(
++    ctx,
++    palette: tuple[int, ...],
++    band: int,
++    transform: int,
++    mode: str,
++    n_colors: int,
++):
+     pattern_options = _PATTERN_BANK[(n_colors, transform, mode)]
+     pattern = ctx.draw_rng(f"a_pattern_{band}").choice(pattern_options)
+ 
+@@ -328,13 +351,26 @@
+     transforms = _scheduled_transforms(
+         _TRANSFORM_INDEX[first_name], n_bands, effective_index
+     )
++    source_color_counts = _scheduled_source_color_counts(transforms)
+     palette = ctx.draw_distinct_colors("palette", n=8, exclude={0})
+     grid = full_grid(3 * n_bands - 1, 9, 0)
+ 
+     for band, transform in enumerate(transforms):
+-        mode = "partial" if band % 2 else "identity"
++        decorrelation_band = (
++            source_color_counts[band] == 3 and transform not in (6, 7)
++        )
++        mode = (
++            "partial"
++            if band % 2 or (decorrelation_band and transform == 0)
++            else "identity"
++        )
+         a_block, b_block, c_block = _band_blocks(
+-            ctx, palette, band, transform, mode
++            ctx,
++            palette,
++            band,
++            transform,
++            mode,
++            source_color_counts[band],
+         )
+         row0 = 3 * band
+         for row in range(2):
+@@ -543,6 +579,22 @@
+     return output
+ 
+ 
++def _rival_source_count_transform_gate(grid):
++    """Wrong shortcut: source-color count predicts transpose-family membership."""
++    info, errors = _analyze(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    output = full_grid(info["height"], 2, 0)
++    for band in info["bands"]:
++        cue_says_transpose = band["source_color_count"] == 3
++        selected_is_transpose = band["transform"] in (6, 7)
++        if cue_says_transpose == selected_is_transpose:
++            _render_band(output, band, band["transform"], band["mapping"])
++        else:
++            _render_band(output, band, 0, {})
++    return output
++
++
+ def _rival_no_recolor(grid):
+     info, errors = _analyze(grid)
+     if errors:
+@@ -567,12 +619,14 @@
+ SEMANTIC_RIVALS = {
+     "canonical_transform_subset": _rival_canonical_transform_subset,
+     "two_color_sources_only": _rival_two_color_sources_only,
++    "source_count_transform_gate": _rival_source_count_transform_gate,
+     "transform_without_recolor": _rival_no_recolor,
+     "one_global_relation": _rival_one_global_relation,
+ }
+ CANONICAL_SHORTCUTS = {
+     "canonical_transform_subset": _rival_canonical_transform_subset,
+     "two_color_sources_only": _rival_two_color_sources_only,
++    "source_count_transform_gate": _rival_source_count_transform_gate,
+ }
+ LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
+ 
+@@ -588,6 +642,12 @@
+             band["source_color_count"] == 3 for band in info["bands"]
+         )
+     ),
++    "source_count_decorrelation": _safe_predicate(
++        lambda info: any(
++            band["source_color_count"] == 3 and band["transform"] not in (6, 7)
++            for band in info["bands"]
++        )
++    ),
+     "active_recolor": _safe_predicate(
+         lambda info: any(
+             any(source != target for source, target in band["mapping"].items())
+@@ -619,6 +679,7 @@
+ WITNESS_RIVALS = {
+     "noncanonical_transform": ["canonical_transform_subset"],
+     "three_color_source": ["two_color_sources_only"],
++    "source_count_decorrelation": ["source_count_transform_gate"],
+     "active_recolor": ["transform_without_recolor"],
+     "different_band_relations": ["one_global_relation"],
+ }
+diff -ruN .review/baseline/repo/generators/4c26a1072222/notes.md repo/generators/4c26a1072222/notes.md
+--- .review/baseline/repo/generators/4c26a1072222/notes.md	2026-10-23 17:01:47.356247849 +0000
++++ repo/generators/4c26a1072222/notes.md	2026-10-23 17:34:08.482727930 +0000
+@@ -1,5 +1,60 @@
+ # Working notes: 4c26a1072222
+ 
++## 2026-10-23 review `review-d262182682b4f569`
++
++Current generator SHA-256:
++`5816599d9ed224a6d95f56745292449c464b6e708cac9373db58e8671b8aa22d`.
++Canonical rule hash remains `a86a18b84011`; no Racket authority text or
++canonical behavior changed.
++
++### Source-count cue repair
++
++The retained 2.0.0 curriculum coupled every three-color A block to transpose or
++anti-transpose while every non-transpose band used two colors. A solver could
++therefore gate the transform family on source-color count instead of learning
++the A→B relation. Version 2.1.0 keeps three colors for transpose-family bands
++but also schedules one causally active three-color non-transpose band in every
++lesson (preferring a non-identity transform). The exact source-count gate is now
++a declared canonical-fitting shortcut and lesson competitor, with a linked
++`source_count_decorrelation` witness. The canonical default, authority selector,
++active recoloring, D4 coverage, dimensions, and palette contract are unchanged.
++
++The focused generator suite was driven red-to-green by the cue regression and
++passes 24/24 tests. The combined production/prototype scope passes 32/32 tests.
++
++### Forward/inverse application prototype
++
++`workspace/parametric/` adds one episode-fixed hidden value:
++
++- `forward` returns the canonical program byte stream and applies the inferred
++  transform to C.
++- `inverse` makes one local program change: transform indices 4 and 5 swap when
++  applying the learned relation to C; the other six D4 operations are
++  self-inverse and the learned color map is unchanged.
++
++Each setting uses four demonstrations and four distinct queries. For a fixed
++seed both settings share the same input schedule, and retained inputs force an
++observable quarter-turn distinction. Public challenge IDs are computed only
++from visible demonstrations and query inputs; the verifier writes those canonical
++visible bytes directly, so each `public.json` SHA-256 equals its public ID. Batch
++manifest rows are sorted by opaque public ID and duplicate visible payloads fail
++closed. Seed, setting, program, sampling receipts, and query labels remain private.
++
++Protected verification produced 32/32 successful Racket executions across two
++episodes, exact Python/Racket parity, and one surviving setting after the four
++demonstrations in each episode. Public IDs are
++`f57aa109d17129d73a4ab44d45bbb53553700b258558e31700713b455d8b702a`
++(forward) and
++`23e2f57ed080a629c89416522108c1f8908088833db119397ab4307d4ed3b22a`
++(inverse). The bounded adversarial probe covered 16 episode cases, 152 unique
++inputs, zero/negative/large/fixed seeds, 4/4 and 5/6 demo/query counts, exact
++integer grids, hidden-field-stable public IDs, corrupted-label rejection, and
++duplicate-query rejection. Its maximum observed construction retry was zero;
++explicit exhaustion of the 512-attempt bound was not forced.
++
++This prototype is not catalog approval, an accepted parametric variant, a
++production API, or training admission.
++
+ ## 2026-10-03 review `review-43ce6510b856b5d2`
+ 
+ Baseline generator SHA-256:
+@@ -58,16 +113,16 @@
+   lessons per band, 500/500 unique inputs per band, all witnesses present in
+   every lesson, zero declared rival survivors.
+ 
+-### Remaining limitations
++### Remaining limitations at the 2026-10-03 review
+ 
+-The generated C domain is deliberately narrower than the full lawful 2x2 domain:
+-only asymmetric 3+1 patterns are used. Three-color A blocks are also coupled to
+-transpose/anti-transpose branches. These restrictions do not defeat the four
+-retained rivals, but they are secondary cues and should be decorrelated in a
+-future expansion rather than hidden by broader claims.
++The generated C domain was deliberately narrower than the full lawful 2x2
++domain: only asymmetric 3+1 patterns were used. Three-color A blocks were also
++coupled to transpose/anti-transpose branches. The source-count coupling was
++resolved in version 2.1.0 on 2026-10-23; the intentionally narrow C morphology
++remains and no exhaustive-domain claim is made.
+ ## Current reviewer considerations
+ 
+-Source SHA-256: `c55bd10cff6e9f5846e33302b895c6316effa805d46c5b85f77bcdcbd1d99580`.
++Source SHA-256: `5816599d9ed224a6d95f56745292449c464b6e708cac9373db58e8671b8aa22d`.
+ 
+ # Decisions for 4c26a1072222
+ 
+@@ -144,31 +199,40 @@
+ schedule guarantees support while palette and templates retain instance-level
+ diversity.
+ 
+-**Probe and limitation.** Semantic witnesses and the 100-lessons-per-band census
+-show every complete lesson refutes the subset shortcut. Transpose branches are
+-currently coupled to three-color A templates; that cue should be decorrelated in
+-a later expansion.
+-
+-## D5 — Use two- and three-color A equality patterns
+-
+-**Input choice.** Non-transpose branches use verified two-color patterns;
+-transpose/anti-transpose use three-color patterns with a unique maximum exact
+-score.
++**Probe and limitation.** Semantic witnesses and the retained 2026-10-03
++100-lessons-per-band census showed every complete lesson refuted the subset
++shortcut on source `c55bd10c…`. Version 2.1.0 additionally schedules a
++three-color non-transpose band and declares the exact source-count gate as a
++competitor; focused current-source tests cover the transpose-first three-band
++edge schedule. The retained historical census is not relabeled as a run on the
++new source bytes.
++
++## D5 — Use two- and three-color A equality patterns without a transform cue
++
++**Input choice.** Transpose/anti-transpose bands retain verified three-color
++patterns with a unique maximum exact score. Every lesson also assigns three
++colors to one non-transpose band, while remaining non-transpose bands may use
++two colors. The non-transpose three-color band is made causally visible under
++partial recoloring when needed.
+ 
+ **Original rationale.** Canonical A blocks use two colors, but two colors alone
+ cannot reliably identify all eight 2x2 symmetries. Four unique colors were the
+-baseline's failure because they made every functional map possible.
+-
+-**Alternatives considered.** Four colors with partial identity preservation
+-could create score separation, but it is farther from canonical and increases
+-palette pressure. Three colors are the smallest extension that can make the
+-transpose branches geometrically identifiable. Requiring three colors for every
+-branch would make the canonical two-color shortcut irrelevant rather than teach
+-beyond it.
+-
+-**Probe.** The pattern bank is generated from restricted-growth equality
+-patterns, not hand-picked literals, and asserts at import that both map modes
+-exist for all eight branches.
++baseline's failure because they made every functional map possible. The 2.0.0
++repair solved that selector problem but left a new shortcut: three source colors
++perfectly predicted transpose-family membership.
++
++**Alternatives considered.** Three colors in every band would remove the cue but
++make the canonical two-color shortcut irrelevant. Random counts could leave a
++small lesson fully correlated by chance. The deterministic schedule preserves
++both equality-pattern families while guaranteeing a source-count
++counterexample in every lesson.
++
++**Probe.** The pattern bank remains generated from restricted-growth equality
++patterns and asserts both map modes for all eight branches. The exact
++`source_count_transform_gate` still fits every canonical occurrence, while
++current focused tests require every generated lesson—including the
++transpose-first three-band schedule—to contain a three-color non-transpose
++refutation.
+ 
+ ## D6 — Alternate identity and partial recoloring by band
+ 
+diff -ruN .review/baseline/repo/generators/4c26a1072222/tests/test_generator_4c26a1072222.py repo/generators/4c26a1072222/tests/test_generator_4c26a1072222.py
+--- .review/baseline/repo/generators/4c26a1072222/tests/test_generator_4c26a1072222.py	2026-10-23 17:01:47.356399091 +0000
++++ repo/generators/4c26a1072222/tests/test_generator_4c26a1072222.py	2026-10-23 17:06:02.710793082 +0000
+@@ -123,6 +123,50 @@
+         assert len(unique_inputs) >= 60
+ 
+ 
++def test_source_color_count_is_decoupled_from_transform_family() -> None:
++    transpose_family = {"transpose", "anti_transpose"}
++    cases = (
++        ("transpose", 3, 0),
++        ("anti_transpose", 3, 1),
++        ("rotate_cw", 3, 2),
++        ("identity", 4, 3),
++    )
++    for first_transform, n_bands, sample_index in cases:
++        grid = GEN.generate(
++            62001,
++            sample_index,
++            difficulty="hard",
++            n_bands=n_bands,
++            first_transform=first_transform,
++        )
++        signature = GEN.semantic_signature(grid)
++        assert any(
++            color_count == 3 and transform not in transpose_family
++            for transform, color_count in zip(
++                signature["transforms"], signature["source_color_counts"]
++            )
++        )
++
++
++
++def test_source_count_gate_is_a_declared_shortcut_and_generated_rival() -> None:
++    rival_name = "source_count_transform_gate"
++    witness_name = "source_count_decorrelation"
++    assert rival_name in GEN.CANONICAL_SHORTCUTS
++    assert rival_name in GEN.SEMANTIC_RIVALS
++    assert GEN.WITNESS_RIVALS[witness_name] == [rival_name]
++
++    rival = GEN.SEMANTIC_RIVALS[rival_name]
++    for pair in canonical_pairs():
++        assert rival(pair["input"]) == pair["output"]
++
++    for sample_index in range(16):
++        grid = GEN.generate(62002, sample_index, difficulty="hard")
++        assert GEN.SEMANTIC_WITNESSES[witness_name](grid)
++        assert rival(grid) != GEN.rule_mirror(grid)
++
++
++
+ def test_declared_witnesses_refute_linked_rivals_and_shortcuts_fit_canonical() -> None:
+     for pair in canonical_pairs():
+         for shortcut in GEN.CANONICAL_SHORTCUTS.values():
+diff -ruN .review/baseline/repo/generators/4c26a1072222/tests/test_parametric_application_direction.py repo/generators/4c26a1072222/tests/test_parametric_application_direction.py
+--- .review/baseline/repo/generators/4c26a1072222/tests/test_parametric_application_direction.py	1970-01-01 00:00:00.000000000 +0000
++++ repo/generators/4c26a1072222/tests/test_parametric_application_direction.py	2026-10-23 17:33:48.668641668 +0000
+@@ -0,0 +1,280 @@
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++import pytest
++
++from reviewer_support import (
++    canonical_path,
++    find_root,
++    load_selected_generator,
++    public_challenge_bytes,
++    public_challenge_id,
++)
++
++
++TASK_ID = "4c26a1072222"
++ROOT = find_root(__file__)
++PROTOTYPE_PATH = (
++    ROOT / "generators" / TASK_ID / "workspace" / "parametric" / "prototype.py"
++)
++VERIFY_PATH = PROTOTYPE_PATH.with_name("verify.py")
++
++_PROTOTYPE = None
++_VERIFIER = None
++_GENERATOR = None
++
++
++def _prototype():
++    global _PROTOTYPE
++    assert PROTOTYPE_PATH.is_file(), "parametric prototype has not been implemented"
++    if _PROTOTYPE is None:
++        name = "_test_parametric_application_direction_prototype"
++        spec = importlib.util.spec_from_file_location(name, PROTOTYPE_PATH)
++        assert spec is not None and spec.loader is not None
++        module = importlib.util.module_from_spec(spec)
++        sys.modules[name] = module
++        spec.loader.exec_module(module)
++        _PROTOTYPE = module
++    return _PROTOTYPE
++
++
++
++def _verifier():
++    global _VERIFIER
++    assert VERIFY_PATH.is_file(), "parametric verifier has not been implemented"
++    if _VERIFIER is None:
++        name = "_test_parametric_application_direction_verifier"
++        spec = importlib.util.spec_from_file_location(name, VERIFY_PATH)
++        assert spec is not None and spec.loader is not None
++        module = importlib.util.module_from_spec(spec)
++        sys.modules[name] = module
++        parameter_dir = str(VERIFY_PATH.parent)
++        sys.path.insert(0, parameter_dir)
++        try:
++            spec.loader.exec_module(module)
++        finally:
++            sys.path.remove(parameter_dir)
++        _VERIFIER = module
++    return _VERIFIER
++
++
++def _generator():
++    global _GENERATOR
++    if _GENERATOR is None:
++        _GENERATOR, _source, _digest = load_selected_generator(TASK_ID, root=ROOT)
++    return _GENERATOR
++
++
++def _canonical_program() -> str:
++    programs = {
++        row["program_solution"]
++        for line in canonical_path(ROOT).read_text(encoding="utf-8").splitlines()
++        if (row := json.loads(line)).get("task_id") == TASK_ID
++    }
++    assert len(programs) == 1
++    return programs.pop()
++
++
++def _pairs(episode):
++    return [pair for split in ("train", "test") for pair in episode[split]]
++
++
++def _serialized_inputs(episode):
++    return [
++        json.dumps(pair["input"], separators=(",", ":"))
++        for pair in _pairs(episode)
++    ]
++
++
++def test_default_program_is_exact_canonical_and_inverse_is_one_checked_edit():
++    """Catches canonical drift or an inverse rule that mutates unrelated logic."""
++    prototype = _prototype()
++    canonical = _canonical_program()
++    old = "(v (c-val gr t lr c))"
++    new = "(v (c-val gr (cond ((= t 4) 5) ((= t 5) 4) (else t)) lr c))"
++
++    assert prototype.DEFAULT_SETTING == "forward"
++    assert prototype.SETTINGS == ("forward", "inverse")
++    assert prototype.program_for("forward") == canonical
++    assert canonical.count(old) == 1
++    assert prototype.program_for("inverse") == canonical.replace(old, new, 1)
++
++    with pytest.raises(TypeError):
++        prototype.program_for(None)
++    with pytest.raises(ValueError):
++        prototype.program_for("reverse-colors")
++
++
++def test_inverse_application_swaps_only_quarter_turns_per_band():
++    """Catches a wrong D4 inverse table or using the inverse to relearn the map."""
++    prototype = _prototype()
++    generator = _generator()
++    inverse_transform = {0: 0, 1: 1, 2: 2, 3: 3, 4: 5, 5: 4, 6: 6, 7: 7}
++
++    for sample_index, first_transform in enumerate(generator.TRANSFORM_NAMES):
++        grid = generator.generate(
++            7300 + sample_index,
++            sample_index,
++            n_bands=4,
++            first_transform=first_transform,
++        )
++        info, errors = generator._analyze(grid)
++        assert errors == []
++        forward = prototype.apply_setting(grid, "forward")
++        inverse = prototype.apply_setting(grid, "inverse")
++
++        assert forward == generator.rule_mirror(grid)
++        for band in info["bands"]:
++            expected_transform = inverse_transform[band["transform"]]
++            transformed = generator._transform(band["c"], expected_transform)
++            expected = [
++                [band["mapping"].get(value, value) for value in row]
++                for row in transformed
++            ]
++            row0 = band["row0"]
++            actual = [inverse[row0], inverse[row0 + 1]]
++            forward_block = [forward[row0], forward[row0 + 1]]
++            assert actual == expected
++            if band["transform"] in (4, 5):
++                assert actual != forward_block
++            else:
++                assert actual == forward_block
++
++
++def test_episode_has_one_fixed_identifiable_setting_and_four_unique_queries():
++    """Catches per-pair setting resampling, duplicate queries, or weak demos."""
++    prototype = _prototype()
++    episode = prototype.build_episode(
++        20261023,
++        application_direction="inverse",
++        n_train=4,
++        n_test=4,
++    )
++
++    assert episode["parameters"] == {"application_direction": "inverse"}
++    assert episode["program"] == prototype.program_for("inverse")
++    assert len(episode["train"]) == 4
++    assert len(episode["test"]) == 4
++    assert prototype.setting_survivors(episode["train"]) == ["inverse"]
++    assert prototype.episode_errors(episode) == []
++
++    serialized = _serialized_inputs(episode)
++    assert len(serialized) == len(set(serialized)) == 8
++    query_serialized = [
++        json.dumps(pair["input"], separators=(",", ":"))
++        for pair in episode["test"]
++    ]
++    assert len(query_serialized) == len(set(query_serialized)) == 4
++
++    for pair in _pairs(episode):
++        assert prototype.apply_setting(pair["input"], "forward") != prototype.apply_setting(
++            pair["input"], "inverse"
++        )
++        assert pair["output"] == prototype.apply_setting(pair["input"], "inverse")
++
++
++def test_input_schedule_is_independent_of_selected_setting():
++    """Catches rule-dependent sampling that confounds the paired comparison."""
++    prototype = _prototype()
++    forward = prototype.build_episode(91, application_direction="forward")
++    inverse = prototype.build_episode(91, application_direction="inverse")
++
++    assert [pair["input"] for pair in _pairs(forward)] == [
++        pair["input"] for pair in _pairs(inverse)
++    ]
++    assert [pair["sampling"] for pair in _pairs(forward)] == [
++        pair["sampling"] for pair in _pairs(inverse)
++    ]
++    assert all(
++        left["output"] != right["output"]
++        for left, right in zip(_pairs(forward), _pairs(inverse), strict=True)
++    )
++
++
++def test_public_projection_masks_hidden_rule_and_query_answers():
++    """Catches seed, setting, program, query labels, or private metadata leaks."""
++    prototype = _prototype()
++    episode = prototype.build_episode(41, application_direction="inverse")
++    public = prototype.public_projection(episode)
++    payload = json.dumps(public, sort_keys=True)
++
++    assert set(public) == {"train", "test"}
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert all(set(pair) == {"input"} for pair in public["test"])
++    assert "parameters" not in payload
++    assert "program" not in payload
++    assert "seed" not in payload
++    assert "sampling" not in payload
++    assert prototype.public_identifier(episode) == public_challenge_id(public)
++
++    hidden_only_mutation = deepcopy(episode)
++    hidden_only_mutation["seed"] = 123456789
++    hidden_only_mutation["parameters"] = {"application_direction": "forward"}
++    hidden_only_mutation["program"] = "private replacement"
++    hidden_only_mutation["generator_sha256"] = "0" * 64
++    for pair in hidden_only_mutation["test"]:
++        pair["output"] = [[9]]
++        pair["sampling"] = {"private": "replacement"}
++    assert prototype.public_identifier(hidden_only_mutation) == prototype.public_identifier(
++        episode
++    )
++
++
++def test_invalid_seed_setting_and_episode_counts_fail_closed():
++    """Catches permissive APIs that emit undersized or ill-typed episodes."""
++    prototype = _prototype()
++
++    assert prototype.choose_setting(17) in prototype.SETTINGS
++    assert prototype.choose_setting(17) == prototype.choose_setting(17)
++    with pytest.raises(TypeError):
++        prototype.choose_setting(True)
++    with pytest.raises(TypeError):
++        prototype.apply_setting([[1]], 1)
++    with pytest.raises(ValueError):
++        prototype.apply_setting([[1]], "sideways")
++    with pytest.raises(TypeError):
++        prototype.build_episode(True)
++    with pytest.raises(ValueError):
++        prototype.build_episode(1, application_direction="sideways")
++    with pytest.raises(ValueError):
++        prototype.build_episode(1, n_train=3, n_test=4)
++    with pytest.raises(ValueError):
++        prototype.build_episode(1, n_train=4, n_test=3)
++
++
++def test_verifier_writes_exact_canonical_public_bytes(tmp_path):
++    """Catches public IDs that do not hash the exact visible public file."""
++    prototype = _prototype()
++    verifier = _verifier()
++    episode = prototype.build_episode(20261023, application_direction="inverse")
++    public = prototype.public_projection(episode)
++    path = tmp_path / "public.json"
++
++    emitted = verifier._write_public(path, public)
++    canonical = public_challenge_bytes(public)
++
++    assert emitted == canonical
++    assert path.read_bytes() == canonical
++    assert hashlib.sha256(path.read_bytes()).hexdigest() == prototype.public_identifier(
++        episode
++    )
++
++
++def test_verifier_sorts_batch_entries_by_opaque_public_id():
++    """Catches batch manifests whose ordering leaks setting iteration order."""
++    verifier = _verifier()
++    entries = [
++        {"public_id": "f" * 64, "setting": "forward"},
++        {"public_id": "2" * 64, "setting": "inverse"},
++    ]
++
++    ordered = verifier._sort_manifest_entries(entries)
++
++    assert [row["public_id"] for row in ordered] == ["2" * 64, "f" * 64]
++    assert [row["setting"] for row in entries] == ["forward", "inverse"]
+diff -ruN .review/baseline/repo/generators/4c26a1072222/workspace/parametric/README.md repo/generators/4c26a1072222/workspace/parametric/README.md
+--- .review/baseline/repo/generators/4c26a1072222/workspace/parametric/README.md	1970-01-01 00:00:00.000000000 +0000
++++ repo/generators/4c26a1072222/workspace/parametric/README.md	2026-10-23 17:34:08.482473176 +0000
+@@ -0,0 +1,46 @@
++# Forward/inverse application prototype
++
++This task-local prototype keeps the original per-band reasoning structure:
++infer the authority-selected D4 transform and functional A→B color map, then
++apply the map to transformed C. One hidden value is chosen once per episode:
++
++- `forward` — apply the inferred transform to C; this is the registered
++  canonical rule and its Racket source is returned byte-for-byte.
++- `inverse` — apply the inverse transform to C while retaining the same learned
++  color map. Only clockwise and counterclockwise quarter turns swap; the other
++  six D4 operations are self-inverse.
++
++Each episode contains four demonstrations and four distinct queries. Input
++sampling is identical across settings for a fixed seed, and every retained input
++contains an observable quarter-turn distinction. The public export includes only
++demonstrations and query inputs; seed, setting, programs, sampling receipts, and
++query labels remain private. The verifier writes the canonical visible challenge
++bytes directly, so the SHA-256 of each emitted `public.json` is exactly its public
++ID. Batch manifest rows are sorted by that opaque ID, and duplicate visible
++payloads fail closed. This is proposed evidence, not production wiring or
++canonical approval.
++
++From the packet root, run exact Python/Racket verification for both settings:
++
++```bash
++python review.py run python3 \
++  generators/4c26a1072222/workspace/parametric/verify.py \
++  --all-settings \
++  --output-dir ../checks/parametric \
++  --overwrite
++```
++
++From `WORK/repo/`, run the focused unit tests:
++
++```bash
++PYTHONPATH=shared/runtime:src python -m pytest -q \
++  generators/4c26a1072222/tests/test_parametric_application_direction.py
++```
++
++Run the bounded sampler/export adversarial probe from `WORK/repo/`:
++
++```bash
++PYTHONPATH=shared/runtime:src python \
++  generators/4c26a1072222/workspace/parametric/adversarial_probe.py \
++  --out ../checks/parametric-adversarial.json
++```
+diff -ruN .review/baseline/repo/generators/4c26a1072222/workspace/parametric/adversarial_probe.py repo/generators/4c26a1072222/workspace/parametric/adversarial_probe.py
+--- .review/baseline/repo/generators/4c26a1072222/workspace/parametric/adversarial_probe.py	1970-01-01 00:00:00.000000000 +0000
++++ repo/generators/4c26a1072222/workspace/parametric/adversarial_probe.py	2026-10-23 17:15:19.230071885 +0000
+@@ -0,0 +1,236 @@
++#!/usr/bin/env python3
++"""Bounded adversarial probe for parametric sampler/export edge surfaces."""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import json
++from pathlib import Path
++import sys
++from typing import Any
++
++
++HERE = Path(__file__).resolve().parent
++REPO = HERE.parents[3]
++for dependency in (REPO, REPO / "shared" / "runtime", HERE):
++    text = str(dependency)
++    if text not in sys.path:
++        sys.path.insert(0, text)
++
++from reviewer_support import public_challenge_id  # noqa: E402
++import prototype  # noqa: E402
++
++
++SEEDS = (0, -1, 2**63 - 1, 20261023)
++COUNT_CASES = ((4, 4), (5, 6))
++
++
++def _grid_errors(grid: Any, label: str) -> list[str]:
++    if type(grid) is not list or not 1 <= len(grid) <= 30:
++        return [f"{label}: grid row count outside 1..30"]
++    if type(grid[0]) is not list or not 1 <= len(grid[0]) <= 30:
++        return [f"{label}: grid column count outside 1..30"]
++    width = len(grid[0])
++    errors = []
++    for row_index, row in enumerate(grid):
++        if type(row) is not list or len(row) != width:
++            errors.append(f"{label}: row {row_index} is ragged or not a list")
++            continue
++        for col_index, value in enumerate(row):
++            if type(value) is not int or not 0 <= value <= 9:
++                errors.append(
++                    f"{label}: cell ({row_index},{col_index}) is not exact int 0..9"
++                )
++    return errors
++
++
++def _visible_grid_errors(public: dict[str, Any]) -> list[str]:
++    errors: list[str] = []
++    for split in ("train", "test"):
++        for index, pair in enumerate(public[split]):
++            errors.extend(_grid_errors(pair["input"], f"{split}[{index}].input"))
++            if split == "train":
++                errors.extend(
++                    _grid_errors(pair["output"], f"{split}[{index}].output")
++                )
++            elif set(pair) != {"input"}:
++                errors.append(f"test[{index}] leaked fields {sorted(set(pair) - {'input'})}")
++    return errors
++
++
++def _episode_inputs(episode: dict[str, Any]) -> list[Any]:
++    return [
++        pair["input"]
++        for split in ("train", "test")
++        for pair in episode[split]
++    ]
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", required=True)
++    args = parser.parse_args()
++
++    failures: list[str] = []
++    cases: list[dict[str, Any]] = []
++    max_retry_attempt = 0
++    all_public_ids: set[str] = set()
++
++    try:
++        prototype.choose_setting(True)
++        failures.append("bool seed was accepted")
++    except TypeError:
++        pass
++
++    for seed in SEEDS:
++        for n_train, n_test in COUNT_CASES:
++            episodes = {
++                setting: prototype.build_episode(
++                    seed,
++                    application_direction=setting,
++                    n_train=n_train,
++                    n_test=n_test,
++                )
++                for setting in prototype.SETTINGS
++            }
++            schedules = {
++                setting: _episode_inputs(episode)
++                for setting, episode in episodes.items()
++            }
++            if schedules["forward"] != schedules["inverse"]:
++                failures.append(
++                    f"seed={seed} counts={n_train}/{n_test}: input schedule depends on setting"
++                )
++
++            for setting, episode in episodes.items():
++                errors = prototype.episode_errors(episode)
++                if errors:
++                    failures.append(
++                        f"seed={seed} counts={n_train}/{n_test} setting={setting}: {errors}"
++                    )
++                survivors = prototype.setting_survivors(episode["train"])
++                if survivors != [setting]:
++                    failures.append(
++                        f"seed={seed} counts={n_train}/{n_test} setting={setting}: survivors={survivors}"
++                    )
++                serialized = [
++                    json.dumps(grid, separators=(",", ":"))
++                    for grid in _episode_inputs(episode)
++                ]
++                if len(serialized) != len(set(serialized)):
++                    failures.append(
++                        f"seed={seed} counts={n_train}/{n_test} setting={setting}: duplicate inputs"
++                    )
++                if any(
++                    prototype.apply_setting(pair["input"], "forward")
++                    == prototype.apply_setting(pair["input"], "inverse")
++                    for split in ("train", "test")
++                    for pair in episode[split]
++                ):
++                    failures.append(
++                        f"seed={seed} counts={n_train}/{n_test} setting={setting}: non-distinguishing input"
++                    )
++
++                attempts = [
++                    pair["sampling"]["attempt"]
++                    for split in ("train", "test")
++                    for pair in episode[split]
++                ]
++                max_retry_attempt = max(max_retry_attempt, *attempts)
++
++                public = prototype.public_projection(episode)
++                public_id = prototype.public_identifier(episode)
++                all_public_ids.add(public_id)
++                if public_id != public_challenge_id(public):
++                    failures.append(
++                        f"seed={seed} counts={n_train}/{n_test} setting={setting}: public ID mismatch"
++                    )
++                failures.extend(
++                    f"seed={seed} counts={n_train}/{n_test} setting={setting}: {error}"
++                    for error in _visible_grid_errors(public)
++                )
++
++                hidden = deepcopy(episode)
++                hidden["seed"] = seed + 1
++                hidden["parameters"] = {
++                    "application_direction": (
++                        "inverse" if setting == "forward" else "forward"
++                    )
++                }
++                hidden["program"] = "hidden replacement"
++                hidden["generator_sha256"] = "0" * 64
++                for pair in hidden["test"]:
++                    pair["output"] = [[9]]
++                    pair["sampling"] = {"hidden": True}
++                if prototype.public_identifier(hidden) != public_id:
++                    failures.append(
++                        f"seed={seed} counts={n_train}/{n_test} setting={setting}: hidden fields changed public ID"
++                    )
++
++                cases.append(
++                    {
++                        "seed": seed,
++                        "n_train": n_train,
++                        "n_test": n_test,
++                        "setting": setting,
++                        "public_id": public_id,
++                        "survivors": survivors,
++                        "max_retry_attempt": max(attempts),
++                        "unique_inputs": len(set(serialized)),
++                    }
++                )
++
++    rejection_episode = prototype.build_episode(
++        17, application_direction="forward", n_train=4, n_test=4
++    )
++    corrupt = deepcopy(rejection_episode)
++    corrupt["train"][0]["output"] = [[0]]
++    if not any("label mismatches" in error for error in prototype.episode_errors(corrupt)):
++        failures.append("episode_errors did not reject a corrupted demonstration label")
++
++    duplicate = deepcopy(rejection_episode)
++    duplicate["test"][0]["input"] = deepcopy(duplicate["train"][0]["input"])
++    duplicate["test"][0]["output"] = prototype.apply_setting(
++        duplicate["test"][0]["input"], "forward"
++    )
++    if not any("duplicates another episode input" in error for error in prototype.episode_errors(duplicate)):
++        failures.append("episode_errors did not reject a duplicated query input")
++
++    report = {
++        "schema": "4c26a1072222-parametric-adversarial-probe-v1",
++        "status": "passed" if not failures else "failed",
++        "surfaces": [
++            "sampler_boundaries_and_retry_schedules",
++            "public_private_export_and_numeric_types",
++        ],
++        "seed_cases": list(SEEDS),
++        "count_cases": [list(case) for case in COUNT_CASES],
++        "settings": list(prototype.SETTINGS),
++        "episode_cases": len(cases),
++        "input_grids_checked": sum(row["unique_inputs"] for row in cases),
++        "max_retry_attempt": max_retry_attempt,
++        "distinct_public_ids": len(all_public_ids),
++        "rejection_paths": {
++            "bool_seed": "rejected",
++            "corrupt_demo_label": "rejected",
++            "duplicate_query_input": "rejected",
++        },
++        "failures": failures,
++        "cases": cases,
++        "limits": [
++            "Bounded to four edge seeds and two train/query count combinations.",
++            "Did not exhaust the 512-attempt retry limit because all retained cases succeeded on attempt 0.",
++            "Racket parity is covered separately by checks/parametric/manifest.json.",
++        ],
++    }
++    out = Path(args.out).resolve()
++    out.parent.mkdir(parents=True, exist_ok=True)
++    out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(json.dumps({key: report[key] for key in (
++        "status", "episode_cases", "input_grids_checked", "max_retry_attempt", "distinct_public_ids"
++    )}, sort_keys=True))
++    return 0 if not failures else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff -ruN .review/baseline/repo/generators/4c26a1072222/workspace/parametric/prototype.py repo/generators/4c26a1072222/workspace/parametric/prototype.py
+--- .review/baseline/repo/generators/4c26a1072222/workspace/parametric/prototype.py	1970-01-01 00:00:00.000000000 +0000
++++ repo/generators/4c26a1072222/workspace/parametric/prototype.py	2026-10-23 17:11:16.624170792 +0000
+@@ -0,0 +1,358 @@
++"""Task-local episode-fixed forward/inverse rule variants for ``4c26a1072222``.
++
++The canonical setting infers one D4 transform and one functional color map from
++A→B in each band, then applies that same transform and map to C.  This proposed
++prototype varies one nearby semantic choice once per episode:
++
++* ``forward``: apply the inferred transform to C (the registered canonical rule);
++* ``inverse``: apply the inverse of the inferred transform to C while retaining
++  the same A→B color map.
++
++Only quarter-turn transforms differ between the settings.  Production generation
++and canonical authority remain unchanged, and the default setting returns the
++registered canonical Racket source byte-for-byte.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++from functools import lru_cache
++import hashlib
++import json
++from typing import Any, Iterable
++
++from reviewer_support import (
++    canonical_path,
++    find_root,
++    load_selected_generator,
++    public_challenge_id,
++)
++
++
++TASK_ID = "4c26a1072222"
++PROTOTYPE_VERSION = "1.0.0"
++DEFAULT_SETTING = "forward"
++SETTINGS = (DEFAULT_SETTING, "inverse")
++MIN_TRAIN = 4
++MIN_TEST = 4
++
++_CANONICAL_C_BINDING = "(v (c-val gr t lr c))"
++_INVERSE_C_BINDING = (
++    "(v (c-val gr (cond ((= t 4) 5) ((= t 5) 4) (else t)) lr c))"
++)
++_INVERSE_TRANSFORM = {0: 0, 1: 1, 2: 2, 3: 3, 4: 5, 5: 4, 6: 6, 7: 7}
++_DIFFICULTIES = ("easy", "medium", "hard", None)
++_QUARTER_TURNS = ("rotate_cw", "rotate_ccw")
++
++
++def _validate_seed(seed: Any) -> int:
++    if type(seed) is not int:
++        raise TypeError("seed must be an integer (not bool)")
++    return seed
++
++
++def validate_setting(setting: Any) -> str:
++    if type(setting) is not str:
++        raise TypeError("application_direction must be a string")
++    if setting not in SETTINGS:
++        raise ValueError(f"application_direction must be one of {SETTINGS}")
++    return setting
++
++
++def setting_key(setting: str) -> str:
++    return validate_setting(setting)
++
++
++def choose_setting(seed: int) -> str:
++    """Choose one hidden application direction for the complete episode."""
++    seed = _validate_seed(seed)
++    digest = hashlib.sha256(
++        f"{TASK_ID}|{PROTOTYPE_VERSION}|episode-setting|{seed}".encode()
++    ).digest()
++    return SETTINGS[int.from_bytes(digest[:8], "big") % len(SETTINGS)]
++
++
++@lru_cache(maxsize=1)
++def canonical_program() -> str:
++    root = find_root(__file__)
++    programs: set[str] = set()
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        for line in handle:
++            if not line.strip():
++                continue
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                programs.add(row["program_solution"])
++    if len(programs) != 1:
++        raise RuntimeError(
++            f"expected one unique canonical program for {TASK_ID}, found {len(programs)}"
++        )
++    return programs.pop()
++
++
++def _replace_once(source: str, old: str, new: str) -> str:
++    count = source.count(old)
++    if count != 1:
++        raise RuntimeError(f"canonical rule drift: expected one {old!r}, found {count}")
++    return source.replace(old, new, 1)
++
++
++def program_for(setting: str = DEFAULT_SETTING) -> str:
++    """Return exact Racket source for one proposed application direction."""
++    setting = validate_setting(setting)
++    source = canonical_program()
++    if setting == DEFAULT_SETTING:
++        if source.count(_CANONICAL_C_BINDING) != 1:
++            raise RuntimeError("canonical C-transform binding drifted")
++        return source
++    return _replace_once(source, _CANONICAL_C_BINDING, _INVERSE_C_BINDING)
++
++
++@lru_cache(maxsize=1)
++def _selected_generator():
++    root = find_root(__file__)
++    return load_selected_generator(TASK_ID, root=root)
++
++
++def apply_setting(grid: Any, setting: str = DEFAULT_SETTING) -> list[list[int]]:
++    """Apply one direction using the selected generator's exact band analysis."""
++    setting = validate_setting(setting)
++    generator, _source_path, _source_sha256 = _selected_generator()
++    info, errors = generator._analyze(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++
++    output = [[0 for _ in range(2)] for _ in range(info["height"])]
++    for band in info["bands"]:
++        transform = band["transform"]
++        if setting == "inverse":
++            transform = _INVERSE_TRANSFORM[transform]
++        generator._render_band(output, band, transform, band["mapping"])
++    return output
++
++
++def _candidate_seed(seed: int, split: str, index: int, attempt: int) -> int:
++    payload = (
++        f"{TASK_ID}|{PROTOTYPE_VERSION}|input|{seed}|{split}|{index}|{attempt}"
++    ).encode()
++    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
++
++
++def _input_spec(split: str, index: int) -> dict[str, Any]:
++    if split == "train":
++        offset = index
++    elif split == "test":
++        offset = index + 17
++    else:
++        raise ValueError(f"unknown split: {split}")
++    return {
++        "sample_index": offset,
++        "n_bands": 3 + (offset % 2),
++        "first_transform": _QUARTER_TURNS[offset % len(_QUARTER_TURNS)],
++        "difficulty": _DIFFICULTIES[offset % len(_DIFFICULTIES)],
++    }
++
++
++def _build_input(
++    generator: Any,
++    *,
++    seed: int,
++    split: str,
++    index: int,
++    used: set[str],
++) -> tuple[list[list[int]], dict[str, Any]]:
++    spec = _input_spec(split, index)
++    for attempt in range(512):
++        draw_seed = _candidate_seed(seed, split, index, attempt)
++        grid = generator.generate(
++            draw_seed,
++            spec["sample_index"],
++            difficulty=spec["difficulty"],
++            n_bands=spec["n_bands"],
++            first_transform=spec["first_transform"],
++        )
++        encoded = json.dumps(grid, separators=(",", ":"))
++        if encoded in used:
++            continue
++        if generator.self_check(grid, difficulty=spec["difficulty"]):
++            continue
++        if apply_setting(grid, "forward") == apply_setting(grid, "inverse"):
++            continue
++        observed = generator.observe_overrides(grid)
++        if observed != {
++            "n_bands": spec["n_bands"],
++            "first_transform": spec["first_transform"],
++        }:
++            raise RuntimeError(
++                f"selected generator realized {observed}, expected input spec {spec}"
++            )
++        used.add(encoded)
++        return grid, {
++            "split": split,
++            "index": index,
++            "draw_seed": draw_seed,
++            "attempt": attempt,
++            **spec,
++        }
++    raise RuntimeError(
++        f"could not draw a unique direction-distinguishing {split}[{index}] "
++        "after 512 attempts"
++    )
++
++
++def build_episode(
++    seed: int,
++    *,
++    application_direction: str | None = None,
++    n_train: int = MIN_TRAIN,
++    n_test: int = MIN_TEST,
++) -> dict[str, Any]:
++    """Build an episode with one fixed setting, four demos, and four queries."""
++    seed = _validate_seed(seed)
++    if type(n_train) is not int or n_train < MIN_TRAIN:
++        raise ValueError(f"n_train must be an integer >= {MIN_TRAIN}")
++    if type(n_test) is not int or n_test < MIN_TEST:
++        raise ValueError(f"n_test must be an integer >= {MIN_TEST}")
++    selected = (
++        choose_setting(seed)
++        if application_direction is None
++        else validate_setting(application_direction)
++    )
++
++    generator, source_path, source_sha256 = _selected_generator()
++    used: set[str] = set()
++    splits: dict[str, list[dict[str, Any]]] = {"train": [], "test": []}
++    for split, count in (("train", n_train), ("test", n_test)):
++        for index in range(count):
++            grid, sampling = _build_input(
++                generator,
++                seed=seed,
++                split=split,
++                index=index,
++                used=used,
++            )
++            splits[split].append(
++                {
++                    "input": grid,
++                    "output": apply_setting(grid, selected),
++                    "sampling": sampling,
++                }
++            )
++
++    return {
++        "schema": "4c26a1072222-parametric-episode-v1",
++        "scope": "proposed task-local prototype; not selected canonical execution",
++        "task_id": TASK_ID,
++        "prototype_version": PROTOTYPE_VERSION,
++        "seed": seed,
++        "parameters": {"application_direction": selected},
++        "program": program_for(selected),
++        "generator_source": str(source_path),
++        "generator_sha256": source_sha256,
++        "train": splits["train"],
++        "test": splits["test"],
++    }
++
++
++def setting_from_parameters(parameters: Any) -> str:
++    if not isinstance(parameters, dict):
++        raise TypeError("parameters must be a mapping")
++    return validate_setting(parameters.get("application_direction"))
++
++
++def setting_survivors(demos: Iterable[dict[str, Any]]) -> list[str]:
++    demos = list(demos)
++    survivors: list[str] = []
++    for candidate in SETTINGS:
++        try:
++            if all(
++                isinstance(pair, dict)
++                and pair.get("output") == apply_setting(pair.get("input"), candidate)
++                for pair in demos
++            ):
++                survivors.append(candidate)
++        except (TypeError, ValueError):
++            continue
++    return survivors
++
++
++def episode_errors(episode: Any) -> list[str]:
++    errors: list[str] = []
++    if not isinstance(episode, dict):
++        return ["episode must be a mapping"]
++    try:
++        selected = setting_from_parameters(episode.get("parameters"))
++    except (TypeError, ValueError) as exc:
++        return [f"invalid parameters: {exc}"]
++    if episode.get("program") != program_for(selected):
++        errors.append("program does not match the fixed setting")
++
++    generator, _source_path, current_sha = _selected_generator()
++    if episode.get("generator_sha256") != current_sha:
++        errors.append("selected generator source hash drifted")
++
++    seen: set[str] = set()
++    for split, minimum in (("train", MIN_TRAIN), ("test", MIN_TEST)):
++        pairs = episode.get(split)
++        if not isinstance(pairs, list) or len(pairs) < minimum:
++            errors.append(f"{split} must contain at least {minimum} pairs")
++            continue
++        for index, pair in enumerate(pairs):
++            if not isinstance(pair, dict) or "input" not in pair or "output" not in pair:
++                errors.append(f"{split}[{index}] lacks input/output")
++                continue
++            try:
++                grammar_errors = generator.self_check(pair["input"])
++                if grammar_errors:
++                    errors.append(
++                        f"{split}[{index}] outside selected grammar: {grammar_errors}"
++                    )
++                expected = apply_setting(pair["input"], selected)
++                if pair["output"] != expected:
++                    errors.append(f"{split}[{index}] label mismatches fixed setting")
++                if apply_setting(pair["input"], "forward") == apply_setting(
++                    pair["input"], "inverse"
++                ):
++                    errors.append(f"{split}[{index}] does not distinguish settings")
++                encoded = json.dumps(pair["input"], separators=(",", ":"))
++                if encoded in seen:
++                    errors.append(f"{split}[{index}] duplicates another episode input")
++                seen.add(encoded)
++            except (TypeError, ValueError) as exc:
++                errors.append(f"{split}[{index}] invalid: {exc}")
++
++    train = episode.get("train")
++    if isinstance(train, list) and len(train) >= MIN_TRAIN:
++        survivors = setting_survivors(train)
++        if survivors != [selected]:
++            errors.append(
++                "demonstrations do not uniquely identify the fixed setting: "
++                + ", ".join(survivors)
++            )
++    return errors
++
++
++def public_projection(episode: dict[str, Any]) -> dict[str, Any]:
++    """Return only visible demonstrations and query inputs."""
++    if not isinstance(episode, dict):
++        raise ValueError("episode must be a mapping")
++    train = episode.get("train")
++    test = episode.get("test")
++    if not isinstance(train, list) or not train or not isinstance(test, list) or not test:
++        raise ValueError("episode must contain nonempty train and test lists")
++    try:
++        return {
++            "train": [
++                {
++                    "input": deepcopy(pair["input"]),
++                    "output": deepcopy(pair["output"]),
++                }
++                for pair in train
++            ],
++            "test": [{"input": deepcopy(pair["input"])} for pair in test],
++        }
++    except (KeyError, TypeError) as exc:
++        raise ValueError("visible pairs are malformed") from exc
++
++
++def public_identifier(episode: dict[str, Any]) -> str:
++    return public_challenge_id(public_projection(episode))
+diff -ruN .review/baseline/repo/generators/4c26a1072222/workspace/parametric/verify.py repo/generators/4c26a1072222/workspace/parametric/verify.py
+--- .review/baseline/repo/generators/4c26a1072222/workspace/parametric/verify.py	1970-01-01 00:00:00.000000000 +0000
++++ repo/generators/4c26a1072222/workspace/parametric/verify.py	2026-10-23 17:33:58.486654994 +0000
+@@ -0,0 +1,326 @@
++#!/usr/bin/env python3
++"""Execute and export the proposed forward/inverse settings with Racket."""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import json
++import os
++from pathlib import Path
++import shutil
++import sys
++from typing import Any
++
++
++HERE = Path(__file__).resolve().parent
++REPO = HERE.parents[3]
++for dependency in (REPO, REPO / "shared" / "runtime", HERE):
++    text = str(dependency)
++    if text not in sys.path:
++        sys.path.insert(0, text)
++
++from arc_repl.racket_bridge import RacketBridge  # noqa: E402
++from puzzle_generators.rule_wrap import strip_rule_wrapper  # noqa: E402
++from reviewer_support import public_challenge_bytes  # noqa: E402
++import prototype  # noqa: E402
++
++
++def _sha256_bytes(payload: bytes) -> str:
++    return hashlib.sha256(payload).hexdigest()
++
++
++def _sha256_file(path: Path) -> str:
++    return _sha256_bytes(path.read_bytes())
++
++
++def _write_json(path: Path, payload: Any) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(
++        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
++        encoding="utf-8",
++    )
++
++
++def _write_public(path: Path, payload: Any) -> bytes:
++    """Write the exact canonical bytes whose SHA-256 is the public ID."""
++    path.parent.mkdir(parents=True, exist_ok=True)
++    canonical = public_challenge_bytes(payload)
++    path.write_bytes(canonical)
++    return canonical
++
++
++def _grid_literal(grid: list[list[int]]) -> str:
++    rows = " ".join(
++        "(" + " ".join(str(value) for value in row) + ")" for row in grid
++    )
++    return f"'({rows})"
++
++
++def _application(program: str, grid: list[list[int]]) -> str:
++    body = strip_rule_wrapper(program)
++    if not body.lstrip().startswith("(lambda"):
++        raise ValueError("prototype program must contain an exact lambda rule")
++    return f"({body} {_grid_literal(grid)})"
++
++
++def _parse_setting(value: str) -> str:
++    try:
++        return prototype.validate_setting(value)
++    except (TypeError, ValueError) as exc:
++        raise argparse.ArgumentTypeError(str(exc)) from exc
++
++
++def _selected_settings(args: argparse.Namespace) -> tuple[str, ...]:
++    if args.all_settings:
++        return prototype.SETTINGS
++    if args.setting is not None:
++        return (args.setting,)
++    return (prototype.choose_setting(args.seed),)
++
++
++def _candidate_outputs(
++    bridge: RacketBridge,
++    programs: dict[str, str],
++    grid: list[list[int]],
++) -> dict[str, list[list[int]]]:
++    outputs: dict[str, list[list[int]]] = {}
++    for setting, program in programs.items():
++        racket_output = bridge.eval_text(_application(program, grid))
++        python_output = prototype.apply_setting(grid, setting)
++        if racket_output != python_output:
++            raise RuntimeError(f"Racket/Python mismatch for candidate {setting}")
++        outputs[setting] = racket_output
++    return outputs
++
++
++def _racket_survivors(
++    checks: list[dict[str, Any]],
++    selected: str,
++) -> list[str]:
++    return [
++        candidate
++        for candidate in prototype.SETTINGS
++        if all(
++            row["candidate_outputs"][candidate]
++            == row["candidate_outputs"][selected]
++            for row in checks
++            if row["split"] == "train"
++        )
++    ]
++
++
++def _prepare_output_dir(path: Path, *, overwrite: bool) -> None:
++    if path.exists() and any(path.iterdir()):
++        if not overwrite:
++            raise FileExistsError(
++                f"output directory is not empty: {path}; use --overwrite"
++            )
++        shutil.rmtree(path)
++    path.mkdir(parents=True, exist_ok=True)
++
++
++def _input_schedule(episode: dict[str, Any]) -> list[list[list[int]]]:
++    return [
++        pair["input"]
++        for split in ("train", "test")
++        for pair in episode[split]
++    ]
++
++
++def _sort_manifest_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
++    """Return batch metadata in opaque public-ID order without mutating input."""
++    return sorted(entries, key=lambda row: row["public_id"])
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seed", type=int, default=20261023)
++    parser.add_argument("--train-count", type=int, default=prototype.MIN_TRAIN)
++    parser.add_argument("--query-count", type=int, default=prototype.MIN_TEST)
++    parser.add_argument("--output-dir", required=True)
++    group = parser.add_mutually_exclusive_group()
++    group.add_argument("--all-settings", action="store_true")
++    group.add_argument("--setting", type=_parse_setting)
++    parser.add_argument("--overwrite", action="store_true")
++    args = parser.parse_args()
++
++    settings = _selected_settings(args)
++    programs = {
++        setting: prototype.program_for(setting) for setting in prototype.SETTINGS
++    }
++    if programs[prototype.DEFAULT_SETTING] != prototype.canonical_program():
++        raise SystemExit("default setting no longer exactly matches canonical authority")
++    program_hashes = {_sha256_bytes(source.encode()) for source in programs.values()}
++    if len(program_hashes) != len(programs):
++        raise SystemExit("two declared settings materialize the same Racket program")
++
++    output_dir = Path(args.output_dir).resolve()
++    _prepare_output_dir(output_dir, overwrite=args.overwrite)
++
++    episodes = {
++        setting: prototype.build_episode(
++            args.seed,
++            application_direction=setting,
++            n_train=args.train_count,
++            n_test=args.query_count,
++        )
++        for setting in settings
++    }
++    for setting, episode in episodes.items():
++        errors = prototype.episode_errors(episode)
++        if errors:
++            raise SystemExit(f"invalid {setting} episode: {errors}")
++    schedules = {_sha256_bytes(json.dumps(_input_schedule(episode), separators=(",", ":")).encode()) for episode in episodes.values()}
++    if len(schedules) != 1:
++        raise SystemExit("selected settings did not share the same input schedule")
++
++    manifest_entries: list[dict[str, Any]] = []
++    total_racket_calls = 0
++    with RacketBridge(timeout=30, max_calls_before_restart=128) as bridge:
++        runtime_identity = bridge.runtime_identity
++        if not runtime_identity.get("protected"):
++            raise SystemExit("Racket bridge did not pass the protected-runtime canary")
++        for selected, provisional in episodes.items():
++            episode = deepcopy(provisional)
++            checks: list[dict[str, Any]] = []
++            for split in ("train", "test"):
++                for index, pair in enumerate(episode[split]):
++                    outputs = _candidate_outputs(bridge, programs, pair["input"])
++                    total_racket_calls += len(programs)
++                    pair["output"] = outputs[selected]
++                    checks.append(
++                        {
++                            "split": split,
++                            "pair_index": index,
++                            "sampling": pair["sampling"],
++                            "candidate_outputs": outputs,
++                        }
++                    )
++
++            errors = prototype.episode_errors(episode)
++            if errors:
++                raise SystemExit(f"Racket-labeled {selected} episode invalid: {errors}")
++            survivors = _racket_survivors(checks, selected)
++            if survivors != [selected]:
++                raise SystemExit(
++                    f"Racket demonstrations do not identify {selected}: {survivors}"
++                )
++
++            public = prototype.public_projection(episode)
++            public_id = prototype.public_identifier(episode)
++            episode_dir = output_dir / public_id
++            episode_dir.mkdir(parents=True, exist_ok=False)
++            canonical_public = _write_public(episode_dir / "public.json", public)
++            if _sha256_bytes(canonical_public) != public_id:
++                raise RuntimeError("public ID does not hash the exact visible public file")
++            (episode_dir / "rule.rkt").write_text(
++                programs[selected] + "\n", encoding="utf-8"
++            )
++            private = {
++                "schema": "4c26a1072222-parametric-private-evidence-v1",
++                "scope": "proposed task-local prototype; not canonical approval",
++                "public_id": public_id,
++                "public_canonical_bytes_sha256": _sha256_bytes(canonical_public),
++                "episode": episode,
++                "demonstration_survivors": survivors,
++                "all_candidate_programs": {
++                    setting: {
++                        "source": source,
++                        "sha256": _sha256_bytes(source.encode()),
++                    }
++                    for setting, source in programs.items()
++                },
++                "execution_checks": checks,
++            }
++            _write_json(episode_dir / "private.json", private)
++
++            files = {}
++            for name in ("public.json", "private.json", "rule.rkt"):
++                path = episode_dir / name
++                files[name] = {
++                    "sha256": _sha256_file(path),
++                    "bytes": path.stat().st_size,
++                }
++            manifest_entries.append(
++                {
++                    "public_id": public_id,
++                    "setting": selected,
++                    "train_count": len(episode["train"]),
++                    "query_count": len(episode["test"]),
++                    "demonstration_survivors": survivors,
++                    "files": files,
++                }
++            )
++
++    manifest_entries = _sort_manifest_entries(manifest_entries)
++
++    generator_hashes = {episode["generator_sha256"] for episode in episodes.values()}
++    if len(generator_hashes) != 1:
++        raise SystemExit("episodes used different selected generator bytes")
++
++    manifest = {
++        "schema": "4c26a1072222-parametric-verification-v1",
++        "status": "passed",
++        "scope": "proposed task-local prototype; not canonical approval",
++        "task_id": prototype.TASK_ID,
++        "prototype_version": prototype.PROTOTYPE_VERSION,
++        "seed": args.seed,
++        "cwd": os.getcwd(),
++        "argv": sys.argv,
++        "parameterization": {
++            "application_direction": {
++                "values": list(prototype.SETTINGS),
++                "default": prototype.DEFAULT_SETTING,
++            },
++            "chosen_once_per_episode": True,
++            "input_schedule_independent_of_setting": True,
++            "demonstration_only_identification": True,
++        },
++        "counts": {
++            "episodes": len(manifest_entries),
++            "settings_available": len(prototype.SETTINGS),
++            "train_pairs_per_episode": args.train_count,
++            "query_pairs_per_episode": args.query_count,
++            "racket_executions": total_racket_calls,
++        },
++        "input_schedule_sha256": next(iter(schedules)),
++        "canonical_program_sha256": _sha256_bytes(
++            prototype.canonical_program().encode()
++        ),
++        "candidate_program_sha256": {
++            setting: _sha256_bytes(source.encode())
++            for setting, source in programs.items()
++        },
++        "generator_sha256": next(iter(generator_hashes)),
++        "prototype_source_sha256": {
++            name: _sha256_file(HERE / name)
++            for name in ("prototype.py", "verify.py", "README.md")
++            if (HERE / name).is_file()
++        },
++        "racket_runtime": runtime_identity,
++        "episodes": manifest_entries,
++        "limitations": [
++            "This is a proposed task-local prototype and is not wired into production generation or approval metadata.",
++            "The retained verification covers one deterministic seed per setting, not every lawful input.",
++            "Demonstrations eliminate the one declared alternative setting, not every imaginable transformation.",
++            "Prototype inputs force a quarter-turn band so forward and inverse are observable; production sampling remains broader.",
++        ],
++    }
++    _write_json(output_dir / "manifest.json", manifest)
++    print(
++        json.dumps(
++            {
++                "status": "passed",
++                "output_dir": str(output_dir),
++                "counts": manifest["counts"],
++                "public_ids": [row["public_id"] for row in manifest_entries],
++            },
++            sort_keys=True,
++        )
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

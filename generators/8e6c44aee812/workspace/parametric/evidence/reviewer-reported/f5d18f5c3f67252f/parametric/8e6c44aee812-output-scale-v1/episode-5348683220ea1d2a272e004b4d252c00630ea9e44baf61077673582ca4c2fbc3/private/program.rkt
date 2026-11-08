@@ -1,0 +1,15 @@
+(rule! (lambda (g)
+  (let* ((h (rows g))
+         (w (cols g))
+         (diag (for/list ((i (range 0 (min h w))))
+                 (at g i i)))
+         (active-diag
+          (let loop ((d diag))
+            (if (or (empty? d) (!= (last d) 0))
+                d
+                (loop (take d (- (length d) 1))))))
+         (period (length active-diag))
+         (oh (* h 2))
+         (ow (* w 2)))
+    (build-grid oh ow (r c)
+      (nth active-diag (remainder (max r c) period))))))

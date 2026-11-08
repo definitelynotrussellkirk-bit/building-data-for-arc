@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let ((axis (first (filter (lambda (c) (all? (lambda (r) (= (at g r c) 9)) (range (rows g)))) (range (cols g)))))) (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range axis))) (let ((v (at g r c)) (mc (- (* 2 axis) c))) (if (and (not (member? v (list 0 9))) (in-bounds? r mc (rows g) (cols g))) (set-cell out r mc v) out))))))

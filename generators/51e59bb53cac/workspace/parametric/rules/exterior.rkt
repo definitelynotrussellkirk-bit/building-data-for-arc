@@ -1,0 +1,21 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((five-cells (find-color g 5))
+                  (fr1 (min-of first five-cells))
+                  (fr2 (max-of first five-cells))
+                  (fc1 (min-of second five-cells))
+                  (fc2 (max-of second five-cells))
+                  (interior-cells (for*/list ((r (range (+ fr1 1) fr2)) (c (range (+ fc1 1) fc2))
+                                      #:when
+                                      (and (!= (at g r c) 0) (!= (at g r c) 5)))
+                                    (at g r c)))
+                  (colors (remove-duplicates interior-cells))
+                  (c1 (first colors))
+                  (c2 (cond ((>= (length colors) 2) (second colors)) (else c1))))
+             (cellmap g
+                      (r c v)
+                      (let ((v v))
+                        (cond
+                          ((or (< r fr1) (> r fr2) (< c fc1) (> c fc2)) (cond ((= v c1) c2) ((= v c2) c1) (else v)))
+                          (else v))))))))

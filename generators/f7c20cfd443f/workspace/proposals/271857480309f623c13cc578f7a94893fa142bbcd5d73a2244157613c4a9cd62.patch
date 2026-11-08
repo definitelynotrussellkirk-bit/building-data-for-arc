@@ -1,0 +1,1257 @@
+diff --git a/repo/generators/f7c20cfd443f/SUMMARY.md b/repo/generators/f7c20cfd443f/SUMMARY.md
+--- a/repo/generators/f7c20cfd443f/SUMMARY.md
++++ b/repo/generators/f7c20cfd443f/SUMMARY.md
+@@ -1,6 +1,15 @@
+ # f7c20cfd443f
+ 
+-0-bg (black) grid (size varies, up to ~24x24) with several gray(5) MARKERS in varied layouts (random / cluster / row / column / diagonal / corners). Each marker is a single cell OR a small shape (domino, L-tromino, 2x2, plus). Rule: output 1 in the 3x3 neighbourhood of every 5-cell, else 0. Net: each marker blooms into the 1-mask of its 3x3 dilation; nearby markers' halos merge. (Was: random colored background + decoy colors that the rule ignores, mismatching the canonical clean distribution.)
++A black input grid contains isolated singleton gray (`5`) seeds. The selected rule paints the clipped Chebyshev-radius-one neighborhood of every seed blue (`1`), so each seed becomes a centered 3×3 block and overlapping blocks merge; all remaining output cells are black (`0`).
+ 
+-Kind: `per_puzzle`. Imported version: `2.0.0`.
++Version 3.0.0 uses a four-example deterministic curriculum. Every window contains:
++
++1. a public-style lattice-aligned anchor;
++2. an interior off-lattice counterexample to “fill the containing 3×3 macrocell”;
++3. an edge seed that demonstrates clipping; and
++4. an interior pair whose output halos overlap and merge.
++
++Half of ordinary draws retain the exact canonical `(9, 9, 2-color)` profile. The other half provide controlled dimension extrapolation within `7..15`, while keeping the canonical `0/5` palette, singleton-object grammar, and three-or-four-seed default count. Exact overrides are limited to observable `grid_h`, `grid_w`, and `n_seeds`; unknown keys fail loudly.
++
++Kind: `per_puzzle`. Imported version: `3.0.0`.
+ Approval is derived by the catalog from current code and retained evidence.
+diff --git a/repo/generators/f7c20cfd443f/generator.py b/repo/generators/f7c20cfd443f/generator.py
+--- a/repo/generators/f7c20cfd443f/generator.py
++++ b/repo/generators/f7c20cfd443f/generator.py
+@@ -1,155 +1,608 @@
+-"""Generator for puzzle ce22a75a — 3x3 dilation of the gray(5) cells.
+-
+-Rule: for each cell, if any cell within Chebyshev distance 1 (the 3x3
+-neighbourhood incl. itself) equals 5, output 1, else 0. So the output is the
+-3x3 dilation of all 5-cells, binarized to 1/0.
+-
+-Canonical inputs (verified) are clean: 5-markers on a 0 (black) background,
+-nothing else. The output depends ONLY on the 5-cells.
+-
+-Rule-safe diversity (this version): grid size, number of markers, marker LAYOUT,
+-and marker SHAPE — a 5-marker can be a single cell OR a small multi-cell shape
+-(domino / L / 2x2 / plus); the rule dilates whatever 5-region exists, so this
+-varies the output richly. Color 5 is rule-LOCKED (the only color that matters);
+-output is always 0/1.
+-PRIOR VERSION POISON: it used a RANDOM non-zero background color and sprinkled
+-DECOY colors — both ignored by the rule but absent from the canonical 0-bg
+-distribution. Removed; inputs are clean 5-on-black now.
+-Degenerates: no_dots, dot_in_every_cell, border_dots_only.
++"""Curriculum generator for ARC task ``f7c20cfd443f`` / ``ce22a75a``.
++
++The selected rule is a clipped Chebyshev-radius-one dilation: every gray
++(color 5) seed becomes a 3x3 block of blue (color 1), clipped at the grid
++boundary; all other output cells are black (color 0).
++
++The public examples place isolated singleton seeds at 3x3 macrocell centers.
++That presentation is ambiguous with a wrong "fill the containing macrocell"
++rule.  This generator preserves one exact 9x9 canonical anchor in every four
++examples, then adds controlled size extrapolation while cycling through
++four deterministic lesson profiles: canonical lattice, off-lattice seeds,
++boundary clipping, and overlapping output halos.  Any four consecutive
++examples therefore retain the public distribution while supplying
++counterexamples to the principal shortcuts.
+ """
+ from __future__ import annotations
+ 
++from collections.abc import Callable, Sequence
++from typing import Any
++
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+ 
++
+ GENERATOR_ID = "f7c20cfd443f"
+-VERSION = "2.0.0"  # clean 0-bg 5-markers + multi-cell marker shapes (was random colored bg + decoy colors the rule ignores)
+-TASK_ID = "f7c20cfd443f"
++TASK_ID = GENERATOR_ID
++VERSION = "3.0.0"
++RULE_HASH = "89548e944e39"
++EXAMPLES_NEEDED = 4
++MIN_STRICT_FRAC = 1.0
++
+ SUMMARY = (
+-    "0-bg (black) grid (size varies, up to ~24x24) with several gray(5) MARKERS "
+-    "in varied layouts (random / cluster / row / column / diagonal / corners). "
+-    "Each marker is a single cell OR a small shape (domino, L-tromino, 2x2, "
+-    "plus). Rule: output 1 in the 3x3 neighbourhood of every 5-cell, else 0. "
+-    "Net: each marker blooms into the 1-mask of its 3x3 dilation; nearby "
+-    "markers' halos merge. (Was: random colored background + decoy colors that "
+-    "the rule ignores, mismatching the canonical clean distribution.)"
++    "A black grid contains one to four isolated singleton gray (5) seeds. "
++    "Replace every seed by a clipped 3x3 blue (1) block centered on that "
++    "seed; overlapping blocks merge. Default lessons stay at the canonical "
++    "9x9 scale with three or four seeds and cycle through canonical-lattice, "
++    "off-lattice, edge-clipping, and overlapping-halo profiles."
+ )
+ 
+ INVARIANTS = [
+-    "background is 0 (black), matching canonical",
+-    "the only non-0 color is 5 (the dilation seed)",
+-    ">=1 gray(5) cell",
+-    "markers are sparse enough that the output is not entirely 1s",
++    "grid dimensions are 7..15; every four ordinary draws include a 9x9 anchor",
++    "the input palette is exactly black 0 plus gray 5",
++    "there are 1..4 singleton gray seeds; ordinary draws use 3 or 4",
++    "seed cells are not 8-neighbours, so every input object is a singleton",
++    "the output is the clipped union of Chebyshev-radius-one blue halos",
+ ]
+ 
+-DOT_LAYOUTS = ("random", "cluster", "row", "column", "diagonal", "corners")
+-DEGENERATE_TEXTURES = ("no_dots", "dot_in_every_cell", "border_dots_only")
+-HELPFUL_TEXTURES = DOT_LAYOUTS
+-
+-# small 5-marker shapes (relative cells); single cell is the canonical default
+-MARKER_SHAPES = (
+-    [(0, 0)],
+-    [(0, 0), (0, 1)],                       # h-domino
+-    [(0, 0), (1, 0)],                       # v-domino
+-    [(0, 0), (0, 1), (1, 0)],               # L-tromino
+-    [(0, 0), (0, 1), (1, 0), (1, 1)],       # 2x2
+-    [(0, 1), (1, 0), (1, 1), (1, 2), (2, 1)],  # plus
++AXES = {
++    "grid_h": {
++        "type": "int",
++        "default": "four-profile/difficulty schedule; canonical anchor is 9",
++        "valid": "7..15",
++        "doc": "input height",
++    },
++    "grid_w": {
++        "type": "int",
++        "default": "four-profile/difficulty schedule; canonical anchor is 9",
++        "valid": "7..15",
++        "doc": "input width",
++    },
++    "n_seeds": {
++        "type": "int",
++        "default": "scheduled 3 or 4; difficulty shifts mass only",
++        "valid": "1..4",
++        "doc": "number of isolated singleton gray seeds",
++    },
++}
++INCOMPATIBLE_OVERRIDE_COMBINATIONS: tuple[dict[str, object], ...] = ()
++
++SCHEDULE_PROFILES = (
++    "canonical_anchor",
++    "off_lattice",
++    "edge_clip",
++    "overlap",
+ )
+ 
+-AXES = {
+-    "grid_h":      {"type": "int", "default": "4-8 easy / 8-16 med / 14-24 hard", "valid": "3..26"},
+-    "grid_w":      {"type": "int", "default": "4-8 easy / 8-16 med / 14-24 hard", "valid": "3..26"},
+-    "n_dots":      {"type": "int", "default": "scales with area", "valid": "1..area/4"},
+-    "dot_layout":  {"type": "str", "default": "rng helpful", "valid": "|".join(DOT_LAYOUTS)},
+-    "marker_shape":{"type": "str", "default": "rng single/domino/L/2x2/plus", "valid": "see MARKER_SHAPES"},
+-    "n_distinct_colors": {"type": "int", "default": "2 (0 and 5)", "valid": "2..2"},
+-    "density":     {"type": "str", "default": "sparse", "valid": "sparse"},
+-    "texture":     {"type": "str", "default": "alias for dot_layout",
+-                    "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++# Dimensions align positionally with SCHEDULE_PROFILES.  Each band has one
++# exact 9x9 anchor plus a 9x9 overlap case and controlled breadth; pooled
++# ordinary draws exercise both public override boundaries without the baseline's
++# 4x4..24x24 scale drift.  Half the curriculum remains exact-profile support.
++PROFILE_DIMENSIONS = {
++    None: ((9, 9), (10, 8), (9, 11), (9, 9)),
++    "easy": ((9, 9), (7, 8), (8, 7), (9, 9)),
++    "medium": ((9, 9), (10, 8), (9, 11), (9, 9)),
++    "hard": ((9, 9), (15, 12), (12, 15), (9, 9)),
++}
++
++_DEFAULT_SEED_COUNTS = {
++    None: (4, 3, 4, 3),
++    "easy": (3, 4, 3, 4),
++    "medium": (4, 3, 4, 3),
++    "hard": (4, 4, 3, 4),
++}
++
++Grid = list[list[int]]
++Cell = tuple[int, int]
++Rule = Callable[[Any], Grid]
++
++
++def _validate_call(difficulty: Any, overrides: dict[str, Any]) -> None:
++    if difficulty not in (None, "easy", "medium", "hard"):
++        raise ValueError(f"unknown difficulty: {difficulty!r}")
++    unknown = sorted(set(overrides) - set(AXES))
++    if unknown:
++        raise ValueError(f"unknown override(s): {unknown}")
++
++
++def schedule_profile(seed: int, sample_index: int, difficulty: Any = None) -> str:
++    """Expose the four-step deterministic curriculum schedule."""
++    del seed, difficulty
++    return SCHEDULE_PROFILES[int(sample_index) % len(SCHEDULE_PROFILES)]
++
++
++def _scheduled_int(ctx, name: str, lo: int, hi: int, default: int) -> int:
++    """Record scheduled defaults while preserving the full exact override domain."""
++    if name in ctx.overrides and ctx.overrides[name] is not None:
++        return int(ctx.draw_int(name, lo, hi))
++    return int(ctx.draw_int(name, default, default))
++
++
++def _chebyshev(a: Cell, b: Cell) -> int:
++    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
++
++
++def _spaced_from(
++    candidates: Sequence[Cell],
++    count: int,
++    rng,
++    *,
++    required: Sequence[Cell] = (),
++    min_distance: int = 2,
++    required_min_distance: int | None = None,
++) -> list[Cell]:
++    """Choose separated cells while preserving profile-defining requirements.
++
++    ``required_min_distance`` may be lower than ``min_distance`` for the overlap
++    profile: its required pair is exactly two cells apart, while every added
++    seed must remain at least three cells from that pair and from other extras.
++    """
++    if not 0 <= len(required) <= count:
++        raise ValueError("required seed count exceeds requested n_seeds")
++    chosen = list(dict.fromkeys(required))
++    if len(chosen) != len(required):
++        raise ValueError("profile supplied duplicate required seeds")
++    required_floor = min_distance if required_min_distance is None else required_min_distance
++    if any(
++        _chebyshev(a, b) < required_floor
++        for i, a in enumerate(chosen)
++        for b in chosen[i + 1 :]
++    ):
++        raise ValueError("profile supplied required seeds that are too close")
++    if len(chosen) == count:
++        return chosen
++
++    pool = [cell for cell in dict.fromkeys(candidates) if cell not in chosen]
++    for attempt in range(32):
++        ordered = list(pool)
++        if attempt < 31:
++            rng.shuffle(ordered)
++        else:
++            ordered.sort()
++        trial = list(chosen)
++        for cell in ordered:
++            if all(_chebyshev(cell, other) >= min_distance for other in trial):
++                trial.append(cell)
++                if len(trial) == count:
++                    return trial
++    raise ValueError(
++        f"could not place {count} separated seeds with {len(required)} required"
++    )
++
++
++def _all_cells(height: int, width: int) -> list[Cell]:
++    return [(row, col) for row in range(height) for col in range(width)]
++
++
++def _lattice_cells(height: int, width: int) -> list[Cell]:
++    """Canonical 3x3-macrocell centers, generalized to override dimensions."""
++    return [
++        (row, col)
++        for row in range(1, height, 3)
++        for col in range(1, width, 3)
++    ]
++
++
++def _try_required_options(
++    candidates: Sequence[Cell],
++    count: int,
++    rng,
++    required_options: Sequence[Sequence[Cell]],
++    *,
++    min_distance: int,
++    required_min_distance: int | None = None,
++) -> list[Cell]:
++    """Try semantic anchors until one leaves room for the requested seed count."""
++    options = [tuple(option) for option in required_options]
++    rng.shuffle(options)
++    last_error: ValueError | None = None
++    for required in options:
++        try:
++            return _spaced_from(
++                candidates,
++                count,
++                rng,
++                required=required,
++                min_distance=min_distance,
++                required_min_distance=required_min_distance,
++            )
++        except ValueError as exc:
++            last_error = exc
++    raise ValueError("no profile anchor supports the requested override tuple") from last_error
++
++
++def _canonical_seeds(height: int, width: int, count: int, rng) -> list[Cell]:
++    return _spaced_from(
++        _lattice_cells(height, width), count, rng, min_distance=3
++    )
++
++
++def _off_lattice_seeds(height: int, width: int, count: int, rng) -> list[Cell]:
++    interior = [
++        (row, col)
++        for row in range(1, height - 1)
++        for col in range(1, width - 1)
++    ]
++    off_lattice = [
++        cell for cell in interior if cell[0] % 3 != 1 or cell[1] % 3 != 1
++    ]
++    return _try_required_options(
++        interior,
++        count,
++        rng,
++        [(cell,) for cell in off_lattice],
++        min_distance=3,
++    )
++
++
++def _edge_seeds(height: int, width: int, count: int, rng) -> list[Cell]:
++    border = [
++        (row, col)
++        for row in range(height)
++        for col in range(width)
++        if row in (0, height - 1) or col in (0, width - 1)
++    ]
++    return _try_required_options(
++        _all_cells(height, width),
++        count,
++        rng,
++        [(cell,) for cell in border],
++        min_distance=3,
++    )
++
++
++def _overlap_seeds(height: int, width: int, count: int, rng) -> list[Cell]:
++    """Require two nonadjacent seeds whose radius-one halos overlap."""
++    pairs: list[tuple[Cell, Cell]] = []
++    for row in range(1, height - 1):
++        for col in range(1, width - 3):
++            pairs.append(((row, col), (row, col + 2)))
++    for row in range(1, height - 3):
++        for col in range(1, width - 1):
++            pairs.append(((row, col), (row + 2, col)))
++    if not pairs:
++        raise ValueError("override dimensions cannot host an overlap profile")
++    interior = [
++        (row, col)
++        for row in range(1, height - 1)
++        for col in range(1, width - 1)
++    ]
++    required_options = [pair[: min(count, 2)] for pair in pairs]
++    return _try_required_options(
++        interior,
++        count,
++        rng,
++        required_options,
++        min_distance=3,
++        required_min_distance=2,
++    )
++
++
++_PROFILE_BUILDERS = {
++    "canonical_anchor": _canonical_seeds,
++    "off_lattice": _off_lattice_seeds,
++    "edge_clip": _edge_seeds,
++    "overlap": _overlap_seeds,
+ }
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  task_id=TASK_ID, version=VERSION,
+-                  difficulty=difficulty, overrides=overrides)
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        rng0 = ctx.draw_rng("deg")
+-        if difficulty == "hard":
+-            return _draw_from_degenerate(overrides["texture"], 16, 16, rng0)
+-        return _draw_from_degenerate(overrides["texture"], 9, 9, rng0)
+-    if difficulty == "easy":
+-        lo, hi = 4, 8
+-    elif difficulty == "hard":
+-        lo, hi = 14, 24
+-    else:
+-        lo, hi = 8, 16
+-    rng = ctx.draw_rng("placement")
+-    h = rng.randint(lo, hi); w = rng.randint(lo, hi)
+-    g = full_grid(h, w, 0)
+-    layout = ctx.draw_choice("dot_layout", list(DOT_LAYOUTS))
+-    # keep 5-cells sparse so the dilation doesn't flood the whole grid
+-    n_markers = max(1, rng.randint(1, max(1, (h * w) // 14)))
+-    anchors = _layout_anchors(layout, h, w, n_markers, rng)
+-    painted = 0
+-    for (ar, ac) in anchors:
+-        shape = rng.choice(MARKER_SHAPES)
+-        for dr, dc in shape:
+-            r, c = ar + dr, ac + dc
+-            if 0 <= r < h and 0 <= c < w:
+-                g[r][c] = 5
+-                painted += 1
+-    if painted == 0:
+-        g[h // 2][w // 2] = 5
+-    return g
+-
+-
+-def _layout_anchors(layout, h, w, n, rng):
+-    allc = [(r, c) for r in range(h) for c in range(w)]
+-    if layout == "cluster":
+-        cr = rng.randint(0, h - 1); cc = rng.randint(0, w - 1)
+-        allc.sort(key=lambda rc: abs(rc[0] - cr) + abs(rc[1] - cc))
+-        return allc[:n]
+-    if layout == "row":
+-        r = rng.randint(0, h - 1)
+-        row = [(r, c) for c in range(w)]; rng.shuffle(row); return row[:n]
+-    if layout == "column":
+-        c = rng.randint(0, w - 1)
+-        col = [(r, c) for r in range(h)]; rng.shuffle(col); return col[:n]
+-    if layout == "diagonal":
+-        diag = [(k, k) for k in range(min(h, w))]; return diag[:n]
+-    if layout == "corners":
+-        return [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)][:n]
+-    rng.shuffle(allc); return allc[:n]
+-
+-
+-def _draw_from_degenerate(name, h, w, rng):
+-    g = full_grid(h, w, 0)
+-    if name == "no_dots":
+-        # one lone dot (rule has minimal work) — keeps the >=1 invariant
+-        g[0][0] = 5
+-        return g
+-    if name == "dot_in_every_cell":
+-        for r in range(h):
+-            for c in range(w):
+-                g[r][c] = 5
+-        return g
+-    if name == "border_dots_only":
+-        for c in range(w):
+-            g[0][c] = 5; g[h - 1][c] = 5
+-        for r in range(h):
+-            g[r][0] = 5; g[r][w - 1] = 5
+-        return g
+-    return g
+-
+-
+-def self_check(grid, *, difficulty=None, meta=None):
+-    """bg=0; the only non-0 color is 5 (gray dilation seed); ≥1 gray(5) cell."""
+-    errs = []
+-    h, w = len(grid), len(grid[0]) if grid else 0
+-    if not any(grid[r][c] == 5 for r in range(h) for c in range(w)):
+-        errs.append("no gray(5) seed cell found")
+-    bad = {grid[r][c] for r in range(h) for c in range(w)} - {0, 5}
+-    if bad:
+-        errs.append(f"unexpected non-{{0,5}} colors found: {sorted(bad)}")
+-    return errs
++    """Return one deterministic input; canonical Racket remains the authority."""
++    _validate_call(difficulty, overrides)
++    profile = schedule_profile(seed, sample_index, difficulty)
++    profile_index = SCHEDULE_PROFILES.index(profile)
++
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++    default_height, default_width = PROFILE_DIMENSIONS[difficulty][profile_index]
++    height = _scheduled_int(ctx, "grid_h", 7, 15, default_height)
++    width = _scheduled_int(ctx, "grid_w", 7, 15, default_width)
++    n_seeds = _scheduled_int(
++        ctx,
++        "n_seeds",
++        1,
++        4,
++        _DEFAULT_SEED_COUNTS[difficulty][profile_index],
++    )
++
++    rng = ctx.draw_rng(f"placement:{profile}:{difficulty or 'default'}")
++    seeds = _PROFILE_BUILDERS[profile](height, width, n_seeds, rng)
++    grid = full_grid(height, width, 0)
++    for row, col in seeds:
++        grid[row][col] = 5
++    return grid
++
++
++def _rectangular_errors(grid: Any) -> list[str]:
++    if not isinstance(grid, (list, tuple)) or not grid:
++        return ["grid must be a non-empty sequence of rows"]
++    if not isinstance(grid[0], (list, tuple)) or not grid[0]:
++        return ["grid rows must be non-empty sequences"]
++    width = len(grid[0])
++    if any(not isinstance(row, (list, tuple)) or len(row) != width for row in grid):
++        return ["grid must be rectangular"]
++    for row in grid:
++        for value in row:
++            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 9:
++                return ["cells must be literal ARC integers 0..9"]
++    return []
++
++
++def _seed_cells(grid: Any) -> list[Cell]:
++    return [
++        (row, col)
++        for row, values in enumerate(grid)
++        for col, value in enumerate(values)
++        if value == 5
++    ]
++
++
++def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
++    """Reject malformed scenes and seed grammars that hide object identity."""
++    del difficulty, meta
++    errors = _rectangular_errors(grid)
++    if errors:
++        return errors
++
++    height, width = len(grid), len(grid[0])
++    if not 7 <= height <= 15:
++        errors.append(f"grid height must be 7..15, found {height}")
++    if not 7 <= width <= 15:
++        errors.append(f"grid width must be 7..15, found {width}")
++
++    palette = {value for row in grid for value in row}
++    unexpected = sorted(palette - {0, 5})
++    if unexpected:
++        errors.append(f"input palette must be a subset of {{0,5}}, found {unexpected}")
++
++    seeds = _seed_cells(grid)
++    if not 1 <= len(seeds) <= 4:
++        errors.append(f"expected 1..4 gray singleton seeds, found {len(seeds)}")
++    if 0 not in palette:
++        errors.append("input must retain black background cells")
++    if 5 not in palette:
++        errors.append("input must contain at least one gray seed")
++
++    adjacent = [
++        (left, right)
++        for index, left in enumerate(seeds)
++        for right in seeds[index + 1 :]
++        if _chebyshev(left, right) < 2
++    ]
++    if adjacent:
++        errors.append(
++            "gray cells must be isolated singleton objects; adjacent pairs "
++            f"include {adjacent[:3]}"
++        )
++    return errors
++
++
++def strict_canonical_like(grid) -> list[str]:
++    """Task-linked lawful-manifold predicate for the semantic gate."""
++    return self_check(grid)
++
++
++def observe_overrides(grid) -> dict[str, int]:
++    """Recover every public exact axis from the returned input."""
++    errors = self_check(grid)
++    if errors:
++        raise ValueError("cannot observe overrides: " + "; ".join(errors))
++    return {
++        "grid_h": len(grid),
++        "grid_w": len(grid[0]),
++        "n_seeds": len(_seed_cells(grid)),
++    }
++
++
++def _require_rule_input(grid: Any) -> tuple[int, int, list[Cell]]:
++    errors = _rectangular_errors(grid)
++    if errors:
++        raise ValueError("invalid rule input: " + "; ".join(errors))
++    palette = {value for row in grid for value in row}
++    if not palette <= {0, 5}:
++        raise ValueError(f"invalid rule input palette: {sorted(palette)}")
++    return len(grid), len(grid[0]), _seed_cells(grid)
++
++
++def _paint_halos(height: int, width: int, seeds: Sequence[Cell]) -> Grid:
++    output = full_grid(height, width, 0)
++    for seed_row, seed_col in seeds:
++        for row in range(max(0, seed_row - 1), min(height, seed_row + 2)):
++            for col in range(max(0, seed_col - 1), min(width, seed_col + 2)):
++                output[row][col] = 1
++    return output
++
++
++def rule_mirror(grid) -> Grid:
++    """Independent Python mirror used for tests; Racket stays authoritative."""
++    height, width, seeds = _require_rule_input(grid)
++    return _paint_halos(height, width, seeds)
++
++
++def _rival_aligned_macrocell(grid) -> Grid:
++    """Wrong shortcut: fill the 3x3 macrocell containing each seed."""
++    height, width, seeds = _require_rule_input(grid)
++    output = full_grid(height, width, 0)
++    for seed_row, seed_col in seeds:
++        row0 = (seed_row // 3) * 3
++        col0 = (seed_col // 3) * 3
++        for row in range(row0, min(height, row0 + 3)):
++            for col in range(col0, min(width, col0 + 3)):
++                output[row][col] = 1
++    return output
++
++
++def _rival_ignore_edge_seeds(grid) -> Grid:
++    """Wrong shortcut: discard seeds whose centered block would be clipped."""
++    height, width, seeds = _require_rule_input(grid)
++    interior = [
++        (row, col)
++        for row, col in seeds
++        if 0 < row < height - 1 and 0 < col < width - 1
++    ]
++    return _paint_halos(height, width, interior)
++
++
++def _footprint(height: int, width: int, seed: Cell) -> set[Cell]:
++    row, col = seed
++    return {
++        (r, c)
++        for r in range(max(0, row - 1), min(height, row + 2))
++        for c in range(max(0, col - 1), min(width, col + 2))
++    }
++
++
++def _rival_nonoverlap_only(grid) -> Grid:
++    """Wrong shortcut: expand only seeds whose 3x3 blocks stay disjoint."""
++    height, width, seeds = _require_rule_input(grid)
++    footprints = [_footprint(height, width, seed) for seed in seeds]
++    kept = [
++        seed
++        for index, seed in enumerate(seeds)
++        if all(
++            footprints[index].isdisjoint(footprints[other])
++            for other in range(len(seeds))
++            if other != index
++        )
++    ]
++    return _paint_halos(height, width, kept)
++
++
++def _rival_preserve_gray_centers(grid) -> Grid:
++    """Wrong shortcut: expand seeds but leave their centers gray."""
++    height, width, seeds = _require_rule_input(grid)
++    output = _paint_halos(height, width, seeds)
++    for row, col in seeds:
++        output[row][col] = 5
++    return output
++
++
++def _rival_orthogonal_plus(grid) -> Grid:
++    """Wrong shortcut: use Manhattan radius one rather than a full 3x3."""
++    height, width, seeds = _require_rule_input(grid)
++    output = full_grid(height, width, 0)
++    for row, col in seeds:
++        for dr, dc in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
++            rr, cc = row + dr, col + dc
++            if 0 <= rr < height and 0 <= cc < width:
++                output[rr][cc] = 1
++    return output
++
++
++SEMANTIC_RIVALS: dict[str, Rule] = {
++    "aligned_macrocell": _rival_aligned_macrocell,
++    "ignore_edge_seeds": _rival_ignore_edge_seeds,
++    "nonoverlap_only": _rival_nonoverlap_only,
++    "preserve_gray_centers": _rival_preserve_gray_centers,
++    "orthogonal_plus": _rival_orthogonal_plus,
++}
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
++CANONICAL_SHORTCUTS = {
++    name: SEMANTIC_RIVALS[name]
++    for name in ("aligned_macrocell", "ignore_edge_seeds", "nonoverlap_only")
++}
++
++
++def _valid_seeds(grid: Any) -> list[Cell] | None:
++    return _seed_cells(grid) if self_check(grid) == [] else None
++
++
++def _witness_off_lattice(grid: Any) -> bool:
++    seeds = _valid_seeds(grid)
++    return bool(
++        seeds is not None
++        and any(row % 3 != 1 or col % 3 != 1 for row, col in seeds)
++    )
++
++
++def _witness_edge_clip(grid: Any) -> bool:
++    seeds = _valid_seeds(grid)
++    if seeds is None:
++        return False
++    height, width = len(grid), len(grid[0])
++    return any(
++        row in (0, height - 1) or col in (0, width - 1)
++        for row, col in seeds
++    )
++
++
++def _witness_overlap(grid: Any) -> bool:
++    seeds = _valid_seeds(grid)
++    return bool(
++        seeds is not None
++        and any(
++            _chebyshev(left, right) == 2
++            for index, left in enumerate(seeds)
++            for right in seeds[index + 1 :]
++        )
++    )
++
++
++def _witness_any_seed(grid: Any) -> bool:
++    seeds = _valid_seeds(grid)
++    return bool(seeds)
++
++
++SEMANTIC_WITNESSES: dict[str, Callable[[Any], bool]] = {
++    "off_lattice_seed": _witness_off_lattice,
++    "edge_clipping": _witness_edge_clip,
++    "overlapping_halos": _witness_overlap,
++    "centers_recolored_blue": _witness_any_seed,
++    "full_square_not_plus": _witness_any_seed,
++}
++WITNESS_RIVALS = {
++    "off_lattice_seed": ["aligned_macrocell"],
++    "edge_clipping": ["ignore_edge_seeds"],
++    "overlapping_halos": ["nonoverlap_only"],
++    "centers_recolored_blue": ["preserve_gray_centers"],
++    "full_square_not_plus": ["orthogonal_plus"],
++}
++
++
++def lesson_identifiable(demos, query) -> list[str]:
++    """Require a four-demo lesson to falsify every named shortcut rule."""
++    reasons: list[str] = []
++    if not isinstance(demos, (list, tuple)) or len(demos) < EXAMPLES_NEEDED:
++        return [f"at least {EXAMPLES_NEEDED} demonstrations are required"]
++    if not isinstance(query, dict) or "input" not in query:
++        return ["query must contain an input grid"]
++    query_errors = self_check(query["input"])
++    if query_errors:
++        reasons.append("query input is outside the teaching grammar")
++
++    valid_demos: list[dict[str, Any]] = []
++    for index, demo in enumerate(demos):
++        if not isinstance(demo, dict) or "input" not in demo or "output" not in demo:
++            reasons.append(f"demo {index} must contain input and output grids")
++            continue
++        if self_check(demo["input"]):
++            reasons.append(f"demo {index} input is outside the teaching grammar")
++            continue
++        if demo["output"] != rule_mirror(demo["input"]):
++            reasons.append(f"demo {index} output is not the selected dilation rule")
++            continue
++        valid_demos.append(demo)
++
++    if len(valid_demos) == len(demos):
++        required_evidence = {
++            "off-lattice seed": _witness_off_lattice,
++            "edge-clipped halo": _witness_edge_clip,
++            "overlapping halos": _witness_overlap,
++        }
++        for label, witness in required_evidence.items():
++            if not any(witness(demo["input"]) for demo in valid_demos):
++                reasons.append(f"demonstrations never show an {label}")
++
++        for name, competitor in LESSON_COMPETITORS.items():
++            if all(
++                competitor(demo["input"]) == demo["output"]
++                for demo in valid_demos
++            ):
++                reasons.append(f"named competitor survives all demonstrations: {name}")
++    return reasons
+diff --git a/repo/generators/f7c20cfd443f/notes.md b/repo/generators/f7c20cfd443f/notes.md
+--- a/repo/generators/f7c20cfd443f/notes.md
++++ b/repo/generators/f7c20cfd443f/notes.md
+@@ -1,4 +1,64 @@
+ # Working notes: f7c20cfd443f
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Selected rule and immutable authority
++
++The canonical Racket rule is a clipped 3×3 dilation of every gray (`5`) input cell, with blue (`1`) output and black (`0`) elsewhere. Its assigned rule hash is `89548e944e39`. The canonical implementation matched all three available train/test pairs and was not changed.
++
++## Baseline findings
++
++The imported v2.0.0 generator had several independent data-quality defects:
++
++- It omitted the required `RULE_HASH`.
++- Default dimensions ranged from 4×4 through roughly 24×24, yet none of the pinned 60 draws matched the canonical `(9,9,2)` profile.
++- The median generated object count was `1.0` versus canonical `3.5`.
++- Multi-cell domino/L/2×2/plus “markers” changed the canonical singleton-object grammar and made the intended unit of transformation less clear.
++- Several declared axes were unprobeable or constant, while unknown override keys were silently accepted.
++- `self_check` accepted adjacent gray cells and inverted foreground/background scenes.
++- No task-linked semantic contract or named shortcut counterexample existed.
++
++Baseline battery: 4 green, 2 advisory, 6 failed. The rule-smoke, strict defect, and authority-execution checks were also blocked by the review host's missing Racket executable.
++
++## Distribution decision
++
++Use a four-step schedule keyed by `sample_index % 4`:
++
++- `canonical_anchor`: canonical macrocell-center placement, nonoverlapping halos;
++- `off_lattice`: interior, nonoverlapping singleton seeds with at least one seed outside the canonical lattice;
++- `edge_clip`: at least one border seed, with no halo-overlap confound;
++- `overlap`: interior seeds with one required Chebyshev-distance-two pair, while any extra seed stays separated.
++
++The profiles isolate one decisive counterexample at a time rather than letting edge clipping and halo overlap occur accidentally in every profile.
++
++Dimensions are scheduled by difficulty. Every band contains two exact 9×9 profiles per four-example cycle and two controlled extrapolation profiles. Across all bands, ordinary draws span both public bounds (`7` and `15`) without returning to the baseline's extreme 4..24 drift.
++
++Default seed counts remain three or four, matching canonical object-count mass. The exact override range is one through four because a single seed is mathematically lawful and useful as a diagnostic, although ordinary lessons never use it.
++
++## Semantic contract
++
++The generator now exposes:
++
++- `strict_canonical_like` and `MIN_STRICT_FRAC = 1.0`;
++- a Python `rule_mirror` pinned against every canonical pair;
++- five named rivals: aligned macrocell fill, ignore clipped edge seeds, expand only nonoverlapping seeds, preserve gray centers, and orthogonal-plus dilation;
++- witnesses with explicit rival claims;
++- `CANONICAL_SHORTCUTS` for the three wrong rules that fit every public pair;
++- `lesson_identifiable`, which requires four demonstrations and rejects a lesson if any named rival survives;
++- a declared four-profile schedule.
++
++## Overrides and invariants
++
++Only `grid_h`, `grid_w`, and `n_seeds` are public axes. All are exactly recoverable from the emitted grid through `observe_overrides`. Unknown keys and unknown difficulty labels raise `ValueError`. Every tested Cartesian boundary combination is valid, so no incompatibilities are declared.
++
++`self_check` now rejects malformed/ragged grids, non-ARC values, dimensions outside 7..15, colors outside `{0,5}`, absent background or seed colors, seed counts outside 1..4, and any pair of 8-neighboring gray cells.
++
++## Retained task-local tooling
++
++`workspace/audit_curriculum.py` provides a Racket-free review aid. It pins the Python mirror to canonical pairs, audits profile isolation and distribution statistics, and checks every sliding lesson window against all named rivals. It explicitly states that it does not replace the protected Racket gates.
++
++## Evidence and limitations
++
++Focused tests cover canonical parity, schedule mass, profile isolation, lesson identifiability, witness/rival claims, override boundaries, determinism/freshness/global-RNG purity, and destructive grammar mutations.
++
++The final review host had no `racket` executable, and outbound DNS prevented installing one. Therefore canonical Racket execution, rule-smoke timing, strict rule-dependent defect detectors, and execution-parity authority sync remain environment-blocked rather than claimed as passed. Static Racket lint did pass in the baseline and the selected Racket source was not modified.
++
++The required after battery completed with **7 green and 5 failed stages**. `selfcheck`, `dist_gate`, `profile_floor`, `diversity`, `override`, `grammar`, and static `racket_lint` were green. `lint`, `rule_smoke`, strict `defect_lint`, `semantic_gate`, and `authority_sync` all recorded the same missing-Racket dependency. The inherited diversity stage's green status is not considered affirmative evidence because its log reports no materialized pairs.
+diff --git a/repo/generators/f7c20cfd443f/tests/test_generator_f7c20cfd443f.py b/repo/generators/f7c20cfd443f/tests/test_generator_f7c20cfd443f.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f7c20cfd443f/tests/test_generator_f7c20cfd443f.py
+@@ -0,0 +1,187 @@
++from __future__ import annotations
++
++import copy
++import importlib.util
++import json
++import random
++from pathlib import Path
++
++import pytest
++
++
++TASK_ID = "f7c20cfd443f"
++ROOT = Path(__file__).resolve().parents[3]
++GENERATOR_PATH = ROOT / "generators" / TASK_ID / "generator.py"
++SPEC = importlib.util.spec_from_file_location(f"review_{TASK_ID}", GENERATOR_PATH)
++assert SPEC is not None and SPEC.loader is not None
++GEN = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(GEN)
++
++
++def _canonical_pairs() -> list[dict]:
++    with (ROOT / "shared/data/canonical/puzzles.jsonl").open(encoding="utf-8") as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                return [pair for split in ("train", "test") for pair in row[split]]
++    raise AssertionError(f"missing canonical row for {TASK_ID}")
++
++
++def _demo(grid: list[list[int]]) -> dict:
++    return {"input": copy.deepcopy(grid), "output": GEN.rule_mirror(grid)}
++
++
++def test_rule_pin_and_python_mirror_match_every_canonical_pair():
++    assert GEN.VERSION == "3.0.0"
++    assert GEN.RULE_HASH == "89548e944e39"
++    pairs = _canonical_pairs()
++    assert len(pairs) == 3
++    for pair in pairs:
++        assert GEN.self_check(pair["input"]) == []
++        assert GEN.strict_canonical_like(pair["input"]) == []
++        assert GEN.rule_mirror(pair["input"]) == pair["output"]
++
++
++def test_default_distribution_keeps_canonical_anchors_and_controlled_scale_breadth():
++    for difficulty in ("easy", "medium", "hard"):
++        grids = [GEN.generate(7000 + index, index, difficulty=difficulty) for index in range(20)]
++        expected_cycle = GEN.PROFILE_DIMENSIONS[difficulty]
++        assert [
++            (len(grid), len(grid[0])) for grid in grids
++        ] == [expected_cycle[index % len(expected_cycle)] for index in range(20)]
++        assert sum((len(grid), len(grid[0])) == (9, 9) for grid in grids) >= 10
++        assert all({value for row in grid for value in row} == {0, 5} for grid in grids)
++        assert all(3 <= sum(value == 5 for row in grid for value in row) <= 4 for grid in grids)
++        assert all(GEN.strict_canonical_like(grid) == [] for grid in grids)
++        assert len({tuple(map(tuple, grid)) for grid in grids}) >= 18
++
++
++def test_every_sliding_four_demo_window_covers_profiles_and_refutes_rivals():
++    for difficulty in ("easy", "medium", "hard"):
++        for start in range(8):
++            grids = [
++                GEN.generate(2026, start + offset, difficulty=difficulty)
++                for offset in range(GEN.EXAMPLES_NEEDED + 1)
++            ]
++            profiles = {
++                GEN.schedule_profile(2026, start + offset, difficulty)
++                for offset in range(GEN.EXAMPLES_NEEDED)
++            }
++            assert profiles == set(GEN.SCHEDULE_PROFILES)
++            demos = [_demo(grid) for grid in grids[: GEN.EXAMPLES_NEEDED]]
++            query = {"input": grids[GEN.EXAMPLES_NEEDED]}
++            assert GEN.lesson_identifiable(demos, query) == []
++            for name, rival in GEN.LESSON_COMPETITORS.items():
++                assert any(rival(demo["input"]) != demo["output"] for demo in demos), name
++
++
++def test_each_declared_witness_fires_and_its_named_rival_disagrees():
++    grids = [GEN.generate(99, index, difficulty="medium") for index in range(8)]
++    for witness_name, witness in GEN.SEMANTIC_WITNESSES.items():
++        witness_grid = next((grid for grid in grids if witness(grid)), None)
++        assert witness_grid is not None, witness_name
++        truth = GEN.rule_mirror(witness_grid)
++        for rival_name in GEN.WITNESS_RIVALS[witness_name]:
++            assert GEN.SEMANTIC_RIVALS[rival_name](witness_grid) != truth
++
++
++def test_override_boundaries_round_trip_in_every_band():
++    for difficulty in ("easy", "medium", "hard"):
++        for grid_h in (7, 15):
++            for grid_w in (7, 15):
++                for n_seeds in (1, 4):
++                    grid = GEN.generate(
++                        1234,
++                        grid_h + grid_w + n_seeds,
++                        difficulty=difficulty,
++                        grid_h=grid_h,
++                        grid_w=grid_w,
++                        n_seeds=n_seeds,
++                    )
++                    assert GEN.observe_overrides(grid) == {
++                        "grid_h": grid_h,
++                        "grid_w": grid_w,
++                        "n_seeds": n_seeds,
++                    }
++                    assert GEN.strict_canonical_like(grid) == []
++
++    with pytest.raises(ValueError, match="unknown override"):
++        GEN.generate(1, 0, typo_axis=3)
++    with pytest.raises(ValueError, match="unknown difficulty"):
++        GEN.generate(1, 0, difficulty="extreme")
++
++
++def test_generation_is_deterministic_fresh_and_global_rng_pure():
++    random.seed(8675309)
++    before = random.getstate()
++    first = GEN.generate(777, 13, difficulty="hard")
++    after = random.getstate()
++    second = GEN.generate(777, 13, difficulty="hard")
++
++    assert before == after
++    assert first == second
++    assert first is not second
++    assert all(left is not right for left, right in zip(first, second, strict=True))
++    first[0][0] = 9
++    assert first != second
++
++
++def test_self_check_rejects_structural_and_marker_grammar_mutations():
++    blank = [[0] * 9 for _ in range(9)]
++    wrong_color = GEN.generate(17, 0)
++    wrong_color[0][0] = 2
++    touching = [[0] * 9 for _ in range(9)]
++    touching[4][4] = touching[4][5] = 5
++    too_many = [[0] * 9 for _ in range(9)]
++    for r, c in ((0, 0), (0, 3), (3, 0), (3, 3), (6, 6)):
++        too_many[r][c] = 5
++    ragged = GEN.generate(18, 1)
++    ragged[0].pop()
++
++    for grid in (blank, wrong_color, touching, too_many, ragged):
++        assert GEN.self_check(grid), grid
++
++
++def test_profiles_isolate_the_intended_counterexample_without_confounds():
++    def seeds(grid):
++        return [
++            (r, c)
++            for r, row in enumerate(grid)
++            for c, value in enumerate(row)
++            if value == 5
++        ]
++
++    def on_edge(grid, cell):
++        r, c = cell
++        return r in (0, len(grid) - 1) or c in (0, len(grid[0]) - 1)
++
++    def halos_overlap(cells):
++        return any(
++            max(abs(a[0] - b[0]), abs(a[1] - b[1])) == 2
++            for index, a in enumerate(cells)
++            for b in cells[index + 1 :]
++        )
++
++    for difficulty in ("easy", "medium", "hard"):
++        for cycle in range(12):
++            for offset, profile in enumerate(GEN.SCHEDULE_PROFILES):
++                index = cycle * len(GEN.SCHEDULE_PROFILES) + offset
++                grid = GEN.generate(4100 + cycle, index, difficulty=difficulty)
++                cells = seeds(grid)
++                assert GEN.schedule_profile(4100 + cycle, index, difficulty) == profile
++                if profile == "canonical_anchor":
++                    assert all(r % 3 == 1 and c % 3 == 1 for r, c in cells)
++                    assert not any(on_edge(grid, cell) for cell in cells)
++                    assert not halos_overlap(cells)
++                elif profile == "off_lattice":
++                    assert any(r % 3 != 1 or c % 3 != 1 for r, c in cells)
++                    assert not any(on_edge(grid, cell) for cell in cells)
++                    assert not halos_overlap(cells)
++                elif profile == "edge_clip":
++                    assert any(on_edge(grid, cell) for cell in cells)
++                    assert not halos_overlap(cells)
++                elif profile == "overlap":
++                    assert not any(on_edge(grid, cell) for cell in cells)
++                    assert halos_overlap(cells)
++                else:  # pragma: no cover - protects schedule expansion
++                    raise AssertionError(profile)
+diff --git a/repo/generators/f7c20cfd443f/workspace/audit_curriculum.py b/repo/generators/f7c20cfd443f/workspace/audit_curriculum.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f7c20cfd443f/workspace/audit_curriculum.py
+@@ -0,0 +1,221 @@
++"""Racket-free audit for the f7c20cfd443f teaching curriculum.
++
++This is intentionally task-local.  It pins the Python mirror to every canonical
++pair, measures the default distribution, checks scheduled lesson windows, and
++verifies that each named competitor is falsified.  It is useful on review hosts
++where the protected Racket runtime is unavailable; it does not replace the
++canonical Racket execution gates.
++"""
++from __future__ import annotations
++
++import argparse
++import importlib.util
++import json
++import sys
++from collections import Counter
++from pathlib import Path
++from typing import Any
++
++
++TASK_ID = "f7c20cfd443f"
++REPO = Path(__file__).resolve().parents[3]
++RUNTIME = REPO / "shared" / "runtime"
++if str(RUNTIME) not in sys.path:
++    sys.path.insert(0, str(RUNTIME))
++
++
++def _load_generator():
++    path = REPO / "generators" / TASK_ID / "generator.py"
++    spec = importlib.util.spec_from_file_location(f"audit_{TASK_ID}", path)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _canonical_pairs() -> list[dict[str, Any]]:
++    path = REPO / "shared" / "data" / "canonical" / "puzzles.jsonl"
++    with path.open(encoding="utf-8") as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                return [pair for split in ("train", "test") for pair in row[split]]
++    raise RuntimeError(f"canonical task {TASK_ID} not found")
++
++
++def _signature(grid: list[list[int]]) -> tuple[tuple[int, ...], ...]:
++    return tuple(tuple(row) for row in grid)
++
++
++def audit(per_band: int, lesson_starts: int) -> dict[str, Any]:
++    gen = _load_generator()
++    failures: list[str] = []
++    canonical_results = []
++    for index, pair in enumerate(_canonical_pairs()):
++        self_errors = gen.self_check(pair["input"])
++        mirror_ok = gen.rule_mirror(pair["input"]) == pair["output"]
++        canonical_results.append(
++            {"index": index, "self_check": self_errors, "mirror_ok": mirror_ok}
++        )
++        if self_errors or not mirror_ok:
++            failures.append(f"canonical pair {index} rejected or mismatched")
++
++    bands: dict[str, Any] = {}
++    for band in ("easy", "medium", "hard"):
++        grids = [gen.generate(900_000 + i, i, difficulty=band) for i in range(per_band)]
++        strict_failures = [
++            {"index": i, "errors": gen.strict_canonical_like(grid)}
++            for i, grid in enumerate(grids)
++            if gen.strict_canonical_like(grid)
++        ]
++        dimensions = Counter((len(grid), len(grid[0])) for grid in grids)
++        seed_counts = Counter(
++            sum(value == 5 for row in grid for value in row) for grid in grids
++        )
++        profiles = Counter(
++            gen.schedule_profile(900_000 + i, i, band) for i in range(per_band)
++        )
++        witness_hits = {
++            name: sum(bool(predicate(grid)) for grid in grids)
++            for name, predicate in gen.SEMANTIC_WITNESSES.items()
++        }
++        profile_contract_failures: list[dict[str, Any]] = []
++        for index, grid in enumerate(grids):
++            profile = gen.schedule_profile(900_000 + index, index, band)
++            cells = [
++                (row, col)
++                for row, values in enumerate(grid)
++                for col, value in enumerate(values)
++                if value == 5
++            ]
++            on_edge = any(
++                row in (0, len(grid) - 1) or col in (0, len(grid[0]) - 1)
++                for row, col in cells
++            )
++            overlap = any(
++                max(abs(a[0] - b[0]), abs(a[1] - b[1])) == 2
++                for left, a in enumerate(cells)
++                for b in cells[left + 1 :]
++            )
++            off_lattice = any(
++                row % 3 != 1 or col % 3 != 1 for row, col in cells
++            )
++            violated = (
++                (profile == "canonical_anchor" and (off_lattice or on_edge or overlap))
++                or (profile == "off_lattice" and (not off_lattice or on_edge or overlap))
++                or (profile == "edge_clip" and (not on_edge or overlap))
++                or (profile == "overlap" and (on_edge or not overlap))
++            )
++            if violated:
++                profile_contract_failures.append(
++                    {"index": index, "profile": profile, "seeds": cells}
++                )
++        unique = len({_signature(grid) for grid in grids})
++        bands[band] = {
++            "draws": per_band,
++            "strict_failures": strict_failures,
++            "dimensions": {f"{h}x{w}": count for (h, w), count in dimensions.items()},
++            "seed_counts": dict(sorted(seed_counts.items())),
++            "profiles": dict(profiles),
++            "witness_hits": witness_hits,
++            "profile_contract_failures": profile_contract_failures,
++            "unique": unique,
++        }
++        if strict_failures:
++            failures.append(f"{band}: {len(strict_failures)} strict failures")
++        expected_dimensions = Counter(
++            gen.PROFILE_DIMENSIONS[band][index % len(gen.SCHEDULE_PROFILES)]
++            for index in range(per_band)
++        )
++        if dimensions != expected_dimensions:
++            failures.append(
++                f"{band}: dimensions differ from the declared controlled schedule"
++            )
++        if dimensions[(9, 9)] < per_band // len(gen.SCHEDULE_PROFILES):
++            failures.append(f"{band}: fewer than one canonical 9x9 anchor per cycle")
++        if any(count not in (3, 4) for count in seed_counts):
++            failures.append(f"{band}: ordinary seed count outside 3..4")
++        if set(profiles) != set(gen.SCHEDULE_PROFILES):
++            failures.append(f"{band}: missing schedule profile")
++        if any(hit == 0 for hit in witness_hits.values()):
++            failures.append(f"{band}: declared witness never fired")
++        if profile_contract_failures:
++            failures.append(
++                f"{band}: {len(profile_contract_failures)} profile-isolation failures"
++            )
++        if unique < max(1, int(per_band * 0.9)):
++            failures.append(f"{band}: uniqueness below 90% ({unique}/{per_band})")
++
++    lesson_results: list[dict[str, Any]] = []
++    for band in ("easy", "medium", "hard"):
++        for start in range(lesson_starts):
++            grids = [
++                gen.generate(777_777, start + offset, difficulty=band)
++                for offset in range(gen.EXAMPLES_NEEDED + 1)
++            ]
++            demos = [
++                {"input": grid, "output": gen.rule_mirror(grid)}
++                for grid in grids[: gen.EXAMPLES_NEEDED]
++            ]
++            reasons = gen.lesson_identifiable(demos, {"input": grids[-1]})
++            survivors = [
++                name
++                for name, competitor in gen.LESSON_COMPETITORS.items()
++                if all(competitor(demo["input"]) == demo["output"] for demo in demos)
++            ]
++            lesson_results.append(
++                {
++                    "band": band,
++                    "start": start,
++                    "profiles": [
++                        gen.schedule_profile(777_777, start + offset, band)
++                        for offset in range(gen.EXAMPLES_NEEDED)
++                    ],
++                    "reasons": reasons,
++                    "survivors": survivors,
++                }
++            )
++            if reasons or survivors:
++                failures.append(
++                    f"{band} lesson start {start}: reasons={reasons}, survivors={survivors}"
++                )
++
++    return {
++        "schema": "f7c20cfd443f-curriculum-audit-v1",
++        "task_id": TASK_ID,
++        "version": gen.VERSION,
++        "rule_hash": gen.RULE_HASH,
++        "status": "PASS" if not failures else "FAIL",
++        "canonical": canonical_results,
++        "bands": bands,
++        "lessons": lesson_results,
++        "failures": failures,
++        "limitation": (
++            "Uses a Python mirror pinned to canonical pairs; run the protected "
++            "Racket gates before approval when a Racket runtime is available."
++        ),
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--per-band", type=int, default=60)
++    parser.add_argument("--lesson-starts", type=int, default=16)
++    parser.add_argument("--out", type=Path)
++    args = parser.parse_args()
++    report = audit(args.per_band, args.lesson_starts)
++    encoded = json.dumps(report, indent=2, sort_keys=True) + "\n"
++    if args.out:
++        args.out.parent.mkdir(parents=True, exist_ok=True)
++        args.out.write_text(encoded, encoding="utf-8")
++    print(
++        f"{report['status']} {TASK_ID} v{report['version']}: "
++        f"{sum(v['draws'] for v in report['bands'].values())} draws, "
++        f"{len(report['lessons'])} lessons, {len(report['failures'])} failures"
++    )
++    return 0 if report["status"] == "PASS" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

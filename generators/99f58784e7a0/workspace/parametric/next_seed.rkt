@@ -1,0 +1,51 @@
+(rule!
+ (let ((dummy 0))
+   (define dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))
+   (define (paint grid cells color)
+     (for/fold ((out grid)) ((p (in-list cells)))
+       (if (in-bounds? (first p) (second p) (rows out) (cols out))
+           (set-cell out (first p) (second p) color)
+           out)))
+   (define (regions-without-wall grid wall-color)
+     (let loop-pos ((positions (grid-positions grid)) (seen (list)) (acc (list)))
+       (cond
+         ((empty? positions) (reverse acc))
+         ((or (member? (first positions) seen)
+              (= (at grid (first (first positions)) (second (first positions))) wall-color))
+          (loop-pos (rest positions) seen acc))
+         (else
+          (let bfs ((queue (list (first positions)))
+                    (seen2 (cons (first positions) seen))
+                    (cells (list)))
+            (if (empty? queue)
+                (loop-pos (rest positions) seen2 (cons (sort cells cell<) acc))
+                (let* ((cur (first queue))
+                       (nbrs
+                        (filter
+                         (lambda (p)
+                           (and (in-bounds? (first p) (second p) (rows grid) (cols grid))
+                                (not (member? p seen2))
+                                (not (= (at grid (first p) (second p)) wall-color))))
+                         (map (lambda (d)
+                                (list (+ (first cur) (first d))
+                                      (+ (second cur) (second d))))
+                              dirs4))))
+                  (bfs (append (rest queue) nbrs)
+                       (append seen2 nbrs)
+                       (cons cur cells)))))))))
+   (define (room-color room)
+     (first
+      (sort
+       (remove-duplicates
+        (filter (lambda (v) (not (member? v (list 0 8))))
+                (map (lambda (p) (at g (first p) (second p))) room)))
+       <)))
+   (let* ((rooms (regions-without-wall g 8))
+          (colors (map room-color rooms))
+          (shifted (append (rest colors) (list (first colors)))))
+     (let loop ((out g) (remaining rooms) (remaining-colors shifted))
+       (if (empty? remaining)
+           out
+           (loop (paint out (first remaining) (first remaining-colors))
+                 (rest remaining)
+                 (rest remaining-colors)))))))

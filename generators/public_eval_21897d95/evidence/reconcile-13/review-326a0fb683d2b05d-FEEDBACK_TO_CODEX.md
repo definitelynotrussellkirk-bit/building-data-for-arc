@@ -1,0 +1,1 @@
+F1: Biggest avoidable friction: the generated INTAKE.json top-level components omits racket for both newly authored root reference.rkt files, although per-target declarations correctly include it. This repeats the prior packet finding; classify task-local reference.rkt as racket so owner triage cannot overlook newly authored authority.

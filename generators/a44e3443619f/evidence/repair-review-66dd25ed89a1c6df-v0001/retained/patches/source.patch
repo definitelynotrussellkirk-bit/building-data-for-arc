@@ -1,0 +1,1808 @@
+diff --git a/repo/generators/a44e3443619f/SUMMARY.md b/repo/generators/a44e3443619f/SUMMARY.md
+--- a/repo/generators/a44e3443619f/SUMMARY.md
++++ b/repo/generators/a44e3443619f/SUMMARY.md
+@@ -1,6 +1,6 @@
+ # a44e3443619f
+ 
+-0-bg grid (h~7-9, w~9-11) with 2-3 'X-QUAD' patterns. Each quad: color-2 cells at the FOUR diagonal corners of a 3×3 region (positions (r,c), (r,c+2), (r+2,c), (r+2,c+2)) — the center (r+1, c+1) and edges are 0. Quads are isolated by ≥3 cells from each other. Rule: for every cell (r, c) in the grid: if input[r][c] == 0 AND all 4 DIAGONAL neighbors (using safe-at with default 0) are 2 → output 1. Else preserve input. Net effect: the 0 center of each X-quad becomes color 1 (blue); everything else stays.
++0-background grid (h≈7–9, w≈9–11) with exactly two or three isolated red X patterns. Each pattern has color-2 cells at the four diagonal corners of a 3×3 region; its centre and edge cells are 0. The constructive sampler rejects any layout whose combined corners would create an unintended extra centre. Rule: for every cell `(r,c)`, if the input value is 0 and all four immediate diagonal neighbours (with out-of-bounds default 0) are 2, change it to blue 1; otherwise preserve it.
+ 
+-Kind: `per_puzzle`. Imported version: `2.0.1`.
+-Approval is derived by the catalog from current code and retained evidence.
++Kind: `per_puzzle`. Imported version: `2.1.0`.
++Approval is derived by the catalog from current code and retained evidence. The task-local parametric workspace proposes an unapproved `single|cascade` family; owner qualification and acceptance remain separate.
+diff --git a/repo/generators/a44e3443619f/generator.py b/repo/generators/a44e3443619f/generator.py
+--- a/repo/generators/a44e3443619f/generator.py
++++ b/repo/generators/a44e3443619f/generator.py
+@@ -1,39 +1,47 @@
+-"""Generator for arc_additional_puzzle_bank_volume3:E16 — Diagonal-2-quad center → 1.
+-
+-Rule: cell (r,c) with value 0 whose 4 diagonal neighbors are all 2 →
+-becomes 1. Out-of-bounds neighbors count as not 2.
+-
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, n_quads,
+-palette_size, position_bias, n_distinct_colors, density, texture.
+-Degenerates: no_quads, quads_at_edge, partial_quads.
++"""Generator for arc_additional_puzzle_bank_volume3:E16 — diagonal X centers.
++
++Canonical rule: every zero cell whose four immediate diagonal neighbours are
++red (2) becomes blue (1); every other cell is preserved.
++
++Ordinary draws construct exactly two or three isolated source X patterns and
++reject layouts whose combined corners would accidentally create extra X
++centres.  This repairs the previous retry sampler, which could emit one, four,
++or five effective patterns despite declaring two or three.
+ """
+ from __future__ import annotations
+ 
++from functools import lru_cache
++from itertools import combinations
++
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "a44e3443619f"
+-VERSION = "2.0.1"
++VERSION = "2.1.0"
+ TASK_ID = "a44e3443619f"
+ SUMMARY = (
+-    "0-bg grid (h~7-9, w~9-11) with 2-3 'X-QUAD' patterns. "
+-    "Each quad: color-2 cells at the FOUR diagonal corners of "
+-    "a 3×3 region (positions (r,c), (r,c+2), (r+2,c), (r+2,"
+-    "c+2)) — the center (r+1, c+1) and edges are 0. Quads "
+-    "are isolated by ≥3 cells from each other. Rule: for "
+-    "every cell (r, c) in the grid: if input[r][c] == 0 AND "
+-    "all 4 DIAGONAL neighbors (using safe-at with default 0) "
+-    "are 2 → output 1. Else preserve input. Net effect: the "
+-    "0 center of each X-quad becomes color 1 (blue); "
+-    "everything else stays."
++    "0-background grid with exactly 2-3 isolated red X patterns. Each pattern "
++    "has red (2) cells at the four diagonal corners of a 3x3 region and an "
++    "empty centre. Every empty cell with red in all four immediate diagonal "
++    "directions becomes blue (1); all other cells are preserved."
+ )
+ 
++# Byte-for-byte selected canonical authority.  Parametric default adapters and
++# source-bound checks use this exact text.
++_CANONICAL_PROGRAM = """(rule!
++  (grid-from-fn (rows g) (cols g)
++    (lambda (r c)
++      (if (and (= (at g r c) 0)
++               (all? (lambda (d) (= (safe-at g (+ r (first d)) (+ c (second d)) 0) 2)) diagonal-deltas))
++          1
++          (at g r c)))))"""
++
+ EXAMPLES_NEEDED = 3
+ 
+ INVARIANTS = [
+-    "≥2 'X' patterns: 2 at four diagonal corners of a 3x3, with empty 0 center",
+-    "patterns don't overlap or touch",
+-    "quad centers are strictly interior (so diagonals are in-bounds)",
++    "ordinary draws contain exactly 2 or 3 complete red X patterns",
++    "ordinary source patterns do not overlap or create accidental extra centres",
++    "all source-pattern centres are strictly interior",
+ ]
+ 
+ PALETTE_KINDS = ("default", "warm", "cool", "varied")
+@@ -41,45 +49,120 @@
+ HELPFUL_TEXTURES = PALETTE_KINDS
+ 
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 7..9", "valid": "6..14"},
+-    "grid_w":         {"type": "int", "default": "rng 9..11", "valid": "8..14"},
+-    "palette_kind":   {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(PALETTE_KINDS)},
+-    "n_quads":        {"type": "int", "default": "rng 2..3", "valid": "1..5"},
+-    "palette_size":   {"type": "int", "default": "1", "valid": "1..2"},
+-    "position_bias":  {"type": "str", "default": "interior_quads",
+-                       "valid": "interior_quads"},
++    "grid_h": {"type": "int", "default": "rng 7..9", "valid": "7..9"},
++    "grid_w": {"type": "int", "default": "rng 9..11", "valid": "9..11"},
++    "palette_kind": {"type": "str", "default": "rng helpful",
++                     "valid": "|".join(PALETTE_KINDS)},
++    "n_quads": {"type": "int", "default": "rng 2..3", "valid": "2..3"},
++    "palette_size": {"type": "int", "default": "1", "valid": "1..2"},
++    "position_bias": {"type": "str", "default": "interior_quads",
++                      "valid": "interior_quads"},
+     "n_distinct_colors": {"type": "int", "default": "1", "valid": "1..2"},
+-    "density":        {"type": "str", "default": "sparse", "valid": "sparse"},
+-    "texture":        {"type": "str", "default": "alias for palette_kind",
+-                       "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "density": {"type": "str", "default": "sparse", "valid": "sparse"},
++    "texture": {"type": "str", "default": "alias for palette_kind",
++                "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
+ }
+ 
++_DIAGONALS = ((-1, -1), (-1, 1), (1, -1), (1, 1))
++
++
++def rule_program() -> str:
++    """Return the exact selected canonical Racket authority."""
++    return _CANONICAL_PROGRAM
++
++
++def _validate_grid(grid) -> tuple[int, int]:
++    if (type(grid) is not list or not grid or type(grid[0]) is not list
++            or not grid[0]):
++        raise ValueError("grid must be a nonempty rectangular list")
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width
++           or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++           for row in grid):
++        raise ValueError("grid must contain exact ARC integer colours")
++    return len(grid), width
++
++
++def _x_centers(grid) -> tuple[tuple[int, int], ...]:
++    h, w = _validate_grid(grid)
++    return tuple(
++        (r, c)
++        for r in range(1, h - 1)
++        for c in range(1, w - 1)
++        if grid[r][c] == 0
++        and all(grid[r + dr][c + dc] == 2 for dr, dc in _DIAGONALS)
++    )
++
++
++def rule_mirror(grid) -> list[list[int]]:
++    """Pure Python mirror of the exact canonical rule."""
++    _validate_grid(grid)
++    centres = set(_x_centers(grid))
++    return [
++        [1 if (r, c) in centres else value for c, value in enumerate(row)]
++        for r, row in enumerate(grid)
++    ]
++
+ 
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Verify: >=1 X-quad pattern present (4 color-2 diagonal corners of a 3×3,
+-    center 0); all non-bg cells are color 2."""
+-    if not grid or not grid[0]:
+-        return ["empty grid"]
+-    h, w = len(grid), len(grid[0])
+-    errs = []
+-    quad_count = 0
+-    for r in range(h - 2):
+-        for c in range(w - 2):
+-            if (grid[r][c] == 2 and grid[r][c + 2] == 2 and
+-                    grid[r + 2][c] == 2 and grid[r + 2][c + 2] == 2 and
+-                    grid[r + 1][c + 1] == 0):
+-                quad_count += 1
++    """Verify the semantic source grammar without rejecting canonical overlaps."""
++    try:
++        h, w = _validate_grid(grid)
++    except ValueError as exc:
++        return [str(exc)]
++    errs: list[str] = []
++    quad_count = len(_x_centers(grid))
+     if quad_count < 1:
+-        errs.append("no complete X-quad pattern found (expected >=1)")
++        errs.append("no complete X pattern found (expected at least one)")
+     wrong = [(r, c, grid[r][c]) for r in range(h) for c in range(w)
+              if grid[r][c] not in (0, 2)]
+     if wrong:
+-        errs.append(f"non-bg cells not color-2: {wrong[:3]}")
++        errs.append(f"non-background cells not red: {wrong[:3]}")
+     return errs
+ 
+ 
++def _paint_quad(grid: list[list[int]], top: int, left: int) -> None:
++    grid[top][left] = 2
++    grid[top][left + 2] = 2
++    grid[top + 2][left] = 2
++    grid[top + 2][left + 2] = 2
++
++
++@lru_cache(maxsize=None)
++def _valid_layouts(h: int, w: int, count: int) -> tuple[tuple[tuple[int, int], ...], ...]:
++    """Enumerate small exact layouts once per supported shape/count.
++
++    Pairwise separation preserves the old intended isolation contract.  The
++    final centre-set equality additionally rules out accidental Xs assembled
++    from corners belonging to different source patterns.
++    """
++    candidates = tuple((r, c) for r in range(h - 2) for c in range(w - 2))
++    valid: list[tuple[tuple[int, int], ...]] = []
++    for layout in combinations(candidates, count):
++        if any(not (abs(ar - br) > 3 or abs(ac - bc) > 3)
++               for (ar, ac), (br, bc) in combinations(layout, 2)):
++            continue
++        grid = full_grid(h, w, 0)
++        for top, left in layout:
++            _paint_quad(grid, top, left)
++        expected = {(top + 1, left + 1) for top, left in layout}
++        if set(_x_centers(grid)) == expected:
++            valid.append(layout)
++    if not valid:
++        raise RuntimeError(f"no exact {count}-X layout for {h}x{w}")
++    return tuple(valid)
++
++
++def _strict_requested_count(overrides: dict) -> None:
++    if "n_quads" not in overrides:
++        return
++    value = overrides["n_quads"]
++    if type(value) is not int or value not in (2, 3):
++        raise ValueError("n_quads must be the exact integer 2 or 3")
++
++
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
++    _strict_requested_count(overrides)
+     ctx = gen_ctx(seed=seed, sample_index=sample_index,
+                   version=VERSION, task_id=TASK_ID,
+                   difficulty=difficulty, overrides=overrides)
+@@ -94,42 +177,31 @@
+     else:
+         h = ctx.draw_int("grid_h", 7, 9)
+         w = ctx.draw_int("grid_w", 9, 11)
+-    g = full_grid(h, w, 0)
++    count = ctx.draw_int("n_quads", 2, 3)
+     rng = ctx.draw_rng("layout")
+-    n = rng.randint(2, 3)
+-    placed = []
+-    for _ in range(40):
+-        if len(placed) >= n:
+-            break
+-        r = rng.randint(0, h - 3); c = rng.randint(0, w - 3)
+-        ok = all(abs(r - pr) > 3 or abs(c - pc) > 3 for pr, pc in placed)
+-        if ok:
+-            g[r][c] = 2; g[r][c + 2] = 2
+-            g[r + 2][c] = 2; g[r + 2][c + 2] = 2
+-            placed.append((r, c))
+-    return g
++    layouts = _valid_layouts(h, w, count)
++    layout = layouts[rng.randrange(len(layouts))]
++    grid = full_grid(h, w, 0)
++    for top, left in layout:
++        _paint_quad(grid, top, left)
++    return grid
+ 
+ 
+ def _draw_from_degenerate(name, rng):
+     h, w = 8, 10
+     g = full_grid(h, w, 0)
+     if name == "no_quads":
+-        # scattered 2s but no full diagonal-quad pattern → rule has no centers to mark
+         for r, c in [(2, 2), (4, 5), (6, 8)]:
+             g[r][c] = 2
+         return g
+     if name == "quads_at_edge":
+-        # quads positioned so center is on grid edge → out-of-bounds diagonal neighbors break rule
+-        # quad at (0,0): center (0,0)+(1,1) = (1,1) but corner (0,0) means top-left out of bounds wrap
+-        g[0][0] = 2; g[0][2] = 2
+-        g[2][0] = 2; g[2][2] = 2
++        # Valid boundary-contact source X; the centre remains interior.
++        _paint_quad(g, 0, 0)
+         return g
+     if name == "partial_quads":
+-        # only 3 of 4 diagonal corners are 2 → rule's "all 4 diagonals" condition never matches
+         for top_r, top_c in [(2, 2), (5, 6)]:
+             g[top_r][top_c] = 2
+             g[top_r][top_c + 2] = 2
+             g[top_r + 2][top_c] = 2
+-            # missing (top_r + 2, top_c + 2)
+         return g
+     return g
+diff --git a/repo/generators/a44e3443619f/notes.md b/repo/generators/a44e3443619f/notes.md
+--- a/repo/generators/a44e3443619f/notes.md
++++ b/repo/generators/a44e3443619f/notes.md
+@@ -1,4 +1,25 @@
+ # Working notes: a44e3443619f
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Review review-66dd25ed89a1c6df — exact sampler and cascade family
++
++### D1 — Repair the base sampler at construction time
++
++The imported generator claimed exactly two or three isolated red X patterns, but its retry placement could combine corners from separate attempts into accidental extra centres. The retained red regression shows default seed 1 producing four effective centres; the broader probe also found one and five. Rejection after generation would leave count semantics fragile, so the repair enumerates pairwise-separated layouts once per `(height, width, count)`, paints each candidate, and retains only layouts whose computed centre set exactly equals the intended set. Strict `n_quads` overrides reject booleans, floats, and values outside `{2,3}`.
++
++### D2 — Preserve the canonical default and add a genuinely causal second pass
++
++`completion_depth=single` returns the selected canonical program byte-for-byte. `completion_depth=cascade` first runs that exact pass, preserving its full output as the intermediate, then recolours a red cell green when all four immediate diagonal neighbours in the intermediate are blue. Inputs contain only 0/2, so skipping Stage A leaves no eligible green targets. Complete 5×5 red lattices create four first-pass centres around a second-pass target; an eight-cell near miss creates only three and must not fire.
++
++### D3 — Make the minimum lesson rule-identifying without setting leakage
++
++Input sampling is identical for `single` and `cascade`. The two-demo prefix includes one- and two-target scenes at the same 13×17 dimensions, plus incomplete motifs, standalone Xs, and partial Xs. It rejects skip-A, all-blue-to-green, fixed-centre, first-only, last-only, and recolour-all-red shortcuts before any query is exposed. Four distinct queries include thin-wide, thin-tall, larger mixed, and substantive 30×30 boundary-contact scenes. Demonstration counts 2–6 are prefix-stable and query count is exactly four.
++
++### D4 — Retain an executable adversarial tool for later agents
++
++`workspace/parametric/adversarial_audit.py` checks setting-independent inputs, minimum lessons, named shortcuts, crossed intermediate/nuisance controls, exact-count base sampling, malformed-certificate rejection, Python/Racket parity, 30×30 stress, and current source hashes. The final protected run covered 96 episodes, 736 pairs, 1,096 Racket evaluations, 576 base draws, and six negative certificate cases; a 128-seed no-Racket sweep covered 768 episodes and 5,888 pairs. These are bounded checks, not universal identifiability proof.
++
++### D5 — Preserve the owner gate
++
++The source-bound authoring preflight, protected-Racket causal witness, public projection, first-turn invariance, and task-local tests pass on the retained source bytes. This review does not edit approval state, grant native acceptance, or admit training data. The next useful action is owner review of the exact patch followed by fresh native qualification and acceptance.
+diff --git a/repo/generators/a44e3443619f/tests/test_parametric_cascade.py b/repo/generators/a44e3443619f/tests/test_parametric_cascade.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/a44e3443619f/tests/test_parametric_cascade.py
+@@ -0,0 +1,254 @@
++from __future__ import annotations
++
++import copy
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root
++
++
++TASK_ID = "a44e3443619f"
++REPO = find_root(__file__)
++HOME = REPO / "generators" / TASK_ID
++PARAMETRIC = HOME / "workspace" / "parametric"
++
++
++def _load(name: str, path: Path):
++    assert path.is_file(), f"missing source: {path}"
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture(scope="module")
++def generator():
++    return _load("a44_base_generator", HOME / "generator.py")
++
++
++@pytest.fixture(scope="module")
++def proto():
++    return _load("a44_parametric_prototype", PARAMETRIC / "prototype.py")
++
++
++def _canonical_row() -> dict:
++    for line in canonical_path(REPO).read_text(encoding="utf-8").splitlines():
++        row = json.loads(line)
++        if row.get("task_id") == TASK_ID:
++            return row
++    raise AssertionError("canonical task row missing")
++
++
++def _x_centers(grid: list[list[int]], *, corner_color: int = 2) -> set[tuple[int, int]]:
++    h, w = len(grid), len(grid[0])
++    return {
++        (r, c)
++        for r in range(1, h - 1)
++        for c in range(1, w - 1)
++        if grid[r][c] == 0
++        and all(
++            grid[r + dr][c + dc] == corner_color
++            for dr, dc in ((-1, -1), (-1, 1), (1, -1), (1, 1))
++        )
++    }
++
++
++def _apply_racket(bridge: RacketBridge, program: str, grid: list[list[int]]) -> list[list[int]]:
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return bridge.eval_text(f"({wrap_rule(program)} {literal})")
++
++
++def test_base_canonical_pairs_and_exact_program_are_preserved(generator):
++    row = _canonical_row()
++    assert generator.rule_program() == row["program_solution"]
++    for pair in [*row["train"], *row["test"]]:
++        original = copy.deepcopy(pair["input"])
++        assert generator.rule_mirror(pair["input"]) == pair["output"]
++        assert pair["input"] == original
++
++
++def test_base_generation_constructs_exactly_the_declared_two_or_three_x_patterns(generator):
++    for difficulty in (None, "easy", "medium", "hard"):
++        for seed in range(96):
++            grid = generator.generate(seed, seed % 7, difficulty=difficulty)
++            centers = _x_centers(grid)
++            assert len(centers) in {2, 3}, (difficulty, seed, centers)
++            assert generator.self_check(grid) == []
++    for count in (2, 3):
++        for seed in range(24):
++            grid = generator.generate(seed, 3, difficulty="medium", n_quads=count)
++            assert len(_x_centers(grid)) == count
++    for invalid in (1, 4, True, 2.0):
++        with pytest.raises((TypeError, ValueError)):
++            generator.generate(1, 0, n_quads=invalid)
++
++
++def test_default_parametric_program_is_byte_exact_canonical(proto):
++    assert proto.DEFAULT == {"completion_depth": "single"}
++    assert proto.program(proto.DEFAULT) == _canonical_row()["program_solution"]
++    assert {s["completion_depth"] for s in proto.SETTINGS} == {"single", "cascade"}
++    assert len({proto.program(setting) for setting in proto.SETTINGS}) == 2
++
++
++def test_cascade_is_a_real_second_pass_over_the_stage_one_grid(proto):
++    grid = proto.make_control_scene(
++        13,
++        13,
++        complete=[(0, 0), (8, 8)],
++        incomplete=[(0, 8)],
++        standalone=[(9, 1)],
++        nuisance=[(6, 6)],
++    )
++    stage_one = proto.stage_one(grid)
++    final = proto.stage_two(stage_one)
++    analysis = proto.analyze_scene(grid)
++    assert analysis["stage_one_centers"] == 4 * 2 + 3 + 1
++    assert analysis["cascade_targets"] == 2
++    assert proto.transform(grid, {"completion_depth": "single"}) == stage_one
++    assert proto.transform(grid, {"completion_depth": "cascade"}) == final
++    assert final != stage_one
++    assert proto.stage_two(grid) == grid  # skipping A cannot create the green targets
++    assert sum(cell == 3 for row in final for cell in row) == 2
++
++
++def test_generation_is_deterministic_count_independent_and_settings_independent(proto):
++    for seed in (0, 1, 17, 91):
++        single_short = proto.generate(seed, {"completion_depth": "single"}, 2, 4)
++        single_long = proto.generate(seed, {"completion_depth": "single"}, 6, 4)
++        cascade = proto.generate(seed, {"completion_depth": "cascade"}, 2, 4)
++        assert single_short == proto.generate(seed, {"completion_depth": "single"}, 2, 4)
++        assert single_short["train"] == single_long["train"][:2]
++        assert single_short["test"] == single_long["test"]
++        assert [p["input"] for p in single_short["train"] + single_short["test"]] == [
++            p["input"] for p in cascade["train"] + cascade["test"]
++        ]
++        assert len(single_short["train"]) == 2
++        assert len(single_short["test"]) == 4
++        assert len({proto.digest(p["input"]) for p in single_short["train"] + single_short["test"]}) == 6
++        assert single_short["certificate"]["survivors"] == [{"completion_depth": "single"}]
++        assert cascade["certificate"]["survivors"] == [{"completion_depth": "cascade"}]
++        assert single_short["certificate"]["shortcut_survivors"] == []
++        assert cascade["certificate"]["shortcut_survivors"] == []
++
++
++def test_every_minimum_lesson_has_multiple_causal_targets_and_near_misses(proto):
++    for seed in range(64):
++        for setting in proto.SETTINGS:
++            episode = proto.generate(seed, setting, 2, 4)
++            train_analysis = [proto.analyze_scene(pair["input"]) for pair in episode["train"]]
++            assert all(row["cascade_targets"] >= 1 for row in train_analysis)
++            assert any(row["cascade_targets"] >= 2 for row in train_analysis)
++            assert any(row["incomplete_motifs"] >= 1 for row in train_analysis)
++            assert any(row["standalone_x"] >= 1 for row in train_analysis)
++            # Demos alone must eliminate every declared wrong shortcut before queries are read.
++            for name, disagreements in episode["certificate"]["shortcut_disagreements"].items():
++                assert disagreements, (seed, setting, name)
++
++
++def test_query_bank_includes_boundary_thin_axis_swap_and_substantive_30x30(proto):
++    episode = proto.generate(31, {"completion_depth": "cascade"}, 3, 4)
++    shapes = [(len(pair["input"]), len(pair["input"][0])) for pair in episode["test"]]
++    assert shapes[0][0] < shapes[0][1]
++    assert shapes[1][0] > shapes[1][1]
++    assert shapes[-1] == (30, 30)
++    grid = episode["test"][-1]["input"]
++    analysis = proto.analyze_scene(grid)
++    occupied = [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value]
++    assert analysis["cascade_targets"] >= 8
++    assert analysis["incomplete_motifs"] >= 4
++    assert analysis["standalone_x"] >= 2
++    assert len(occupied) >= 100
++    assert min(r for r, _ in occupied) == 0 and max(r for r, _ in occupied) == 29
++    assert min(c for _, c in occupied) == 0 and max(c for _, c in occupied) == 29
++
++
++def test_crossed_controls_change_intermediate_not_dimensions_and_change_nuisance_not_targets(proto):
++    controls = proto.crossed_controls()
++    different_intermediate = controls["different_intermediate_same_profile"]
++    assert {tuple(map(len, [case["input"], case["input"][0]])) for case in different_intermediate} == {(13, 13)}
++    assert len({case["analysis"]["cascade_targets"] for case in different_intermediate}) == 2
++    same_targets = controls["same_targets_different_nuisance"]
++    assert len({tuple(case["analysis"]["target_cells"]) for case in same_targets}) == 1
++    assert same_targets[0]["input"] != same_targets[1]["input"]
++    assert same_targets[0]["analysis"]["cascade_targets"] == same_targets[1]["analysis"]["cascade_targets"]
++
++
++def test_strict_contract_rejects_malformed_settings_counts_grids_and_certificates(proto):
++    for settings in ({}, {"completion_depth": "double"}, {"completion_depth": 2},
++                     {"completion_depth": "single", "extra": 1}):
++        with pytest.raises(ValueError):
++            proto.program(settings)
++    for key, value in (("seed", True), ("seed", 1.0), ("demos", 1), ("demos", 7),
++                       ("demos", True), ("queries", 3), ("queries", 5), ("queries", True)):
++        kwargs = {"seed": 1, "settings": proto.DEFAULT, "demos": 2, "queries": 4}
++        kwargs[key] = value
++        with pytest.raises((TypeError, ValueError)):
++            proto.generate(**kwargs)
++    for bad_grid in ([], [[]], [[0], [0, 0]], [[True]], [[10]], "grid"):
++        with pytest.raises((TypeError, ValueError)):
++            proto.transform(bad_grid, proto.DEFAULT)
++
++    episode = proto.generate(9, {"completion_depth": "cascade"}, 2, 4)
++    duplicate = copy.deepcopy(episode)
++    duplicate["test"][0]["input"] = copy.deepcopy(duplicate["train"][0]["input"])
++    with pytest.raises(ValueError, match="distinct"):
++        proto.certify(duplicate)
++    forged = copy.deepcopy(episode)
++    forged["test"][0]["output"] = copy.deepcopy(forged["test"][1]["output"])
++    with pytest.raises(ValueError, match="query label"):
++        proto.certify(forged)
++
++
++def test_python_mirror_matches_protected_racket_for_both_settings(proto):
++    bridge = RacketBridge()
++    try:
++        assert bridge.runtime_identity["backend"] == "racket"
++        assert bridge.runtime_identity["protected"] is True
++        for seed in (0, 17):
++            episode = proto.generate(seed, proto.DEFAULT, 2, 4)
++            for setting in proto.SETTINGS:
++                program = proto.program(setting)
++                for pair in episode["train"] + episode["test"]:
++                    assert _apply_racket(bridge, program, pair["input"]) == proto.transform(pair["input"], setting)
++    finally:
++        bridge.close()
++
++
++def test_adapter_contract_and_counterfactual_are_complete(proto):
++    adapter = _load("a44_parametric_adapter", PARAMETRIC / "adapter.py")
++    promotion = json.loads((PARAMETRIC / "promotion.json").read_text(encoding="utf-8"))
++    assert promotion["default"] == proto.DEFAULT
++    assert promotion["parameters"] == {"completion_depth": ["single", "cascade"]}
++    assert promotion["limits"] == {"demos": [2, 6], "queries": [4, 4]}
++    assert promotion["qualification_demos"] == 2
++    episode = adapter.generate(5, proto.DEFAULT, 6, 4)
++    assert len(episode["train"]) == 6 and len(episode["test"]) == 4
++    assert episode["program_solution"] == adapter.program(proto.DEFAULT)
++    counterfactual = (PARAMETRIC / "skip_stage_one.rkt").read_text(encoding="utf-8")
++    bridge = RacketBridge()
++    try:
++        witness = proto.generate(3, {"completion_depth": "cascade"}, 2, 4)["test"][0]
++        actual = _apply_racket(bridge, proto.program({"completion_depth": "cascade"}), witness["input"])
++        skipped = _apply_racket(bridge, counterfactual, witness["input"])
++        assert actual == witness["output"]
++        assert skipped != actual
++    finally:
++        bridge.close()
++
++
++def test_adversarial_audit_tool_covers_declared_surfaces():
++    audit = _load("a44_adversarial_audit", PARAMETRIC / "adversarial_audit.py")
++    report = audit.run_audit(seeds=range(4), demo_counts=(2, 6), use_racket=False)
++    assert report["status"] == "pass"
++    assert report["episodes_checked"] == 4 * 2 * 2
++    assert report["pairs_checked"] == report["episodes_checked"] * (4 + (2 + 6) / 2)
++    assert report["crossed_controls"]["different_intermediate_same_profile"]
++    assert report["crossed_controls"]["same_targets_different_nuisance"]
++    assert report["negative_certificate_checks"] >= 4
++    assert report["max_shape"] == [30, 30]
+diff --git a/repo/generators/a44e3443619f/workspace/parametric/README.md b/repo/generators/a44e3443619f/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/a44e3443619f/workspace/parametric/README.md
+@@ -0,0 +1,28 @@
++# a44e3443619f parametric cascade prototype
++
++This proposed family keeps the selected canonical program byte-for-byte as
++`completion_depth=single`.  `completion_depth=cascade` executes that pass, then
++recolours a red cell green when the newly blue intermediate supplies all four
++of its diagonal neighbours.  The hidden setting never changes input sampling.
++
++The minimum two-demo lesson contains a complete cascade, an eight-red-cell
++near miss, a standalone X and a partial X across the pair.  Every episode has
++four distinct queries; the last is a substantive 30×30 boundary-contact scene.
++
++From the packet root:
++
++```sh
++python3 review.py run python3 -m pytest \
++  generators/a44e3443619f/tests/test_parametric_cascade.py -q
++python3 review.py run python3 \
++  generators/a44e3443619f/workspace/parametric/adversarial_audit.py \
++  --out generators/a44e3443619f/workspace/parametric/evidence/adversarial-audit.json
++python3 review.py run python3 -m arcpuzzles parametric manifest a44e3443619f \
++  --evidence generators/a44e3443619f/workspace/parametric/evidence \
++  --reported-checks 'focused pytest plus protected-Racket adversarial audit'
++python3 review.py run python3 -m arcpuzzles.review_base_preflight a44e3443619f \
++  --out ../checks/a44e3443619f/qualification
++```
++
++These are reviewer authoring checks.  The owner must review the exact source,
++rerun native qualification/acceptance, and separately decide training admission.
+diff --git a/repo/generators/a44e3443619f/workspace/parametric/adapter.py b/repo/generators/a44e3443619f/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/a44e3443619f/workspace/parametric/adapter.py
+@@ -0,0 +1,15 @@
++"""Thin exact-path adapter for the a44e3443619f cascade prototype."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_SPEC = importlib.util.spec_from_file_location("_a44e3443619f_parametric_impl", _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise RuntimeError(f"cannot load {_PATH}")
++_IMPL = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(_IMPL)
++
++program = _IMPL.program
++generate = _IMPL.generate
+diff --git a/repo/generators/a44e3443619f/workspace/parametric/adversarial_audit.py b/repo/generators/a44e3443619f/workspace/parametric/adversarial_audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/a44e3443619f/workspace/parametric/adversarial_audit.py
+@@ -0,0 +1,338 @@
++"""Bounded adversarial audit for the a44e3443619f cascade prototype.
++
++The audit is deliberately task-specific.  It attacks the minimum two-demo
++lesson, several plausible partial/intermediate bypasses, sampler boundaries,
++strict certificate rejection, crossed controls, settings-independent inputs,
++and protected-Racket parity.  It writes a compact source-bound JSON receipt for
++future reviewers; it does not grant owner acceptance or training admission.
++"""
++from __future__ import annotations
++
++import argparse
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++from typing import Iterable
++
++HERE = Path(__file__).resolve().parent
++TASK_HOME = HERE.parents[1]
++REPO = HERE.parents[3]
++
++
++def _load(name: str, path: Path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++prototype = _load("_a44_parametric_audit_impl", HERE / "prototype.py")
++base_generator = _load("_a44_base_audit_impl", TASK_HOME / "generator.py")
++
++
++def _sha256(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def _source_binding() -> dict[str, str]:
++    paths = {
++        "generator.py": TASK_HOME / "generator.py",
++        "prototype.py": HERE / "prototype.py",
++        "adapter.py": HERE / "adapter.py",
++        "promotion.json": HERE / "promotion.json",
++        "cascade.rkt": HERE / "cascade.rkt",
++        "skip_stage_one.rkt": HERE / "skip_stage_one.rkt",
++        "tests/test_parametric_cascade.py": TASK_HOME / "tests/test_parametric_cascade.py",
++    }
++    return {name: _sha256(path) for name, path in paths.items()}
++
++
++def _racket_runner():
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    bridge = RacketBridge()
++    identity = bridge.runtime_identity
++    if identity.get("backend") != "racket" or identity.get("protected") is not True:
++        bridge.close()
++        raise RuntimeError("audit requires protected Racket")
++    cache: dict[str, str] = {}
++
++    def execute(program: str, grid: list[list[int]]) -> list[list[int]]:
++        wrapped = cache.setdefault(program, wrap_rule(program))
++        literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++        return bridge.eval_text(f"({wrapped} {literal})")
++
++    return bridge, execute, {
++        key: identity[key]
++        for key in (
++            "schema", "backend", "protected", "binary_sha256", "prelude_sha256",
++            "bridge_sha256", "boot_script_sha256", "candidate_symbol_policy_sha256",
++        )
++        if key in identity
++    }
++
++
++def _assert_base_sampler() -> dict[str, object]:
++    hist: dict[str, int] = {"2": 0, "3": 0}
++    for difficulty in (None, "easy", "medium", "hard"):
++        for seed in range(128):
++            grid = base_generator.generate(seed, seed % 7, difficulty=difficulty)
++            centres = base_generator._x_centers(grid)
++            if len(centres) not in (2, 3):
++                raise AssertionError((difficulty, seed, centres))
++            if base_generator.self_check(grid):
++                raise AssertionError((difficulty, seed, base_generator.self_check(grid)))
++            hist[str(len(centres))] += 1
++    for count in (2, 3):
++        for seed in range(32):
++            grid = base_generator.generate(seed, 5, n_quads=count)
++            if len(base_generator._x_centers(grid)) != count:
++                raise AssertionError(("override", count, seed))
++    return {"draws": 4 * 128 + 2 * 32, "effective_x_histogram": hist}
++
++
++def _negative_certificate_checks() -> int:
++    checked = 0
++    episode = prototype.generate(41, {"completion_depth": "cascade"}, 2, 4)
++
++    duplicate = copy.deepcopy(episode)
++    duplicate["test"][0]["input"] = copy.deepcopy(duplicate["train"][0]["input"])
++    try:
++        prototype.certify(duplicate)
++    except ValueError as exc:
++        if "distinct" not in str(exc):
++            raise
++        checked += 1
++    else:
++        raise AssertionError("duplicate input certificate forgery was accepted")
++
++    wrong_program = copy.deepcopy(episode)
++    wrong_program["program_solution"] = prototype.program({"completion_depth": "single"})
++    try:
++        prototype.certify(wrong_program)
++    except ValueError as exc:
++        if "program" not in str(exc):
++            raise
++        checked += 1
++    else:
++        raise AssertionError("wrong program certificate forgery was accepted")
++
++    wrong_query = copy.deepcopy(episode)
++    wrong_query["test"][0]["output"] = copy.deepcopy(wrong_query["test"][1]["output"])
++    try:
++        prototype.certify(wrong_query)
++    except ValueError as exc:
++        if "query label" not in str(exc):
++            raise
++        checked += 1
++    else:
++        raise AssertionError("wrong query label was accepted")
++
++    wrong_setting = copy.deepcopy(episode)
++    wrong_setting["settings"] = {"completion_depth": "single"}
++    try:
++        prototype.certify(wrong_setting)
++    except ValueError:
++        checked += 1
++    else:
++        raise AssertionError("mismatched private setting was accepted")
++
++    too_few = copy.deepcopy(episode)
++    too_few["train"] = too_few["train"][:1]
++    try:
++        prototype.certify(too_few)
++    except ValueError as exc:
++        if "2..6" not in str(exc):
++            raise
++        checked += 1
++    else:
++        raise AssertionError("one-demo forged certificate was accepted")
++
++    malformed = copy.deepcopy(episode)
++    malformed["test"][0]["input"][0][0] = True
++    try:
++        prototype.certify(malformed)
++    except ValueError as exc:
++        if "exact integer" not in str(exc):
++            raise
++        checked += 1
++    else:
++        raise AssertionError("bool-valued grid was accepted")
++    return checked
++
++
++def _check_controls(execute=None) -> dict[str, object]:
++    controls = prototype.crossed_controls()
++    varying = controls["different_intermediate_same_profile"]
++    if {tuple(case["analysis"]["shape"]) for case in varying} != {(13, 13)}:
++        raise AssertionError("crossed profile dimensions drifted")
++    if len({case["analysis"]["cascade_targets"] for case in varying}) != 2:
++        raise AssertionError("intended intermediate did not vary at fixed profile")
++
++    nuisance = controls["same_targets_different_nuisance"]
++    if len({tuple(map(tuple, case["analysis"]["target_cells"])) for case in nuisance}) != 1:
++        raise AssertionError("nuisance change moved causal targets")
++    if nuisance[0]["input"] == nuisance[1]["input"]:
++        raise AssertionError("nuisance controls are identical")
++
++    racket_cases = 0
++    if execute is not None:
++        for group in controls.values():
++            for case in group:
++                grid = case["input"]
++                for setting in prototype.SETTINGS:
++                    got = execute(prototype.program(setting), grid)
++                    expected = prototype.transform(grid, setting)
++                    if got != expected:
++                        raise AssertionError(("control Racket mismatch", setting))
++                    racket_cases += 1
++    return {
++        "different_intermediate_same_profile": [case["analysis"] for case in varying],
++        "same_targets_different_nuisance": [case["analysis"] for case in nuisance],
++        "protected_racket_cases": racket_cases,
++    }
++
++
++def run_audit(
++    *,
++    seeds: Iterable[int] = range(16),
++    demo_counts: Iterable[int] = (2, 3, 6),
++    use_racket: bool = True,
++) -> dict[str, object]:
++    seeds = tuple(seeds)
++    demo_counts = tuple(demo_counts)
++    if not seeds or not demo_counts:
++        raise ValueError("audit requires nonempty seeds and demo counts")
++    for seed in seeds:
++        prototype._strict_int("seed", seed, 0, prototype.MAX_SEED)
++    for count in demo_counts:
++        prototype._strict_int("demos", count, prototype.MIN_DEMOS, prototype.MAX_DEMOS)
++
++    bridge = None
++    execute = None
++    racket_identity = {"backend": "not_run", "protected": False}
++    if use_racket:
++        bridge, execute, racket_identity = _racket_runner()
++
++    episodes_checked = 0
++    pairs_checked = 0
++    racket_evaluations = 0
++    max_shape = [0, 0]
++    target_histogram: dict[str, int] = {}
++    shortcut_disagreements: dict[str, int] = {name: 0 for name in prototype.SHORTCUTS}
++    query_role_counts = {"thin_wide": 0, "thin_tall": 0, "large": 0, "30x30": 0}
++
++    try:
++        for seed in seeds:
++            for demos in demo_counts:
++                episodes = {
++                    setting["completion_depth"]: prototype.generate(seed, setting, demos, 4)
++                    for setting in prototype.SETTINGS
++                }
++                visible_inputs = {
++                    key: [pair["input"] for pair in episode["train"] + episode["test"]]
++                    for key, episode in episodes.items()
++                }
++                if visible_inputs["single"] != visible_inputs["cascade"]:
++                    raise AssertionError(("setting leaked into input grammar", seed, demos))
++
++                for setting in prototype.SETTINGS:
++                    episode = episodes[setting["completion_depth"]]
++                    certificate = prototype.certify(episode, execute=execute)
++                    episodes_checked += 1
++                    pairs_checked += len(episode["train"]) + len(episode["test"])
++                    if execute is not None:
++                        # certify executes every setting on demonstrations and the
++                        # selected program on all queries.
++                        racket_evaluations += len(prototype.SETTINGS) * demos + 4
++                    if certificate["shortcut_survivors"]:
++                        raise AssertionError((seed, demos, setting, certificate["shortcut_survivors"]))
++                    for name, disagreements in certificate["shortcut_disagreements"].items():
++                        shortcut_disagreements[name] += len(disagreements)
++                    for pair in episode["train"] + episode["test"]:
++                        if any(cell not in (0, 2) for row in pair["input"] for cell in row):
++                            raise AssertionError("input grammar leaked output/distractor colours")
++                        analysis = prototype.analyze_scene(pair["input"])
++                        if analysis["cascade_targets"] < 1:
++                            raise AssertionError(("scene without causal target", seed, demos, setting))
++                        key = str(analysis["cascade_targets"])
++                        target_histogram[key] = target_histogram.get(key, 0) + 1
++                        shape = analysis["shape"]
++                        max_shape[0] = max(max_shape[0], shape[0])
++                        max_shape[1] = max(max_shape[1], shape[1])
++                    shapes = [prototype.analyze_scene(pair["input"])["shape"] for pair in episode["test"]]
++                    query_role_counts["thin_wide"] += int(shapes[0][0] < shapes[0][1])
++                    query_role_counts["thin_tall"] += int(shapes[1][0] > shapes[1][1])
++                    query_role_counts["large"] += int(shapes[2][0] >= 20 and shapes[2][1] >= 20)
++                    query_role_counts["30x30"] += int(shapes[3] == [30, 30])
++
++        controls = _check_controls(execute)
++        if execute is not None:
++            racket_evaluations += controls["protected_racket_cases"]
++        negatives = _negative_certificate_checks()
++        base = _assert_base_sampler()
++    finally:
++        if bridge is not None:
++            bridge.close()
++
++    if any(count == 0 for count in shortcut_disagreements.values()):
++        raise AssertionError(("unexercised shortcut", shortcut_disagreements))
++    if max_shape != [30, 30]:
++        raise AssertionError(("missing 30x30 stress", max_shape))
++
++    return {
++        "schema": "a44e3443619f-adversarial-audit-v1",
++        "status": "pass",
++        "task_id": prototype.TASK_ID,
++        "settings": [dict(setting) for setting in prototype.SETTINGS],
++        "seeds": list(seeds),
++        "demo_counts": list(demo_counts),
++        "episodes_checked": episodes_checked,
++        "pairs_checked": pairs_checked,
++        "racket_evaluations": racket_evaluations,
++        "racket": racket_identity,
++        "shortcut_demo_disagreements": shortcut_disagreements,
++        "target_count_histogram": target_histogram,
++        "query_role_counts": query_role_counts,
++        "crossed_controls": controls,
++        "negative_certificate_checks": negatives,
++        "base_sampler": base,
++        "max_shape": max_shape,
++        "source_sha256": _source_binding(),
++        "limits": (
++            "Finite named-rival, crossed-control, sampler, certificate and Racket checks; "
++            "not a proof of universal identifiability or owner acceptance."
++        ),
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seed-count", type=int, default=16)
++    parser.add_argument("--demo-counts", type=int, nargs="+", default=[2, 3, 6])
++    parser.add_argument("--no-racket", action="store_true")
++    parser.add_argument("--out", type=Path)
++    args = parser.parse_args(argv)
++    if type(args.seed_count) is not int or not 1 <= args.seed_count <= 256:
++        raise ValueError("seed-count must be in 1..256")
++    report = run_audit(
++        seeds=range(args.seed_count),
++        demo_counts=args.demo_counts,
++        use_racket=not args.no_racket,
++    )
++    text = json.dumps(report, indent=2, sort_keys=True) + "\n"
++    if args.out:
++        args.out.parent.mkdir(parents=True, exist_ok=True)
++        args.out.write_text(text, encoding="utf-8")
++    else:
++        print(text, end="")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/a44e3443619f/workspace/parametric/cascade.rkt b/repo/generators/a44e3443619f/workspace/parametric/cascade.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/a44e3443619f/workspace/parametric/cascade.rkt
+@@ -0,0 +1,17 @@
++(rule!
++  (let ((stage1
++         (grid-from-fn (rows g) (cols g)
++           (lambda (r c)
++             (if (and (= (at g r c) 0)
++                      (all? (lambda (d) (= (safe-at g (+ r (first d)) (+ c (second d)) 0) 2)) diagonal-deltas))
++                 1
++                 (at g r c))))))
++    (grid-from-fn (rows stage1) (cols stage1)
++      (lambda (r c)
++        (if (and (= (at stage1 r c) 2)
++                 (= (safe-at stage1 (+ r -1) (+ c -1) 0) 1)
++                 (= (safe-at stage1 (+ r -1) (+ c 1) 0) 1)
++                 (= (safe-at stage1 (+ r 1) (+ c -1) 0) 1)
++                 (= (safe-at stage1 (+ r 1) (+ c 1) 0) 1))
++            3
++            (at stage1 r c))))))
+diff --git a/repo/generators/a44e3443619f/workspace/parametric/evidence/adversarial-audit.json b/repo/generators/a44e3443619f/workspace/parametric/evidence/adversarial-audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/a44e3443619f/workspace/parametric/evidence/adversarial-audit.json
+@@ -0,0 +1,203 @@
++{
++  "base_sampler": {
++    "draws": 576,
++    "effective_x_histogram": {
++      "2": 236,
++      "3": 276
++    }
++  },
++  "crossed_controls": {
++    "different_intermediate_same_profile": [
++      {
++        "cascade_targets": 1,
++        "incomplete_motifs": 1,
++        "near_miss_cells": [
++          [
++            2,
++            10
++          ]
++        ],
++        "occupied": 21,
++        "shape": [
++          13,
++          13
++        ],
++        "stage_one_centers": 8,
++        "standalone_x": 1,
++        "target_cells": [
++          [
++            2,
++            2
++          ]
++        ]
++      },
++      {
++        "cascade_targets": 2,
++        "incomplete_motifs": 1,
++        "near_miss_cells": [
++          [
++            2,
++            10
++          ]
++        ],
++        "occupied": 30,
++        "shape": [
++          13,
++          13
++        ],
++        "stage_one_centers": 12,
++        "standalone_x": 1,
++        "target_cells": [
++          [
++            2,
++            2
++          ],
++          [
++            10,
++            10
++          ]
++        ]
++      }
++    ],
++    "protected_racket_cases": 8,
++    "same_targets_different_nuisance": [
++      {
++        "cascade_targets": 2,
++        "incomplete_motifs": 1,
++        "near_miss_cells": [
++          [
++            2,
++            10
++          ]
++        ],
++        "occupied": 31,
++        "shape": [
++          13,
++          13
++        ],
++        "stage_one_centers": 12,
++        "standalone_x": 1,
++        "target_cells": [
++          [
++            2,
++            2
++          ],
++          [
++            10,
++            10
++          ]
++        ]
++      },
++      {
++        "cascade_targets": 2,
++        "incomplete_motifs": 1,
++        "near_miss_cells": [
++          [
++            2,
++            10
++          ]
++        ],
++        "occupied": 31,
++        "shape": [
++          13,
++          13
++        ],
++        "stage_one_centers": 12,
++        "standalone_x": 1,
++        "target_cells": [
++          [
++            2,
++            2
++          ],
++          [
++            10,
++            10
++          ]
++        ]
++      }
++    ]
++  },
++  "demo_counts": [
++    2,
++    3,
++    6
++  ],
++  "episodes_checked": 96,
++  "limits": "Finite named-rival, crossed-control, sampler, certificate and Racket checks; not a proof of universal identifiability or owner acceptance.",
++  "max_shape": [
++    30,
++    30
++  ],
++  "negative_certificate_checks": 6,
++  "pairs_checked": 736,
++  "query_role_counts": {
++    "30x30": 96,
++    "large": 96,
++    "thin_tall": 96,
++    "thin_wide": 96
++  },
++  "racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "racket_evaluations": 1096,
++  "schema": "a44e3443619f-adversarial-audit-v1",
++  "seeds": [
++    0,
++    1,
++    2,
++    3,
++    4,
++    5,
++    6,
++    7,
++    8,
++    9,
++    10,
++    11,
++    12,
++    13,
++    14,
++    15
++  ],
++  "settings": [
++    {
++      "completion_depth": "single"
++    },
++    {
++      "completion_depth": "cascade"
++    }
++  ],
++  "shortcut_demo_disagreements": {
++    "all_blue_green": 352,
++    "first_target_only": 304,
++    "fixed_grid_center": 352,
++    "green_every_red": 352,
++    "last_target_only": 304,
++    "skip_stage_one": 352
++  },
++  "source_sha256": {
++    "adapter.py": "e66bc8b6384becb0e3d6a365b08c29feb9fbb41ee70309c1d8f3062333ed064a",
++    "cascade.rkt": "c65a5638e5ba3a0a45410944e65813294ccf5358dbb71b6ea37eca45bc2040f9",
++    "generator.py": "3876218a2c916061c424cb9b55652d0a640ac21fb4750f55b3a5bf235b8bebd5",
++    "promotion.json": "7be66ac62d9dc251e00895cdf338a4a9e2388f143131e5f96ec1f9dd9a3ccfce",
++    "prototype.py": "9c59a831f7a4c89c5f97b20d4b9d2cf0e9a01b465c60594e9ea9472b82e1079d",
++    "skip_stage_one.rkt": "5839ef6fd5e09cb882660caf4c2e73cd6d0817ddbe96fc9da42aeaac9bbc0b12",
++    "tests/test_parametric_cascade.py": "30830c7ec505cddac2f7bec418db52380656daccbed892a20b6aea96484be4d2"
++  },
++  "status": "pass",
++  "target_count_histogram": {
++    "1": 288,
++    "2": 192,
++    "4": 128,
++    "5": 32,
++    "8": 96
++  },
++  "task_id": "a44e3443619f"
++}
+diff --git a/repo/generators/a44e3443619f/workspace/parametric/evidence/manifest.json b/repo/generators/a44e3443619f/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/a44e3443619f/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,77 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "e557abd09a5cef1e116682cb4e4b0de5bec4d206b9e35262db6ffffe0ead4a98",
++  "canonical_rule_hash": "c3d5615c92c5",
++  "default": {
++    "completion_depth": "single"
++  },
++  "evidence_root": "generators/a44e3443619f/workspace/parametric/evidence",
++  "files": [
++    {
++      "bytes": 7679,
++      "path": "generators/a44e3443619f/generator.py",
++      "sha256": "3876218a2c916061c424cb9b55652d0a640ac21fb4750f55b3a5bf235b8bebd5"
++    },
++    {
++      "bytes": 519,
++      "path": "generators/a44e3443619f/workspace/parametric/adapter.py",
++      "sha256": "e66bc8b6384becb0e3d6a365b08c29feb9fbb41ee70309c1d8f3062333ed064a"
++    },
++    {
++      "bytes": 13791,
++      "path": "generators/a44e3443619f/workspace/parametric/adversarial_audit.py",
++      "sha256": "522e1a6be069ecbf5eaae1f2d73216a9ecb33ae0c7ea9f3b92a07d97235523c9"
++    },
++    {
++      "bytes": 681,
++      "path": "generators/a44e3443619f/workspace/parametric/cascade.rkt",
++      "sha256": "c65a5638e5ba3a0a45410944e65813294ccf5358dbb71b6ea37eca45bc2040f9"
++    },
++    {
++      "bytes": 4419,
++      "path": "generators/a44e3443619f/workspace/parametric/evidence/adversarial-audit.json",
++      "sha256": "afea46f0a48924c4d09dcdaae1c89d1e5dcda7440fcac6df6b96f025208715d9"
++    },
++    {
++      "bytes": 610,
++      "path": "generators/a44e3443619f/workspace/parametric/promotion.json",
++      "sha256": "7be66ac62d9dc251e00895cdf338a4a9e2388f143131e5f96ec1f9dd9a3ccfce"
++    },
++    {
++      "bytes": 18554,
++      "path": "generators/a44e3443619f/workspace/parametric/prototype.py",
++      "sha256": "9c59a831f7a4c89c5f97b20d4b9d2cf0e9a01b465c60594e9ea9472b82e1079d"
++    },
++    {
++      "bytes": 337,
++      "path": "generators/a44e3443619f/workspace/parametric/skip_stage_one.rkt",
++      "sha256": "5839ef6fd5e09cb882660caf4c2e73cd6d0817ddbe96fc9da42aeaac9bbc0b12"
++    }
++  ],
++  "generator_sha256": "3876218a2c916061c424cb9b55652d0a640ac21fb4750f55b3a5bf235b8bebd5",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      4,
++      4
++    ]
++  },
++  "parameters": {
++    "completion_depth": [
++      "single",
++      "cascade"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "12 focused tests; protected-Racket adversarial audit 96 episodes/736 pairs/1096 evaluations; 576 repaired-base draws; 6 negative certificate cases",
++  "rule_task_id": "a44e3443619f",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "a44e3443619f",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/a44e3443619f/workspace/parametric/promotion.json b/repo/generators/a44e3443619f/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/a44e3443619f/workspace/parametric/promotion.json
+@@ -0,0 +1,29 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/a44e3443619f/workspace/parametric/adapter.py",
++  "parameters": {
++    "completion_depth": [
++      "single",
++      "cascade"
++    ]
++  },
++  "default": {
++    "completion_depth": "single"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      4,
++      4
++    ]
++  },
++  "qualification_demos": 2,
++  "resources": [
++    "generators/a44e3443619f/workspace/parametric/prototype.py",
++    "generators/a44e3443619f/workspace/parametric/cascade.rkt",
++    "generators/a44e3443619f/workspace/parametric/skip_stage_one.rkt"
++  ]
++}
+diff --git a/repo/generators/a44e3443619f/workspace/parametric/prototype.py b/repo/generators/a44e3443619f/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/a44e3443619f/workspace/parametric/prototype.py
+@@ -0,0 +1,472 @@
++"""Proposed single-pass/cascade family for a44e3443619f.
++
++The canonical ``single`` setting is byte-for-byte the selected source rule:
++fill every zero centre of a red diagonal X with blue.  The ``cascade`` setting
++first performs that exact pass, then recolours a red cell green when the newly
++blue intermediate supplies all four of its immediate diagonal neighbours.
++
++Inputs are sampled independently of the hidden setting.  Complete 5x5 red
++lattices create four first-pass centres surrounding one second-pass target;
++near-identical eight-cell lattices create only three centres and are retained as
++negative controls.  Protected Racket remains the label authority during native
++preflight; the Python implementation is a tested mirror and authoring oracle.
++"""
++from __future__ import annotations
++
++import copy
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any, Callable
++
++TASK_ID = "a44e3443619f"
++PARAMETER = "completion_depth"
++PARAMETERS = {PARAMETER: ["single", "cascade"]}
++DEFAULT = {PARAMETER: "single"}
++SETTINGS = tuple({PARAMETER: value} for value in PARAMETERS[PARAMETER])
++MIN_DEMOS = 2
++MAX_DEMOS = 6
++QUERIES = 4
++MAX_SEED = 2**63 - 1
++
++HERE = Path(__file__).resolve().parent
++
++_CANONICAL = """(rule!
++  (grid-from-fn (rows g) (cols g)
++    (lambda (r c)
++      (if (and (= (at g r c) 0)
++               (all? (lambda (d) (= (safe-at g (+ r (first d)) (+ c (second d)) 0) 2)) diagonal-deltas))
++          1
++          (at g r c)))))"""
++_CASCADE = (HERE / "cascade.rkt").read_text(encoding="utf-8").rstrip("\n")
++_PROGRAMS = {"single": _CANONICAL, "cascade": _CASCADE}
++_DIAGONALS = ((-1, -1), (-1, 1), (1, -1), (1, 1))
++_OUTER_CORNERS = ((0, 0), (0, 4), (4, 0), (4, 4))
++
++# (height, width, role counts).  The first two profiles deliberately keep
++# dimensions fixed while changing the number of causal targets.
++_TRAIN_PROFILES = (
++    (13, 17, {"complete": 1, "incomplete": 1, "standalone": 1, "partial": 1}),
++    (13, 17, {"complete": 2, "incomplete": 1, "standalone": 1, "partial": 0}),
++    (17, 13, {"complete": 2, "incomplete": 1, "standalone": 1, "partial": 0}),
++    (17, 17, {"complete": 2, "incomplete": 1, "standalone": 1, "partial": 0}),
++    (23, 25, {"complete": 4, "incomplete": 2, "standalone": 2, "partial": 1}),
++    (29, 27, {"complete": 5, "incomplete": 3, "standalone": 2, "partial": 2}),
++)
++_QUERY_PROFILES = (
++    (9, 17, {"complete": 1, "incomplete": 0, "standalone": 1, "partial": 0}),
++    (17, 9, {"complete": 1, "incomplete": 1, "standalone": 0, "partial": 0}),
++    (23, 23, {"complete": 4, "incomplete": 2, "standalone": 2, "partial": 1}),
++    (30, 30, {"complete": 8, "incomplete": 4, "standalone": 2, "partial": 2}),
++)
++
++
++def digest(value: object) -> str:
++    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
++    return hashlib.sha256(raw).hexdigest()
++
++
++def _strict_int(name: str, value: object, low: int, high: int) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be an exact integer; bool is forbidden")
++    if not low <= value <= high:
++        raise ValueError(f"{name} must be in {low}..{high}")
++    return value
++
++
++def _settings(settings: object) -> dict[str, str]:
++    if type(settings) is not dict or set(settings) != {PARAMETER}:
++        raise ValueError(f"settings must contain exactly {PARAMETER}")
++    value = settings[PARAMETER]
++    if type(value) is not str or value not in PARAMETERS[PARAMETER]:
++        raise ValueError(f"{PARAMETER} must be one of {PARAMETERS[PARAMETER]!r}")
++    return {PARAMETER: value}
++
++
++def _grid(grid: object) -> list[list[int]]:
++    if (type(grid) is not list or not 1 <= len(grid) <= 30
++            or type(grid[0]) is not list or not 1 <= len(grid[0]) <= 30):
++        raise ValueError("grid must be a nonempty 1..30 by 1..30 list")
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width
++           or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++           for row in grid):
++        raise ValueError("grid must be rectangular with exact integer ARC colours")
++    return grid
++
++
++def program(settings: object) -> str:
++    return _PROGRAMS[_settings(settings)[PARAMETER]]
++
++
++def stage_one(grid: list[list[int]]) -> list[list[int]]:
++    """Canonical red-X completion pass."""
++    _grid(grid)
++    h, w = len(grid), len(grid[0])
++    output = [row[:] for row in grid]
++    for r in range(1, h - 1):
++        for c in range(1, w - 1):
++            if grid[r][c] == 0 and all(grid[r + dr][c + dc] == 2 for dr, dc in _DIAGONALS):
++                output[r][c] = 1
++    return output
++
++
++def _target_cells(intermediate: list[list[int]]) -> set[tuple[int, int]]:
++    _grid(intermediate)
++    h, w = len(intermediate), len(intermediate[0])
++    return {
++        (r, c)
++        for r in range(1, h - 1)
++        for c in range(1, w - 1)
++        if intermediate[r][c] == 2
++        and all(intermediate[r + dr][c + dc] == 1 for dr, dc in _DIAGONALS)
++    }
++
++
++def stage_two(intermediate: list[list[int]]) -> list[list[int]]:
++    """Consume the first-pass grid and recolour every supported red target."""
++    _grid(intermediate)
++    targets = _target_cells(intermediate)
++    return [
++        [3 if (r, c) in targets else value for c, value in enumerate(row)]
++        for r, row in enumerate(intermediate)
++    ]
++
++
++def transform(grid: list[list[int]], settings: object) -> list[list[int]]:
++    chosen = _settings(settings)[PARAMETER]
++    first = stage_one(grid)
++    return first if chosen == "single" else stage_two(first)
++
++
++def _paint_cell(grid: list[list[int]], r: int, c: int) -> None:
++    if not (0 <= r < len(grid) and 0 <= c < len(grid[0])):
++        raise ValueError(f"motif cell {(r, c)} is outside the grid")
++    if grid[r][c] not in (0, 2):
++        raise ValueError("motifs may only occupy background/red cells")
++    grid[r][c] = 2
++
++
++def _paint_complete(grid: list[list[int]], top: int, left: int) -> None:
++    for dr in (0, 2, 4):
++        for dc in (0, 2, 4):
++            _paint_cell(grid, top + dr, left + dc)
++
++
++def _paint_incomplete(grid: list[list[int]], top: int, left: int, missing: tuple[int, int]) -> None:
++    if missing not in _OUTER_CORNERS:
++        raise ValueError("incomplete motif must omit one outer lattice corner")
++    for dr in (0, 2, 4):
++        for dc in (0, 2, 4):
++            if (dr, dc) != missing:
++                _paint_cell(grid, top + dr, left + dc)
++
++
++def _paint_x(grid: list[list[int]], top: int, left: int, *, missing: tuple[int, int] | None = None) -> None:
++    corners = ((0, 0), (0, 2), (2, 0), (2, 2))
++    if missing is not None and missing not in corners:
++        raise ValueError("partial X must omit one X corner")
++    for dr, dc in corners:
++        if (dr, dc) != missing:
++            _paint_cell(grid, top + dr, left + dc)
++
++
++def make_control_scene(
++    height: int,
++    width: int,
++    *,
++    complete: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
++    incomplete: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
++    standalone: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
++    partial: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
++    nuisance: list[tuple[int, int]] | tuple[tuple[int, int], ...] = (),
++) -> list[list[int]]:
++    """Build a small explicit audit scene from motif top-left coordinates."""
++    _strict_int("height", height, 1, 30)
++    _strict_int("width", width, 1, 30)
++    grid = [[0] * width for _ in range(height)]
++    for top, left in complete:
++        _paint_complete(grid, top, left)
++    for index, (top, left) in enumerate(incomplete):
++        _paint_incomplete(grid, top, left, _OUTER_CORNERS[index % 4])
++    for top, left in standalone:
++        _paint_x(grid, top, left)
++    for index, (top, left) in enumerate(partial):
++        _paint_x(grid, top, left, missing=((0, 0), (0, 2), (2, 0), (2, 2))[index % 4])
++    for r, c in nuisance:
++        _paint_cell(grid, r, c)
++    return grid
++
++
++def analyze_scene(grid: list[list[int]]) -> dict[str, Any]:
++    """Return semantic counts used by tests/certificates, not private labels."""
++    _grid(grid)
++    first = stage_one(grid)
++    new_blue = {
++        (r, c)
++        for r in range(len(grid))
++        for c in range(len(grid[0]))
++        if grid[r][c] == 0 and first[r][c] == 1
++    }
++    targets = _target_cells(first)
++    near_misses: set[tuple[int, int]] = set()
++    for r in range(1, len(grid) - 1):
++        for c in range(1, len(grid[0]) - 1):
++            if first[r][c] == 2 and sum(first[r + dr][c + dc] == 1 for dr, dc in _DIAGONALS) == 3:
++                near_misses.add((r, c))
++    clustered_blue = {
++        (r + dr, c + dc)
++        for r, c in targets | near_misses
++        for dr, dc in _DIAGONALS
++        if (r + dr, c + dc) in new_blue
++    }
++    return {
++        "shape": [len(grid), len(grid[0])],
++        "stage_one_centers": len(new_blue),
++        "cascade_targets": len(targets),
++        "target_cells": sorted(targets),
++        "incomplete_motifs": len(near_misses),
++        "near_miss_cells": sorted(near_misses),
++        "standalone_x": len(new_blue - clustered_blue),
++        "occupied": sum(cell != 0 for row in grid for cell in row),
++    }
++
++
++def _rng(seed: int, split: str, index: int) -> random.Random:
++    raw = f"{TASK_ID}|cascade-scenes-v1|{seed}|{split}|{index}".encode()
++    return random.Random(int.from_bytes(hashlib.sha256(raw).digest()[:16], "big"))
++
++
++def _slots(height: int, width: int) -> list[tuple[int, int]]:
++    rows = list(range(0, height - 4, 8))
++    cols = list(range(0, width - 4, 8))
++    return [(r, c) for r in rows for c in cols]
++
++
++def _jittered_origin(height: int, width: int, slot: tuple[int, int], rng: random.Random) -> tuple[int, int]:
++    r, c = slot
++    max_jitter = min(1, height - 5 - r, width - 5 - c)
++    jitter_r = rng.randint(0, max_jitter) if max_jitter >= 0 else 0
++    jitter_c = rng.randint(0, max_jitter) if max_jitter >= 0 else 0
++    return r + jitter_r, c + jitter_c
++
++
++def _scene(seed: int, split: str, index: int) -> list[list[int]]:
++    profiles = _TRAIN_PROFILES if split == "train" else _QUERY_PROFILES
++    height, width, counts = profiles[index]
++    rng = _rng(seed, split, index)
++    slots = _slots(height, width)
++    roles = [role for role in ("complete", "incomplete", "standalone", "partial")
++             for _ in range(counts[role])]
++    if len(roles) != len(slots):
++        raise RuntimeError(f"profile role/slot mismatch for {split}[{index}]")
++
++    assignments: list[tuple[str, tuple[int, int], int]] = []
++    if split == "test" and index == 3:
++        # Preserve genuine 30x30 boundary contact at both ends while randomising
++        # all remaining roles independently of the hidden setting.
++        low = (0, 0)
++        high = (24, 24)
++        assignments.extend([("complete", low, 0), ("complete", high, 1)])
++        slots = [slot for slot in slots if slot not in {low, high}]
++        roles.remove("complete")
++        roles.remove("complete")
++        rng.shuffle(slots)
++        rng.shuffle(roles)
++        assignments.extend((role, slot, -1) for role, slot in zip(roles, slots))
++    else:
++        rng.shuffle(slots)
++        rng.shuffle(roles)
++        assignments.extend((role, slot, -1) for role, slot in zip(roles, slots))
++
++    grid = [[0] * width for _ in range(height)]
++    for ordinal, (role, slot, forced_jitter) in enumerate(assignments):
++        if forced_jitter == 0:
++            top, left = slot
++        elif forced_jitter == 1:
++            top, left = slot[0] + 1, slot[1] + 1
++        else:
++            top, left = _jittered_origin(height, width, slot, rng)
++        if role == "complete":
++            _paint_complete(grid, top, left)
++        elif role == "incomplete":
++            _paint_incomplete(grid, top, left, _OUTER_CORNERS[rng.randrange(4)])
++        elif role == "standalone":
++            _paint_x(grid, top, left)
++        elif role == "partial":
++            _paint_x(grid, top, left, missing=((0, 0), (0, 2), (2, 0), (2, 2))[rng.randrange(4)])
++        else:  # pragma: no cover - internal profile guard
++            raise RuntimeError(role)
++
++    analysis = analyze_scene(grid)
++    expected_stage_one = 4 * counts["complete"] + 3 * counts["incomplete"] + counts["standalone"]
++    expected = {
++        "stage_one_centers": expected_stage_one,
++        "cascade_targets": counts["complete"],
++        "incomplete_motifs": counts["incomplete"],
++        "standalone_x": counts["standalone"],
++    }
++    observed = {key: analysis[key] for key in expected}
++    if observed != expected:
++        raise RuntimeError(f"scene profile interaction: expected {expected}, observed {observed}")
++    return grid
++
++
++def _shortcut(name: str, grid: list[list[int]]) -> list[list[int]]:
++    first = stage_one(grid)
++    targets = sorted(_target_cells(first))
++    if name == "skip_stage_one":
++        return stage_two(grid)
++    if name == "all_blue_green":
++        return [[3 if value == 1 else value for value in row] for row in first]
++    if name == "fixed_grid_center":
++        output = [row[:] for row in first]
++        r, c = len(output) // 2, len(output[0]) // 2
++        output[r][c] = 3
++        return output
++    if name in {"first_target_only", "last_target_only"}:
++        output = [row[:] for row in first]
++        if targets:
++            r, c = targets[0 if name == "first_target_only" else -1]
++            output[r][c] = 3
++        return output
++    if name == "green_every_red":
++        return [[3 if value == 2 else value for value in row] for row in first]
++    raise KeyError(name)
++
++
++SHORTCUTS = (
++    "skip_stage_one",
++    "all_blue_green",
++    "fixed_grid_center",
++    "first_target_only",
++    "last_target_only",
++    "green_every_red",
++)
++
++
++def certify(
++    episode: dict[str, Any],
++    execute: Callable[[str, list[list[int]]], list[list[int]]] | None = None,
++) -> dict[str, Any]:
++    chosen = _settings(episode.get("settings"))
++    if episode.get("program_solution") != program(chosen):
++        raise ValueError("program does not match fixed episode settings")
++    train, test = episode.get("train"), episode.get("test")
++    if type(train) is not list or type(test) is not list:
++        raise ValueError("episode must contain train/test lists")
++    if not MIN_DEMOS <= len(train) <= MAX_DEMOS:
++        raise ValueError("demonstration count must be in 2..6")
++    if len(test) != QUERIES:
++        raise ValueError("query count must be exactly four")
++    pairs = train + test
++    inputs: list[str] = []
++    for pair in pairs:
++        if type(pair) is not dict or not {"input", "output"} <= set(pair):
++            raise ValueError("each pair must contain input and output")
++        _grid(pair["input"])
++        _grid(pair["output"])
++        inputs.append(digest(pair["input"]))
++    if len(inputs) != len(set(inputs)):
++        raise ValueError("all demonstration and query inputs must be distinct")
++
++    if execute is None:
++        apply = lambda text, grid: transform(
++            grid, next(setting for setting in SETTINGS if program(setting) == text)
++        )
++    else:
++        apply = execute
++
++    records = []
++    for setting in SETTINGS:
++        disagreements = [
++            index
++            for index, pair in enumerate(train)
++            if apply(program(setting), pair["input"]) != pair["output"]
++        ]
++        records.append({"settings": dict(setting), "disagreeing_demo_indices": disagreements})
++    survivors = [row["settings"] for row in records if not row["disagreeing_demo_indices"]]
++    if survivors != [chosen]:
++        raise ValueError(f"demonstrations do not identify selected completion depth: {survivors}")
++
++    shortcut_disagreements: dict[str, list[int]] = {}
++    shortcut_survivors: list[str] = []
++    for name in SHORTCUTS:
++        disagreements = [
++            index for index, pair in enumerate(train)
++            if _shortcut(name, pair["input"]) != pair["output"]
++        ]
++        shortcut_disagreements[name] = disagreements
++        if not disagreements:
++            shortcut_survivors.append(name)
++    if shortcut_survivors:
++        raise ValueError(f"declared wrong shortcuts survive demonstrations: {shortcut_survivors}")
++
++    query_rows = []
++    for index, pair in enumerate(test):
++        got = apply(program(chosen), pair["input"])
++        if got != pair["output"]:
++            raise ValueError(f"query label disagrees with fixed setting at index {index}")
++        query_rows.append({
++            "input_sha256": digest(pair["input"]),
++            "output_sha256": digest(pair["output"]),
++            "analysis": analyze_scene(pair["input"]),
++        })
++    return {
++        "status": "pass",
++        "survivors": survivors,
++        "setting_disagreements": records,
++        "shortcut_disagreements": shortcut_disagreements,
++        "shortcut_survivors": shortcut_survivors,
++        "queries": query_rows,
++        "train_analysis": [analyze_scene(pair["input"]) for pair in train],
++    }
++
++
++def generate(
++    seed: int,
++    settings: dict[str, str],
++    demos: int = 3,
++    queries: int = 4,
++) -> dict[str, Any]:
++    seed = _strict_int("seed", seed, 0, MAX_SEED)
++    demos = _strict_int("demos", demos, MIN_DEMOS, MAX_DEMOS)
++    queries = _strict_int("queries", queries, QUERIES, QUERIES)
++    chosen = _settings(settings)
++    train = []
++    for index in range(demos):
++        grid = _scene(seed, "train", index)
++        train.append({"input": grid, "output": transform(grid, chosen)})
++    test = []
++    for index in range(queries):
++        grid = _scene(seed, "test", index)
++        test.append({"input": grid, "output": transform(grid, chosen)})
++    episode: dict[str, Any] = {
++        "settings": chosen,
++        "train": train,
++        "test": test,
++        "program_solution": program(chosen),
++    }
++    episode["certificate"] = certify(episode)
++    return episode
++
++
++def crossed_controls() -> dict[str, list[dict[str, Any]]]:
++    """Small explicit controls retained by the adversarial audit."""
++    varying = [
++        make_control_scene(13, 13, complete=[(0, 0)], incomplete=[(0, 8)], standalone=[(9, 1)]),
++        make_control_scene(13, 13, complete=[(0, 0), (8, 8)], incomplete=[(0, 8)], standalone=[(9, 1)]),
++    ]
++    nuisance = [
++        make_control_scene(13, 13, complete=[(0, 0), (8, 8)], incomplete=[(0, 8)], standalone=[(9, 1)], nuisance=[(6, 6)]),
++        make_control_scene(13, 13, complete=[(0, 0), (8, 8)], incomplete=[(0, 8)], standalone=[(9, 1)], nuisance=[(6, 5)]),
++    ]
++    return {
++        "different_intermediate_same_profile": [
++            {"input": grid, "analysis": analyze_scene(grid)} for grid in varying
++        ],
++        "same_targets_different_nuisance": [
++            {"input": grid, "analysis": analyze_scene(grid)} for grid in nuisance
++        ],
++    }
+diff --git a/repo/generators/a44e3443619f/workspace/parametric/skip_stage_one.rkt b/repo/generators/a44e3443619f/workspace/parametric/skip_stage_one.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/a44e3443619f/workspace/parametric/skip_stage_one.rkt
+@@ -0,0 +1,10 @@
++(rule!
++  (grid-from-fn (rows g) (cols g)
++    (lambda (r c)
++      (if (and (= (at g r c) 2)
++               (= (safe-at g (+ r -1) (+ c -1) 0) 1)
++               (= (safe-at g (+ r -1) (+ c 1) 0) 1)
++               (= (safe-at g (+ r 1) (+ c -1) 0) 1)
++               (= (safe-at g (+ r 1) (+ c 1) 0) 1))
++          3
++          (at g r c)))))

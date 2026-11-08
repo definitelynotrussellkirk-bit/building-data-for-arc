@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((obj (in-list (objects g 0)))) (let* ((bb (obj-bbox obj)) (h (+ 1 (- (third bb) (first bb)))) (w (+ 1 (- (fourth bb) (second bb))))) (if (and (= h w) (= (modulo h 2) 1)) (set-cell out (+ (first bb) (quotient h 2)) (+ (second bb) (quotient w 2)) (obj-color obj)) out)))))

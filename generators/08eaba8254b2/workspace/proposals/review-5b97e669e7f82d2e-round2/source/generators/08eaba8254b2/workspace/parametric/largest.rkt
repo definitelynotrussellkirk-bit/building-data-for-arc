@@ -1,0 +1,13 @@
+(rule! (lambda (g)
+  (let* ((w (cols g))
+         (mask (grid-from-fn 4 w (lambda (r c)
+                 (if (!= (= 0 (cell-at g r c))
+                         (= 0 (cell-at g (+ r 5) c)))
+                     1 0))))
+         (parts (objects mask 0))
+         (largest-size (if (null? parts) 0 (apply max (map obj-size parts))))
+         (kept (flatmap obj-cells
+                        (filter (lambda (part) (= (obj-size part) largest-size))
+                                parts))))
+    (grid-from-fn 4 w (lambda (r c)
+      (if (member (list r c) kept) 3 0))))))

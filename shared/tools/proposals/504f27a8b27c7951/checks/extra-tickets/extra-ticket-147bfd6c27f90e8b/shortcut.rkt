@@ -1,0 +1,13 @@
+(rule!
+  (let ((dummy 0))
+    (for/fold ((out g)) ((c (in-range (cols g))))
+      (let ((hits (filter (lambda (r) (= (at g r c) 6))
+                          (range 0 (rows g)))))
+        (if (and (= (length hits) 2)
+                 (< (* 2 (first hits)) (rows g))
+                 (all? (lambda (r) (= (at g r c) 0))
+                       (range (+ (first hits) 1) (second hits))))
+            (for/fold ((acc out))
+                      ((r (in-range (first hits) (+ (second hits) 1))))
+              (set-cell acc r c 6))
+            out)))))

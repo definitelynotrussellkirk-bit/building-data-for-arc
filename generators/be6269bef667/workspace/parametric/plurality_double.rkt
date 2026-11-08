@@ -1,0 +1,26 @@
+(rule! (let ((dummy 0))
+  (let* ((dirs (list (list 1 -1 0) (list 2 0 1)
+                     (list 3 1 0) (list 4 0 -1)))
+         (counts (map (lambda (d)
+                        (list (first d)
+                              (length (find-color g (first d)))))
+                      dirs))
+         (ranked (sort counts
+                       (lambda (a b) (> (second a) (second b)))))
+         (selected (first (first ranked))))
+    (for*/fold ((out (empty-grid (rows g) (cols g) 0)))
+               ((r (in-range (rows g))) (c (in-range (cols g))))
+      (let* ((v (at g r c))
+             (hit (filter (lambda (d) (= (first d) v)) dirs)))
+        (if (empty? hit)
+            out
+            (let ((dr (second (first hit)))
+                  (dc (third (first hit)))
+                  (weight (if (= v selected) 2 1)))
+              (let loop ((rr r) (cc c) (acc out))
+                (if (or (not (in-bounds? rr cc (rows g) (cols g)))
+                        (= (at g rr cc) 5))
+                    acc
+                    (loop (+ rr dr) (+ cc dc)
+                          (set-cell acc rr cc
+                                    (+ weight (at acc rr cc)))))))))))))

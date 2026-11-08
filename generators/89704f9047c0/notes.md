@@ -1,0 +1,8 @@
+# Working notes: 89704f9047c0
+
+- **Decision:** the task-local parametric family varies two episode-fixed semantic choices, `row_tie=top|bottom` and `column_tie=left|right`. The canonical default (`top`, `left`) returns the canonical Racket program byte-for-byte; other settings alter only the four priority literals.
+- Inputs are independent of settings. The first two constructive demonstrations isolate row and column ties, so each of the four settings is uniquely identified at the minimum two-demo count. Supported bounds are 2–6 demonstrations and 1–8 prefix-stable private queries; the ordinary four queries are distinct 29×30, 30×29, 29×29, and 30×30 cases.
+- **Canonical repair:** version 2.1.0 advances palette-role order on a five-step cycle disjoint from the legacy profile-locked orders. The legacy profile-plus-palette-rank shortcut is now a named competitor and is refuted in every four-demo lesson; the canonical rule hash remains `83dc1de09d53`.
+- **Evidence:** final protected-Racket materialization executed 64 evaluations across four 3-demo/4-query episodes, with exactly the requested setting surviving each teaching set. Four saved first-turn public challenges passed exact-byte ID, masking, and shape checks. Manifest SHA-256: `d14e23494a19f7d0d52116d0080d0c4009fab8144843ef260f18bedbb272ff43`.
+- Final review also made `lesson_identifiable` report out-of-profile demonstrations without invoking profile-only rivals, and made `episode_errors` return diagnostics for malformed demonstrations instead of raising.
+- **Status / next action:** prototype and native promotion contract are ready for owner qualification. They are not variant approval or training admission; the next useful action is maintainer replay/acceptance of the manifest-bound evidence.

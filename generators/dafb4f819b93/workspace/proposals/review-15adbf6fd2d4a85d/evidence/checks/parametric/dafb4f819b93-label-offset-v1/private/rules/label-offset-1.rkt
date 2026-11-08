@@ -1,0 +1,16 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (cellmap g
+                    (r c v)
+                    (if (!= 0 v)
+                        v
+                        (let* ((row-colors (filter (lambda (v) (!= 0 v))
+                                                   (map (lambda (cc) (at g r cc))
+                                                        (range 0 w))))
+                               (col-colors (filter (lambda (v) (!= 0 v))
+                                                   (map (lambda (rr) (at g rr c))
+                                                        (range 0 h))))
+                               (common (filter (lambda (v) (member? v col-colors))
+                                               row-colors)))
+                          (let* ((palette (unique (map (lambda (rr) (at g rr (- w 1))) (range 0 h)))) (row-color (first row-colors)) (column-color (first col-colors)) (target-color (list-ref palette (modulo (+ 1 (index-of palette row-color)) (length palette))))) (if (= column-color target-color) row-color 0))))))))

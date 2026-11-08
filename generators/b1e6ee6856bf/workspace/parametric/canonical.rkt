@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((c (in-range (cols g)))) (let ((hits (filter (lambda (r) (not (= (at g r c) 0))) (range 0 (rows g))))) (if (empty? hits) out (set-cell out (first hits) c (at g (first hits) c)))))))

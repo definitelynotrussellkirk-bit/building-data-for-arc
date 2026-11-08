@@ -1,0 +1,35 @@
+(rule!
+(lambda (g)
+  (define h (rows g))
+  (define w (cols g))
+  (define bars (filter (lambda (r) (andmap (lambda (v) (= v 6)) (list-ref g r))) (range 0 h)))
+  (define top (first bars))
+  (define bottom (second bars))
+  (define nr (quotient (- bottom top 2) 5))
+  (define nc (quotient (- w 2) 5))
+  (define (glyph y x)
+    (for*/list ([dy (in-range 3)] [dx (in-range 3)]) (cell-at g (+ y dy) (+ x dx))))
+  (define (mask key) (map (lambda (v) (not (= v 8))) key))
+  (define (ink key) (first (filter (lambda (v) (not (= v 8))) key)))
+  (define tiles (for*/list ([r (in-range nr)] [c (in-range nc)])
+    (list r c (glyph (+ top 3 (* 5 r)) (+ 2 (* 5 c))))))
+  (define headers (filter (lambda (item) (ormap (lambda (v) (not (= v 8))) (second item)))
+    (for/list ([slot (in-range nc)]) (list slot (glyph (- top 4) (+ 2 (* 5 slot)))))))
+  (define positions (remove-duplicates
+    (for/list ([header (in-list headers)])
+      (let ([found (first (filter (lambda (tile) (equal? (mask (third tile)) (mask (second header)))) tiles))]) (list (first found) (second found)))) equal?))
+  (define row-ok (and (= (length positions) nc)
+    (= (length (remove-duplicates (map first positions))) 1)))
+  (define col-ok (and (= (length positions) nr)
+    (= (length (remove-duplicates (map second positions))) 1)))
+  (define success (or row-ok col-ok))
+  (for/list ([r (in-range h)])
+    (for/list ([c (in-range w)])
+      (define v (cell-at g r c))
+      (cond
+        [(> r bottom) (if success 3 2)]
+        [(and success (< r top) (= v 8)) 3]
+        [(and (= v 8) (>= r (+ top 2)) (< r bottom) (>= c 1) (< c (- w 1))
+              (member (list (quotient (- r top 2) 5) (quotient (- c 1) 5)) positions)) 3]
+        [else v]))))
+)

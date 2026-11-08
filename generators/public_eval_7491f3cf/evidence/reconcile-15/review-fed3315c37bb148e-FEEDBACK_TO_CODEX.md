@@ -1,0 +1,1 @@
+F1: Biggest avoidable friction: manual relocation closure assembly. The first smoke copy omitted `shared/tools/comment_solutions.py`, which the Racket wrapper requires; a copy-closure helper driven by the preflight source inventory would prevent this omission without copying the full repository. The return includes a corrected data-free relocation check and its passing receipt.

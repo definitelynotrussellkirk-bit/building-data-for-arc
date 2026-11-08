@@ -1,0 +1,16 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((bg (mode g))
+                  (seed (first (positions-of g (lambda (v) (!= v bg)))))
+                  (sr (first seed))
+                  (sc (second seed))
+                  (seed-color (at g sr sc))
+                  (cycle (list 0 5 2 8 9 6 1 3 4))
+                  (n (length cycle))
+                  (start (find-first (lambda (i) (= (list-ref cycle i) seed-color))
+                                     (range 0 n))))
+             (cellmap g
+                      (r c v)
+                      (list-ref cycle
+                                (modulo (+ start (abs (- r sr)) (abs (- c sc))) n)))))))

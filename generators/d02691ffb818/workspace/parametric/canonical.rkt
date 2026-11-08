@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((p (in-list (find-color g 1)))) (paint-cells out (filter (lambda (q) (in-bounds? (first q) (second q) (rows g) (cols g))) (list p (list (+ (first p) 1) (+ (second p) 1)) (list (+ (first p) 1) (- (second p) 1)) (list (- (first p) 1) (+ (second p) 1)) (list (- (first p) 1) (- (second p) 1)))) 7))))

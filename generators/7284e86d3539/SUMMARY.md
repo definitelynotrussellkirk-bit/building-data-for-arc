@@ -1,0 +1,6 @@
+# 7284e86d3539
+
+Fixed 6×16 0-bg grid with 2-4 COLORED 2-CELL VERTICAL COMPONENTS placed at FIXED COLUMN STARTS [1, 5, 9, 13] (one component per slot, separated by 4 columns). For EACH component i: pick a random row r ∈ {1..3}; paint cells (r, starts[i]) and (r+1, starts[i]) in a DISTINCT non-{0, 5} color drawn from {1..9}; with 50% probability ALSO paint cell (r+1, starts[i]+1) with COLOR 5 (a GRAY MARKER cell, signaling this component to be recolored). Other cells stay bg-0. Rule (GRAY MARKERS INHERIT NEAREST COLOR, COMPONENTS PACKED INTO 3-ROW STRIP): for EACH GRAY (color 5) MARKER cell: find the NEAREST non-gray non-bg cell (its color C) — typically the adjacent component. RECOLOR the gray cell to C (so the gray inherits its nearest color, extending the component). Then extract every now-uniform-color component and PACK them into a 3-ROW OUTPUT STRIP (specifically, place each component's crop into a tight 3-row arrangement, preserving color, in order). Net: gray markers absorb into their neighbors and the colored components are gathered into a compact 3-row gallery.
+
+Kind: `per_puzzle`. Imported version: `2.2.0`.
+Approval is derived by the catalog from current code and retained evidence.

@@ -1,0 +1,1937 @@
+diff --git a/repo/generators/b37eb391ddc0/notes.md b/repo/generators/b37eb391ddc0/notes.md
+--- a/repo/generators/b37eb391ddc0/notes.md
++++ b/repo/generators/b37eb391ddc0/notes.md
+@@ -102,3 +102,15 @@
+ - Generated scenes do not contain two active target colours whose completed boxes conflict. The authority’s first-appearance write order is mirrored and parity-tested, but canonical demonstrations do not establish that teaching requirement.
+ - Profiles remain at canonical dimensions and palette sizes rather than expanding to all ARC sizes; the goal was faithful semantic coverage, not unconstrained scale diversity.
+ - Audit findings A1 and A2 are report-only; their generators were not modified under this assignment.
++
++## Review review-e1bae10251bf9386 — native parametric family
++
++A matched-input two-setting family was added under `workspace/parametric/` without changing the production generator or selected canonical authority.
++
++- `completion=all_colors` returns the exact canonical Racket source byte-for-byte.
++- `completion=rarest_active_color` first finds colors participating in at least one same-color diagonal pair, derives the uniquely least frequent active color from the input, and completes only that color's pairs.
++- The sampler supports 2–6 prefix-stable demonstrations and 1–4 prefix-stable queries. Its four query profiles are 10×12, 17×19, 30×30, and 25×29; the 30×30 case contains 76 nonzero cells and touches every boundary.
++- Every lesson uses three active colors with distinct occurrence counts, both diagonal orientations, repeated pairs, and an occupied companion. The first two demonstrations vary both the selected color and its count.
++- A finite bank of nine executable rivals covers all-colors, first/last/most active, rarest nonzero, all-but-rarest, count-two, and first-pair shortcuts.
++
++A 32-seed audit initially exposed a seed-22 alias where a randomized high-color singleton could make the rare color the last row-major active color. A regression test now covers all 32 seeds, and extras are placed in unused companions of separate motifs so the high-count color remains below the rare color's row-zero anchor. Final bounded evidence covers 192 episodes, 24 protected-Racket parity evaluations, and zero surviving named rivals. This is finite evidence, not a claim of universal identifiability or training benefit.
+diff --git a/repo/generators/b37eb391ddc0/tests/test_parametric_rarest_active.py b/repo/generators/b37eb391ddc0/tests/test_parametric_rarest_active.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b37eb391ddc0/tests/test_parametric_rarest_active.py
+@@ -0,0 +1,202 @@
++"""Native parametric regressions for b37eb391ddc0."""
++from __future__ import annotations
++
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import random
++import sys
++
++import pytest
++
++from reviewer_support import canonical_path, find_root, public_challenge_bytes, public_challenge_id
++
++
++TASK_ID = "b37eb391ddc0"
++ROOT = find_root(__file__)
++HOME = ROOT / "generators" / TASK_ID
++PARAMETRIC = HOME / "workspace" / "parametric"
++CANONICAL = {"completion": "all_colors"}
++RAREST = {"completion": "rarest_active_color"}
++
++
++def load(name: str):
++    path = PARAMETRIC / name
++    assert path.is_file(), f"missing parametric source: {path}"
++    module_name = f"_{TASK_ID}_{name.replace('.', '_')}"
++    spec = importlib.util.spec_from_file_location(module_name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[module_name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def canonical_record() -> dict:
++    for line in canonical_path(ROOT).read_text(encoding="utf-8").splitlines():
++        row = json.loads(line)
++        if row.get("task_id") == TASK_ID:
++            return row
++    raise AssertionError("canonical record missing")
++
++
++def inputs(episode: dict) -> list[list[list[int]]]:
++    return [pair["input"] for split in ("train", "test") for pair in episode[split]]
++
++
++def test_contract_and_programs_preserve_exact_canonical_default():
++    adapter = load("adapter.py")
++    contract = json.loads((PARAMETRIC / "promotion.json").read_text())
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": f"generators/{TASK_ID}/workspace/parametric/adapter.py",
++        "parameters": {"completion": ["all_colors", "rarest_active_color"]},
++        "default": CANONICAL,
++        "limits": {"demos": [2, 6], "queries": [1, 4]},
++        "qualification_demos": 3,
++        "resources": [
++            f"generators/{TASK_ID}/workspace/parametric/canonical.rkt",
++            f"generators/{TASK_ID}/workspace/parametric/rarest_active.rkt",
++        ],
++    }
++    assert adapter.program(CANONICAL) == canonical_record()["program_solution"]
++    assert adapter.program(RAREST) != adapter.program(CANONICAL)
++
++
++@pytest.mark.parametrize("seed", [0, 17])
++@pytest.mark.parametrize("demos", [2, 3, 6])
++def test_matched_inputs_identify_settings_and_supply_four_distinct_queries(seed, demos):
++    adapter = load("adapter.py")
++    canonical = adapter.generate(seed, CANONICAL, demos, 4)
++    rarest = adapter.generate(seed, RAREST, demos, 4)
++    assert inputs(canonical) == inputs(rarest)
++    assert len(canonical["train"]) == demos
++    assert len(canonical["test"]) == 4
++    serialized = [json.dumps(grid, separators=(",", ":")) for grid in inputs(canonical)]
++    assert len(serialized) == len(set(serialized)) == demos + 4
++    assert all(a["output"] != b["output"] for a, b in zip(canonical["train"], rarest["train"]))
++
++    for settings, episode in ((CANONICAL, canonical), (RAREST, rarest)):
++        assert episode["program_solution"] == adapter.program(settings)
++        for pair in episode["train"] + episode["test"]:
++            facts = adapter.analyze(pair["input"])
++            assert len(facts["active_colors"]) == 3
++            assert facts["rarest_active_color"] in facts["active_colors"]
++            assert len(set(facts["active_counts"].values())) == 3
++            assert pair["output"] == adapter.solve(pair["input"], settings["completion"])
++
++    # The minimum lesson changes the input-derived selected color and its count,
++    # defeating a fixed-color or fixed-count interpretation.
++    first_two = [adapter.analyze(pair["input"]) for pair in canonical["train"][:2]]
++    assert len({row["rarest_active_color"] for row in first_two}) == 2
++    assert len({row["active_counts"][row["rarest_active_color"]] for row in first_two}) == 2
++
++    assert [(len(pair["input"]), len(pair["input"][0])) for pair in canonical["test"]] == [
++        (10, 12), (17, 19), (30, 30), (25, 29)
++    ]
++    stress = canonical["test"][2]["input"]
++    assert sum(value != 0 for row in stress for value in row) >= 75
++    occupied_rows = {r for r, row in enumerate(stress) if any(row)}
++    occupied_cols = {c for c in range(30) if any(stress[r][c] for r in range(30))}
++    assert min(occupied_rows) == 0 and max(occupied_rows) == 29
++    assert min(occupied_cols) == 0 and max(occupied_cols) == 29
++
++
++@pytest.mark.parametrize("completion", ["all_colors", "rarest_active_color"])
++def test_programs_execute_through_protected_racket_and_match_claims(completion):
++    adapter = load("adapter.py")
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    episode = adapter.generate(17, {"completion": completion}, 2, 4)
++    source = wrap_rule(adapter.program({"completion": completion}))
++    with RacketBridge() as bridge:
++        assert bridge.runtime_identity["backend"] == "racket"
++        assert bridge.runtime_identity["protected"] is True
++        for pair in episode["train"] + episode["test"]:
++            literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in pair["input"]) + ")"
++            assert bridge.eval_text(f"({source} {literal})") == pair["output"]
++
++
++def test_public_turn_is_prefix_stable_and_hashes_visible_bytes_only():
++    adapter = load("adapter.py")
++    one = adapter.generate(17, RAREST, 3, 1)
++    four = adapter.generate(17, RAREST, 3, 4)
++    assert public_challenge_bytes(adapter.public_turn(one)) == public_challenge_bytes(adapter.public_turn(four))
++    public = adapter.public_turn(four, 2)
++    assert set(public) == {"train", "test"}
++    assert len(public["test"]) == 1
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert all(set(pair) == {"input"} for pair in public["test"])
++    before = copy.deepcopy(four)
++    payload = public_challenge_bytes(public)
++    assert public_challenge_id(public) == hashlib.sha256(payload).hexdigest()
++    assert b"rarest_active_color" not in payload and b"program_solution" not in payload
++    assert four == before
++
++
++@pytest.mark.parametrize("completion", ["all_colors", "rarest_active_color"])
++def test_generation_is_deterministic_fresh_prefix_stable_and_rng_isolated(completion):
++    adapter = load("adapter.py")
++    settings = {"completion": completion}
++    state = random.getstate()
++    full = adapter.generate(2**63 - 1, settings, 6, 4)
++    again = adapter.generate(2**63 - 1, settings, 6, 4)
++    assert full == again and full is not again
++    assert random.getstate() == state
++    for demos, queries in ((2, 1), (3, 4), (6, 1)):
++        small = adapter.generate(2**63 - 1, settings, demos, queries)
++        assert small["train"] == full["train"][:demos]
++        assert small["test"] == full["test"][:queries]
++    full["train"][0]["input"][0][0] = 8
++    assert adapter.generate(2**63 - 1, settings, 6, 4) == again
++
++
++@pytest.mark.parametrize(
++    "args",
++    [
++        (True, CANONICAL, 3, 4), (-1, CANONICAL, 3, 4), (2**63, CANONICAL, 3, 4),
++        (0, CANONICAL, 1, 4), (0, CANONICAL, 7, 4),
++        (0, CANONICAL, 3, 0), (0, CANONICAL, 3, 5),
++        (0, {}, 3, 4), (0, {"completion": "unknown"}, 3, 4),
++        (0, {"completion": "all_colors", "extra": 1}, 3, 4),
++    ],
++)
++def test_invalid_controls_fail_loudly(args):
++    adapter = load("adapter.py")
++    with pytest.raises((TypeError, ValueError)):
++        adapter.generate(*args)
++
++
++def test_finite_demo_only_self_audit_rejects_plausible_shortcuts():
++    adapter = load("adapter.py")
++    rivals = load("rivals.py")
++    for seed in (0, 17, 31):
++        for demos in (2, 3, 6):
++            for setting in (CANONICAL, RAREST):
++                episode = adapter.generate(seed, setting, demos, 4)
++                correct = setting["completion"]
++                survivors = [
++                    name for name in rivals.RIVAL_NAMES
++                    if all(rivals.predict(pair["input"], name) == pair["output"] for pair in episode["train"])
++                ]
++                assert survivors == [correct]
++                assert all(
++                    rivals.predict(pair["input"], correct) == pair["output"]
++                    for pair in episode["test"]
++                )
++
++
++def test_two_demo_rarest_lesson_is_not_first_or_last_active_across_a_seed_sweep():
++    """Catch seed-dependent row-major aliases of the input-derived rare color."""
++    adapter = load("adapter.py")
++    rivals = load("rivals.py")
++    for seed in range(32):
++        episode = adapter.generate(seed, RAREST, 2, 1)
++        for rival in ("first_active_color", "last_active_color"):
++            assert any(
++                rivals.predict(pair["input"], rival) != pair["output"]
++                for pair in episode["train"]
++            ), (seed, rival)
+diff --git a/repo/generators/b37eb391ddc0/workspace/parametric/README.md b/repo/generators/b37eb391ddc0/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b37eb391ddc0/workspace/parametric/README.md
+@@ -0,0 +1,31 @@
++# Native parametric family: b37eb391ddc0
++
++`completion=all_colors` is the exact canonical program: every same-colored
++opposite-corner pair completes its 2×2 block.
++
++`completion=rarest_active_color` first finds the colors that actually participate
++in a diagonal pair, counts their occurrences in the input, and binds the unique
++least frequent active color. It then completes only that color's pairs. Step A
++therefore produces an input-dependent color that step B needs for its write mask.
++
++Inputs are matched across settings. The minimum two demonstrations change both
++the selected color and its count; every scene also contains two nonselected
++active colors, a one-cell nonactive guard, both diagonal orientations, and an
++occupied companion that the selected rule may overwrite. Four query roles cover
++transfer, larger geometry, a substantive 30×30 boundary scene, and a wide scene.
++`public_turn()` exposes all demonstrations and exactly one unlabeled query.
++
++From the packet's outer directory:
++
++```sh
++python3 review.py run python3 -m pytest -q \
++  generators/b37eb391ddc0/tests/test_parametric_rarest_active.py
++python3 review.py run python3 \
++  generators/b37eb391ddc0/workspace/parametric/audit.py \
++  --out generators/b37eb391ddc0/workspace/parametric/evidence/current/self-audit.json
++python3 review.py run python3 -m arcpuzzles parametric qualify b37eb391ddc0 \
++  --demos 3 --queries 4 --out ../checks/b37eb391ddc0/qualification --summary
++```
++
++These are reviewer-side source-bound checks only. Owner acceptance and training
++admission remain separate.
+diff --git a/repo/generators/b37eb391ddc0/workspace/parametric/adapter.py b/repo/generators/b37eb391ddc0/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b37eb391ddc0/workspace/parametric/adapter.py
+@@ -0,0 +1,314 @@
++"""Matched-input diagonal completion lessons with an input-derived color gate.
++
++The canonical setting completes every same-colored diagonal pair.  The
++alternative first finds every color that participates in at least one diagonal
++pair, selects the uniquely least frequent such color in the input, and completes
++only that color's pairs.  Pair labels are Python claims; native qualification
++re-executes every label through protected Racket.
++"""
++from __future__ import annotations
++
++from collections import Counter
++import copy
++import hashlib
++from pathlib import Path
++import random
++
++
++HERE = Path(__file__).resolve().parent
++COMPLETIONS = ("all_colors", "rarest_active_color")
++TRAIN_PROFILES = (
++    (9, 11, (1, 2, 3)),
++    (11, 13, (2, 3, 4)),
++    (13, 15, (2, 4, 5)),
++    (16, 18, (3, 5, 6)),
++    (20, 22, (4, 6, 8)),
++    (24, 26, (5, 8, 10)),
++)
++QUERY_PROFILES = (
++    (10, 12, (2, 3, 4)),
++    (17, 19, (3, 6, 8)),
++    (30, 30, (8, 12, 16)),
++    (25, 29, (6, 9, 12)),
++)
++DIAGONALS = ((1, 1), (1, -1))
++
++
++def _integer(value, low, high, name):
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++
++
++def _completion(settings):
++    if (type(settings) is not dict or set(settings) != {"completion"}
++            or type(settings["completion"]) is not str
++            or settings["completion"] not in COMPLETIONS):
++        raise ValueError(
++            "settings must contain only completion='all_colors' or "
++            "'rarest_active_color'"
++        )
++    return settings["completion"]
++
++
++def program(settings):
++    completion = _completion(settings)
++    filename = "canonical.rkt" if completion == "all_colors" else "rarest_active.rkt"
++    return (HERE / filename).read_text(encoding="utf-8")
++
++
++def _grid(grid):
++    if (type(grid) is not list or not 2 <= len(grid) <= 30
++            or type(grid[0]) is not list or not 2 <= len(grid[0]) <= 30):
++        raise ValueError("expected a rectangular 2..30 grid")
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width
++           or any(type(value) is not int or not 0 <= value <= 9 for value in row)
++           for row in grid):
++        raise ValueError("grid cells must be exact integer colors 0..9")
++    return grid
++
++
++def _colors_reading(grid):
++    seen = set()
++    colors = []
++    for row in grid:
++        for value in row:
++            if value and value not in seen:
++                seen.add(value)
++                colors.append(value)
++    return colors
++
++
++def _active_pairs(grid):
++    h, w = len(grid), len(grid[0])
++    pairs = []
++    for r in range(h - 1):
++        for c in range(w - 1):
++            first = grid[r][c]
++            if first and first == grid[r + 1][c + 1]:
++                pairs.append({"color": first, "cells": ((r, c), (r + 1, c + 1))})
++            second = grid[r][c + 1]
++            if second and second == grid[r + 1][c]:
++                pairs.append({"color": second, "cells": ((r, c + 1), (r + 1, c))})
++    return pairs
++
++
++def analyze(grid):
++    grid = _grid(grid)
++    counts = Counter(value for row in grid for value in row if value)
++    pairs = _active_pairs(grid)
++    active_set = {pair["color"] for pair in pairs}
++    active_colors = [color for color in _colors_reading(grid) if color in active_set]
++    if len(active_colors) < 2:
++        raise ValueError("scene needs at least two active diagonal colors")
++    active_counts = {color: counts[color] for color in active_colors}
++    minimum = min(active_counts.values())
++    rarest = [color for color, count in active_counts.items() if count == minimum]
++    if len(rarest) != 1:
++        raise ValueError("scene needs one uniquely rarest active color")
++    return {
++        "colors": _colors_reading(grid),
++        "counts": dict(counts),
++        "pairs": pairs,
++        "active_colors": active_colors,
++        "active_counts": active_counts,
++        "rarest_active_color": rarest[0],
++    }
++
++
++def complete_colors(grid, colors):
++    """Mirror the authority's original-grid detection and accumulated writes."""
++    facts = analyze(grid)
++    selected = set(colors)
++    out = copy.deepcopy(grid)
++    positions = {
++        color: {(r, c) for r, row in enumerate(grid) for c, value in enumerate(row)
++                if value == color}
++        for color in facts["colors"]
++    }
++    for color in facts["colors"]:
++        if color not in selected:
++            continue
++        cells = positions[color]
++        for r, c in sorted(cells):
++            for dr, dc in DIAGONALS:
++                q = r + dr, c + dc
++                if q in cells:
++                    for rr in sorted((r, q[0])):
++                        for cc in sorted((c, q[1])):
++                            out[rr][cc] = color
++    return out
++
++
++def solve(grid, completion="all_colors"):
++    if type(completion) is not str or completion not in COMPLETIONS:
++        raise ValueError("unknown completion mode")
++    facts = analyze(grid)
++    colors = facts["active_colors"] if completion == "all_colors" else [facts["rarest_active_color"]]
++    return complete_colors(grid, colors)
++
++
++def _rng(seed, split, index):
++    raw = f"b37eb391ddc0-parametric-v1:{seed}:{split}:{index}".encode()
++    return random.Random(int.from_bytes(hashlib.sha256(raw).digest(), "big"))
++
++
++def _slots(height, width):
++    candidates = [(0, 0), (0, width - 2), (height - 2, 0), (height - 2, width - 2)]
++    candidates.extend((r, c) for r in range(0, height - 1, 3)
++                      for c in range(0, width - 1, 3))
++    result = []
++    for slot in candidates:
++        if slot in result:
++            continue
++        if all(abs(slot[0] - other[0]) >= 3 or abs(slot[1] - other[1]) >= 3
++               for other in result):
++            result.append(slot)
++    return result
++
++
++def _palette(seed, split, index):
++    offset = 0 if split == "train" else 3
++    rare = 1 + ((seed + index + offset) % 8)
++    remaining = [color for color in range(1, 9) if color != rare]
++    mid = remaining[(2 * seed + index + offset) % len(remaining)]
++    high = next(color for color in remaining if color != mid)
++    return rare, mid, high
++
++
++def _place_pair(grid, slot, color, orientation, guard=False):
++    r, c = slot
++    if orientation == 0:
++        cells = ((r, c), (r + 1, c + 1))
++        companions = ((r, c + 1), (r + 1, c))
++    else:
++        cells = ((r, c + 1), (r + 1, c))
++        companions = ((r, c), (r + 1, c + 1))
++    for rr, cc in cells:
++        if grid[rr][cc] != 0:
++            raise ValueError("pair placement collision")
++        grid[rr][cc] = color
++    if guard:
++        rr, cc = companions[orientation]
++        if grid[rr][cc] != 0:
++            raise ValueError("guard placement collision")
++        grid[rr][cc] = 9
++
++
++def _scene(seed, split, index, profile):
++    height, width, pair_counts = profile
++    rng = _rng(seed, split, index)
++    rare, mid, high = _palette(seed, split, index)
++    role_colors = (rare, mid, high)
++    slots = _slots(height, width)
++    needed = sum(pair_counts) + 3
++    if len(slots) < needed:
++        raise ValueError("profile lacks enough separated motif slots")
++
++    top_left = (0, 0)
++    top_right = (0, width - 2)
++    bottom_right = (height - 2, width - 2)
++    available = [slot for slot in slots if slot not in (top_left, top_right, bottom_right)]
++    rng.shuffle(available)
++    # Row-major discovery sees a nonselected color first, then the rare color,
++    # so neither first-active nor last-active is a hidden equivalent rule.
++    assigned = {0: [top_right], 1: [top_left], 2: [bottom_right]}
++    for role, count in enumerate(pair_counts):
++        while len(assigned[role]) < count:
++            if role == 2:
++                index = next(i for i in range(len(available) - 1, -1, -1) if available[i][0] > 0)
++                assigned[role].append(available.pop(index))
++            else:
++                assigned[role].append(available.pop())
++
++    grid = [[0] * width for _ in range(height)]
++    guard_used = False
++    placed = {0: [], 1: [], 2: []}
++    for role, color in enumerate(role_colors):
++        for position, slot in enumerate(assigned[role]):
++            orientation = rng.randrange(2)
++            use_guard = role == 0 and position == 0 and not guard_used
++            _place_pair(grid, slot, color, orientation, guard=use_guard)
++            placed[role].append((slot, orientation))
++            guard_used = guard_used or use_guard
++
++    # Distinct total counts identify the rarest active color without tying it to
++    # pair count alone.  Put each extra into an unused companion of a separate
++    # motif.  This cannot create another diagonal pair, and the high-count
++    # color remains below the rare color's row-zero anchor for every seed.
++    for role, extra_count in enumerate((0, 1, 2)):
++        for slot, orientation in placed[role][:extra_count]:
++            r, c = slot
++            companions = (
++                ((r, c + 1), (r + 1, c))
++                if orientation == 0
++                else ((r, c), (r + 1, c + 1))
++            )
++            rr, cc = companions[0]
++            if grid[rr][cc] != 0:
++                rr, cc = companions[1]
++            if grid[rr][cc] != 0:
++                raise ValueError("extra-cell placement collision")
++            grid[rr][cc] = role_colors[role]
++
++    facts = analyze(grid)
++    if facts["rarest_active_color"] != rare or len(facts["active_colors"]) != 3:
++        raise RuntimeError("constructed scene lost its selected active color")
++    if len(set(facts["active_counts"].values())) != 3:
++        raise RuntimeError("constructed scene lost distinct active counts")
++    return grid
++
++
++def _input(seed, split, index):
++    profiles = TRAIN_PROFILES if split == "train" else QUERY_PROFILES
++    try:
++        profile = profiles[index]
++    except (IndexError, TypeError) as error:
++        raise ValueError("unsupported split/index") from error
++    return _scene(seed, split, index, profile)
++
++
++def sample_inputs(seed, demos=3, queries=4):
++    _integer(seed, 0, 2**63 - 1, "seed")
++    _integer(demos, 2, 6, "demos")
++    _integer(queries, 1, 4, "queries")
++    result = {
++        "train": [_input(seed, "train", index) for index in range(demos)],
++        "test": [_input(seed, "test", index) for index in range(queries)],
++    }
++    serialized = [repr(grid) for split in ("train", "test") for grid in result[split]]
++    if len(serialized) != len(set(serialized)):
++        raise ValueError("authored episode inputs must be distinct")
++    return result
++
++
++def generate(seed, settings, demos=3, queries=4):
++    completion = _completion(settings)
++    sampled = sample_inputs(seed, demos=demos, queries=queries)
++    return {
++        "train": [
++            {"input": copy.deepcopy(grid), "output": solve(grid, completion)}
++            for grid in sampled["train"]
++        ],
++        "test": [
++            {"input": copy.deepcopy(grid), "output": solve(grid, completion)}
++            for grid in sampled["test"]
++        ],
++        "program_solution": program(settings),
++        "seed": seed,
++        "settings": copy.deepcopy(settings),
++    }
++
++
++def public_turn(episode, query_index=0):
++    if type(query_index) is not int or not 0 <= query_index < len(episode.get("test", [])):
++        raise ValueError("query_index must select an existing query")
++    try:
++        train = [
++            {"input": copy.deepcopy(pair["input"]), "output": copy.deepcopy(pair["output"])}
++            for pair in episode["train"]
++        ]
++        query = {"input": copy.deepcopy(episode["test"][query_index]["input"])}
++    except (KeyError, TypeError) as error:
++        raise ValueError("episode lacks private train/test pairs") from error
++    return {"train": train, "test": [query]}
+diff --git a/repo/generators/b37eb391ddc0/workspace/parametric/audit.py b/repo/generators/b37eb391ddc0/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b37eb391ddc0/workspace/parametric/audit.py
+@@ -0,0 +1,100 @@
++"""Bounded self-audit for the b37eb391ddc0 native parametric family."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++
++HERE = Path(__file__).resolve().parent
++
++
++def load(name):
++    path = HERE / name
++    module_name = "_b37_audit_" + name.replace(".", "_")
++    spec = importlib.util.spec_from_file_location(module_name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[module_name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def write(path, value):
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    if args.out.exists():
++        parser.error("--out must be new")
++    adapter, rivals = load("adapter.py"), load("rivals.py")
++    settings = ({"completion": "all_colors"}, {"completion": "rarest_active_color"})
++    rows = []
++    for seed in range(32):
++        for demos in (2, 3, 6):
++            for setting in settings:
++                episode = adapter.generate(seed, setting, demos, 4)
++                survivors = [
++                    name for name in rivals.RIVAL_NAMES
++                    if all(rivals.predict(pair["input"], name) == pair["output"] for pair in episode["train"])
++                ]
++                if survivors != [setting["completion"]]:
++                    raise ValueError(f"ambiguous lesson seed={seed} demos={demos} setting={setting}: {survivors}")
++                if not all(rivals.predict(pair["input"], survivors[0]) == pair["output"] for pair in episode["test"]):
++                    raise ValueError("surviving setting failed a query")
++                rows.append({"seed": seed, "demos": demos, "settings": setting, "survivors": survivors})
++
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++    evaluations = 0
++    with RacketBridge() as bridge:
++        identity = bridge.runtime_identity
++        for seed in (0, 17):
++            for setting in settings:
++                episode = adapter.generate(seed, setting, 2, 4)
++                source = wrap_rule(adapter.program(setting))
++                for pair in episode["train"] + episode["test"]:
++                    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in pair["input"]) + ")"
++                    if bridge.eval_text(f"({source} {literal})") != pair["output"]:
++                        raise ValueError("protected Racket parity mismatch")
++                    evaluations += 1
++
++    stress = adapter.generate(17, settings[0], 2, 4)["test"][2]
++    report = {
++        "schema": "arcpuzzles-parametric-self-audit-v1",
++        "task_id": "b37eb391ddc0",
++        "status": "pass",
++        "episodes": len(rows),
++        "seeds": 32,
++        "demo_counts": [2, 3, 6],
++        "settings": list(settings),
++        "rivals": list(rivals.RIVAL_NAMES),
++        "ambiguities": 0,
++        "racket": identity,
++        "racket_evaluations": evaluations,
++        "stress": {
++            "shape": [len(stress["input"]), len(stress["input"][0])],
++            "input_nonzero": sum(value != 0 for row in stress["input"] for value in row),
++            "output_nonzero": sum(value != 0 for row in stress["output"] for value in row),
++        },
++        "program_sha256": {
++            setting["completion"]: hashlib.sha256(adapter.program(setting).encode()).hexdigest()
++            for setting in settings
++        },
++        "limits": "Finite named-rival and two-seed Racket parity audit; not a proof of universal identifiability or training benefit.",
++    }
++    write(args.out, report)
++    print(json.dumps(report, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/b37eb391ddc0/workspace/parametric/canonical.rkt b/repo/generators/b37eb391ddc0/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b37eb391ddc0/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (e8b-colors-reading grid) (remove-duplicates (filter (lambda (v) (not (= v 0))) (map (lambda (p) (at grid (first p) (second p))) (grid-positions grid))))) (for/fold ((out g)) ((color (in-list (e8b-colors-reading g)))) (let ((cells (find-color g color))) (for/fold ((acc out)) ((p (in-list cells))) (for/fold ((acc2 acc)) ((d (in-list (list (list 1 1) (list 1 -1))))) (let ((q (list (+ (first p) (first d)) (+ (second p) (second d))))) (if (member? q cells) (let* ((rs (sort (list (first p) (first q)) <)) (cs (sort (list (second p) (second q)) <))) (for*/fold ((acc3 acc2)) ((r (in-list rs)) (c (in-list cs))) (set-cell acc3 r c color))) acc2))))))))
+\ No newline at end of file
+diff --git a/repo/generators/b37eb391ddc0/workspace/parametric/evidence/current/self-audit.json b/repo/generators/b37eb391ddc0/workspace/parametric/evidence/current/self-audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b37eb391ddc0/workspace/parametric/evidence/current/self-audit.json
+@@ -0,0 +1,79 @@
++{
++  "ambiguities": 0,
++  "demo_counts": [
++    2,
++    3,
++    6
++  ],
++  "episodes": 192,
++  "limits": "Finite named-rival and two-seed Racket parity audit; not a proof of universal identifiability or training benefit.",
++  "program_sha256": {
++    "all_colors": "24318a9ceacd06b0128efd2c50d843c278c090f897504721284ac45eeac1d0c2",
++    "rarest_active_color": "9e7cf73d038fa45027553e008a2e4c44193da7a446931c5c591959563f014b2a"
++  },
++  "racket": {
++    "backend": "racket",
++    "binary_path": "/mnt/data/arcpuzzles_review_092202/input/WORK/.review/racket-runtime/racket/bin/racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_path": "/mnt/data/arcpuzzles_review_092202/input/WORK/repo/shared/runtime/arc_repl/racket_bridge.py",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_environment": "empty-environment-variables-v1",
++    "candidate_exit_handler": "deny-process-exit-v1",
++    "candidate_input": "empty-string-port-v1",
++    "candidate_output": "discard-string-ports-v1",
++    "candidate_symbol_policy_schema": "arc-racket-candidate-symbol-policy-v1",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "deterministic": true,
++    "evaluation_custodian": "fresh-per-eval-shutdown-before-reply-v1",
++    "evaluation_resource_limit": "nested-thread-512MiB-v1",
++    "prelude_path": "/mnt/data/arcpuzzles_review_092202/input/WORK/repo/shared/runtime/arc_repl/racket_prelude/arc-prelude.rkt",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1",
++    "security_canary": {
++      "environment": "pass",
++      "exit": "pass",
++      "filesystem": "pass",
++      "input": "pass",
++      "memory": "pass",
++      "network": "pass",
++      "subprocess": "pass"
++    },
++    "security_guard": "deny-filesystem-network-link-v1",
++    "startup_handshake": "pass",
++    "subprocess_environment": "explicit-allowlist-v1"
++  },
++  "racket_evaluations": 24,
++  "rivals": [
++    "all_colors",
++    "rarest_active_color",
++    "most_active_color",
++    "first_active_color",
++    "last_active_color",
++    "rarest_nonzero_color",
++    "all_except_rarest",
++    "exactly_two_occurrences",
++    "first_pair_color"
++  ],
++  "schema": "arcpuzzles-parametric-self-audit-v1",
++  "seeds": 32,
++  "settings": [
++    {
++      "completion": "all_colors"
++    },
++    {
++      "completion": "rarest_active_color"
++    }
++  ],
++  "status": "pass",
++  "stress": {
++    "input_nonzero": 76,
++    "output_nonzero": 144,
++    "shape": [
++      30,
++      30
++    ]
++  },
++  "task_id": "b37eb391ddc0"
++}
+diff --git a/repo/generators/b37eb391ddc0/workspace/parametric/evidence/manifest.json b/repo/generators/b37eb391ddc0/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b37eb391ddc0/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,82 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "24318a9ceacd06b0128efd2c50d843c278c090f897504721284ac45eeac1d0c2",
++  "canonical_rule_hash": "24318a9ceacd",
++  "default": {
++    "completion": "all_colors"
++  },
++  "evidence_root": "generators/b37eb391ddc0/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 21435,
++      "path": "generators/b37eb391ddc0/generator.py",
++      "sha256": "c113fd93cc524873595b4bf9808b87727c97548f68c0a7427424c782e393b47f"
++    },
++    {
++      "bytes": 8755,
++      "path": "generators/b37eb391ddc0/tests/test_parametric_rarest_active.py",
++      "sha256": "f361bed207388d0190cd72b991a0719f982f4bb7e436db983cca7fb6df0f50c3"
++    },
++    {
++      "bytes": 11578,
++      "path": "generators/b37eb391ddc0/workspace/parametric/adapter.py",
++      "sha256": "b398e77e6333ba79d03655b2620c29d11eccdf72b6563fdd2942bed4eb37f5f1"
++    },
++    {
++      "bytes": 4010,
++      "path": "generators/b37eb391ddc0/workspace/parametric/audit.py",
++      "sha256": "5e8ee3a28384b92759084ef4e34e451410b80546c163c41352a09f953b502c3d"
++    },
++    {
++      "bytes": 682,
++      "path": "generators/b37eb391ddc0/workspace/parametric/canonical.rkt",
++      "sha256": "24318a9ceacd06b0128efd2c50d843c278c090f897504721284ac45eeac1d0c2"
++    },
++    {
++      "bytes": 2787,
++      "path": "generators/b37eb391ddc0/workspace/parametric/evidence/current/self-audit.json",
++      "sha256": "af87de8a9b0ab394e2a1f35d47ff86aedc40eadbc694053ef68c5f58ac2b82db"
++    },
++    {
++      "bytes": 554,
++      "path": "generators/b37eb391ddc0/workspace/parametric/promotion.json",
++      "sha256": "818abb8bdefb3944dc4696ee510ad95c3b27d5ef11390b06567daffc089048b5"
++    },
++    {
++      "bytes": 1706,
++      "path": "generators/b37eb391ddc0/workspace/parametric/rarest_active.rkt",
++      "sha256": "9e7cf73d038fa45027553e008a2e4c44193da7a446931c5c591959563f014b2a"
++    },
++    {
++      "bytes": 2000,
++      "path": "generators/b37eb391ddc0/workspace/parametric/rivals.py",
++      "sha256": "d4407d77693d6c53038f6b2753fb03f0f47d900e07bd5b43e20a2c9532bee8cc"
++    }
++  ],
++  "generator_sha256": "c113fd93cc524873595b4bf9808b87727c97548f68c0a7427424c782e393b47f",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "completion": [
++      "all_colors",
++      "rarest_active_color"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "Focused parametric suite 24/24; changed-target task suite previously 36/36 before final seed-alias repair; bounded audit 192 episodes across seeds 0-31 and demo counts 2,3,6 with nine named rivals, plus 24 protected-Racket parity evaluations; no universal-identifiability or learning-benefit claim.",
++  "rule_task_id": "b37eb391ddc0",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "b37eb391ddc0",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/b37eb391ddc0/workspace/parametric/promotion.json b/repo/generators/b37eb391ddc0/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b37eb391ddc0/workspace/parametric/promotion.json
+@@ -0,0 +1,28 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/b37eb391ddc0/workspace/parametric/adapter.py",
++  "parameters": {
++    "completion": [
++      "all_colors",
++      "rarest_active_color"
++    ]
++  },
++  "default": {
++    "completion": "all_colors"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/b37eb391ddc0/workspace/parametric/canonical.rkt",
++    "generators/b37eb391ddc0/workspace/parametric/rarest_active.rkt"
++  ]
++}
+diff --git a/repo/generators/b37eb391ddc0/workspace/parametric/rarest_active.rkt b/repo/generators/b37eb391ddc0/workspace/parametric/rarest_active.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b37eb391ddc0/workspace/parametric/rarest_active.rkt
+@@ -0,0 +1,42 @@
++(rule! (let ((dummy 0))
++  (define (colors-reading grid)
++    (remove-duplicates
++      (filter (lambda (v) (not (= v 0)))
++        (map (lambda (p) (at grid (first p) (second p)))
++             (grid-positions grid)))))
++  (define (has-diagonal? grid color)
++    (let ((cells (find-color grid color)))
++      (not (empty?
++        (filter
++          (lambda (p)
++            (not (empty?
++              (filter
++                (lambda (d)
++                  (member? (list (+ (first p) (first d))
++                                 (+ (second p) (second d)))
++                           cells))
++                (list (list 1 1) (list 1 -1))))))
++          cells)))))
++  (let* ((active (filter (lambda (color) (has-diagonal? g color))
++                         (colors-reading g)))
++         (ranked (sort active
++                       (lambda (a b)
++                         (< (length (find-color g a))
++                            (length (find-color g b)))))))
++    (if (empty? ranked)
++        g
++        (let* ((color (first ranked))
++               (cells (find-color g color)))
++          (for/fold ((acc g)) ((p (in-list cells)))
++            (for/fold ((acc2 acc))
++                      ((d (in-list (list (list 1 1) (list 1 -1)))))
++              (let ((q (list (+ (first p) (first d))
++                             (+ (second p) (second d)))))
++                (if (member? q cells)
++                    (let* ((rs (sort (list (first p) (first q)) <))
++                           (cs (sort (list (second p) (second q)) <)))
++                      (for*/fold ((acc3 acc2))
++                                 ((r (in-list rs)) (c (in-list cs)))
++                        (set-cell acc3 r c color)))
++                    acc2))))))))
++)
+diff --git a/repo/generators/b37eb391ddc0/workspace/parametric/rivals.py b/repo/generators/b37eb391ddc0/workspace/parametric/rivals.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/b37eb391ddc0/workspace/parametric/rivals.py
+@@ -0,0 +1,61 @@
++"""Finite demonstration-only shortcut bank for b37eb391ddc0."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++
++HERE = Path(__file__).resolve().parent
++_path = HERE / "adapter.py"
++_name = "_b37eb391ddc0_parametric_adapter_" + hashlib.sha256(str(_path).encode()).hexdigest()
++if _name in sys.modules:
++    adapter = sys.modules[_name]
++else:
++    _spec = importlib.util.spec_from_file_location(_name, _path)
++    if _spec is None or _spec.loader is None:
++        raise ImportError(_path)
++    adapter = importlib.util.module_from_spec(_spec)
++    sys.modules[_name] = adapter
++    _spec.loader.exec_module(adapter)
++
++
++RIVAL_NAMES = (
++    "all_colors",
++    "rarest_active_color",
++    "most_active_color",
++    "first_active_color",
++    "last_active_color",
++    "rarest_nonzero_color",
++    "all_except_rarest",
++    "exactly_two_occurrences",
++    "first_pair_color",
++)
++
++
++def predict(grid, name):
++    if name in adapter.COMPLETIONS:
++        return adapter.solve(grid, name)
++    facts = adapter.analyze(grid)
++    active = facts["active_colors"]
++    counts = facts["active_counts"]
++    rare = facts["rarest_active_color"]
++    if name == "most_active_color":
++        selected = [max(active, key=lambda color: counts[color])]
++    elif name == "first_active_color":
++        selected = [active[0]]
++    elif name == "last_active_color":
++        selected = [active[-1]]
++    elif name == "rarest_nonzero_color":
++        minimum = min(facts["counts"].values())
++        selected = [next(color for color in facts["colors"] if facts["counts"][color] == minimum)]
++    elif name == "all_except_rarest":
++        selected = [color for color in active if color != rare]
++    elif name == "exactly_two_occurrences":
++        selected = [color for color in active if counts[color] == 2]
++    elif name == "first_pair_color":
++        selected = [facts["pairs"][0]["color"]]
++    else:
++        raise ValueError("unknown rival")
++    return adapter.complete_colors(grid, selected)
+diff --git a/repo/generators/be6269bef667/notes.md b/repo/generators/be6269bef667/notes.md
+--- a/repo/generators/be6269bef667/notes.md
++++ b/repo/generators/be6269bef667/notes.md
+@@ -144,3 +144,14 @@
+ **Alternatives considered.** Editing shared reviewer tools was unnecessary for this task and outside the selected-task delta. Copying a full staged runtime into the return was rejected; only the small probe and decisive JSON receipts are retained.
+ 
+ **Evidence.** `checks/be6269bef667-reference-probe.json`; `repo/generators/be6269bef667/workspace/reference_probe.py`.
++
++## Review review-e1bae10251bf9386 — native parametric family
++
++A matched-input two-setting family was added under `workspace/parametric/` without changing the production generator or selected canonical authority.
++
++- `weighting=unit` returns the exact canonical Racket source byte-for-byte and adds one along every directed ray.
++- `weighting=plurality_double` first counts emitters by direction, derives the unique plurality direction from the input, and then traces all rays with weight two for the selected direction and one for the other three.
++- The sampler supports 2–6 prefix-stable demonstrations and 1–4 prefix-stable queries. Its query shapes are 10×13, 17×19, 30×30, and 24×29; the 30×30 case uses 33 nonzero input cells and yields about 490 nonzero output cells while retaining walls, all four directions, boundary contact, and bounded overlap.
++- The minimum lesson changes the plurality direction, and a ten-rival bank covers unit, fixed-direction weighting, least-direction weighting, selected-only, nonselected weighting, and count-proportional weighting.
++
++The first stress profile was semantically valid but covered only 383–396 output cells, below the retained large-case threshold. Increasing the edge-emitter counts while reducing nonessential walls preserved the rule branches and raised observed coverage to 490–496 cells without increasing the maximum output value beyond three. Final bounded evidence covers 192 episodes, 24 protected-Racket parity evaluations, and zero surviving named rivals. This is finite evidence, not a claim of universal identifiability or training benefit.
+diff --git a/repo/generators/be6269bef667/tests/test_parametric_plurality_weight.py b/repo/generators/be6269bef667/tests/test_parametric_plurality_weight.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/be6269bef667/tests/test_parametric_plurality_weight.py
+@@ -0,0 +1,187 @@
++"""Native parametric regressions for be6269bef667."""
++from __future__ import annotations
++
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import random
++import sys
++
++import pytest
++
++from reviewer_support import canonical_path, find_root, public_challenge_bytes, public_challenge_id
++
++
++TASK_ID = "be6269bef667"
++ROOT = find_root(__file__)
++HOME = ROOT / "generators" / TASK_ID
++PARAMETRIC = HOME / "workspace" / "parametric"
++CANONICAL = {"weighting": "unit"}
++PLURALITY = {"weighting": "plurality_double"}
++
++
++def load(name: str):
++    path = PARAMETRIC / name
++    assert path.is_file(), f"missing parametric source: {path}"
++    module_name = f"_{TASK_ID}_{name.replace('.', '_')}"
++    spec = importlib.util.spec_from_file_location(module_name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[module_name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def canonical_record() -> dict:
++    for line in canonical_path(ROOT).read_text(encoding="utf-8").splitlines():
++        row = json.loads(line)
++        if row.get("task_id") == TASK_ID:
++            return row
++    raise AssertionError("canonical record missing")
++
++
++def inputs(episode: dict) -> list[list[list[int]]]:
++    return [pair["input"] for split in ("train", "test") for pair in episode[split]]
++
++
++def test_contract_and_programs_preserve_exact_canonical_default():
++    adapter = load("adapter.py")
++    contract = json.loads((PARAMETRIC / "promotion.json").read_text())
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": f"generators/{TASK_ID}/workspace/parametric/adapter.py",
++        "parameters": {"weighting": ["unit", "plurality_double"]},
++        "default": CANONICAL,
++        "limits": {"demos": [2, 6], "queries": [1, 4]},
++        "qualification_demos": 3,
++        "resources": [
++            f"generators/{TASK_ID}/workspace/parametric/canonical.rkt",
++            f"generators/{TASK_ID}/workspace/parametric/plurality_double.rkt",
++        ],
++    }
++    assert adapter.program(CANONICAL) == canonical_record()["program_solution"]
++    assert adapter.program(PLURALITY) != adapter.program(CANONICAL)
++
++
++@pytest.mark.parametrize("seed", [0, 17])
++@pytest.mark.parametrize("demos", [2, 3, 6])
++def test_matched_inputs_identify_settings_and_supply_four_distinct_queries(seed, demos):
++    adapter = load("adapter.py")
++    canonical = adapter.generate(seed, CANONICAL, demos, 4)
++    plurality = adapter.generate(seed, PLURALITY, demos, 4)
++    assert inputs(canonical) == inputs(plurality)
++    assert len(canonical["train"]) == demos
++    assert len(canonical["test"]) == 4
++    serialized = [json.dumps(grid, separators=(",", ":")) for grid in inputs(canonical)]
++    assert len(serialized) == len(set(serialized)) == demos + 4
++    assert all(a["output"] != b["output"] for a, b in zip(canonical["train"], plurality["train"]))
++
++    for settings, episode in ((CANONICAL, canonical), (PLURALITY, plurality)):
++        assert episode["program_solution"] == adapter.program(settings)
++        for pair in episode["train"] + episode["test"]:
++            facts = adapter.analyze(pair["input"])
++            assert set(facts["direction_counts"]) == {1, 2, 3, 4}
++            assert len(set(facts["direction_counts"].values())) >= 2
++            assert facts["plurality_direction"] in {1, 2, 3, 4}
++            assert pair["output"] == adapter.solve(pair["input"], settings["weighting"])
++            assert max(max(row) for row in pair["output"]) <= 9
++
++    first_two = [adapter.analyze(pair["input"])["plurality_direction"] for pair in canonical["train"][:2]]
++    assert len(set(first_two)) == 2
++
++    assert [(len(pair["input"]), len(pair["input"][0])) for pair in canonical["test"]] == [
++        (10, 13), (17, 19), (30, 30), (24, 29)
++    ]
++    stress_input = canonical["test"][2]["input"]
++    stress_output = canonical["test"][2]["output"]
++    assert sum(value != 0 for row in stress_input for value in row) >= 28
++    assert sum(value != 0 for row in stress_output for value in row) >= 420
++    assert any(stress_input[0]) and any(stress_input[-1])
++    assert any(row[0] for row in stress_input) and any(row[-1] for row in stress_input)
++
++
++@pytest.mark.parametrize("weighting", ["unit", "plurality_double"])
++def test_programs_execute_through_protected_racket_and_match_claims(weighting):
++    adapter = load("adapter.py")
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    episode = adapter.generate(17, {"weighting": weighting}, 2, 4)
++    source = wrap_rule(adapter.program({"weighting": weighting}))
++    with RacketBridge() as bridge:
++        assert bridge.runtime_identity["backend"] == "racket"
++        assert bridge.runtime_identity["protected"] is True
++        for pair in episode["train"] + episode["test"]:
++            literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in pair["input"]) + ")"
++            assert bridge.eval_text(f"({source} {literal})") == pair["output"]
++
++
++def test_public_turn_is_prefix_stable_and_hashes_visible_bytes_only():
++    adapter = load("adapter.py")
++    one = adapter.generate(17, PLURALITY, 3, 1)
++    four = adapter.generate(17, PLURALITY, 3, 4)
++    assert public_challenge_bytes(adapter.public_turn(one)) == public_challenge_bytes(adapter.public_turn(four))
++    public = adapter.public_turn(four, 1)
++    assert set(public) == {"train", "test"}
++    assert len(public["test"]) == 1
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert all(set(pair) == {"input"} for pair in public["test"])
++    before = copy.deepcopy(four)
++    payload = public_challenge_bytes(public)
++    assert public_challenge_id(public) == hashlib.sha256(payload).hexdigest()
++    assert b"plurality_double" not in payload and b"program_solution" not in payload
++    assert four == before
++
++
++@pytest.mark.parametrize("weighting", ["unit", "plurality_double"])
++def test_generation_is_deterministic_fresh_prefix_stable_and_rng_isolated(weighting):
++    adapter = load("adapter.py")
++    settings = {"weighting": weighting}
++    state = random.getstate()
++    full = adapter.generate(2**63 - 1, settings, 6, 4)
++    again = adapter.generate(2**63 - 1, settings, 6, 4)
++    assert full == again and full is not again
++    assert random.getstate() == state
++    for demos, queries in ((2, 1), (3, 4), (6, 1)):
++        small = adapter.generate(2**63 - 1, settings, demos, queries)
++        assert small["train"] == full["train"][:demos]
++        assert small["test"] == full["test"][:queries]
++    full["train"][0]["input"][0][0] = 8
++    assert adapter.generate(2**63 - 1, settings, 6, 4) == again
++
++
++@pytest.mark.parametrize(
++    "args",
++    [
++        (True, CANONICAL, 3, 4), (-1, CANONICAL, 3, 4), (2**63, CANONICAL, 3, 4),
++        (0, CANONICAL, 1, 4), (0, CANONICAL, 7, 4),
++        (0, CANONICAL, 3, 0), (0, CANONICAL, 3, 5),
++        (0, {}, 3, 4), (0, {"weighting": "unknown"}, 3, 4),
++        (0, {"weighting": "unit", "extra": 1}, 3, 4),
++    ],
++)
++def test_invalid_controls_fail_loudly(args):
++    adapter = load("adapter.py")
++    with pytest.raises((TypeError, ValueError)):
++        adapter.generate(*args)
++
++
++def test_finite_demo_only_self_audit_rejects_plausible_shortcuts():
++    adapter = load("adapter.py")
++    rivals = load("rivals.py")
++    for seed in (0, 17, 31):
++        for demos in (2, 3, 6):
++            for setting in (CANONICAL, PLURALITY):
++                episode = adapter.generate(seed, setting, demos, 4)
++                correct = setting["weighting"]
++                survivors = [
++                    name for name in rivals.RIVAL_NAMES
++                    if all(rivals.predict(pair["input"], name) == pair["output"] for pair in episode["train"])
++                ]
++                assert survivors == [correct]
++                assert all(
++                    rivals.predict(pair["input"], correct) == pair["output"]
++                    for pair in episode["test"]
++                )
+diff --git a/repo/generators/be6269bef667/workspace/parametric/README.md b/repo/generators/be6269bef667/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/be6269bef667/workspace/parametric/README.md
+@@ -0,0 +1,31 @@
++# Native parametric family: be6269bef667
++
++`weighting=unit` is the exact canonical program: every emitter contributes one
++along its ray until a color-5 wall or the boundary.
++
++`weighting=plurality_double` first counts direction-coded emitters and binds the
++unique plurality direction. It then traces every ray, adding two for emitters in
++that selected direction and one for all other directions. Step B therefore
++cannot choose ray weights until step A supplies the input-dependent direction.
++
++Inputs are matched across settings. The minimum two demonstrations use different
++plurality directions. Every scene contains all four direction symbols, disjoint
++long horizontal and vertical ray lines, overlap, selected-direction wall stops,
++and distractor walls. Four queries cover transfer, larger geometry, a substantive
++30×30 cross-hatch, and a wide boundary scene. `public_turn()` reveals one query
++input at a time and keeps settings, programs, answers, and future queries private.
++
++From the packet's outer directory:
++
++```sh
++python3 review.py run python3 -m pytest -q \
++  generators/be6269bef667/tests/test_parametric_plurality_weight.py
++python3 review.py run python3 \
++  generators/be6269bef667/workspace/parametric/audit.py \
++  --out generators/be6269bef667/workspace/parametric/evidence/current/self-audit.json
++python3 review.py run python3 -m arcpuzzles parametric qualify be6269bef667 \
++  --demos 3 --queries 4 --out ../checks/be6269bef667/qualification --summary
++```
++
++These are reviewer-side source-bound checks only. Owner acceptance and training
++admission remain separate.
+diff --git a/repo/generators/be6269bef667/workspace/parametric/adapter.py b/repo/generators/be6269bef667/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/be6269bef667/workspace/parametric/adapter.py
+@@ -0,0 +1,246 @@
++"""Matched-input ray lessons with an input-derived plurality weighting.
++
++The canonical setting adds one along every directed ray.  The alternative first
++counts direction-coded emitters, selects the unique plurality direction, and
++then traces every ray while adding two for rays in that selected direction and
++one for all others.  Native qualification independently executes all labels in
++protected Racket.
++"""
++from __future__ import annotations
++
++from collections import Counter
++import copy
++import hashlib
++from pathlib import Path
++import random
++
++
++HERE = Path(__file__).resolve().parent
++WEIGHTINGS = ("unit", "plurality_double")
++DIRECTIONS = {1: (-1, 0), 2: (0, 1), 3: (1, 0), 4: (0, -1)}
++TRAIN_PROFILES = (
++    (8, 9, 4, 2, 4),
++    (9, 11, 4, 2, 4),
++    (12, 13, 5, 2, 5),
++    (15, 17, 5, 3, 6),
++    (20, 22, 6, 3, 7),
++    (24, 26, 7, 3, 8),
++)
++QUERY_PROFILES = (
++    (10, 13, 4, 2, 4),
++    (17, 19, 6, 3, 6),
++    (30, 30, 10, 5, 8),
++    (24, 29, 7, 3, 8),
++)
++
++
++def _integer(value, low, high, name):
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++
++
++def _weighting(settings):
++    if (type(settings) is not dict or set(settings) != {"weighting"}
++            or type(settings["weighting"]) is not str
++            or settings["weighting"] not in WEIGHTINGS):
++        raise ValueError(
++            "settings must contain only weighting='unit' or 'plurality_double'"
++        )
++    return settings["weighting"]
++
++
++def program(settings):
++    weighting = _weighting(settings)
++    filename = "canonical.rkt" if weighting == "unit" else "plurality_double.rkt"
++    return (HERE / filename).read_text(encoding="utf-8")
++
++
++def _grid(grid):
++    if (type(grid) is not list or not 3 <= len(grid) <= 30
++            or type(grid[0]) is not list or not 3 <= len(grid[0]) <= 30):
++        raise ValueError("expected a rectangular 3..30 grid")
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width
++           or any(type(value) is not int or not 0 <= value <= 9 for value in row)
++           for row in grid):
++        raise ValueError("grid cells must be exact integer colors 0..9")
++    return grid
++
++
++def analyze(grid):
++    grid = _grid(grid)
++    counts = Counter(value for row in grid for value in row if value in DIRECTIONS)
++    direction_counts = {direction: counts[direction] for direction in DIRECTIONS}
++    if any(value <= 0 for value in direction_counts.values()):
++        raise ValueError("scene needs all four emitter directions")
++    maximum = max(direction_counts.values())
++    plurality = [direction for direction, count in direction_counts.items() if count == maximum]
++    if len(plurality) != 1:
++        raise ValueError("scene needs one unique plurality direction")
++    return {
++        "direction_counts": direction_counts,
++        "plurality_direction": plurality[0],
++        "wall_count": sum(value == 5 for row in grid for value in row),
++    }
++
++
++def solve_weighted(grid, weights):
++    grid = _grid(grid)
++    if (type(weights) is not dict or set(weights) != set(DIRECTIONS)
++            or any(type(value) is not int or value <= 0 for value in weights.values())):
++        raise ValueError("weights must give positive exact integers for directions 1..4")
++    height, width = len(grid), len(grid[0])
++    out = [[0] * width for _ in range(height)]
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if value not in DIRECTIONS:
++                continue
++            dr, dc = DIRECTIONS[value]
++            rr, cc = r, c
++            while 0 <= rr < height and 0 <= cc < width and grid[rr][cc] != 5:
++                out[rr][cc] += weights[value]
++                rr += dr
++                cc += dc
++    return out
++
++
++def solve(grid, weighting="unit"):
++    if type(weighting) is not str or weighting not in WEIGHTINGS:
++        raise ValueError("unknown weighting")
++    facts = analyze(grid)
++    weights = {direction: 1 for direction in DIRECTIONS}
++    if weighting == "plurality_double":
++        weights[facts["plurality_direction"]] = 2
++    return solve_weighted(grid, weights)
++
++
++def _rng(seed, split, index):
++    raw = f"be6269bef667-parametric-v1:{seed}:{split}:{index}".encode()
++    return random.Random(int.from_bytes(hashlib.sha256(raw).digest(), "big"))
++
++
++def _plurality(seed, split, index):
++    offset = 0 if split == "train" else 2
++    return 1 + ((seed + index + offset) % 4)
++
++
++def _scene(seed, split, index, profile):
++    height, width, plurality_count, other_count, wall_count = profile
++    plurality = _plurality(seed, split, index)
++    counts = {direction: other_count for direction in DIRECTIONS}
++    counts[plurality] = plurality_count
++    rng = _rng(seed, split, index)
++
++    vertical = list(range(1, width - 1))
++    horizontal = list(range(1, height - 1))
++    rng.shuffle(vertical)
++    rng.shuffle(horizontal)
++    if counts[1] + counts[3] > len(vertical) or counts[2] + counts[4] > len(horizontal):
++        raise ValueError("profile lacks edge positions for disjoint rays")
++
++    columns = {
++        1: vertical[:counts[1]],
++        3: vertical[counts[1]:counts[1] + counts[3]],
++    }
++    rows = {
++        2: horizontal[:counts[2]],
++        4: horizontal[counts[2]:counts[2] + counts[4]],
++    }
++    grid = [[0] * width for _ in range(height)]
++    for c in columns[1]:
++        grid[height - 1][c] = 1
++    for c in columns[3]:
++        grid[0][c] = 3
++    for r in rows[2]:
++        grid[r][0] = 2
++    for r in rows[4]:
++        grid[r][width - 1] = 4
++
++    active_rows = rows[2] + rows[4]
++    active_cols = columns[1] + columns[3]
++    intersections = [(r, c) for r in active_rows for c in active_cols]
++    rng.shuffle(intersections)
++    if plurality in (1, 3):
++        selected_lines = columns[plurality]
++        witness_candidates = [(r, c) for c in selected_lines for r in active_rows]
++    else:
++        selected_lines = rows[plurality]
++        witness_candidates = [(r, c) for r in selected_lines for c in active_cols]
++    witness = min(
++        witness_candidates,
++        key=lambda point: (abs(point[0] - height / 2) + abs(point[1] - width / 2), point),
++    )
++    walls = [witness]
++    for point in intersections:
++        if point not in walls and len(walls) < min(wall_count, 4):
++            walls.append(point)
++    interior = [(r, c) for r in range(1, height - 1) for c in range(1, width - 1)
++                if grid[r][c] == 0 and (r, c) not in walls]
++    rng.shuffle(interior)
++    while len(walls) < wall_count:
++        walls.append(interior.pop())
++    for r, c in walls:
++        grid[r][c] = 5
++
++    facts = analyze(grid)
++    if facts["plurality_direction"] != plurality or facts["wall_count"] != wall_count:
++        raise RuntimeError("constructed scene lost its plurality/wall contract")
++    # The witness is interior on a selected ray, so cells exist beyond it.
++    if not (0 < witness[0] < height - 1 and 0 < witness[1] < width - 1):
++        raise RuntimeError("constructed wall witness is not interior")
++    return grid
++
++
++def _input(seed, split, index):
++    profiles = TRAIN_PROFILES if split == "train" else QUERY_PROFILES
++    try:
++        profile = profiles[index]
++    except (IndexError, TypeError) as error:
++        raise ValueError("unsupported split/index") from error
++    return _scene(seed, split, index, profile)
++
++
++def sample_inputs(seed, demos=3, queries=4):
++    _integer(seed, 0, 2**63 - 1, "seed")
++    _integer(demos, 2, 6, "demos")
++    _integer(queries, 1, 4, "queries")
++    result = {
++        "train": [_input(seed, "train", index) for index in range(demos)],
++        "test": [_input(seed, "test", index) for index in range(queries)],
++    }
++    serialized = [repr(grid) for split in ("train", "test") for grid in result[split]]
++    if len(serialized) != len(set(serialized)):
++        raise ValueError("authored episode inputs must be distinct")
++    return result
++
++
++def generate(seed, settings, demos=3, queries=4):
++    weighting = _weighting(settings)
++    sampled = sample_inputs(seed, demos=demos, queries=queries)
++    return {
++        "train": [
++            {"input": copy.deepcopy(grid), "output": solve(grid, weighting)}
++            for grid in sampled["train"]
++        ],
++        "test": [
++            {"input": copy.deepcopy(grid), "output": solve(grid, weighting)}
++            for grid in sampled["test"]
++        ],
++        "program_solution": program(settings),
++        "seed": seed,
++        "settings": copy.deepcopy(settings),
++    }
++
++
++def public_turn(episode, query_index=0):
++    if type(query_index) is not int or not 0 <= query_index < len(episode.get("test", [])):
++        raise ValueError("query_index must select an existing query")
++    try:
++        train = [
++            {"input": copy.deepcopy(pair["input"]), "output": copy.deepcopy(pair["output"])}
++            for pair in episode["train"]
++        ]
++        query = {"input": copy.deepcopy(episode["test"][query_index]["input"])}
++    except (KeyError, TypeError) as error:
++        raise ValueError("episode lacks private train/test pairs") from error
++    return {"train": train, "test": [query]}
+diff --git a/repo/generators/be6269bef667/workspace/parametric/audit.py b/repo/generators/be6269bef667/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/be6269bef667/workspace/parametric/audit.py
+@@ -0,0 +1,101 @@
++"""Bounded self-audit for the be6269bef667 native parametric family."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++
++HERE = Path(__file__).resolve().parent
++
++
++def load(name):
++    path = HERE / name
++    module_name = "_be62_audit_" + name.replace(".", "_")
++    spec = importlib.util.spec_from_file_location(module_name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[module_name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def write(path, value):
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    if args.out.exists():
++        parser.error("--out must be new")
++    adapter, rivals = load("adapter.py"), load("rivals.py")
++    settings = ({"weighting": "unit"}, {"weighting": "plurality_double"})
++    rows = []
++    for seed in range(32):
++        for demos in (2, 3, 6):
++            for setting in settings:
++                episode = adapter.generate(seed, setting, demos, 4)
++                survivors = [
++                    name for name in rivals.RIVAL_NAMES
++                    if all(rivals.predict(pair["input"], name) == pair["output"] for pair in episode["train"])
++                ]
++                if survivors != [setting["weighting"]]:
++                    raise ValueError(f"ambiguous lesson seed={seed} demos={demos} setting={setting}: {survivors}")
++                if not all(rivals.predict(pair["input"], survivors[0]) == pair["output"] for pair in episode["test"]):
++                    raise ValueError("surviving setting failed a query")
++                rows.append({"seed": seed, "demos": demos, "settings": setting, "survivors": survivors})
++
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++    evaluations = 0
++    with RacketBridge() as bridge:
++        identity = bridge.runtime_identity
++        for seed in (0, 17):
++            for setting in settings:
++                episode = adapter.generate(seed, setting, 2, 4)
++                source = wrap_rule(adapter.program(setting))
++                for pair in episode["train"] + episode["test"]:
++                    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in pair["input"]) + ")"
++                    if bridge.eval_text(f"({source} {literal})") != pair["output"]:
++                        raise ValueError("protected Racket parity mismatch")
++                    evaluations += 1
++
++    stress = adapter.generate(17, settings[0], 2, 4)["test"][2]
++    report = {
++        "schema": "arcpuzzles-parametric-self-audit-v1",
++        "task_id": "be6269bef667",
++        "status": "pass",
++        "episodes": len(rows),
++        "seeds": 32,
++        "demo_counts": [2, 3, 6],
++        "settings": list(settings),
++        "rivals": list(rivals.RIVAL_NAMES),
++        "ambiguities": 0,
++        "racket": identity,
++        "racket_evaluations": evaluations,
++        "stress": {
++            "shape": [len(stress["input"]), len(stress["input"][0])],
++            "input_nonzero": sum(value != 0 for row in stress["input"] for value in row),
++            "output_nonzero": sum(value != 0 for row in stress["output"] for value in row),
++            "max_output": max(max(row) for row in stress["output"]),
++        },
++        "program_sha256": {
++            setting["weighting"]: hashlib.sha256(adapter.program(setting).encode()).hexdigest()
++            for setting in settings
++        },
++        "limits": "Finite named-rival and two-seed Racket parity audit; not a proof of universal identifiability or training benefit.",
++    }
++    write(args.out, report)
++    print(json.dumps(report, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/be6269bef667/workspace/parametric/canonical.rkt b/repo/generators/be6269bef667/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/be6269bef667/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (let ((dirs (list (list 1 -1 0) (list 2 0 1) (list 3 1 0) (list 4 0 -1)))) (for*/fold ((out (empty-grid (rows g) (cols g) 0))) ((r (in-range (rows g))) (c (in-range (cols g)))) (let* ((v (at g r c)) (hit (filter (lambda (d) (= (first d) v)) dirs))) (if (empty? hit) out (let ((dr (second (first hit))) (dc (third (first hit)))) (let loop ((rr r) (cc c) (acc out)) (if (or (not (in-bounds? rr cc (rows g) (cols g))) (= (at g rr cc) 5)) acc (loop (+ rr dr) (+ cc dc) (set-cell acc rr cc (+ 1 (at acc rr cc)))))))))))))
+\ No newline at end of file
+diff --git a/repo/generators/be6269bef667/workspace/parametric/evidence/current/self-audit.json b/repo/generators/be6269bef667/workspace/parametric/evidence/current/self-audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/be6269bef667/workspace/parametric/evidence/current/self-audit.json
+@@ -0,0 +1,81 @@
++{
++  "ambiguities": 0,
++  "demo_counts": [
++    2,
++    3,
++    6
++  ],
++  "episodes": 192,
++  "limits": "Finite named-rival and two-seed Racket parity audit; not a proof of universal identifiability or training benefit.",
++  "program_sha256": {
++    "plurality_double": "9ac879bde4040a8d72eb6a1dc3f4d7cdfa3da69f7c9ab353b7bf780e5846ff52",
++    "unit": "c3e717030acc9b3fde4a8ae642a926ca0d411eb8d236545b66437a2e0987eec2"
++  },
++  "racket": {
++    "backend": "racket",
++    "binary_path": "/mnt/data/arcpuzzles_review_092202/input/WORK/.review/racket-runtime/racket/bin/racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_path": "/mnt/data/arcpuzzles_review_092202/input/WORK/repo/shared/runtime/arc_repl/racket_bridge.py",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_environment": "empty-environment-variables-v1",
++    "candidate_exit_handler": "deny-process-exit-v1",
++    "candidate_input": "empty-string-port-v1",
++    "candidate_output": "discard-string-ports-v1",
++    "candidate_symbol_policy_schema": "arc-racket-candidate-symbol-policy-v1",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "deterministic": true,
++    "evaluation_custodian": "fresh-per-eval-shutdown-before-reply-v1",
++    "evaluation_resource_limit": "nested-thread-512MiB-v1",
++    "prelude_path": "/mnt/data/arcpuzzles_review_092202/input/WORK/repo/shared/runtime/arc_repl/racket_prelude/arc-prelude.rkt",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1",
++    "security_canary": {
++      "environment": "pass",
++      "exit": "pass",
++      "filesystem": "pass",
++      "input": "pass",
++      "memory": "pass",
++      "network": "pass",
++      "subprocess": "pass"
++    },
++    "security_guard": "deny-filesystem-network-link-v1",
++    "startup_handshake": "pass",
++    "subprocess_environment": "explicit-allowlist-v1"
++  },
++  "racket_evaluations": 24,
++  "rivals": [
++    "unit",
++    "plurality_double",
++    "fixed_double_1",
++    "fixed_double_2",
++    "fixed_double_3",
++    "fixed_double_4",
++    "least_direction_double",
++    "plurality_only",
++    "nonplurality_double",
++    "direction_count_weight"
++  ],
++  "schema": "arcpuzzles-parametric-self-audit-v1",
++  "seeds": 32,
++  "settings": [
++    {
++      "weighting": "unit"
++    },
++    {
++      "weighting": "plurality_double"
++    }
++  ],
++  "status": "pass",
++  "stress": {
++    "input_nonzero": 33,
++    "max_output": 2,
++    "output_nonzero": 496,
++    "shape": [
++      30,
++      30
++    ]
++  },
++  "task_id": "be6269bef667"
++}
+diff --git a/repo/generators/be6269bef667/workspace/parametric/evidence/manifest.json b/repo/generators/be6269bef667/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/be6269bef667/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,82 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "c3e717030acc9b3fde4a8ae642a926ca0d411eb8d236545b66437a2e0987eec2",
++  "canonical_rule_hash": "c3e717030acc",
++  "default": {
++    "weighting": "unit"
++  },
++  "evidence_root": "generators/be6269bef667/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 11527,
++      "path": "generators/be6269bef667/generator.py",
++      "sha256": "48d327986948b9ee31cbd0dcfeb8d8381ed0ce016efc4bfacc50f3393122e9d8"
++    },
++    {
++      "bytes": 8011,
++      "path": "generators/be6269bef667/tests/test_parametric_plurality_weight.py",
++      "sha256": "b6cbc6d1dbd1f6a180b2b8784127f178c25c90a1e4623a6be2db3b98bb5df528"
++    },
++    {
++      "bytes": 9030,
++      "path": "generators/be6269bef667/workspace/parametric/adapter.py",
++      "sha256": "80e7d1590d7aba0791d8fc5d8c33cca28393bfd75bb30e430072634973025a97"
++    },
++    {
++      "bytes": 4067,
++      "path": "generators/be6269bef667/workspace/parametric/audit.py",
++      "sha256": "f6f75469742a100a270aa53606c20abd346af3cac81ec40d39b5391e7961ee52"
++    },
++    {
++      "bytes": 540,
++      "path": "generators/be6269bef667/workspace/parametric/canonical.rkt",
++      "sha256": "c3e717030acc9b3fde4a8ae642a926ca0d411eb8d236545b66437a2e0987eec2"
++    },
++    {
++      "bytes": 2792,
++      "path": "generators/be6269bef667/workspace/parametric/evidence/current/self-audit.json",
++      "sha256": "1013551ac3e16ef2987d15da870552fb0ae7feeeb7f6d587b44ba4e469d1952f"
++    },
++    {
++      "bytes": 1173,
++      "path": "generators/be6269bef667/workspace/parametric/plurality_double.rkt",
++      "sha256": "9ac879bde4040a8d72eb6a1dc3f4d7cdfa3da69f7c9ab353b7bf780e5846ff52"
++    },
++    {
++      "bytes": 540,
++      "path": "generators/be6269bef667/workspace/parametric/promotion.json",
++      "sha256": "518e605aef59455c9443e9740f15d8d4b2c35aa283dbf9e45e0c2893867fda00"
++    },
++    {
++      "bytes": 2858,
++      "path": "generators/be6269bef667/workspace/parametric/rivals.py",
++      "sha256": "1beabac6c4130f968cf18a5d1ae80cbcb3a9ca416fe1e2f1df21b77ef884cbde"
++    }
++  ],
++  "generator_sha256": "48d327986948b9ee31cbd0dcfeb8d8381ed0ce016efc4bfacc50f3393122e9d8",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "weighting": [
++      "unit",
++      "plurality_double"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "Focused parametric suite 23/23; changed-target task suite 77 passed and 1 intentional skip; bounded audit 192 episodes across seeds 0-31 and demo counts 2,3,6 with ten named rivals, plus 24 protected-Racket parity evaluations; no universal-identifiability or learning-benefit claim.",
++  "rule_task_id": "be6269bef667",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "be6269bef667",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/be6269bef667/workspace/parametric/plurality_double.rkt b/repo/generators/be6269bef667/workspace/parametric/plurality_double.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/be6269bef667/workspace/parametric/plurality_double.rkt
+@@ -0,0 +1,26 @@
++(rule! (let ((dummy 0))
++  (let* ((dirs (list (list 1 -1 0) (list 2 0 1)
++                     (list 3 1 0) (list 4 0 -1)))
++         (counts (map (lambda (d)
++                        (list (first d)
++                              (length (find-color g (first d)))))
++                      dirs))
++         (ranked (sort counts
++                       (lambda (a b) (> (second a) (second b)))))
++         (selected (first (first ranked))))
++    (for*/fold ((out (empty-grid (rows g) (cols g) 0)))
++               ((r (in-range (rows g))) (c (in-range (cols g))))
++      (let* ((v (at g r c))
++             (hit (filter (lambda (d) (= (first d) v)) dirs)))
++        (if (empty? hit)
++            out
++            (let ((dr (second (first hit)))
++                  (dc (third (first hit)))
++                  (weight (if (= v selected) 2 1)))
++              (let loop ((rr r) (cc c) (acc out))
++                (if (or (not (in-bounds? rr cc (rows g) (cols g)))
++                        (= (at g rr cc) 5))
++                    acc
++                    (loop (+ rr dr) (+ cc dc)
++                          (set-cell acc rr cc
++                                    (+ weight (at acc rr cc)))))))))))))
+diff --git a/repo/generators/be6269bef667/workspace/parametric/promotion.json b/repo/generators/be6269bef667/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/be6269bef667/workspace/parametric/promotion.json
+@@ -0,0 +1,28 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/be6269bef667/workspace/parametric/adapter.py",
++  "parameters": {
++    "weighting": [
++      "unit",
++      "plurality_double"
++    ]
++  },
++  "default": {
++    "weighting": "unit"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/be6269bef667/workspace/parametric/canonical.rkt",
++    "generators/be6269bef667/workspace/parametric/plurality_double.rkt"
++  ]
++}
+diff --git a/repo/generators/be6269bef667/workspace/parametric/rivals.py b/repo/generators/be6269bef667/workspace/parametric/rivals.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/be6269bef667/workspace/parametric/rivals.py
+@@ -0,0 +1,75 @@
++"""Finite demonstration-only shortcut bank for be6269bef667."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++
++HERE = Path(__file__).resolve().parent
++_path = HERE / "adapter.py"
++_name = "_be6269bef667_parametric_adapter_" + hashlib.sha256(str(_path).encode()).hexdigest()
++if _name in sys.modules:
++    adapter = sys.modules[_name]
++else:
++    _spec = importlib.util.spec_from_file_location(_name, _path)
++    if _spec is None or _spec.loader is None:
++        raise ImportError(_path)
++    adapter = importlib.util.module_from_spec(_spec)
++    sys.modules[_name] = adapter
++    _spec.loader.exec_module(adapter)
++
++
++RIVAL_NAMES = (
++    "unit",
++    "plurality_double",
++    "fixed_double_1",
++    "fixed_double_2",
++    "fixed_double_3",
++    "fixed_double_4",
++    "least_direction_double",
++    "plurality_only",
++    "nonplurality_double",
++    "direction_count_weight",
++)
++
++
++def predict(grid, name):
++    if name in adapter.WEIGHTINGS:
++        return adapter.solve(grid, name)
++    facts = adapter.analyze(grid)
++    plurality = facts["plurality_direction"]
++    counts = facts["direction_counts"]
++    if name.startswith("fixed_double_"):
++        chosen = int(name.rsplit("_", 1)[1])
++        weights = {direction: 2 if direction == chosen else 1 for direction in adapter.DIRECTIONS}
++    elif name == "least_direction_double":
++        minimum = min(counts.values())
++        chosen = min(direction for direction, count in counts.items() if count == minimum)
++        weights = {direction: 2 if direction == chosen else 1 for direction in adapter.DIRECTIONS}
++    elif name == "plurality_only":
++        weights = {direction: 1 if direction == plurality else 0 for direction in adapter.DIRECTIONS}
++        # solve_weighted intentionally requires positive weights, so implement
++        # this rival by subtracting the nonplurality unit maps from the full map.
++        out = [[0] * len(grid[0]) for _ in grid]
++        selected = {direction: (1 if direction == plurality else 0) for direction in adapter.DIRECTIONS}
++        height, width = len(grid), len(grid[0])
++        for r, row in enumerate(grid):
++            for c, value in enumerate(row):
++                if value != plurality:
++                    continue
++                dr, dc = adapter.DIRECTIONS[value]
++                rr, cc = r, c
++                while 0 <= rr < height and 0 <= cc < width and grid[rr][cc] != 5:
++                    out[rr][cc] += selected[value]
++                    rr += dr
++                    cc += dc
++        return out
++    elif name == "nonplurality_double":
++        weights = {direction: 1 if direction == plurality else 2 for direction in adapter.DIRECTIONS}
++    elif name == "direction_count_weight":
++        weights = dict(counts)
++    else:
++        raise ValueError("unknown rival")
++    return adapter.solve_weighted(grid, weights)

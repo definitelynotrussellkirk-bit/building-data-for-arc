@@ -1,0 +1,51 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((result (make-hash)))
+             (for* ((r (range 0 h)) (c (range 0 w))) (hash-set! result (list r c) 0))
+             (for ((col (range 0 w)))
+               (let* ((cells (for/list ((r (range 0 h)) #:when (!= (at g r col) 0))
+                               (list r (at g r col))))
+                      (total (length cells)))
+                 (when
+                   (> total 0)
+                   (let* ((k (inexact->exact (floor (sqrt (+ 0.0 total)))))
+                          (colors-rev (list))
+                          (seen (make-hash))
+                          (dummy (for ((cell (reverse cells)))
+                                   (let ((color (second cell)))
+                                     (unless
+                                       (hash-has-key? seen color)
+                                       (hash-set! seen color #t)
+                                       (set! colors-rev
+                                             (append colors-rev (list color)))))))
+                          (ccounts (make-hash))
+                          (dummy2 (for ((cell cells))
+                                    (hash-set! ccounts
+                                               (second cell)
+                                               (+ 1 (hash-ref ccounts (second cell) 0)))))
+                          (layers (for/list ((i (range 0 k))) (- (- (* 2 k) 1) (* 2 i))))
+                          (cidx 0)
+                          (rem (hash-ref ccounts (list-ref colors-rev 0) 0))
+                          (layer-colors (for/list ((lw layers))
+                                          (begin
+                                            (when
+                                              (<= rem 0)
+                                              (set! cidx (+ cidx 1))
+                                              (set! rem
+                                                    (hash-ref ccounts
+                                                              (list-ref colors-rev cidx)
+                                                              0)))
+                                            (set! rem (- rem lw))
+                                            (list-ref colors-rev cidx)))))
+                     (for ((i (range 0 k)))
+                       (let* ((lw (list-ref layers i))
+                              (color (list-ref layer-colors i))
+                              (row (- (- h 1) i))
+                              (start (- col (quotient lw 2))))
+                         (for ((dc (range 0 lw)))
+                           (let ((c (+ start dc)))
+                             (when
+                               (and (>= c 0) (< c w))
+                               (hash-set! result (list row c) color))))))))))
+             (cellmap g (r c v) (hash-ref result (list r c) 0))))))

@@ -1,0 +1,92 @@
+effective cwd: /workspace/scratch/496944bd91ed/arc_review/WORK/repo
+Payload paths are relative to repo; use generators/TASK/..., not repo/generators/TASK/...
+..................F                                                      [100%]
+=================================== FAILURES ===================================
+__________ test_export_keeps_query_labels_rule_and_parameters_private __________
+
+runner = <bee63e6e52bd_parametric_prototype.RacketRunner object at 0x7f960228bb30>
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-12/test_export_keeps_query_labels0')
+
+    def test_export_keeps_query_labels_rule_and_parameters_private(runner, tmp_path):
+        proto = prototype()
+        output = tmp_path / "evidence"
+>       report = proto.write_evidence(output, base_seed=901, per_setting=1, runner=runner)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+generators/bee63e6e52bd/tests/test_parametric.py:183: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+output = PosixPath('/tmp/pytest-of-root/pytest-12/test_export_keeps_query_labels0/evidence')
+
+    def write_evidence(output: Path, *, base_seed=26023, per_setting=2, runner=None) -> dict:
+        """Write bounded reproducible evidence and clean public challenges; refuse overwrite."""
+        output = Path(output)
+        if output.exists():
+            raise FileExistsError(output)
+        if type(per_setting) is not int or per_setting < 1:
+            raise ValueError("per_setting must be a positive integer")
+        output.mkdir(parents=True)
+        canonical = _canonical_source()
+        if canonical != program_source():
+            raise ValueError("prototype default differs from the selected canonical source")
+        programs = {}
+        for reach in ALLOWED_REACHES:
+            relative = f"private/programs/reach-{reach}.rkt"
+            path = output / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            source = program_source(reach)
+            path.write_text(source, encoding="utf-8")
+            programs[str(reach)] = {"file": relative, "sha256": sha256(source.encode())}
+    
+        _, selected_path, generator_hash = load_selected_generator(TASK_ID, root=ROOT)
+        source_files = [Path(__file__), HERE / "canonical-full.rkt", HERE / "README.md",
+                        HERE.parent / "reference_probe.py", HERE.parent.parent / "tests/test_parametric.py"]
+        source_hashes = {str(path.relative_to(ROOT)): sha256(path.read_bytes()) for path in source_files if path.is_file()}
+        source_hashes[str(selected_path.relative_to(ROOT))] = generator_hash
+        failures = []
+        episodes = []
+        with nullcontext(runner) if runner is not None else RacketRunner() as active:
+            execution_start = active.grid_executions
+            labeled = canonical_pairs(TASK_ID, root=ROOT, labeled_only=True)
+            actual = active.apply(program_source(), [pair["input"] for pair in labeled])
+            canonical_rows = [{**pair, "racket_output": result, "matches": result == pair["output"]}
+                              for pair, result in zip(labeled, actual)]
+            parity = {"pairs": len(labeled), "matches": sum(row["matches"] for row in canonical_rows),
+                      "program_sha256": CANONICAL_SHA256, "rows": canonical_rows}
+            if parity["pairs"] != 4 or parity["matches"] != 4:
+                failures.append("default failed a canonical label or canonical coverage changed")
+            _json(output / "private/canonical-parity.json", parity)
+    
+            witnesses = []
+            for index in range(4):
+                grid = input_draw(base_seed, index)
+                outputs = {str(reach): active.apply(program_source(reach), [grid])[0] for reach in ALLOWED_REACHES}
+                distinct = len({json.dumps(value) for value in outputs.values()})
+                facts = _reference_probe().shape_facts(grid)
+                witnesses.append({"input": grid, "facts": facts, "ray_runways": ray_runways(grid),
+                                  "racket_outputs": outputs, "distinct_outputs": distinct})
+                if distinct != len(ALLOWED_REACHES):
+                    failures.append(f"witness {index} does not distinguish every reach")
+            _json(output / "private/long-ray-witnesses.json", witnesses)
+    
+            # Same seeds and inputs for each setting make parameter effects directly
+            # comparable; the public filenames are opaque sequential episode IDs.
+            for reach in ALLOWED_REACHES:
+                for offset in range(per_setting):
+                    episode = generate_episode(base_seed + offset, spout_reach=reach, runner=active)
+                    episode["program_file"] = programs[str(reach)]["file"]
+                    episode["identifiability"] = assess_identifiability(episode, runner=active)
+                    episode["source_sha256"] = source_hashes
+                    episode["public_file"] = f"public/episode-{len(episodes):03d}.json"
+                    if episode["identifiability"]["status"] != "pass":
+                        failures.append(f"episode {len(episodes)} has an ambiguous declared rival")
+                    _json(output / episode["public_file"], public_challenge(episode))
+                    episodes.append(episode)
+>           runtime_identity = active.bridge.runtime_identity()
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           TypeError: 'dict' object is not callable
+
+generators/bee63e6e52bd/workspace/parametric/prototype.py:309: TypeError
+=========================== short test summary info ============================
+FAILED generators/bee63e6e52bd/tests/test_parametric.py::test_export_keeps_query_labels_rule_and_parameters_private
+1 failed, 18 passed in 6.59s

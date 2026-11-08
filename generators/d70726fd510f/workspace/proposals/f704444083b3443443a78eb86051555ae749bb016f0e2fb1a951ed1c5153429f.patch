@@ -1,0 +1,1563 @@
+diff --git a/repo/generators/d70726fd510f/SUMMARY.md b/repo/generators/d70726fd510f/SUMMARY.md
+--- a/repo/generators/d70726fd510f/SUMMARY.md
++++ b/repo/generators/d70726fd510f/SUMMARY.md
+@@ -1,6 +1,20 @@
+-# d70726fd510f
++# d70726fd510f — occupancy XOR, version 2.0.0
+ 
+-Two equal-width panels split by a full color-4 col; XOR of zero-occupancy → 2.
++Split at the full color-4 middle column. Return 2 exactly where aligned left/right
++zero-versus-nonzero occupancy differs; otherwise return 0. Foreground color
++identity is irrelevant, and both panels may use the same foreground color.
+ 
+-Kind: `per_puzzle`. Imported version: `1.1.1`.
+-Approval is derived by the catalog from current code and retained evidence.
++Ordinary draws cover all four occupancy states, use independent textured
++proposals and symmetric exact-XOR projection, and retain a one-in-three canonical
++shape/palette anchor in each band. Explicit counts 0..area and dimensions 1..18
++by panel width 1..14 are lawful. Density/texture settings control proposals, not
++exact final marginals/motifs. Invalid or incompatible overrides fail explicitly.
++
++The selected base Racket authority is now exact-text aligned with canonical;
++its semantics and the canonical ledger are unchanged. Diagnostic Python mirrors
++never replace Racket as training-label authority. Rule hash: `11243a80c7ea`.
++
++Task-local tests and reusable census/oracle/audit tools are in `tests/` and
++`workspace/`. Review evidence is reported in the packet's REVIEW.md. Finite-rival
++coverage is a data-quality proxy, not a model-training evaluation or approval.
++Approval remains derived from the catalog's current code/evidence policy.
+diff --git a/repo/generators/d70726fd510f/generator.py b/repo/generators/d70726fd510f/generator.py
+--- a/repo/generators/d70726fd510f/generator.py
++++ b/repo/generators/d70726fd510f/generator.py
+@@ -1,205 +1,351 @@
+-"""Generator for ARC task 34b99a2b.
+-
+-Rule: input has a full color-4 separator column at col `sep`. Output
+-is h × sep: cells where exactly one of (left, right) is zero → 2,
+-else 0.
+-
+-Combinatorial axes (8): grid_h, panel_w, left_color, right_color,
+-left_density, right_density, panel_pattern, xor_target.
+-Degenerates: same_panels, disjoint_panels, all_zero.
++"""Paired-panel occupancy XOR, with explicit truth-table coverage.
++
++The unchanged Racket authority splits on the full color-4 column and returns
++2 iff exactly one aligned input cell is nonzero. Foreground color identity is
++irrelevant. Ordinary draws demonstrate all four occupancy states. Lawful
++constant-output edge cases are opt-in, not mislabeled negative examples.
++
++Textures and densities propose spatial masks; symmetric projection realizes
++xor_target exactly and reserves both subcases of each sufficiently large
++output class. Densities are NOT promises about the final foreground fraction.
+ """
+ from __future__ import annotations
+ 
++import math
++
+ from puzzle_generators.base import gen_ctx
+-from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "d70726fd510f"
+-VERSION = "1.1.1"
+ TASK_ID = "d70726fd510f"
+-SUMMARY = "Two equal-width panels split by a full color-4 col; XOR of zero-occupancy → 2."
+-
++VERSION = "2.0.0"
++RULE_HASH = "11243a80c7ea"
++EXAMPLES_NEEDED = 3
++SUMMARY = "Split at the full 4-column; return 2 where aligned zero/nonzero occupancy differs."
+ INVARIANTS = [
+-    "one full separator column is color 4",
+-    "left and right panels have equal width (panel_w)",
+-    "≥1 aligned cell differs in zero/nonzero occupancy",
++    "rectangular integer-color grid, height 1..18, odd width 3..29",
++    "color 4 occurs only in the full middle separator column",
++    "each panel has at most one nonzero foreground color; colors may be equal or 2",
++    "ordinary unoverridden draws contain 00, 01, 10 and 11 aligned occupancy states",
++    "explicit xor_target is an exact count, including lawful constant-output edges",
+ ]
+-
+ PANEL_PATTERNS = ("random", "blob", "stripes", "checker", "border", "diagonal", "scatter")
++HELPFUL_TEXTURES = PANEL_PATTERNS
+ DEGENERATE_TEXTURES = ("same_panels", "disjoint_panels", "all_zero")
+-HELPFUL_TEXTURES = PANEL_PATTERNS
+-
++LAWFUL_DEGENERATE_TEXTURES = DEGENERATE_TEXTURES
++COLORS = (1, 2, 3, 5, 6, 7, 8, 9)
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 4..14", "valid": "1..18"},
+-    "panel_w":        {"type": "int", "default": "rng 3..7", "valid": "1..14"},
+-    "left_color":     {"type": "color", "default": "rng (≠0,2,4)", "valid": "1..9 (≠2,4)"},
+-    "right_color":    {"type": "color", "default": "rng (≠0,2,4,left)", "valid": "1..9"},
+-    "left_density":   {"type": "float", "default": "rng 0.3..0.7", "valid": "0..1"},
+-    "right_density":  {"type": "float", "default": "rng 0.3..0.7", "valid": "0..1"},
+-    "panel_pattern":  {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(PANEL_PATTERNS)},
+-    "xor_target":     {"type": "int", "default": "rng 1..h*pw/2", "valid": "1..h*pw"},
+-    "texture":        {"type": "str", "default": "alias for panel_pattern",
+-                       "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "grid_h": {"type": "int", "default": "canonical anchor or difficulty range", "valid": "1..18"},
++    "panel_w": {"type": "int", "default": "canonical anchor or difficulty range", "valid": "1..14"},
++    "left_color": {"type": "color", "default": "8 on anchors; keyed color elsewhere", "valid": "1|2|3|5|6|7|8|9"},
++    "right_color": {"type": "color", "default": "5 on anchors; keyed color elsewhere", "valid": "1|2|3|5|6|7|8|9"},
++    "left_density": {"type": "float", "default": "rng 0.25..0.75", "valid": "0..1", "exact": False,
++                     "doc": "Proposal probability/fraction, before exact-XOR and coverage projection."},
++    "right_density": {"type": "float", "default": "rng 0.25..0.75", "valid": "0..1", "exact": False,
++                      "doc": "Proposal probability/fraction, before exact-XOR and coverage projection."},
++    "panel_pattern": {"type": "str", "default": "random on anchors; keyed texture elsewhere",
++                      "valid": "random|blob|stripes|checker|border|diagonal|scatter"},
++    "xor_target": {"type": "int", "default": "rng 2..area-2 for ordinary shapes", "valid": "0..252",
++                   "doc": "Exact output-2 count; cannot exceed chosen panel area. Unpinned dimensions may expand."},
++    "texture": {"type": "str", "default": "alias for panel_pattern; edge cases explicit only",
++                "valid": "random|blob|stripes|checker|border|diagonal|scatter|same_panels|disjoint_panels|all_zero"},
+ }
++# Cross-axis impossibilities carry the particular axis names in the exception.
++INCOMPATIBLE_OVERRIDE_COMBINATIONS = []
++SCHEDULE_PROFILES = ("canonical_anchor", "extended_1", "extended_2")
++MIN_STRICT_FRAC = 0.25
++
++
++class IncompatibleOverrides(ValueError):
++    def __init__(self, message, axes):
++        super().__init__(message)
++        self.incompatible_axes = tuple(sorted(axes))
++
++
++def schedule_profile(seed, sample_index, difficulty=None):
++    return SCHEDULE_PROFILES[sample_index % 3]
++
++
++def _validate_overrides(overrides):
++    unknown = set(overrides) - set(AXES)
++    if unknown:
++        raise ValueError(f"unknown override(s): {sorted(unknown)}")
++    opts = {key: value for key, value in overrides.items() if value is not None}
++    for name, lo, hi in (("grid_h", 1, 18), ("panel_w", 1, 14), ("xor_target", 0, 252)):
++        if name in opts and (type(opts[name]) is not int or not lo <= opts[name] <= hi):
++            raise ValueError(f"{name} must be an integer in {lo}..{hi}")
++    for name in ("left_color", "right_color"):
++        if name in opts and (type(opts[name]) is not int or opts[name] not in COLORS):
++            raise ValueError(f"{name} must be one of {COLORS}")
++    for name in ("left_density", "right_density"):
++        if name in opts:
++            value = opts[name]
++            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
++                raise ValueError(f"{name} must be finite and in 0..1")
++    for name, choices in (("panel_pattern", PANEL_PATTERNS), ("texture", PANEL_PATTERNS + DEGENERATE_TEXTURES)):
++        if name in opts and opts[name] not in choices:
++            raise ValueError(f"{name} must be one of {choices}")
++    if "texture" in opts and "panel_pattern" in opts and opts["texture"] != opts["panel_pattern"]:
++        raise IncompatibleOverrides("texture and panel_pattern cannot disagree", ("texture", "panel_pattern"))
++    edge = opts.get("texture")
++    if edge in DEGENERATE_TEXTURES:
++        for name in ("left_density", "right_density"):
++            if name in opts:
++                raise IncompatibleOverrides("density proposals are not defined for boundary textures", ("texture", name))
++        if edge == "all_zero":
++            for name in ("left_color", "right_color"):
++                if name in opts:
++                    raise IncompatibleOverrides("all_zero has no observable foreground color", ("texture", name))
++    return opts
++
++
++def _dimensions(ctx, band, anchor, opts):
++    h_lo, h_hi, w_lo, w_hi = {
++        "easy": (4, 7, 3, 5), "medium": (4, 12, 3, 8), "hard": (8, 18, 5, 14)
++    }[band]
++    target = opts.get("xor_target", 0)
++    min_h = max(1, math.ceil(target / opts.get("panel_w", 14)))
++    h_options = [h for h in ([5] if anchor else range(h_lo, h_hi + 1)) if h >= min_h]
++    if not h_options:
++        h_options = list(range(min_h, 19))
++    if not h_options or ("grid_h" in opts and opts["grid_h"] < min_h):
++        raise IncompatibleOverrides("xor_target exceeds the available panel area", set(opts) & {"grid_h", "panel_w", "xor_target"})
++    h = ctx.draw_int("grid_h", 1, 18) if "grid_h" in opts else ctx.draw_choice("grid_h", h_options)
++    min_w = max(1, math.ceil(target / h))
++    w_options = [w for w in ([4] if anchor else range(w_lo, w_hi + 1)) if w >= min_w]
++    if not w_options:
++        w_options = list(range(min_w, 15))
++    if not w_options or ("panel_w" in opts and opts["panel_w"] < min_w):
++        raise IncompatibleOverrides("xor_target exceeds the available panel area", set(opts) & {"grid_h", "panel_w", "xor_target"})
++    pw = ctx.draw_int("panel_w", 1, 14) if "panel_w" in opts else ctx.draw_choice("panel_w", w_options)
++    return h, pw
++
++
++def _mask(h, pw, pattern, density, rng):
++    """Independent texture proposal: no shared panel phase or origin."""
++    n = h * pw
++    if pattern == "random":
++        return [int(rng.random() < density) for _ in range(n)]
++    count = int(n * density + 0.5)
++    origin_r, origin_c = rng.randrange(h), rng.randrange(pw)
++    phase, vertical, slope = rng.randrange(2), rng.randrange(2), rng.choice((-1, 1))
++    scores = []
++    for index in range(n):
++        r, c = divmod(index, pw)
++        if pattern == "blob":
++            priority = -((r - origin_r) ** 2 + (c - origin_c) ** 2)
++        elif pattern == "stripes":
++            priority = ((c if vertical else r) + phase) % 2
++        elif pattern == "checker":
++            priority = (r + c + phase) % 2
++        elif pattern == "border":
++            priority = -min(r, c, h - 1 - r, pw - 1 - c)
++        elif pattern == "diagonal":
++            priority = -abs((c - origin_c) - slope * (r - origin_r))
++        else:  # scatter: fixed-size random subset, unlike Bernoulli random.
++            priority = 0
++        scores.append((priority, rng.random(), index))
++    chosen = {item[2] for item in sorted(scores, reverse=True)[:count]}
++    return [int(index in chosen) for index in range(n)]
++
++
++def _project(states, target, rng):
++    """Exact XOR cardinality, then symmetric within-class branch repair."""
++    active = [i for i, value in enumerate(states) if value in (1, 2)]
++    if len(active) > target:
++        rng.shuffle(active)
++        for index in active[:len(active) - target]:
++            states[index] = rng.choice((0, 3))
++    elif len(active) < target:
++        equal = [i for i, value in enumerate(states) if value in (0, 3)]
++        rng.shuffle(equal)
++        for index in equal[:target - len(active)]:
++            states[index] = rng.choice((1, 2))
++    for a, b in ((0, 3), (1, 2)):
++        indexes = [i for i, value in enumerate(states) if value in (a, b)]
++        if len(indexes) >= 2:
++            for desired in (a, b):
++                if not any(states[i] == desired for i in indexes):
++                    states[rng.choice(indexes)] = desired
++        elif indexes and a == 0:
++            # On tiny explicit shapes preserve observable foreground colors.
++            states[indexes[0]] = 3
++
++
++def _render(states, h, pw, left_color, right_color):
++    grid = []
++    for row in range(h):
++        values = states[row * pw:(row + 1) * pw]
++        grid.append([left_color if v & 2 else 0 for v in values] + [4] +
++                    [right_color if v & 1 else 0 for v in values])
++    return grid
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
+-    if difficulty == "easy":
+-        h_lo, h_hi, pw_lo, pw_hi = 4, 6, 3, 5
+-    elif difficulty == "hard":
+-        h_lo, h_hi, pw_lo, pw_hi = 11, 14, 6, 7
++    band = "medium" if difficulty is None else difficulty
++    if band not in ("easy", "medium", "hard"):
++        raise ValueError("difficulty must be None, easy, medium or hard")
++    opts = _validate_overrides(overrides)
++    ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION,
++                  task_id=TASK_ID, difficulty=difficulty, overrides=opts)
++    anchor = schedule_profile(seed, sample_index, difficulty) == "canonical_anchor"
++    h, pw = _dimensions(ctx, band, anchor, opts)
++    n = h * pw
++    left = ctx.draw_choice("left_color", COLORS if "left_color" in opts or not anchor else (8,))
++    right = ctx.draw_choice("right_color", COLORS if "right_color" in opts or not anchor else (5,))
++    pattern = opts.get("texture") or opts.get("panel_pattern")
++    if pattern is None:
++        pattern = ctx.draw_choice("panel_pattern", ("random",) if anchor else PANEL_PATTERNS)
++    elif pattern in PANEL_PATTERNS:
++        # Record alias resolution, but do not silently override a conflict.
++        ctx.draw_choice("panel_pattern", (pattern,))
++    ctx.draw_choice("texture", (pattern,))
++    rng = ctx.draw_rng("joint_projection:" + band)
++    if pattern in DEGENERATE_TEXTURES:
++        target = n if pattern == "disjoint_panels" else 0
++        if "xor_target" in opts and opts["xor_target"] != target:
++            raise IncompatibleOverrides("boundary texture fixes xor_target", ("texture", "xor_target"))
++        ctx.draw_choice("xor_target", (target,))
++        states = [0] * n if pattern == "all_zero" else [rng.choice((0, 3) if target == 0 else (1, 2)) for _ in range(n)]
++        if pattern != "all_zero":
++            _project(states, target, rng)
+     else:
+-        h_lo, h_hi, pw_lo, pw_hi = 4, 14, 3, 7
+-    h = ctx.draw_int("grid_h", h_lo, h_hi)
+-    pw = ctx.draw_int("panel_w", pw_lo, pw_hi)
+-    rng = ctx.draw_rng("panels")
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], h, pw, rng)
+-    left_c = int(overrides.get("left_color",
+-                               ctx.draw_color("left_color", exclude={0, 2, 4})))
+-    right_c = int(overrides.get("right_color",
+-                                ctx.draw_color("right_color", exclude={0, 2, 4, left_c})))
+-    ld = float(overrides.get("left_density",
+-                             ctx.draw_rng("left_density").uniform(0.3, 0.7)))
+-    rd = float(overrides.get("right_density",
+-                             ctx.draw_rng("right_density").uniform(0.3, 0.7)))
+-    pattern = (overrides.get("texture") or overrides.get("panel_pattern")
+-               or ctx.draw_choice("panel_pattern", list(PANEL_PATTERNS)))
+-    g = full_grid(h, 2 * pw + 1, 0)
+-    for r in range(h):
+-        g[r][pw] = 4
+-    _fill(g, 0, pw, h, pattern, ld, left_c, rng)
+-    _fill(g, pw + 1, 2 * pw + 1, h, pattern, rd, right_c, rng)
+-    target = int(overrides.get("xor_target",
+-                               ctx.draw_int("xor_target", 1, max(1, h * pw // 2))))
+-    have = sum(1 for r in range(h) for c in range(pw)
+-               if (g[r][c] == 0) != (g[r][pw + 1 + c] == 0))
+-    cells = [(r, c) for r in range(h) for c in range(pw)]
+-    rng.shuffle(cells)
+-    for (r, c) in cells:
+-        if have >= target: break
+-        if g[r][c] == 0 and g[r][pw + 1 + c] == 0:
+-            g[r][c] = left_c
+-            have += 1
+-    _avoid_full_xor(g, h, pw, left_c, rng)
+-    return g
+-
+-
+-def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Executable invariants for the generated *input* grid.
+-
+-    The canonical rule finds the full color-4 separator column, compares the
+-    equally-sized left/right panels cellwise, and paints output cells 2 exactly
+-    where zero/nonzero occupancy differs.  The default path must therefore
+-    expose one unambiguous separator and at least one demonstrated XOR cell.
+-    """
+-    issues: list[str] = []
+-    if not isinstance(grid, list) or not grid or not all(isinstance(r, list) and r for r in grid):
+-        return ["grid must be a non-empty rectangular list of rows"]
+-    w = len(grid[0])
+-    if any(len(r) != w for r in grid):
+-        return ["grid rows must all have equal width"]
+-    h = len(grid)
+-    if w < 3 or w % 2 != 1:
+-        issues.append(f"width must be odd and at least 3 so panels are equal (got {w})")
+-        return issues
+-    sep = w // 2
+-    full_sep_cols = [c for c in range(w) if all(grid[r][c] == 4 for r in range(h))]
+-    if full_sep_cols != [sep]:
+-        issues.append(f"expected exactly one full color-4 separator at middle col {sep}; got {full_sep_cols}")
+-    stray_4 = [(r, c) for r in range(h) for c in range(w) if c != sep and grid[r][c] == 4]
+-    if stray_4:
+-        issues.append("color 4 must be reserved for the separator column")
+-    xor_cells = [
+-        (r, c)
+-        for r in range(h)
+-        for c in range(sep)
+-        if (grid[r][c] == 0) != (grid[r][sep + 1 + c] == 0)
+-    ]
+-    if not xor_cells:
+-        issues.append("at least one aligned left/right cell must differ in zero/nonzero occupancy")
+-    elif len(xor_cells) == h * sep and h * sep > 1:
+-        issues.append("not every aligned cell should differ; a solid output hides the equality branch")
+-    return issues
+-
+-
+-def _avoid_full_xor(g, h, pw, left_c, rng):
+-    """Keep default episodes from collapsing to an all-2 output grid."""
+-    if h * pw <= 1:
+-        return
+-    if any((g[r][c] == 0) == (g[r][pw + 1 + c] == 0) for r in range(h) for c in range(pw)):
+-        return
+-    cells = [(r, c) for r in range(h) for c in range(pw)]
+-    rng.shuffle(cells)
+-    r, c = cells[0]
+-    # Make this aligned pair share occupancy while preserving legal colors.
+-    if g[r][c] == 0:
+-        g[r][c] = left_c
+-    else:
+-        g[r][c] = 0
+-
+-
+-def _fill(g, c0, c1, h, pattern, density, fg, rng):
+-    if pattern == "random":
+-        for r in range(h):
+-            for c in range(c0, c1):
+-                if rng.random() < density:
+-                    g[r][c] = fg
+-    elif pattern == "blob":
+-        bh = max(1, int(h * density)); bw = max(1, int((c1 - c0) * density))
+-        rr = rng.randint(0, h - bh); cc = rng.randint(c0, c1 - bw)
+-        for r in range(rr, rr + bh):
+-            for c in range(cc, cc + bw):
+-                g[r][c] = fg
+-    elif pattern == "stripes":
+-        for r in range(h):
+-            if r % 2 == 0:
+-                for c in range(c0, c1):
+-                    g[r][c] = fg
+-    elif pattern == "checker":
+-        for r in range(h):
+-            for c in range(c0, c1):
+-                if (r + c) % 2 == 0:
+-                    g[r][c] = fg
+-    elif pattern == "border":
+-        for c in range(c0, c1):
+-            g[0][c] = fg; g[h - 1][c] = fg
+-        for r in range(h):
+-            g[r][c0] = fg; g[r][c1 - 1] = fg
+-    elif pattern == "diagonal":
+-        for k in range(min(h, c1 - c0)):
+-            g[k][c0 + k] = fg
+-    elif pattern == "scatter":
+-        for r in range(h):
+-            for c in range(c0, c1):
+-                if rng.random() < density * 0.5:
+-                    g[r][c] = fg
+-
+-
+-def _draw_from_degenerate(name, h, pw, rng):
+-    g = full_grid(h, 2 * pw + 1, 0)
+-    for r in range(h):
+-        g[r][pw] = 4
+-    left_c = rng.choice([1, 3, 5, 6, 7, 8, 9])
+-    right_c = rng.choice([c for c in [1, 3, 5, 6, 7, 8, 9] if c != left_c])
+-    if name == "same_panels":
+-        for r in range(h):
+-            for c in range(pw):
+-                v = left_c if rng.random() < 0.5 else 0
+-                g[r][c] = v
+-                g[r][pw + 1 + c] = (right_c if v != 0 else 0)
+-        return g
+-    if name == "disjoint_panels":
+-        for r in range(h):
+-            for c in range(pw):
+-                if rng.random() < 0.5:
+-                    g[r][c] = left_c
+-                else:
+-                    g[r][pw + 1 + c] = right_c
+-        return g
+-    if name == "all_zero":
+-        return g
+-    return g
++        ld = opts.get("left_density", ctx.draw_rng("left_density:" + band).uniform(0.25, 0.75))
++        rd = opts.get("right_density", ctx.draw_rng("right_density:" + band).uniform(0.25, 0.75))
++        lm = _mask(h, pw, pattern, ld, ctx.draw_rng("left_panel:" + band))
++        rm = _mask(h, pw, pattern, rd, ctx.draw_rng("right_panel:" + band))
++        states = [2 * a + b for a, b in zip(lm, rm)]
++        if "xor_target" in opts:
++            target = ctx.draw_int("xor_target", 0, n)
++        elif n >= 4:
++            target = ctx.draw_int("xor_target", 2, n - 2)
++        else:
++            target = ctx.draw_choice("xor_target", (0,) if n == 1 else (1,))
++        _project(states, target, rng)
++    grid = _render(states, h, pw, left, right)
++    for name, bit in (("left_color", 2), ("right_color", 1)):
++        if name in opts and not any(value & bit for value in states):
++            raise IncompatibleOverrides("requested foreground color cannot appear in this boundary case", set(opts) & {"texture", "xor_target", "grid_h", "panel_w", name})
++    return grid
++
++
++def self_check(grid, *, difficulty=None, meta=None):
++    """Structural/semantic domain, NOT a test that every answer is nonconstant."""
++    if not isinstance(grid, list) or not grid or not all(isinstance(row, list) and row for row in grid):
++        return ["grid must be a nonempty list of nonempty row lists"]
++    h, w = len(grid), len(grid[0])
++    if any(len(row) != w for row in grid):
++        return ["grid must be rectangular"]
++    if not 1 <= h <= 18 or not 3 <= w <= 29 or w % 2 != 1:
++        return ["height must be 1..18 and width odd in 3..29"]
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        return ["cells must be integer ARC colors 0..9, not booleans or floats"]
++    pw = w // 2
++    if any(row[pw] != 4 for row in grid) or any(value == 4 for row in grid for c, value in enumerate(row) if c != pw):
++        return ["4 must occur only in the full middle separator column"]
++    for start, stop in ((0, pw), (pw + 1, w)):
++        if len({row[c] for row in grid for c in range(start, stop)} - {0}) > 1:
++            return ["each panel must have at most one nonzero foreground color"]
++    return []
++
++
++def _states(grid):
++    pw = len(grid[0]) // 2
++    return [2 * int(row[c] != 0) + int(row[pw + 1 + c] != 0) for row in grid for c in range(pw)]
++
++
++def rule_mirror(grid):
++    """Diagnostic Python mirror; exported training labels still come from Racket."""
++    errors = self_check(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    pw = len(grid[0]) // 2
++    return [[2 if (row[c] != 0) != (row[pw + 1 + c] != 0) else 0 for c in range(pw)] for row in grid]
++
++
++def observe_overrides(grid):
++    pw = len(grid[0]) // 2
++    observed = {"grid_h": len(grid), "panel_w": pw,
++                "xor_target": sum(value in (1, 2) for value in _states(grid))}
++    for name, start, stop in (("left_color", 0, pw), ("right_color", pw + 1, 2 * pw + 1)):
++        colors = {row[c] for row in grid for c in range(start, stop)} - {0}
++        if len(colors) == 1:
++            observed[name] = next(iter(colors))
++    return observed
++
++
++def strict_canonical_like(grid):
++    errors = self_check(grid)
++    if errors:
++        return errors
++    obs = observe_overrides(grid)
++    if (obs["grid_h"], obs["panel_w"], obs.get("left_color"), obs.get("right_color")) != (5, 4, 8, 5):
++        return ["canonical profile is height 5, panel width 4, left 8, right 5"]
++    return [] if set(_states(grid)) == {0, 1, 2, 3} else ["canonical pairs demonstrate all four occupancy states"]
++
++
++def _boolean_rival(table):
++    def apply(grid):
++        pw = len(grid[0]) // 2
++        values = [2 * ((table >> state) & 1) for state in _states(grid)]
++        return [values[r * pw:(r + 1) * pw] for r in range(len(grid))]
++    return apply
++
++
++def _color_inequality(grid):
++    pw = len(grid[0]) // 2
++    return [[2 * (row[c] != row[pw + 1 + c]) for c in range(pw)] for row in grid]
++
++
++def _mirrored_right(grid):
++    pw = len(grid[0]) // 2
++    return [[2 * ((row[c] != 0) != (row[-1 - c] != 0)) for c in range(pw)] for row in grid]
++
++
++# The complete 16-function Boolean family, excluding XOR's table 0b0110.
++SEMANTIC_RIVALS = {f"boolean_{table:04b}": _boolean_rival(table) for table in range(16) if table != 6}
++SEMANTIC_RIVALS.update({"color_inequality": _color_inequality, "mirrored_right": _mirrored_right})
++LESSON_COMPETITORS = SEMANTIC_RIVALS
++SEMANTIC_WITNESSES = {
++    "both_zero": lambda grid: 0 in _states(grid),
++    "right_only": lambda grid: 1 in _states(grid),
++    "left_only": lambda grid: 2 in _states(grid),
++    "both_nonzero": lambda grid: 3 in _states(grid),
++}
++WITNESS_RIVALS = {
++    "both_zero": ["boolean_0111"], "right_only": ["boolean_0100"],
++    "left_only": ["boolean_0010"], "both_nonzero": ["boolean_1110"],
++}
++
++
++def lesson_identifiable(demos, query):
++    """Check the declared rival family, not uniqueness among arbitrary programs."""
++    if not demos:
++        return ["need at least one visible demonstration"]
++    for index, pair in enumerate(demos):
++        errors = self_check(pair["input"])
++        if errors:
++            return [f"demo {index}: {errors}"]
++        if pair.get("output") != rule_mirror(pair["input"]):
++            return [f"demo {index}: output disagrees with occupancy XOR"]
++    if self_check(query["input"]):
++        return ["query is outside the declared panel domain"]
++    expected = rule_mirror(query["input"])
++    reasons = []
++    if query.get("output") is not None and query["output"] != expected:
++        reasons.append("query output disagrees with occupancy XOR")
++    for name, rival in LESSON_COMPETITORS.items():
++        if all(rival(pair["input"]) == pair["output"] for pair in demos) and rival(query["input"]) != expected:
++            reasons.append(f"surviving rival changes query answer: {name}")
++    return reasons
++
++
++def mutation_fixtures():
++    grid = generate(19, 0)
++    wrong_separator = [row[:] for row in grid]
++    wrong_separator[0][4] = 0
++    extra_separator = [row[:] for row in grid]
++    extra_separator[0][0] = 4
++    bad_color = [row[:] for row in grid]
++    bad_color[0][0] = 10
++    return [("broken_separator", wrong_separator), ("stray_separator_color", extra_separator),
++            ("out_of_range_color", bad_color), ("ragged", [grid[0][:-1]] + grid[1:])]
+diff --git a/repo/generators/d70726fd510f/notes.md b/repo/generators/d70726fd510f/notes.md
+--- a/repo/generators/d70726fd510f/notes.md
++++ b/repo/generators/d70726fd510f/notes.md
+@@ -1,4 +1,22 @@
+ # Working notes: d70726fd510f
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++2026-10-02 review `review-7db198064734f44c`.
++
++Baseline `a378425dc1ee3fb12ef91d006d851533c3ffec88e687442f595b24884c4981fb` reused panel patterns and painted repair pixels only on the
++left. Ordinary stripe/border/diagonal draws in the measured sweep did not expose
++the right-only occupancy branch. An explicit finite-family lesson census found
++39 ambiguous queries in 600 nonoverlapping lessons.
++
++Version 2.0.0 repairs semantic coverage, exact override control, lawful edges,
++canonical support and cross-band RNG independence. Final source `4f64c325bf234d55ff5e9c7d6a4a15108fbcf1e713ccb6cf730d6c9b54441b53` passes
++all 12 battery stages; 93 task-local tests pass in source and staged layouts.
++Independent Racket checks: 316/316. Final measured lesson ambiguity is 0/600
++within the 16-rule Boolean family, with 2400 distinct input grids in 2400 draws.
++No model training, broad program-identifiability proof, or automatic admission
++claim is implied. Proposal textures/densities may change under exact projection.
++
++Historical rationale beyond original comments is unknown. The canonical rule was
++already correct; only the selected base target's whitespace was aligned. The
++archived raw program and full canonical ledger were not changed. Reusable tools
++are task-local; audit targets and shared harness remain untouched. The repository
++suite has a separately documented startup-sensitive timeout test failure.
+diff --git a/repo/generators/d70726fd510f/tests/test_generator_d70726fd510f.py b/repo/generators/d70726fd510f/tests/test_generator_d70726fd510f.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d70726fd510f/tests/test_generator_d70726fd510f.py
+@@ -0,0 +1,263 @@
++"""Task-local regressions. Runs in a source checkout or a staged runtime."""
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++import pytest
++
++TASK = "d70726fd510f"
++HERE = Path(__file__).resolve()
++for parent in HERE.parents:
++    if (parent / "shared/runtime/puzzle_generators/base.py").exists():
++        ROOT = parent
++        sys.path.insert(0, str(parent / "shared/runtime"))
++        SOURCE = parent / "generators" / TASK / "generator.py"
++        CANONICAL = parent / "shared/data/canonical/puzzles.jsonl"
++        break
++    if (parent / "puzzle_generators/base.py").exists():
++        ROOT = parent
++        sys.path.insert(0, str(parent))
++        SOURCE = parent / "puzzle_generators/per_puzzle" / TASK / "generator.py"
++        CANONICAL = parent / "data/canonical/puzzles.jsonl"
++        break
++else:
++    raise RuntimeError("Cannot locate self-contained source or runtime")
++spec = importlib.util.spec_from_file_location("xor_review_test_generator", SOURCE)
++gen = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(gen)
++
++
++def states(grid):
++    width = len(grid[0]) // 2
++    return {(int(row[c] != 0), int(row[width + 1 + c] != 0))
++            for row in grid for c in range(width)}
++
++
++def answer(grid):
++    width = len(grid[0]) // 2
++    return [[2 * ((row[c] != 0) != (row[width + 1 + c] != 0))
++             for c in range(width)] for row in grid]
++
++
++@pytest.mark.parametrize("pattern", ["random", "blob", "stripes", "checker", "border", "diagonal", "scatter"])
++def test_every_ordinary_texture_teaches_all_four_occupancy_states(pattern):
++    for band in ("easy", "medium", "hard"):
++        for index in range(20):
++            grid = gen.generate(0, index, difficulty=band, panel_pattern=pattern)
++            assert not gen.self_check(grid)
++            assert states(grid) == {(0, 0), (0, 1), (1, 0), (1, 1)}
++
++
++@pytest.mark.parametrize("band", ["easy", "medium", "hard"])
++@pytest.mark.parametrize("h,pw", [(1, 1), (1, 14), (18, 1), (18, 14)])
++def test_documented_dimension_boundaries_are_not_difficulty_bounds(band, h, pw):
++    grid = gen.generate(5, 0, difficulty=band, grid_h=h, panel_w=pw)
++    assert (len(grid), len(grid[0])) == (h, 2 * pw + 1)
++    assert not gen.self_check(grid)
++
++
++@pytest.mark.parametrize("target", range(21))
++def test_xor_target_is_exact_including_empty_and_full_outputs(target):
++    grid = gen.generate(11, 2, grid_h=5, panel_w=4, xor_target=target)
++    assert sum(v == 2 for row in answer(grid) for v in row) == target
++    assert not gen.self_check(grid)
++
++
++def test_large_target_expands_only_unspecified_dimensions():
++    grid = gen.generate(9, 0, difficulty="easy", xor_target=252)
++    assert (len(grid), len(grid[0])) == (18, 29)
++    assert sum(v == 2 for row in answer(grid) for v in row) == 252
++    with pytest.raises(ValueError):
++        gen.generate(9, 0, grid_h=1, xor_target=252)
++
++
++@pytest.mark.parametrize("overrides", [
++    {"typo_axis": 3}, {"panel_pattern": "typo"}, {"texture": "typo"},
++    {"panel_pattern": "stripes", "texture": "border"},
++    {"left_density": -0.1}, {"right_density": 1.1},
++    {"left_density": float("nan")}, {"right_density": float("inf")},
++    {"grid_h": True}, {"panel_w": 3.5}, {"xor_target": -1},
++    {"left_color": 4}, {"right_color": 0}, {"left_color": 2.5},
++    {"grid_h": 19}, {"panel_w": 15},
++])
++def test_bad_overrides_fail_loudly(overrides):
++    with pytest.raises(ValueError):
++        gen.generate(0, 0, **overrides)
++
++
++@pytest.mark.parametrize("color", [1, 2, 3, 5, 6, 7, 8, 9])
++def test_equal_foreground_colors_and_output_color_are_lawful(color):
++    grid = gen.generate(2, 1, left_color=color, right_color=color)
++    assert states(grid) == {(0, 0), (0, 1), (1, 0), (1, 1)}
++    assert not gen.self_check(grid)
++    assert {v for row in grid for v in row} == {0, 4, color}
++
++
++@pytest.mark.parametrize("name,target", [("same_panels", 0), ("all_zero", 0), ("disjoint_panels", 20)])
++def test_lawful_boundary_textures_are_valid_not_training_defaults(name, target):
++    grid = gen.generate(12, 0, grid_h=5, panel_w=4, texture=name)
++    assert not gen.self_check(grid)
++    assert sum(v == 2 for row in answer(grid) for v in row) == target
++
++
++def test_canonical_pairs_are_accepted_and_match_mirror():
++    row = next(json.loads(line) for line in CANONICAL.open()
++               if json.loads(line).get("task_id") == TASK)
++    import hashlib
++    assert gen.RULE_HASH == hashlib.sha256(" ".join(row["program_solution"].split()).encode()).hexdigest()[:12]
++    for pair in row["train"] + row["test"]:
++        assert not gen.self_check(pair["input"])
++        assert not gen.strict_canonical_like(pair["input"])
++        assert gen.rule_mirror(pair["input"]) == pair["output"]
++
++
++def test_canonical_anchor_exists_in_every_band():
++    for band in ("easy", "medium", "hard"):
++        for index in (0, 3, 6):
++            grid = gen.generate(17, index, difficulty=band)
++            assert not gen.strict_canonical_like(grid)
++
++
++@pytest.mark.parametrize("bad", [[], [[]], [[0, 4, 1], [0, 4]], [[False, 4, 1]],
++    [[0.0, 4, 1]], [[-1, 4, 1]], [[10, 4, 1]], [[0, 3, 1]],
++    [[4, 4, 1]], [[1, 2, 4, 3, 5]], [[0, 4, 1, 1]]])
++def test_structural_validator_rejects_malformed_grids(bad):
++    assert gen.self_check(bad)
++
++
++def test_all_boolean_rivals_are_falsified_by_an_ordinary_grid():
++    grid = gen.generate(17, 4)
++    expected = answer(grid)
++    boolean_rivals = {name: rival for name, rival in gen.SEMANTIC_RIVALS.items() if name.startswith("boolean_")}
++    assert len(boolean_rivals) == 15
++    assert all(rival(grid) != expected for rival in boolean_rivals.values())
++    for name, predicate in gen.SEMANTIC_WITNESSES.items():
++        assert predicate(grid)
++        assert any(gen.SEMANTIC_RIVALS[rival](grid) != expected
++                   for rival in gen.WITNESS_RIVALS[name])
++
++
++def test_lesson_gate_detects_missing_direction_and_accepts_complete_demo():
++    # Both inputs are lawful; the first never shows a right-only foreground.
++    demo = [[0, 8, 8, 4, 0, 0, 5]]
++    query = [[0, 8, 8, 4, 5, 0, 5]]
++    reasons = gen.lesson_identifiable([{"input": demo, "output": answer(demo)}], {"input": query})
++    assert reasons and any("boolean_" in reason for reason in reasons)
++    complete = [[0, 0, 8, 8, 4, 0, 5, 0, 5]]
++    assert not gen.lesson_identifiable([{"input": complete, "output": answer(complete)}], {"input": complete})
++
++
++def test_replay_and_observer_are_exact():
++    for band in ("easy", "medium", "hard"):
++        for index in range(12):
++            grid = gen.generate(8, index, difficulty=band)
++            assert grid == gen.generate(8, index, difficulty=band)
++            observed = gen.observe_overrides(grid)
++            assert observed["grid_h"] == len(grid)
++            assert observed["panel_w"] == len(grid[0]) // 2
++            assert observed["xor_target"] == sum(v == 2 for row in answer(grid) for v in row)
++            assert gen.rule_mirror(grid) == answer(grid)
++
++
++def test_active_authorities_match_exactly_and_archive_is_preserved():
++    canonical = next(json.loads(line) for line in CANONICAL.open()
++                     if json.loads(line).get("task_id") == TASK)
++    data_root = CANONICAL.parents[1]
++    base = json.loads((data_root / "base/solutions/training/34b99a2b__d70726fd510f.json").read_text())
++    source = base["racket_target"]
++    assert source["target_code"] == canonical["program_solution"]
++    assert " ".join(source["raw_code"].split()) == " ".join(source["target_code"].split())
++
++
++def load_probe():
++    path = SOURCE.parent / "workspace/review_probe.py"
++    spec = importlib.util.spec_from_file_location("xor_review_probe", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_probe_exhausts_boolean_family_on_complete_truth_table():
++    probe = load_probe()
++    grid = [[0, 0, 8, 8, 4, 0, 5, 0, 5]]
++    result = probe.assess_boolean_lesson([{"input": grid, "output": answer(grid)}], grid)
++    assert result["surviving_tables"] == [6]
++    assert result["status"] == "query_determined"
++
++
++def test_probe_exposes_only_query_relevant_ambiguity():
++    probe = load_probe()
++    demo = [[0, 8, 8, 4, 0, 0, 5]]
++    pairs = [{"input": demo, "output": answer(demo)}]
++    assert probe.assess_boolean_lesson(pairs, [[0, 4, 5]])["status"] == "ambiguous_query"
++    assert probe.assess_boolean_lesson(pairs, [[8, 4, 0]])["status"] == "query_determined"
++
++
++def test_probe_rejects_inconsistent_labels_instead_of_vacuous_pass():
++    probe = load_probe()
++    grid = [[0, 4, 0]]
++    demos = [{"input": grid, "output": [[0]]}, {"input": grid, "output": [[2]]}]
++    result = probe.assess_boolean_lesson(demos, grid)
++    assert result["surviving_tables"] == []
++    assert result["status"] == "inconsistent_labels"
++
++
++def test_probe_validates_label_shape_and_palette():
++    probe = load_probe()
++    with pytest.raises(ValueError):
++        probe.assess_boolean_lesson([{"input": [[0, 4, 0]], "output": [[0, 2]]}], [[0, 4, 0]])
++    with pytest.raises(ValueError):
++        probe.assess_boolean_lesson([{"input": [[0, 4, 0]], "output": [[1]]}], [[0, 4, 0]])
++
++
++def test_canonical_anchors_do_not_repeat_across_difficulty_bands():
++    for seed in range(8):
++        grids = [gen.generate(seed, 0, difficulty=band) for band in ("easy", "medium", "hard")]
++        assert len({json.dumps(grid) for grid in grids}) == 3
++        assert all(not gen.strict_canonical_like(grid) for grid in grids)
++
++
++def test_probe_can_wrap_the_rule_in_source_or_staged_layout():
++    probe = load_probe()
++    probe.locate_root()
++    from puzzle_generators.rule_wrap import wrap_rule
++    canonical = next(json.loads(line) for line in CANONICAL.open()
++                     if json.loads(line).get("task_id") == TASK)
++    assert "lambda" in wrap_rule(canonical["program_solution"])
++
++
++def load_audit_probe():
++    path = SOURCE.parent / "workspace/audit_probe.py"
++    spec = importlib.util.spec_from_file_location("xor_review_audit_probe", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_audit_detects_nonrectangular_equal_transform_shape():
++    audit = load_audit_probe()
++    grid = [[0, 0, 0, 8], [7, 7, 0, 0], [7, 0, 0, 0]]
++    result = audit.dispatch_analysis(grid)
++    assert result["blob_size"] == 3
++    assert result["nonrectangular"]
++    assert result["clockwise"] == result["flipped"]
++
++
++def test_audit_counts_actually_clipped_foreground_not_texture_name():
++    audit = load_audit_probe()
++    grid = [[0] * 7 for _ in range(7)]
++    for d in range(3):
++        grid[d][d] = 5
++    grid[0][4] = 1
++    result = audit.stamp_analysis(grid)
++    assert result["lost_foreground_cells"] == 1
++    assert sum(map(sum, result["output"])) == 2
++    assert result["output"] != result["clamped_rival"]
++    grid[0][4] = 0
++    grid[3][4] = 1
++    result = audit.stamp_analysis(grid)
++    assert result["lost_foreground_cells"] == 0
++    assert result["output"] == result["clamped_rival"]
+diff --git a/repo/generators/d70726fd510f/workspace/README.md b/repo/generators/d70726fd510f/workspace/README.md
+--- a/repo/generators/d70726fd510f/workspace/README.md
++++ b/repo/generators/d70726fd510f/workspace/README.md
+@@ -1,4 +1,85 @@
+-# Workspace
++# Review tools for d70726fd510f
+ 
+-Keep alternate drafts, reproducers, and unfinished experiments here.
+-The selected implementation is `../generator.py`. Workspace drafts are never automatically selected.
++Run from the extracted review packet root after applying the returned source
++patch. The selected implementation is `../generator.py`; no tool here is
++implicitly selected as a training generator.
++
++## Pure-Python semantic census
++
++```sh
++python3 repo/generators/d70726fd510f/workspace/review_probe.py census --output checks/census-replay.json
++```
++
++Default: three bands, seeds 0..7, indices 0..99; 2400 draws and 600 nonoverlapping
++3-demo/1-query lessons, plus a separate 700-draw explicit-texture sweep. The JSON
++includes generator/rule/probe hashes, distinct-input/output counts, all-four-state
++coverage, directional-shortcut matches, and retained ambiguity witnesses.
++`--generator PATH` selects an immutable baseline for a like-for-like comparison;
++`--seeds` and `--samples` control the budget. Labels in census mode are diagnostic
++Python computations. Exit 0 means the census executed, not that every lesson was
++unambiguous; consume its explicit status/counterexample fields.
++
++`assess_boolean_lesson(demos, query_grid)` uses only visible labels and query
++input, enumerates all 16 pointwise occupancy functions, and distinguishes
++inconsistent labels from actual query ambiguity. Multiple surviving rules that
++agree on this query are not automatically rejected.
++
++## Independent Racket parity
++
++```sh
++python3 setup_racket.py
++python3 run_with_racket.py python3 generators/d70726fd510f/workspace/review_probe.py oracle --output ../checks/oracle-replay.json
++```
++
++Runs 316 cases: canonical, default, texture, shape/count boundary, all color pairs
++and lawful edges. Saves full actual Racket outputs; exit is nonzero on any failed
++case. Source and staged runtime layouts are supported. Never run these source-
++reading probes inside the required visible-only fresh-solve phase.
++
++## Task regression tests
++
++```sh
++python3 -m pytest -q repo/generators/d70726fd510f/tests/test_generator_d70726fd510f.py
++```
++
++The repository's ordinary pytest configuration discovers only its `tests/` tree,
++not these additional task tests. The review ran 93 tests in source and a separately
++staged layout. Staging must explicitly include new task files absent from the
++frozen catalog; `checks/portable-receipt.json` lists copied files and hashes.
++To replay staging, use `python3 run_with_racket.py python3 -m arcpuzzles workspace
++--id d70726fd510f --out ../.review/portable-runtime`, copy this task's `tests/*.py`
++and `workspace/*.py` into its corresponding staged task directories, then run
++pytest there. That output directory must not already contain a prior runtime.
++
++## Read-only audit and harness diagnostics
++
++```sh
++python3 run_with_racket.py python3 generators/d70726fd510f/workspace/audit_probe.py --output-dir ../checks/audits-replay --baseline-census ../checks/census-before.json
++python3 repo/generators/d70726fd510f/workspace/harness_startup_probe.py
++```
++
++The audit CLI requires the full source checkout because it reads the two assigned
++audit generators. It modifies neither target and produces hash-bound actual-
++Racket witnesses. Census portions are explicitly Python diagnostics, not claims
++of oracle-scoring every draw. The optional baseline census enables an additional
++Racket check of the first retained XOR-ambiguity lesson; its absence skips only
++that optional check.
++
++The startup diagnostic records normal/no-site Python startup and timeout stdout
++capture without editing shared harness code. It diagnoses environment-sensitive
++test readiness, not a generator defect. A diagnostic command exiting 0 is not an
++assertion that the repository's failing test has been fixed.
++
++## Return-patch round trip
++
++```sh
++python3 repo/generators/d70726fd510f/workspace/check_return_patch.py review_response_review-7db198064734f44c.zip
++```
++
++Run inside the original assigned packet after building a return. The tool requires
++`git`, validates the archive with the repository's validator, applies the patch
++only to a fresh temporary baseline, and compares every resulting file with the
++reviewed source. It also checks compressed evidence hashes without executing
++programs from the return. Exit 0 means the actual patch applies and matches, not
++merely that ZIP member names look valid. It detected the packet builder's
++unterminated-line diff bug during this review.
+diff --git a/repo/generators/d70726fd510f/workspace/audit_probe.py b/repo/generators/d70726fd510f/workspace/audit_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d70726fd510f/workspace/audit_probe.py
+@@ -0,0 +1,206 @@
++#!/usr/bin/env python3
++"""Read-only, hash-bound audits for the two immutable reviewer audit targets.
++
++Python census is diagnostic; small counterexamples and canonical pairs are
++independently executed in Racket and stored with full inputs and outputs.
++"""
++from __future__ import annotations
++import argparse
++from collections import Counter
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++from review_probe import locate_root, load_generator
++
++TARGETS = ("97e4de6b44f4", "0beba7b7e706")
++BANDS = ("easy", "medium", "hard")
++
++
++def dispatch_analysis(grid):
++    markers = [(r, c, v) for r, row in enumerate(grid) for c, v in enumerate(row) if v in (8, 9)]
++    cells = [(r, c) for r, row in enumerate(grid) for c, v in enumerate(row) if v not in (0, 8, 9)]
++    if len(markers) != 1 or not cells:
++        raise ValueError("Expected one marker and a nonempty shape")
++    r0, r1 = min(r for r, _ in cells), max(r for r, _ in cells)
++    c0, c1 = min(c for _, c in cells), max(c for _, c in cells)
++    shape = [row[c0:c1 + 1] for row in grid[r0:r1 + 1]]
++    cw = [list(row) for row in zip(*shape[::-1])]
++    flip = [row[::-1] for row in shape]
++    return {"marker": markers[0][2], "blob_size": len(cells), "shape": shape,
++            "nonrectangular": len(cells) != (r1 - r0 + 1) * (c1 - c0 + 1),
++            "clockwise": cw, "flipped": flip,
++            "output": cw if markers[0][2] == 8 else flip}
++
++
++def transform(mask, code):
++    if code == 2:
++        return [list(row) for row in zip(*mask[::-1])]
++    if code == 3:
++        return [row[::-1] for row in mask]
++    if code == 4:
++        return mask[::-1]
++    return [row[:] for row in mask]
++
++
++def stamp_analysis(grid):
++    h, w = len(grid), len(grid[0])
++    proto = [row[:3] for row in grid[:3]]
++    output, clamped = [[0] * w for _ in range(h)], [[0] * w for _ in range(h)]
++    markers, lost = [], 0
++    for r, row in enumerate(grid):
++        for c, code in enumerate(row):
++            if code not in (1, 2, 3, 4) or (r < 3 and c < 3):
++                continue
++            markers.append([r, c, code])
++            mask = transform(proto, code)
++            clamp_r, clamp_c = max(1, min(h - 2, r)), max(1, min(w - 2, c))
++            for dr, mask_row in enumerate(mask):
++                for dc, v in enumerate(mask_row):
++                    if v == 0:
++                        continue
++                    rr, cc = r - 1 + dr, c - 1 + dc
++                    if 0 <= rr < h and 0 <= cc < w:
++                        output[rr][cc] += 1
++                    else:
++                        lost += 1
++                    clamped[clamp_r - 1 + dr][clamp_c - 1 + dc] += 1
++    return {"output": output, "clamped_rival": clamped, "markers": markers,
++            "lost_foreground_cells": lost,
++            "edge_markers": sum(r in (0, h - 1) or c in (0, w - 1) for r, c, _ in markers)}
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--baseline-census", type=Path, default=Path("../checks/census-before.json"))
++    args = parser.parse_args(argv)
++    root, canonical_path, _ = locate_root()
++    if not (root / "generators").is_dir():
++        parser.error("Audit target generation needs the full source checkout")
++    args.output_dir.mkdir(parents=True, exist_ok=True)
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++    canonical = {row["task_id"]: row for line in canonical_path.open() if (row := json.loads(line)).get("task_id") in TARGETS + ("d70726fd510f",)}
++    modules = {task: load_generator(root / "generators" / task / "generator.py") for task in TARGETS}
++    identities = {}
++    for task in TARGETS:
++        identities[task] = {"task_id": task,
++            "generator_sha256": hashlib.sha256((root / "generators" / task / "generator.py").read_bytes()).hexdigest(),
++            "rule_sha256": hashlib.sha256(canonical[task]["program_solution"].encode()).hexdigest()}
++    invocation = {"cwd": "packet_root", "argv": ["python3", "run_with_racket.py", "python3",
++        "generators/d70726fd510f/workspace/audit_probe.py", "--output-dir", str(args.output_dir),
++        "--baseline-census", str(args.baseline_census)]}
++    result = {"schema": "two-target-readonly-audit-v1", "identities": identities,
++              "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++              "command": invocation, "census_labels": "diagnostic independent Python, not oracle-scored census",
++              "summaries": {}, "counterexample_files": [], "oracle_cases": [], "errors": []}
++    pending = []
++    a = TARGETS[0]
++    counts = Counter()
++    ambiguous, contrasting = [], None
++    for band in BANDS:
++        for seed in range(10):
++            for index in range(20):
++                grid = modules[a].generate(seed, index, difficulty=band)
++                obs = dispatch_analysis(grid)
++                counts["draws"] += 1
++                counts["validator_rejects"] += bool(modules[a].self_check(grid))
++                counts["nonrectangular"] += obs["nonrectangular"]
++                counts["cw_equals_flip"] += obs["clockwise"] == obs["flipped"]
++                rec = {"seed": seed, "sample_index": index, "difficulty": band, "overrides": {},
++                       "input": grid, "analysis": obs}
++                if obs["clockwise"] == obs["flipped"] and not any(r["analysis"]["marker"] == obs["marker"] for r in ambiguous):
++                    ambiguous.append(rec)
++                if obs["marker"] == 9 and obs["clockwise"] != obs["flipped"] and contrasting is None:
++                    contrasting = rec
++    result["summaries"][a] = {"counts": dict(counts), "bands": BANDS, "seed_range": [0, 9], "sample_index_range": [0, 19]}
++    for number, rec in enumerate(ambiguous):
++        pending.append((a, f"nonrectangular_equal_transforms_{number}", rec, "clockwise"))
++    if contrasting:
++        pending.append((a, "marker_conditioning_required", contrasting, "clockwise"))
++    overrides = {"blob_size": 6}
++    grid = modules[a].generate(0, 0, difficulty="easy", **overrides)
++    obs = dispatch_analysis(grid)
++    counts["blob_size_override_mismatch"] = int(obs["blob_size"] != 6)
++    assert obs["blob_size"] != 6
++    pending.append((a, "ignored_blob_size_override", {"seed": 0, "sample_index": 0, "difficulty": "easy",
++                    "overrides": overrides, "input": grid, "analysis": obs,
++                    "comparison_same_seed_blob_size_2_is_identical": grid == modules[a].generate(0, 0, difficulty="easy", blob_size=2)}, "clockwise"))
++    b = TARGETS[1]
++    counts = Counter()
++    nonclip, clip = None, None
++    for band in BANDS:
++        for seed in range(10):
++            for index in range(10):
++                grid = modules[b].generate(seed, index, difficulty=band, texture="clip")
++                obs = stamp_analysis(grid)
++                counts["draws"] += 1
++                counts["validator_rejects"] += bool(modules[b].self_check(grid))
++                counts["no_foreground_clipped"] += obs["lost_foreground_cells"] == 0
++                counts["no_edge_marker"] += obs["edge_markers"] == 0
++                counts["clamped_rival_matches"] += obs["output"] == obs["clamped_rival"]
++                rec = {"seed": seed, "sample_index": index, "difficulty": band,
++                       "overrides": {"texture": "clip"}, "input": grid, "analysis": obs}
++                if nonclip is None and obs["edge_markers"] == 0 and obs["lost_foreground_cells"] == 0:
++                    nonclip = rec
++                if clip is None and obs["output"] != obs["clamped_rival"]:
++                    clip = rec
++    result["summaries"][b] = {"counts": dict(counts), "bands": BANDS, "seed_range": [0, 9], "sample_index_range": [0, 9], "overrides": {"texture": "clip"}}
++    assert nonclip is not None and clip is not None
++    pending.extend([(b, "clip_texture_without_clipping", nonclip, "clamped_rival"), (b, "real_clipping_contrast", clip, "clamped_rival")])
++    with RacketBridge(max_calls_before_restart=96) as bridge:
++        wrapped = {task: wrap_rule(row["program_solution"]) for task, row in canonical.items()}
++        def evaluate(task, grid):
++            literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++            return bridge.eval_text(f"({wrapped[task]} {literal})")
++        for task, name, rec, rival in pending:
++            record = {**identities[task], **rec, "finding": name, "command": invocation,
++                      "validator_issues": modules[task].self_check(rec["input"]),
++                      "domain": "Generated through the public API; input lies in documented nondegenerate domain. Override conformance is recorded separately.",
++                      "rival_name": "always_rotate_cw" if rival == "clockwise" else "clamp_stamp_center_instead_of_clipping",
++                      "rival_output": rec["analysis"][rival]}
++            record["actual_racket_output"] = evaluate(task, rec["input"])
++            record["python_matches_racket"] = record["actual_racket_output"] == rec["analysis"]["output"]
++            record["rival_matches_racket"] = record["actual_racket_output"] == record["rival_output"]
++            path = args.output_dir / f"{task}_{name}.json"
++            path.write_text(json.dumps(record, indent=2) + "\n")
++            result["counterexample_files"].append(str(path))
++            if not record["python_matches_racket"]:
++                result["errors"].append({"counterexample": str(path), "problem": "independent mirror mismatch"})
++        for task in TARGETS:
++            for split in ("train", "test"):
++                pairs = canonical[task].get(split, [])
++                if isinstance(pairs, dict):
++                    pairs = [pairs]
++                for index, pair in enumerate(pairs):
++                    got = evaluate(task, pair["input"])
++                    rec = {"task_id": task, "kind": "canonical", "split": split, "index": index,
++                           "input": pair["input"], "expected": pair["output"], "actual_racket_output": got,
++                           "passed": got == pair["output"]}
++                    result["oracle_cases"].append(rec)
++                    if not rec["passed"]:
++                        result["errors"].append(rec)
++        if args.baseline_census.exists():
++            before = json.loads(args.baseline_census.read_text())
++            lesson = before["lesson_counterexamples"][0]
++            verified = []
++            for pair in lesson["demos"] + [lesson["query"]]:
++                got = evaluate("d70726fd510f", pair["input"])
++                verified.append({**pair, "actual_racket_output": got, "passed": got == pair["output"]})
++            witness = {"source": before["source"], "command": invocation, "lesson": lesson,
++                       "oracle_verification": verified, "all_passed": all(r["passed"] for r in verified)}
++            (args.output_dir / "baseline_boolean_ambiguity_racket.json").write_text(json.dumps(witness, indent=2) + "\n")
++            if not witness["all_passed"]:
++                result["errors"].append({"problem": "baseline Boolean witness mirror mismatch"})
++    (args.output_dir / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
++    print(json.dumps({"summaries": result["summaries"], "counterexamples": len(pending),
++                      "canonical_oracle_cases": len(result["oracle_cases"]), "errors": result["errors"]}, indent=2))
++    return bool(result["errors"])
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/d70726fd510f/workspace/check_return_patch.py b/repo/generators/d70726fd510f/workspace/check_return_patch.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d70726fd510f/workspace/check_return_patch.py
+@@ -0,0 +1,86 @@
++#!/usr/bin/env python3
++"""Validate a return ZIP and apply its delta to an isolated immutable baseline.
++
++Requires the original assigned packet checkout and git. Does not mutate reviewed
++sources, execute returned programs, or open private solve labels. Also verifies
++losslessly compressed evidence without trusting an embedded restoration script.
++"""
++from __future__ import annotations
++import argparse
++import gzip
++import hashlib
++import io
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import tempfile
++import zipfile
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('archive', type=Path)
++    args = parser.parse_args(argv)
++    root = next((p for p in Path(__file__).resolve().parents if
++                 (p/'ASSIGNMENT.json').is_file() and (p/'repo/src/arcpuzzles/review_full_return.py').is_file()), None)
++    if root is None:
++        parser.error('Run this task-local tool inside the original assigned packet')
++    sys.path.insert(0, str(root/'repo/src'))
++    from arcpuzzles.review_full_return import validate_full_return
++    manifest = json.loads((root/'PACKET-MANIFEST.json').read_text())
++    report = {'archive':str(args.archive), 'passed':False, 'commands':[]}
++    try:
++        with zipfile.ZipFile(args.archive) as archive:
++            validated = validate_full_return(archive, manifest)
++            if archive.testzip() is not None:
++                raise ValueError('ZIP CRC failure')
++            report.update(members=len(archive.infolist()),
++                          expanded_bytes=sum(i.file_size for i in archive.infolist()),
++                          archive_sha256=hashlib.sha256(args.archive.read_bytes()).hexdigest())
++            with tempfile.TemporaryDirectory(prefix='return-patch-', dir=root/'.review') as temporary:
++                stage = Path(temporary)
++                for name in validated['patch_paths']:
++                    source = root/'.review/baseline'/name
++                    if source.is_file():
++                        target = stage/name
++                        target.parent.mkdir(parents=True, exist_ok=True)
++                        shutil.copy2(source, target)
++                patch = stage/'source.patch'
++                patch.write_bytes(archive.read('patches/source.patch'))
++                for command in (['git','apply','--check','source.patch'], ['git','apply','source.patch']):
++                    result = subprocess.run(command, cwd=stage, text=True, capture_output=True, timeout=30)
++                    report['commands'].append({'argv':command,'cwd':str(stage), 'exit_code':result.returncode,
++                                               'stdout':result.stdout,'stderr':result.stderr})
++                    if result.returncode:
++                        raise ValueError('Delta does not apply cleanly to the immutable baseline')
++                mismatches = [name for name in validated['patch_paths'] if (stage/name).read_bytes() != (root/name).read_bytes()]
++                if mismatches:
++                    raise ValueError('Applied files differ from current reviewed source: '+repr(mismatches))
++                report['patched_paths'] = validated['patch_paths']
++            restored = 0
++            if 'checks/COMPRESSED_EVIDENCE.json' in archive.namelist():
++                mapping = json.loads(archive.read('checks/COMPRESSED_EVIDENCE.json'))
++                for obj in mapping['objects']:
++                    size = obj['uncompressed_bytes']
++                    if type(size) is not int or not 0 <= size <= 100*1024*1024:
++                        raise ValueError('Unexpected compressed evidence expansion budget')
++                    blob = archive.read(obj['compressed_path'])
++                    if hashlib.sha256(blob).hexdigest() != obj['compressed_sha256']:
++                        raise ValueError('Compressed evidence hash mismatch')
++                    with gzip.GzipFile(fileobj=io.BytesIO(blob)) as stream:
++                        raw = stream.read(size+1)
++                    if len(raw) != size or hashlib.sha256(raw).hexdigest() != obj['uncompressed_sha256']:
++                        raise ValueError('Restored evidence hash/size mismatch')
++                    restored += len(obj['original_paths'])
++                report['compressed_original_paths_verified'] = restored
++            report['passed'] = True
++    except (OSError, ValueError, KeyError, subprocess.SubprocessError, zipfile.BadZipFile) as exc:
++        report['error'] = str(exc)
++    print(json.dumps(report, indent=2))
++    return 0 if report['passed'] else 1
++
++
++if __name__ == '__main__':
++    raise SystemExit(main())
+diff --git a/repo/generators/d70726fd510f/workspace/harness_startup_probe.py b/repo/generators/d70726fd510f/workspace/harness_startup_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d70726fd510f/workspace/harness_startup_probe.py
+@@ -0,0 +1,30 @@
++#!/usr/bin/env python3
++"""Diagnose timeout-before-first-output without editing the repository harness."""
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import time
++
++root = next(p for p in Path(__file__).resolve().parents if (p / "src/arcpuzzles/runtime.py").exists())
++sys.path.insert(0, str(root / "src"))
++from arcpuzzles.runtime import run_process
++
++rows = []
++with tempfile.TemporaryDirectory() as tmp:
++    for flags in ([], ["-S"]):
++        startup = []
++        for _ in range(3):
++            t = time.monotonic()
++            subprocess.run([sys.executable, *flags, "-c", "print('ready',flush=True)"], capture_output=True, check=True)
++            startup.append(time.monotonic() - t)
++        chunks = []
++        command = [sys.executable, *flags, "-c", "import time; print('RUN unfinished',flush=True); time.sleep(30)"]
++        outcome = run_process(command, Path(tmp), timeout=.2, on_output=chunks.append)
++        rows.append({"flags": flags, "startup_seconds": startup, "timeout_test": outcome, "chunks": chunks})
++result = {"scope": "diagnostic only, no harness or test changes", "rows": rows,
++          "runtime_sha256": hashlib.sha256((root / "src/arcpuzzles/runtime.py").read_bytes()).hexdigest(),
++          "test_sha256": hashlib.sha256((root / "tests/test_review_runtime.py").read_bytes()).hexdigest()}
++print(json.dumps(result, indent=2))
+diff --git a/repo/generators/d70726fd510f/workspace/review_probe.py b/repo/generators/d70726fd510f/workspace/review_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d70726fd510f/workspace/review_probe.py
+@@ -0,0 +1,250 @@
++#!/usr/bin/env python3
++"""Reproducible occupancy-XOR census and independent Racket parity probe.
++
++The Boolean lesson gate itself consumes visible pairs, not a reference program.
++Census labels are diagnostic Python calculations, explicitly distinct from the
++oracle command's actual Racket outputs. Neither command reads solve/ artifacts.
++"""
++from __future__ import annotations
++
++import argparse
++from collections import Counter
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++import types
++
++TASK = "d70726fd510f"
++BANDS = ("easy", "medium", "hard")
++PATTERNS = ("random", "blob", "stripes", "checker", "border", "diagonal", "scatter")
++
++
++def panel_states(grid):
++    if not isinstance(grid, list) or not grid or not all(isinstance(row, list) and row for row in grid):
++        raise ValueError("input must be a nonempty row-list grid")
++    w = len(grid[0])
++    if w < 3 or w % 2 != 1 or any(len(row) != w for row in grid):
++        raise ValueError("input must be rectangular with two equal panels")
++    if any(type(v) is not int or not 0 <= v <= 9 for row in grid for v in row):
++        raise ValueError("input cells must be integer ARC colors")
++    pw = w // 2
++    if any(row[pw] != 4 for row in grid) or any(v == 4 for row in grid for c, v in enumerate(row) if c != pw):
++        raise ValueError("input must have only the full middle color-4 separator")
++    return [2 * int(row[c] != 0) + int(row[pw + 1 + c] != 0) for row in grid for c in range(pw)]
++
++
++def boolean_output(grid, table):
++    pw = len(grid[0]) // 2
++    values = [2 * ((table >> state) & 1) for state in panel_states(grid)]
++    return [values[r * pw:(r + 1) * pw] for r in range(len(grid))]
++
++
++def assess_boolean_lesson(demos, query_grid):
++    """Exact version space of all 16 pointwise Boolean occupancy functions.
++
++    A missing branch is only a query-ambiguity failure if surviving functions
++    actually disagree on this query. This avoids rejecting a lawful restricted
++    subtask merely because its demonstrations do not exercise all four states.
++    """
++    constraints = []
++    seen = set()
++    for pair in demos:
++        grid, output = pair["input"], pair["output"]
++        states = panel_states(grid)
++        pw = len(grid[0]) // 2
++        if not isinstance(output, list) or len(output) != len(grid) or any(not isinstance(row, list) or len(row) != pw for row in output):
++            raise ValueError("label shape does not match the panel")
++        values = [v for row in output for v in row]
++        if any(type(v) is not int or v not in (0, 2) for v in values):
++            raise ValueError("Boolean occupancy labels must use only 0 and 2")
++        constraints.extend((s, v // 2) for s, v in zip(states, values))
++        seen.update(states)
++    tables = [table for table in range(16) if all(((table >> state) & 1) == label for state, label in constraints)]
++    query_states = panel_states(query_grid)
++    predictions = {tuple((table >> state) & 1 for state in query_states) for table in tables}
++    status = "inconsistent_labels" if not tables else ("query_determined" if len(predictions) == 1 else "ambiguous_query")
++    return {"status": status, "surviving_tables": tables,
++            "observed_states": sorted(seen), "query_states": sorted(set(query_states)),
++            "distinct_query_predictions": len(predictions)}
++
++
++def locate_root():
++    for root in Path(__file__).resolve().parents:
++        if (root / "shared/runtime/puzzle_generators/base.py").exists():
++            sys.path.insert(0, str(root / "shared/runtime"))
++            # The portable runtime maps shared/tools to scripts/. In a source
++            # checkout expose that same namespace without copying or changing
++            # upstream tooling. Do not shadow a real scripts package.
++            if "scripts" not in sys.modules and importlib.util.find_spec("scripts") is None:
++                scripts = types.ModuleType("scripts")
++                scripts.__path__ = [str(root / "shared/tools")]
++                scripts.__package__ = "scripts"
++                scripts.__spec__ = importlib.machinery.ModuleSpec("scripts", None, is_package=True)
++                sys.modules["scripts"] = scripts
++            return root, root / "shared/data/canonical/puzzles.jsonl", root / "generators" / TASK / "generator.py"
++        if (root / "puzzle_generators/base.py").exists():
++            sys.path.insert(0, str(root))
++            return root, root / "data/canonical/puzzles.jsonl", root / "puzzle_generators/per_puzzle" / TASK / "generator.py"
++    raise RuntimeError("Cannot find an independent source checkout or staged runtime")
++
++
++def load_generator(path):
++    spec = importlib.util.spec_from_file_location("review_probe_subject", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def digest(value):
++    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
++
++
++def source_identity(path, canonical):
++    return {
++        "task_id": TASK, "generator_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
++        "canonical_rule_sha256": hashlib.sha256(canonical["program_solution"].encode()).hexdigest(),
++        "normalized_rule_hash": hashlib.sha256(" ".join(canonical["program_solution"].split()).encode()).hexdigest()[:12],
++        "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++    }
++
++
++def census(module, seeds, samples):
++    result = {"label_source": "diagnostic Python Boolean table 6; see separate oracle report for Racket validation",
++              "seed_range": [0, seeds - 1], "sample_index_range": [0, samples - 1],
++              "lesson_layout": "nonoverlapping groups: three demonstrations then one query; incomplete final group excluded",
++              "bands": {}, "textures": {}, "failures": [], "lesson_counterexamples": []}
++    all_inputs, all_outputs = set(), set()
++    for band in BANDS:
++        counts, state_counts = Counter(), Counter()
++        inputs, outputs = set(), set()
++        for seed in range(seeds):
++            pairs = []
++            for index in range(samples):
++                try:
++                    grid = module.generate(seed, index, difficulty=band)
++                    label = boolean_output(grid, 6)
++                    present = set(panel_states(grid))
++                    counts["draws"] += 1
++                    counts["all_four_states"] += present == {0, 1, 2, 3}
++                    counts["validator_rejects"] += bool(module.self_check(grid))
++                    counts["left_minus_right_matches"] += 1 not in present
++                    counts["canonical_shape_and_palette"] += (len(grid), len(grid[0]), {v for row in grid for v in row}) == (5, 9, {0, 4, 5, 8})
++                    for state in present:
++                        state_counts[f"{state:02b}"] += 1
++                    inputs.add(digest(grid)); outputs.add(digest(label))
++                    pairs.append({"input": grid, "output": label})
++                except Exception as exc:
++                    result["failures"].append({"band": band, "seed": seed, "sample_index": index, "error": repr(exc)})
++                    pairs.append(None)
++            for offset in range(0, samples - 3, 4):
++                group = pairs[offset:offset + 4]
++                if any(pair is None for pair in group):
++                    continue
++                lesson = assess_boolean_lesson(group[:3], group[3]["input"])
++                counts["lessons"] += 1
++                counts[lesson["status"]] += 1
++                if lesson["status"] != "query_determined" and len(result["lesson_counterexamples"]) < 12:
++                    result["lesson_counterexamples"].append({"band": band, "seed": seed, "sample_indexes": list(range(offset, offset + 4)),
++                                                             "assessment": lesson, "demos": group[:3], "query": group[3]})
++        result["bands"][band] = {"counts": dict(counts), "state_coverage_draw_counts": dict(state_counts),
++                                  "unique_inputs": len(inputs), "unique_outputs": len(outputs)}
++        all_inputs.update(inputs); all_outputs.update(outputs)
++    result["default_totals"] = {key: sum(v["counts"].get(key, 0) for v in result["bands"].values())
++                                for key in sorted({k for v in result["bands"].values() for k in v["counts"]})}
++    result["default_totals"].update(unique_inputs=len(all_inputs), unique_outputs=len(all_outputs))
++    for pattern in PATTERNS:
++        counts = Counter()
++        for index in range(samples):
++            grid = module.generate(0, index, panel_pattern=pattern)
++            present = set(panel_states(grid))
++            counts["draws"] += 1
++            counts["all_four_states"] += present == {0, 1, 2, 3}
++            counts["left_minus_right_matches"] += 1 not in present
++            counts["validator_rejects"] += bool(module.self_check(grid))
++        result["textures"][pattern] = {"seed": 0, "difficulty": None, "sample_index_range": [0, samples - 1], "counts": dict(counts)}
++    return result
++
++
++def oracle_cases(module, canonical):
++    for split in ("train", "test"):
++        for index, pair in enumerate(canonical[split]):
++            yield {"kind": "canonical", "split": split, "index": index, "input": pair["input"], "expected": pair["output"]}
++    for band in BANDS:
++        for seed in range(5):
++            for index in range(12):
++                yield {"kind": "default", "difficulty": band, "seed": seed, "sample_index": index,
++                       "overrides": {}, "input": module.generate(seed, index, difficulty=band)}
++        for pattern in PATTERNS:
++            for index in range(2):
++                overrides = {"panel_pattern": pattern}
++                yield {"kind": "texture", "difficulty": band, "seed": 19, "sample_index": index,
++                       "overrides": overrides, "input": module.generate(19, index, difficulty=band, **overrides)}
++    for h, pw in ((1, 1), (1, 14), (18, 1), (18, 14), (5, 4)):
++        for target in sorted({0, 1, h * pw // 2, h * pw - 1, h * pw}):
++            overrides = {"grid_h": h, "panel_w": pw, "xor_target": target}
++            yield {"kind": "boundary", "seed": 23, "sample_index": 2, "overrides": overrides,
++                   "input": module.generate(23, 2, **overrides)}
++    for left in module.COLORS:
++        for right in module.COLORS:
++            overrides = {"left_color": left, "right_color": right}
++            yield {"kind": "palette", "seed": 23, "sample_index": 2, "overrides": overrides,
++                   "input": module.generate(23, 2, **overrides)}
++    for name in module.DEGENERATE_TEXTURES:
++        overrides = {"texture": name}
++        yield {"kind": "lawful_edge", "seed": 23, "sample_index": 2, "overrides": overrides,
++               "input": module.generate(23, 2, **overrides)}
++
++
++def oracle(module, canonical):
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++    wrapped = wrap_rule(canonical["program_solution"])
++    result = {"label_source": "actual canonical Racket execution", "cases": [], "failures": []}
++    counts = Counter()
++    with RacketBridge(max_calls_before_restart=96) as bridge:
++        for record in oracle_cases(module, canonical):
++            grid = record["input"]
++            literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++            try:
++                actual = bridge.eval_text(f"({wrapped} {literal})")
++                expected = record.get("expected", boolean_output(grid, 6))
++                record.update(actual_racket_output=actual, expected=expected,
++                              validator_issues=module.self_check(grid), passed=(actual == expected and not module.self_check(grid)))
++            except Exception as exc:
++                record.update(passed=False, error=repr(exc))
++            counts[record["kind"]] += 1
++            if not record["passed"]:
++                result["failures"].append(record)
++            result["cases"].append(record)
++    result.update(counts=dict(counts), checked=sum(counts.values()), passed=sum(r["passed"] for r in result["cases"]))
++    return result
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("mode", choices=("census", "oracle"))
++    parser.add_argument("--generator", type=Path)
++    parser.add_argument("--seeds", type=int, default=8)
++    parser.add_argument("--samples", type=int, default=100)
++    parser.add_argument("--output", type=Path, required=True)
++    args = parser.parse_args(argv)
++    if args.seeds <= 0 or args.samples < 4:
++        parser.error("--seeds must be positive and --samples at least four")
++    _, canonical_path, default_path = locate_root()
++    path = (args.generator or default_path).resolve()
++    canonical = next(row for line in canonical_path.open() if (row := json.loads(line)).get("task_id") == TASK)
++    module = load_generator(path)
++    result = census(module, args.seeds, args.samples) if args.mode == "census" else oracle(module, canonical)
++    result.update(schema="occupancy-xor-review-probe-v1", mode=args.mode, source=source_identity(path, canonical))
++    args.output.parent.mkdir(parents=True, exist_ok=True)
++    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({"output": str(args.output), "source": result["source"],
++                      "totals": result.get("default_totals", {"checked": result.get("checked"), "passed": result.get("passed")}),
++                      "failures": len(result["failures"])}, indent=2))
++    return int(bool(result["failures"]))
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/shared/data/base/solutions/training/34b99a2b__d70726fd510f.json b/repo/shared/data/base/solutions/training/34b99a2b__d70726fd510f.json
+--- a/repo/shared/data/base/solutions/training/34b99a2b__d70726fd510f.json
++++ b/repo/shared/data/base/solutions/training/34b99a2b__d70726fd510f.json
+@@ -58,7 +58,7 @@
+   "needs_conversion": false,
+   "raw_code": "(rule! (lambda (g) (let* ((h (rows g)) (w (cols g)) (sep (find-first (lambda (c) (for/and ((r (range 0 h))) (= (at g r c) 4))) (range 0 w)))) (build-grid h sep (r c) (let* ((a (at g r c)) (b (at g r (+ sep 1 c)))) (if (!= (zero? a) (zero? b)) 2 0))))))",
+   "solution_language": "racket",
+-  "target_code": "(rule! (lambda (g) (let* ((h (rows g)) (w (cols g)) (sep (find-first (lambda (c) (for/and ((r (range 0 h))) (= (at g r c) 4))) (range 0 w)))) (build-grid h sep (r c) (let* ((a (at g r c)) (b (at g r (+ sep 1 c)))) (if (!= (zero? a) (zero? b)) 2 0))))))",
++  "target_code": "(rule! (lambda (g)\n         (let* ((h (rows g))\n                (w (cols g))\n                (sep (find-first (lambda (c)\n                                   (for/and ((r (range 0 h))) (= (at g r c) 4)))\n                                 (range 0 w))))\n           (build-grid h\n                       sep\n                       (r c)\n                       (let* ((a (at g r c))\n                              (b (at g r (+ sep 1 c))))\n                         (if (!= (zero? a) (zero? b)) 2 0))))))",
+   "target_status": "verified_racket_available"
+  },
+  "schema_version": 1,

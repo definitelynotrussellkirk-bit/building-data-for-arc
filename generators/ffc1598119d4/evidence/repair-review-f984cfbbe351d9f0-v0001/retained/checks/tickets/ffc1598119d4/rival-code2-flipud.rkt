@@ -1,0 +1,40 @@
+(rule!
+  (let ((dummy 0))
+    (define (rect-border? obj)
+      (let* ((bb (obj-bbox obj))
+             (h (+ (- (third bb) (first bb)) 1))
+             (w (+ (- (fourth bb) (second bb)) 1))
+             (border-size (- (* h w) (* (max 0 (- h 2)) (max 0 (- w 2))))))
+        (and (>= h 3) (>= w 3) (= (obj-size obj) border-size)
+             (all? (lambda (p)
+                     (or (= (first p) (first bb)) (= (first p) (third bb))
+                         (= (second p) (second bb)) (= (second p) (fourth bb))))
+                   (obj-cells obj)))))
+    (define (floor-half x)
+      (if (>= x 0) (quotient x 2) (- 0 (quotient (+ (- 0 x) 1) 2))))
+    (define (transform motif code)
+      (cond [(= code 2) (flip-ud motif)]
+            [(= code 3) (rotate-180 motif)]
+            [(= code 4) (flip-ud motif)]
+            [else motif]))
+    (define source-frame (first (filter rect-border? (objects (keep-only g 9) 0))))
+    (define source (subgrid g (+ (obj-r1 source-frame) 1) (+ (obj-c1 source-frame) 1)
+                            (- (obj-r2 source-frame) 1) (- (obj-c2 source-frame) 1)))
+    (for/fold ([out g]) ([frame (in-list (filter rect-border? (objects (keep-only g 8) 0)))])
+      (let* ((code (if (>= (- (obj-r1 frame) 1) 0) (at g (- (obj-r1 frame) 1) (obj-c1 frame)) 1))
+             (motif (transform source code))
+             (mh (rows motif)) (mw (cols motif))
+             (ih (- (obj-r2 frame) (obj-r1 frame) 1))
+             (iw (- (obj-c2 frame) (obj-c1 frame) 1))
+             (sr (+ (obj-r1 frame) 1 (floor-half (- ih mh))))
+             (sc (+ (obj-c1 frame) 1 (floor-half (- iw mw)))))
+        (define cleared
+          (for*/fold ([acc out])
+                     ([r (in-range sr (obj-r2 frame))]
+                      [c (in-range (+ (obj-c1 frame) 1) (obj-c2 frame))])
+            (set-cell acc r c 0)))
+        (for*/fold ([acc cleared])
+                   ([r (in-range mh)]
+                    [c (in-range mw)])
+          (let ((v (at motif r c)))
+            (if (not (= v 0)) (set-cell acc (+ sr r) (+ sc c) v) acc)))))))

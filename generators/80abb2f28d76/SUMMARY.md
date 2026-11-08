@@ -1,0 +1,6 @@
+# 80abb2f28d76
+
+COLOR-7 (orange) background grid (h, w ∈ 9-18, by difficulty) with: (a) ONE COLOR-1 (BLUE) SOLID RECTANGLE of size rh × rw (rh ∈ 2-5, rw ∈ 3-7) placed with margin ≥4 from the DOT_SIDE; (b) N_DOTS ∈ 1-4 COLOR-9 (MAROON) MARKER DOTS placed in column (rows for left/right side) or row (cols for top/bottom side) aligned with one of the rectangle's rows (or cols), at varied distances from the rectangle's edge. Dot_side ∈ {left, right, top, bottom} chosen per sample. Rule (FOR EACH SIDE WITH MAROON DOTS: THE CLOSEST DOT SNAPS TO THE RECT'S EDGE CELL; OTHER DOTS MOVE TO ONE CELL SHORT OF THE EDGE; BLUE BECOMES RED, OLD DOT POSITIONS BECOME 7 (BACKGROUND-COLOR), NEW DOT POSITIONS = 9): FIND the color-1 RECT and the color-9 DOTS. For EACH DOT-bearing side: FIND the CLOSEST dot (min distance to rect edge). SNAP it to the rect's edge cell (adjacent to rect). FOR OTHER dots on the same side: move them to ONE CELL SHORT of the edge (i.e., position edge ± 1 from rect). PAINT new dot positions = 9. PAINT old dot positions = 7 (bg). PAINT every rect cell = 2 (red). Net: dots converge on rect; closest touches the edge, rest park one cell short.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

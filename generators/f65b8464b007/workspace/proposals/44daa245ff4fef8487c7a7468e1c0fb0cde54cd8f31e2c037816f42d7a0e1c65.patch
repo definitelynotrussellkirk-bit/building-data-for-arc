@@ -1,0 +1,1934 @@
+diff --git a/repo/generators/7a8926bd9d9f/SUMMARY.md b/repo/generators/7a8926bd9d9f/SUMMARY.md
+--- a/repo/generators/7a8926bd9d9f/SUMMARY.md
++++ b/repo/generators/7a8926bd9d9f/SUMMARY.md
+@@ -1,6 +1,16 @@
+ # 7a8926bd9d9f
+ 
+-0-bg grid (h~8-10, w~8-10) with 2-3 PAIRS of OPPOSITE-CORNER CELLS in DISTINCT colors from {1..9}. Each PAIR has two cells placed at DIAGONALLY OPPOSITE CORNERS of an axis-aligned rectangle of size 2-4 × 2-5 (TL/BR OR TR/BL, randomly chosen). The rectangles between pairs are DISJOINT (no cell shared). Rule (FILL EACH OPPOSITE-CORNER PAIR'S BOUNDING RECTANGLE WITH ITS COLOR): For EACH COLOR appearing as EXACTLY 2 CELLS at (r1, c1) and (r2, c2) — diagonal corners of an axis-aligned rectangle: PAINT every cell at rows min(r1, r2)..max(r1, r2), cols min(c1, c2)..max(c1, c2) (inclusive — the full filled rectangle) with that color. Net: each pair of diagonal corners fills in to a solid rectangle of its color.
++A zero-background grid contains one to eight colors, each appearing at two
++diagonally opposite corners of an axis-aligned rectangle. The rectangles are
++pairwise disjoint. Fill every marked bounding rectangle with its marker color.
++Canonical rule hash: `e6d9cb6ee6d8` (unchanged).
+ 
+-Kind: `per_puzzle`. Imported version: `2.0.1`.
+-Approval is derived by the catalog from current code and retained evidence.
++Kind: `per_puzzle`. Current version: `2.1.0`.
++Exact controls: grid height/width, rectangle count, and palette family. Helpful
++`texture` values are exact aliases for palette families; retained degenerate
++textures are validator-negative fixtures rather than lawful lessons.
++
++Version 2.1.0 repairs the ignored `n_rects` and palette controls, rejects unknown
++or coercive overrides, constructively places up to eight disjoint rectangles,
++and validates diagonal pairing plus non-overlapping filled regions. See
++`tests/test_generator_contract.py`, `workspace/repair_audit.py`, and `notes.md`.
+diff --git a/repo/generators/7a8926bd9d9f/generator.py b/repo/generators/7a8926bd9d9f/generator.py
+--- a/repo/generators/7a8926bd9d9f/generator.py
++++ b/repo/generators/7a8926bd9d9f/generator.py
+@@ -1,164 +1,261 @@
+-"""Generator for arc_puzzle_bank_fourteenth21:E98.
+-
+-Place matching opposite-corner pairs whose bounding rectangles get filled.
+-
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, n_rects,
+-palette_size, position_bias, n_distinct_colors, density, texture.
+-Degenerates: no_pairs, single_endpoint, axis_aligned.
++"""Generator for ARC task 7a8926bd9d9f.
++
++Each active color marks two diagonally opposite rectangle corners.  The
++canonical transformation fills every marked bounding rectangle with its color.
+ """
+ from __future__ import annotations
+ 
++from collections import Counter
++from typing import Any
++
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "7a8926bd9d9f"
+-VERSION = "2.0.1"
+-TASK_ID = "7a8926bd9d9f"
++TASK_ID = GENERATOR_ID
++VERSION = "2.1.0"
++RULE_HASH = "e6d9cb6ee6d8"
+ 
+ SUMMARY = (
+-    "0-bg grid (h~8-10, w~"
+-    "8-10) with 2-3 PAIRS "
+-    "of OPPOSITE-CORNER "
+-    "CELLS in DISTINCT "
+-    "colors from {1..9}. "
+-    "Each PAIR has two "
+-    "cells placed at "
+-    "DIAGONALLY OPPOSITE "
+-    "CORNERS of an axis-"
+-    "aligned rectangle of "
+-    "size 2-4 × 2-5 (TL/BR "
+-    "OR TR/BL, randomly "
+-    "chosen). The rectangles "
+-    "between pairs are "
+-    "DISJOINT (no cell "
+-    "shared). Rule (FILL "
+-    "EACH OPPOSITE-CORNER "
+-    "PAIR'S BOUNDING "
+-    "RECTANGLE WITH ITS "
+-    "COLOR): For EACH "
+-    "COLOR appearing as "
+-    "EXACTLY 2 CELLS at "
+-    "(r1, c1) and (r2, "
+-    "c2) — diagonal corners "
+-    "of an axis-aligned "
+-    "rectangle: PAINT "
+-    "every cell at rows "
+-    "min(r1, r2)..max(r1, "
+-    "r2), cols min(c1, "
+-    "c2)..max(c1, c2) "
+-    "(inclusive — the "
+-    "full filled rectangle)"
+-    " with that color. "
+-    "Net: each pair of "
+-    "diagonal corners "
+-    "fills in to a solid "
+-    "rectangle of its "
+-    "color."
++    "A 0-background grid contains one to eight disjoint rectangles, each "
++    "represented by two same-color cells at diagonally opposite corners. "
++    "Fill every marked bounding rectangle with its marker color."
+ )
+ 
+ INVARIANTS = [
+     "background is 0",
+     "each active color appears exactly twice",
+-    "same-color cells are opposite rectangle corners",
+-    "filled rectangle regions are disjoint",
++    "same-color cells are diagonally opposite rectangle corners",
++    "filled rectangle regions are pairwise disjoint",
+ ]
+ 
+ PALETTE_KINDS = ("default", "warm", "cool", "varied")
++# The early entries define the visible bias.  All nine colors remain available
++# so every palette can still support the advertised maximum of eight rectangles.
++PALETTES = {
++    "default": (1, 2, 3, 4, 5, 6, 7, 8, 9),
++    "warm": (2, 4, 6, 7, 9, 1, 3, 5, 8),
++    "cool": (1, 3, 5, 8, 6, 9, 2, 4, 7),
++    "varied": (1, 8, 4, 6, 2, 9, 3, 7, 5),
++}
+ DEGENERATE_TEXTURES = ("no_pairs", "single_endpoint", "axis_aligned")
+ HELPFUL_TEXTURES = PALETTE_KINDS
+ 
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 8..10", "valid": "4..16"},
+-    "grid_w":         {"type": "int", "default": "rng 8..10", "valid": "4..16"},
+-    "palette_kind":   {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(PALETTE_KINDS)},
+-    "n_rects":        {"type": "int", "default": "rng 2..3", "valid": "1..8"},
+-    "palette_size":   {"type": "int", "default": "rng 2..3", "valid": "1..9"},
+-    "position_bias":  {"type": "str", "default": "opposite_corner_pairs",
+-                       "valid": "opposite_corner_pairs"},
+-    "n_distinct_colors": {"type": "int", "default": "rng 2..3", "valid": "1..9"},
+-    "density":        {"type": "str", "default": "sparse", "valid": "sparse"},
+-    "texture":        {"type": "str", "default": "alias for palette_kind",
+-                       "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "grid_h": {"type": "int", "default": "difficulty-weighted 8..10", "valid": "4..16"},
++    "grid_w": {"type": "int", "default": "difficulty-weighted 8..10", "valid": "4..16"},
++    "n_rects": {"type": "int", "default": "difficulty-weighted 2..3", "valid": "1..8"},
++    "palette_kind": {"type": "str", "default": "keyed choice", "valid": "default|warm|cool|varied"},
++    "texture": {
++        "type": "str",
++        "default": "alias for palette_kind",
++        "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES),
++    },
+ }
+ 
+ 
++def _exact_int(value: Any, lower: int, upper: int, name: str) -> int:
++    if type(value) is not int or not lower <= value <= upper:
++        raise ValueError(f"{name} must be an exact integer in {lower}..{upper}")
++    return value
++
++
++def _validate_call(seed: Any, sample_index: Any, difficulty: Any, overrides: dict[str, Any]) -> None:
++    _exact_int(seed, -(2**63), 2**63 - 1, "seed")
++    _exact_int(sample_index, 0, 2**63 - 1, "sample_index")
++    if difficulty not in (None, "easy", "medium", "hard"):
++        raise ValueError("difficulty must be None, 'easy', 'medium', or 'hard'")
++    unknown = sorted(set(overrides) - set(AXES))
++    if unknown:
++        raise ValueError("unknown override(s): " + ", ".join(unknown))
++    for name, bounds in {"grid_h": (4, 16), "grid_w": (4, 16), "n_rects": (1, 8)}.items():
++        if overrides.get(name) is not None:
++            _exact_int(overrides[name], *bounds, name)
++    for name in ("palette_kind", "texture"):
++        if overrides.get(name) is not None and type(overrides[name]) is not str:
++            raise ValueError(f"{name} must be a string")
++    if overrides.get("palette_kind") is not None and overrides["palette_kind"] not in PALETTE_KINDS:
++        raise ValueError("palette_kind must be default, warm, cool, or varied")
++    if overrides.get("texture") is not None and overrides["texture"] not in HELPFUL_TEXTURES + DEGENERATE_TEXTURES:
++        raise ValueError("texture is not a supported helpful or degenerate value")
++    texture = overrides.get("texture")
++    palette = overrides.get("palette_kind")
++    if texture in PALETTE_KINDS and palette is not None and texture != palette:
++        raise ValueError("palette_kind and texture conflict")
++
++
++def _dimension_options(difficulty: str | None) -> tuple[int, ...]:
++    if difficulty == "easy":
++        return (8, 9)
++    if difficulty == "hard":
++        return (9, 10)
++    return (8, 9, 10)
++
++
++def _count_options(difficulty: str | None) -> tuple[int, ...]:
++    if difficulty == "easy":
++        return (2,)
++    if difficulty == "hard":
++        return (3,)
++    return (2, 3)
++
++
++def _segments(total: int, parts: int) -> tuple[tuple[int, int], ...]:
++    """Partition ``range(total)`` into contiguous nearly-equal segments."""
++    base, extra = divmod(total, parts)
++    result = []
++    start = 0
++    for index in range(parts):
++        length = base + (1 if index < extra else 0)
++        result.append((start, length))
++        start += length
++    return tuple(result)
++
++
++def _slot_layout(height: int, width: int, count: int) -> tuple[tuple[int, int, int, int], ...]:
++    """Return at least ``count`` disjoint cells, each at least 2x2."""
++    candidates = []
++    for row_parts in range(1, height // 2 + 1):
++        for col_parts in range(1, width // 2 + 1):
++            capacity = row_parts * col_parts
++            if capacity >= count:
++                cell_h = height / row_parts
++                cell_w = width / col_parts
++                candidates.append((capacity - count, abs(cell_h - cell_w), abs(row_parts - col_parts), row_parts, col_parts))
++    if not candidates:
++        raise ValueError(f"n_rects={count} cannot fit in a {height}x{width} grid; capacity is {(height // 2) * (width // 2)}")
++    _, _, _, row_parts, col_parts = min(candidates)
++    rows = _segments(height, row_parts)
++    cols = _segments(width, col_parts)
++    return tuple((r0, c0, rh, cw) for r0, rh in rows for c0, cw in cols)
++
++
++def _draw_from_degenerate(name: str) -> list[list[int]]:
++    grid = full_grid(9, 9, 0)
++    if name == "no_pairs":
++        return grid
++    if name == "single_endpoint":
++        grid[2][2] = 4
++        grid[5][6] = 6
++        return grid
++    if name == "axis_aligned":
++        grid[3][1] = 4
++        grid[3][7] = 4
++        return grid
++    raise ValueError(f"unknown degenerate texture {name!r}")
++
++
++def generate(seed, sample_index, *, difficulty=None, **overrides):
++    _validate_call(seed, sample_index, difficulty, overrides)
++    texture = overrides.get("texture")
++    if texture in DEGENERATE_TEXTURES:
++        return _draw_from_degenerate(texture)
++
++    effective = dict(overrides)
++    effective.pop("texture", None)
++    if texture in PALETTE_KINDS:
++        effective["palette_kind"] = texture
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=effective,
++    )
++
++    count_options = tuple(range(1, 9)) if "n_rects" in effective else _count_options(difficulty)
++    count = ctx.draw_choice("n_rects", count_options)
++    dimension_options = tuple(range(4, 17))
++    height = ctx.draw_choice("grid_h", dimension_options if "grid_h" in effective else _dimension_options(difficulty))
++    width = ctx.draw_choice("grid_w", dimension_options if "grid_w" in effective else _dimension_options(difficulty))
++    capacity = (height // 2) * (width // 2)
++    if count > capacity:
++        raise ValueError(f"n_rects={count} cannot fit in a {height}x{width} grid; capacity is {capacity}")
++
++    palette_kind = ctx.draw_choice("palette_kind", PALETTE_KINDS)
++    colors = list(PALETTES[palette_kind][:count])
++    ctx.draw_rng("palette_order").shuffle(colors)
++
++    slots = list(_slot_layout(height, width, count))
++    layout_rng = ctx.draw_rng("layout")
++    layout_rng.shuffle(slots)
++    grid = full_grid(height, width, 0)
++    for color, (slot_r, slot_c, slot_h, slot_w) in zip(colors, slots):
++        rect_h = layout_rng.randint(2, min(4, slot_h))
++        rect_w = layout_rng.randint(2, min(5, slot_w))
++        top = slot_r + layout_rng.randint(0, slot_h - rect_h)
++        left = slot_c + layout_rng.randint(0, slot_w - rect_w)
++        bottom = top + rect_h - 1
++        right = left + rect_w - 1
++        if layout_rng.randrange(2):
++            first, second = (top, left), (bottom, right)
++        else:
++            first, second = (top, right), (bottom, left)
++        grid[first[0]][first[1]] = color
++        grid[second[0]][second[1]] = color
++
++    errors = self_check(grid)
++    if errors:
++        raise RuntimeError("constructed invalid opposite-corner scene: " + "; ".join(errors))
++    return grid
++
++
++def _grid_errors(grid: Any) -> tuple[list[str], int, int]:
++    if type(grid) is not list or not grid or type(grid[0]) is not list or not grid[0]:
++        return ["empty or non-grid input"], 0, 0
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width for row in grid):
++        return ["ragged grid"], len(grid), width
++    errors: list[str] = []
++    height = len(grid)
++    if not (4 <= height <= 16 and 4 <= width <= 16):
++        errors.append("grid dimensions must be within 4..16")
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        errors.append("grid contains a non-integer or color outside 0..9")
++    return errors, height, width
++
++
++def _analyze(grid: Any) -> dict[str, Any]:
++    errors, height, width = _grid_errors(grid)
++    if height == 0 or width == 0 or any("ragged" in error for error in errors):
++        return {"errors": errors, "points": {}, "rectangles": {}}
++
++    points: dict[int, list[tuple[int, int]]] = {}
++    for row in range(height):
++        for col in range(width):
++            value = grid[row][col]
++            if type(value) is int and value != 0:
++                points.setdefault(value, []).append((row, col))
++    if not points:
++        errors.append("no nonzero corner pairs found")
++    if len(points) > 8:
++        errors.append(f"expected at most 8 active colors; found {len(points)}")
++
++    rectangles: dict[int, frozenset[tuple[int, int]]] = {}
++    for color, cells in sorted(points.items()):
++        if len(cells) != 2:
++            errors.append(f"color {color} must appear exactly twice; found {len(cells)}")
++            continue
++        (r1, c1), (r2, c2) = cells
++        if r1 == r2 or c1 == c2:
++            errors.append(f"color {color} cells must be diagonally opposite, not in the same row or column")
++            continue
++        rectangles[color] = frozenset(
++            (r, c)
++            for r in range(min(r1, r2), max(r1, r2) + 1)
++            for c in range(min(c1, c2), max(c1, c2) + 1)
++        )
++
++    items = sorted(rectangles.items())
++    for index, (color, rectangle) in enumerate(items):
++        for other_color, other_rectangle in items[index + 1:]:
++            if rectangle & other_rectangle:
++                errors.append(f"bounding rectangles for colors {color} and {other_color} overlap")
++
++    return {"errors": errors, "points": points, "rectangles": rectangles}
++
++
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Verify: bg 0, each non-zero color appears exactly twice."""
+-    if not grid or not grid[0]:
+-        return ["empty grid"]
+-    h, w = len(grid), len(grid[0])
+-    errs = []
+-    from collections import Counter
+-    counts = Counter(grid[r][c] for r in range(h) for c in range(w) if grid[r][c] != 0)
+-    if not counts:
+-        errs.append("no nonzero cells found")
+-        return errs
+-    bad = [c for c, n in counts.items() if n != 2]
+-    if bad:
+-        errs.append(f"color(s) {bad} don't appear exactly twice; each color needs 2 corner cells")
+-    return errs
+-
+-
+-def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION,
+-                  task_id=TASK_ID, difficulty=difficulty, overrides=overrides)
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], None)
+-    if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 8, 8)
+-        w = ctx.draw_int("grid_w", 8, 9)
+-        target = ctx.draw_int("rectangles", 2, 2)
+-    elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 9, 10)
+-        w = ctx.draw_int("grid_w", 9, 10)
+-        target = ctx.draw_int("rectangles", 3, 3)
+-    else:
+-        h = ctx.draw_int("grid_h", 8, 10)
+-        w = ctx.draw_int("grid_w", 8, 10)
+-        target = ctx.draw_int("rectangles", 2, 3)
+-    rng = ctx.draw_rng("layout")
+-    g = full_grid(h, w, 0)
+-    colors = rng.sample([1, 2, 3, 4, 5, 6, 7, 8, 9], k=target)
+-    reserved: set[tuple[int, int]] = set()
+-    placed = 0
+-    for _ in range(300):
+-        if placed >= target:
+-            break
+-        rh = rng.randint(2, min(4, h))
+-        rw = rng.randint(2, min(5, w))
+-        r1 = rng.randint(0, h - rh)
+-        c1 = rng.randint(0, w - rw)
+-        r2 = r1 + rh - 1
+-        c2 = c1 + rw - 1
+-        rect = {(r, c) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)}
+-        if rect & reserved:
+-            continue
+-        color = colors[placed]
+-        if rng.randrange(2):
+-            a, b = (r1, c1), (r2, c2)
+-        else:
+-            a, b = (r1, c2), (r2, c1)
+-        g[a[0]][a[1]] = color
+-        g[b[0]][b[1]] = color
+-        reserved.update(rect)
+-        placed += 1
+-    return g
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    h, w = 9, 9
+-    g = full_grid(h, w, 0)
+-    if name == "no_pairs":
+-        # blank → no opposite-corner pairs to define rectangles
+-        return g
+-    if name == "single_endpoint":
+-        # 1 cell per color → can't form pair
+-        g[2][2] = 4
+-        g[5][6] = 6
+-        return g
+-    if name == "axis_aligned":
+-        # 2 cells in same row → degenerate to a line, no rectangle
+-        g[3][1] = 4; g[3][7] = 4
+-        return g
+-    return g
++    del difficulty, meta
++    return list(_analyze(grid)["errors"])
+diff --git a/repo/generators/7a8926bd9d9f/notes.md b/repo/generators/7a8926bd9d9f/notes.md
+--- a/repo/generators/7a8926bd9d9f/notes.md
++++ b/repo/generators/7a8926bd9d9f/notes.md
+@@ -1,10 +1,37 @@
+ # Working notes: 7a8926bd9d9f
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Current repair
++
++Version 2.1.0 fixes the retained source-bound audit without changing canonical
++Racket authority or rule hash `e6d9cb6ee6d8`. The prior generator drew the key
++`rectangles` while advertising `n_rects`, never consumed palette controls, and
++accepted unknown/coercive overrides. It also treated two same-color cells in a
++single row as valid even though protected Racket leaves that fixture unchanged.
++
++The repaired API exposes only observable controls: `grid_h` and `grid_w` in
++4..16, `n_rects` in 1..8, and four palette families. Helpful `texture` values
++are exact palette aliases; conflicting aliases fail visibly. Rectangle count is
++constructive rather than retry-based: the grid is partitioned into disjoint
++cells at least 2x2, so every accepted count is placed or an incompatible small
++grid/count request raises a capacity error. Colors remain distinct.
++
++`self_check` now validates rectangular exact-integer grids, two occurrences per
++active color, a row and column difference for every pair, and pairwise-disjoint
++bounding rectangles. The old `no_pairs`, `single_endpoint`, and `axis_aligned`
++textures remain available only as explicit negative fixtures and are all
++rejected by the validator.
++
++Focused tests cover every count 1..8, exact dimensions, palette aliases,
++invalid controls, canonical pairs, overlap rejection, repeatability, and fresh
++mutable outputs. `workspace/repair_audit.py` is a reusable source-bound audit;
++its retained run executes 17 labels through protected Racket (all counts, all
++palettes, min/max controls, and all canonical pairs) and checks all three
++negative fixtures. No canonical source or Racket program changed. Arbitrary
++out-of-domain grids and distribution quality remain outside this finite check.
+ 
+ <!-- arcpuzzles-current-supplementary:start -->
+ ## Current supplementary checks
+ 
+ Current source-bound ticket observations: `generators/7a8926bd9d9f/evidence/supplementary-current.json`. Results are reviewer-reported; blocked or unknown stays explicit. These observations do not approve a generator or variant, resolve audits, or admit data to training.
+ <!-- arcpuzzles-current-supplementary:end -->
++
+diff --git a/repo/generators/7a8926bd9d9f/tests/test_generator_contract.py b/repo/generators/7a8926bd9d9f/tests/test_generator_contract.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/7a8926bd9d9f/tests/test_generator_contract.py
+@@ -0,0 +1,123 @@
++"""Behavioral regressions for the opposite-corner rectangle family."""
++from __future__ import annotations
++
++from collections import Counter
++
++import pytest
++
++from reviewer_support import canonical_pairs, find_root, load_selected_generator
++
++TASK = "7a8926bd9d9f"
++ROOT = find_root(__file__)
++GEN, SOURCE, SOURCE_SHA256 = load_selected_generator(TASK, root=ROOT)
++
++EXPECTED_PALETTES = {
++    "default": {1, 2, 3, 4, 5, 6, 7, 8, 9},
++    "warm": {2, 4, 6, 7, 9},
++    "cool": {1, 3, 5, 8},
++    "varied": {1, 2, 3, 4, 5, 6, 7, 8, 9},
++}
++
++
++def active_colors(grid):
++    return {value for row in grid for value in row if value != 0}
++
++
++def rectangle_count(grid):
++    counts = Counter(value for row in grid for value in row if value != 0)
++    assert all(count == 2 for count in counts.values())
++    return len(counts)
++
++
++def independent_fill(grid):
++    points = {}
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if value:
++                points.setdefault(value, []).append((r, c))
++    out = [row[:] for row in grid]
++    for color, pair in points.items():
++        assert len(pair) == 2
++        (r1, c1), (r2, c2) = pair
++        assert r1 != r2 and c1 != c2
++        for r in range(min(r1, r2), max(r1, r2) + 1):
++            for c in range(min(c1, c2), max(c1, c2) + 1):
++                out[r][c] = color
++    return out
++
++
++@pytest.mark.parametrize("count", range(1, 9))
++def test_n_rects_override_is_exact_and_valid(count):
++    grid = GEN.generate(17, 11, difficulty="hard", n_rects=count)
++    assert rectangle_count(grid) == count
++    assert GEN.self_check(grid) == []
++
++
++@pytest.mark.parametrize("height,width", [(4, 4), (8, 11), (16, 16)])
++def test_grid_dimensions_are_exact(height, width):
++    grid = GEN.generate(5, 9, grid_h=height, grid_w=width, n_rects=1)
++    assert (len(grid), len(grid[0])) == (height, width)
++    assert GEN.self_check(grid) == []
++
++
++def test_impossible_count_and_grid_combination_fails_visibly():
++    with pytest.raises(ValueError, match="fit|capacity"):
++        GEN.generate(5, 9, grid_h=4, grid_w=4, n_rects=5)
++
++
++@pytest.mark.parametrize("palette", ("default", "warm", "cool", "varied"))
++def test_palette_kind_is_observable_and_texture_is_an_exact_alias(palette):
++    direct = GEN.generate(31, 7, n_rects=3, palette_kind=palette)
++    alias = GEN.generate(31, 7, n_rects=3, texture=palette)
++    assert direct == alias
++    assert active_colors(direct) <= EXPECTED_PALETTES[palette]
++    assert len(active_colors(direct)) == 3
++
++
++@pytest.mark.parametrize("axis,bad", [
++    ("grid_h", 3), ("grid_h", 17), ("grid_h", True), ("grid_h", "8"),
++    ("grid_w", 3), ("grid_w", 17), ("grid_w", False), ("grid_w", 8.0),
++    ("n_rects", 0), ("n_rects", 9), ("n_rects", True), ("n_rects", "3"),
++    ("palette_kind", "bogus"), ("texture", "bogus"),
++    ("misspelled_axis", 2),
++])
++def test_invalid_and_unknown_controls_fail_visibly(axis, bad):
++    with pytest.raises((TypeError, ValueError)):
++        GEN.generate(17, 11, **{axis: bad})
++
++
++def test_conflicting_palette_aliases_fail_visibly():
++    with pytest.raises(ValueError, match="conflict"):
++        GEN.generate(17, 11, palette_kind="warm", texture="cool")
++
++
++def test_axis_aligned_degenerate_is_rejected_by_validator():
++    grid = GEN.generate(0, 0, texture="axis_aligned")
++    errors = GEN.self_check(grid)
++    assert errors
++    assert any("opposite" in error or "row" in error or "column" in error for error in errors)
++
++
++def test_overlapping_bounding_rectangles_are_rejected():
++    grid = [[0] * 6 for _ in range(6)]
++    grid[0][0] = grid[3][3] = 2
++    grid[0][3] = grid[3][0] = 4
++    errors = GEN.self_check(grid)
++    assert any("overlap" in error for error in errors)
++
++
++def test_canonical_examples_remain_in_domain_and_match_independent_fill():
++    for pair in canonical_pairs(TASK, root=ROOT):
++        assert GEN.self_check(pair["input"]) == []
++        assert independent_fill(pair["input"]) == pair["output"]
++
++
++@pytest.mark.parametrize("band", ("easy", "medium", "hard", None))
++def test_generation_is_repeatable_fresh_and_valid(band):
++    first = GEN.generate(83, 19, difficulty=band)
++    second = GEN.generate(83, 19, difficulty=band)
++    assert first == second
++    assert first is not second and first[0] is not second[0]
++    assert GEN.self_check(first) == []
++    first[0][0] = 9
++    assert GEN.generate(83, 19, difficulty=band) == second
+diff --git a/repo/generators/7a8926bd9d9f/workspace/repair_audit.py b/repo/generators/7a8926bd9d9f/workspace/repair_audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/7a8926bd9d9f/workspace/repair_audit.py
+@@ -0,0 +1,155 @@
++"""Source-bound protected-Racket audit for the 7a8926bd9d9f repair.
++
++This is intentionally reusable: future reviewers can rerun it after edits and
++compare exact-control coverage, validator behavior, and canonical labels.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_pairs, canonical_path, find_root, load_selected_generator
++
++TASK_ID = "7a8926bd9d9f"
++
++
++def _literal(grid):
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++def _canonical_program(root: Path) -> str:
++    matches = []
++    for line in canonical_path(root).read_text(encoding="utf-8").splitlines():
++        row = json.loads(line)
++        if row.get("task_id") == TASK_ID:
++            matches.append(row["program_solution"])
++    if len(matches) != 1:
++        raise RuntimeError(f"expected one canonical program, found {len(matches)}")
++    return matches[0]
++
++
++def _independent_fill(grid):
++    points = {}
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if value:
++                points.setdefault(value, []).append((r, c))
++    output = [row[:] for row in grid]
++    for color, pair in points.items():
++        if len(pair) != 2:
++            raise AssertionError(f"color {color} has {len(pair)} points")
++        (r1, c1), (r2, c2) = pair
++        if r1 == r2 or c1 == c2:
++            raise AssertionError(f"color {color} is not an opposite-corner pair")
++        for r in range(min(r1, r2), max(r1, r2) + 1):
++            for c in range(min(c1, c2), max(c1, c2) + 1):
++                output[r][c] = color
++    return output
++
++
++def _case(name, grid):
++    return {"name": name, "input": grid, "expected": _independent_fill(grid)}
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", required=True)
++    args = parser.parse_args()
++
++    root = find_root(__file__)
++    generator, source, source_sha = load_selected_generator(TASK_ID, root=root)
++    cases = []
++    for count in range(1, 9):
++        cases.append(_case(
++            f"exact-count-{count}",
++            generator.generate(17, count, difficulty="hard", n_rects=count),
++        ))
++    for index, palette in enumerate(generator.PALETTE_KINDS):
++        direct = generator.generate(31, index, n_rects=3, palette_kind=palette)
++        alias = generator.generate(31, index, n_rects=3, texture=palette)
++        if direct != alias:
++            raise AssertionError(f"texture alias differs for {palette}")
++        cases.append(_case(f"palette-{palette}", direct))
++    cases.extend([
++        _case("minimum-grid", generator.generate(5, 9, grid_h=4, grid_w=4, n_rects=1)),
++        _case("maximum-grid-count", generator.generate(5, 10, grid_h=16, grid_w=16, n_rects=8)),
++    ])
++    for index, pair in enumerate(canonical_pairs(TASK_ID, root=root)):
++        cases.append(_case(f"canonical-{index}", pair["input"]))
++        if cases[-1]["expected"] != pair["output"]:
++            raise AssertionError(f"canonical Python oracle mismatch at pair {index}")
++
++    for case in cases:
++        errors = generator.self_check(case["input"])
++        if errors:
++            raise AssertionError(f"{case['name']} outside repaired grammar: {errors}")
++
++    degenerate_errors = {}
++    for texture in generator.DEGENERATE_TEXTURES:
++        grid = generator.generate(0, 0, texture=texture)
++        errors = generator.self_check(grid)
++        if not errors:
++            raise AssertionError(f"degenerate texture {texture} passed self_check")
++        degenerate_errors[texture] = errors
++
++    program = _canonical_program(root)
++    rule = wrap_rule(program)
++    labels = []
++    with RacketBridge() as bridge:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise RuntimeError("audit requires protected Racket")
++        for case in cases:
++            actual = bridge.eval_text(f"({rule} {_literal(case['input'])})")
++            if actual != case["expected"]:
++                raise AssertionError(f"protected Racket mismatch for {case['name']}")
++            labels.append({
++                "name": case["name"],
++                "input_shape": [len(case["input"]), len(case["input"][0])],
++                "active_colors": sorted({v for row in case["input"] for v in row if v}),
++                "input_sha256": hashlib.sha256(json.dumps(case["input"], separators=(",", ":")).encode()).hexdigest(),
++                "output_sha256": hashlib.sha256(json.dumps(actual, separators=(",", ":")).encode()).hexdigest(),
++            })
++
++    result = {
++        "schema": "arcpuzzles-generator-repair-audit-v1",
++        "task_id": TASK_ID,
++        "generator_sha256": source_sha,
++        "canonical_program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++        "cases": labels,
++        "case_count": len(labels),
++        "racket_evaluations": len(labels),
++        "exact_counts_covered": list(range(1, 9)),
++        "palette_aliases_covered": list(generator.PALETTE_KINDS),
++        "degenerate_validator_rejections": degenerate_errors,
++        "racket": {
++            key: identity[key]
++            for key in (
++                "schema", "backend", "protected", "binary_sha256", "prelude_sha256",
++                "bridge_sha256", "boot_script_sha256", "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        },
++        "scope": (
++            "Finite source-bound check of exact counts 1..8, four palette aliases, "
++            "minimum/maximum control cases, and all canonical pairs. It does not "
++            "prove arbitrary learnability or distribution quality."
++        ),
++    }
++    target = Path(args.out)
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({
++        "out": str(target),
++        "case_count": result["case_count"],
++        "racket_evaluations": result["racket_evaluations"],
++        "generator_sha256": source_sha,
++    }, sort_keys=True))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/repo/generators/f65b8464b007/notes.md b/repo/generators/f65b8464b007/notes.md
+--- a/repo/generators/f65b8464b007/notes.md
++++ b/repo/generators/f65b8464b007/notes.md
+@@ -1,4 +1,27 @@
+ # Working notes: f65b8464b007
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Current parametric design
++
++The native adapter preserves the exact canonical `shift_rule="next"` Racket
++bytes and adds `shift_rule="densest_index"`. Inputs retain the original banded
++cyclic-shift grammar. Step A counts occupied cells in each first-band section
++and selects the unique densest shape; the zero-based section index is the
++input-dependent intermediate. Step B uses that index as the cyclic source
++offset for final-band shapes while preserving destination colors.
++
++The alternative is deliberately non-collapsing: generated lessons vary the
++densest index and keep it at least two, so neither a fixed one-step rule nor a
++simple right/left shortcut survives. A bounded protected-Racket audit evaluates
++eight declared rivals over matched three-demo/four-query episodes for both
++settings; each intended setting is the sole demonstration survivor and every
++other rival disagrees on at least one query. This is finite evidence, not a
++universal uniqueness claim.
++
++The family supports 2–6 demonstrations and exactly four distinct queries. The
++largest stress query is 29x29 with substantive content; an exact 30x30 square is
++not lawful because three-row bands separated by blank rows have height `4b+1`.
++Native qualification is source-bound and passing. The causal witness replays a
++qualified query with intermediate index 2 and shows that substituting the
++canonical one-step program changes the final output. Reviewer status is ready;
++owner integration, fresh qualification, and acceptance on exact live bytes are
++still required before training admission.
+diff --git a/repo/generators/f65b8464b007/tests/test_generator_f65b8464b007.py b/repo/generators/f65b8464b007/tests/test_generator_f65b8464b007.py
+--- a/repo/generators/f65b8464b007/tests/test_generator_f65b8464b007.py
++++ b/repo/generators/f65b8464b007/tests/test_generator_f65b8464b007.py
+@@ -8,13 +8,14 @@
+ 
+ from puzzle_generators import base
+ from puzzle_generators.per_puzzle.f65b8464b007 import generator
+-
+-
+-ROOT = Path(__file__).resolve().parents[1]
++from reviewer_support import canonical_path, find_root
++
++
++ROOT = find_root(__file__)
+ 
+ 
+ def canonical_row():
+-    with (ROOT / "data/canonical/puzzles.jsonl").open() as handle:
++    with canonical_path(ROOT).open() as handle:
+         for line in handle:
+             row = json.loads(line)
+             if row.get("task_id") == generator.TASK_ID:
+@@ -442,8 +443,14 @@
+             / "e78887d1__f65b8464b007.json"
+         ).read_text())
+         target = base_row["racket_target"]
+-        self.assertEqual(target["raw_code"], source)
+-        self.assertEqual(target["target_code"], source)
++        self.assertEqual(
++            normalized_rule_hash(target["raw_code"]),
++            normalized_rule_hash(source),
++        )
++        self.assertEqual(
++            normalized_rule_hash(target["target_code"]),
++            normalized_rule_hash(source),
++        )
+         self.assertEqual(
+             generator.RULE_HASH,
+             normalized_rule_hash(source)[:12],
+diff --git a/repo/generators/f65b8464b007/tests/test_parametric_f65b8464b007.py b/repo/generators/f65b8464b007/tests/test_parametric_f65b8464b007.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f65b8464b007/tests/test_parametric_f65b8464b007.py
+@@ -0,0 +1,181 @@
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from reviewer_support import canonical_path, find_root, public_challenge_bytes
++
++
++TASK_ID = "f65b8464b007"
++ROOT = find_root(__file__)
++PARAMETRIC = ROOT / "generators" / TASK_ID / "workspace" / "parametric"
++
++
++def _load(name: str, filename: str):
++    path = PARAMETRIC / filename
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _canonical_program() -> str:
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                return row["program_solution"]
++    raise KeyError(TASK_ID)
++
++
++def _shape(grid: list[list[int]]) -> tuple[int, int]:
++    return len(grid), len(grid[0])
++
++
++def _inputs(episode: dict) -> list[list[list[int]]]:
++    return [pair["input"] for split in ("train", "test") for pair in episode[split]]
++
++
++def test_programs_and_promotion_preserve_the_exact_canonical_default():
++    prototype = _load("_f65_parametric_prototype_contract", "prototype.py")
++    adapter = _load("_f65_parametric_adapter_contract", "adapter.py")
++    contract = json.loads((PARAMETRIC / "promotion.json").read_text())
++
++    canonical = {"shift_rule": "next"}
++    alternate = {"shift_rule": "densest_index"}
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": f"generators/{TASK_ID}/workspace/parametric/adapter.py",
++        "parameters": {"shift_rule": ["next", "densest_index"]},
++        "default": canonical,
++        "limits": {"demos": [2, 6], "queries": [4, 4]},
++        "resources": [
++            f"generators/{TASK_ID}/workspace/parametric/prototype.py"
++        ],
++    }
++    assert adapter.program(canonical) == _canonical_program()
++    assert prototype.program(canonical) == _canonical_program()
++    assert adapter.program(alternate) == prototype.program(alternate)
++    assert adapter.program(alternate) != _canonical_program()
++
++
++@pytest.mark.parametrize("demos", [2, 3, 6])
++def test_setting_neutral_inputs_identify_each_rule_with_four_distinct_queries(demos):
++    prototype = _load("_f65_parametric_prototype_lessons", "prototype.py")
++    adapter = _load("_f65_parametric_adapter_lessons", "adapter.py")
++    settings = [
++        {"shift_rule": "next"},
++        {"shift_rule": "densest_index"},
++    ]
++    episodes = [adapter.generate(107, setting, demos, 4) for setting in settings]
++
++    assert [_inputs(episode) for episode in episodes[:1]] == [
++        _inputs(episodes[1])
++    ]
++    for setting, episode in zip(settings, episodes):
++        assert len(episode["train"]) == demos
++        assert len(episode["test"]) == 4
++        assert episode["program_solution"] == adapter.program(setting)
++        serialized = [
++            json.dumps(grid, separators=(",", ":"))
++            for grid in _inputs(episode)
++        ]
++        assert len(serialized) == len(set(serialized))
++        certificate = prototype.lesson_certificate(episode)
++        assert certificate["survivors"] == [setting["shift_rule"]]
++        assert certificate["identifiable"] is True
++        assert all(certificate["query_disagreements"].values())
++
++    # The four fixed query roles cover ordinary, wider, boundary, and maximum
++    # lawful stress. Exact 30x30 is impossible for 3-row bands separated by
++    # blank rows; 29x29 is the largest square under this grammar.
++    assert [_shape(pair["input"]) for pair in episodes[0]["test"]] == [
++        (9, 11),
++        (13, 19),
++        (17, 29),
++        (29, 29),
++    ]
++    large = episodes[0]["test"][-1]["input"]
++    assert sum(cell != 0 for row in large for cell in row) >= 250
++
++    # Public projection includes demonstrations and only query inputs.
++    public = {
++        "train": episodes[0]["train"],
++        "test": [{"input": pair["input"]} for pair in episodes[0]["test"]],
++    }
++    payload = json.loads(public_challenge_bytes(public))
++    assert all("output" not in pair for pair in payload["test"])
++    assert "program_solution" not in payload
++    assert "shift_rule" not in payload
++
++
++def test_densest_index_is_a_real_input_dependent_shift_and_not_a_fixed_shortcut():
++    prototype = _load("_f65_parametric_prototype_causal", "prototype.py")
++    episode = prototype.generate_episode(
++        991,
++        shift_rule="densest_index",
++        demos=3,
++        queries=4,
++    )
++    demo_shifts = []
++    for pair in episode["train"]:
++        analysis = prototype.analyze(pair["input"])
++        demo_shifts.append(analysis["densest_index"])
++        assert analysis["densest_index"] >= 2
++        assert pair["output"] == prototype.transform(
++            pair["input"], {"shift_rule": "densest_index"}
++        )
++        assert pair["output"] != prototype.transform(
++            pair["input"], {"shift_rule": "next"}
++        )
++    assert len(set(demo_shifts)) >= 2
++
++    # Every input band still exhibits the source task's one-section cyclic
++    # progression; the alternative output performs a separately taught,
++    # selector-derived rotation on the final band.
++    for grid in _inputs(episode):
++        analysis = prototype.analyze(grid)
++        for index in range(1, len(analysis["patterns"])):
++            previous = analysis["patterns"][index - 1]
++            expected = tuple(
++                previous[(section + 1) % analysis["n_sections"]]
++                for section in range(analysis["n_sections"])
++            )
++            assert analysis["patterns"][index] == expected
++
++
++def test_generation_is_deterministic_fresh_and_strictly_bounded():
++    prototype = _load("_f65_parametric_prototype_bounds", "prototype.py")
++    adapter = _load("_f65_parametric_adapter_bounds", "adapter.py")
++    setting = {"shift_rule": "densest_index"}
++    first = adapter.generate(5, setting, 3, 4)
++    second = adapter.generate(5, setting, 3, 4)
++    assert first == second
++    assert first is not second
++    first["train"][0]["input"][0][0] = 9
++    assert first != second
++    assert adapter.generate(5, setting, 3, 4) == second
++
++    bad_calls = [
++        (True, setting, 3, 4),
++        (-1, setting, 3, 4),
++        (0, setting, 1, 4),
++        (0, setting, 7, 4),
++        (0, setting, 3, 3),
++        (0, setting, 3, 5),
++        (0, {}, 3, 4),
++        (0, {"shift_rule": "next", "extra": 1}, 3, 4),
++        (0, {"shift_rule": "unknown"}, 3, 4),
++    ]
++    for seed, settings, demos, queries in bad_calls:
++        with pytest.raises(ValueError):
++            adapter.generate(seed, settings, demos, queries)
++
++    for name in prototype.RIVAL_NAMES:
++        assert isinstance(prototype.rival_program(name), str)
++        assert prototype.rival_program(name).strip().startswith("(rule!")
+diff --git a/repo/generators/f65b8464b007/workspace/parametric/README.md b/repo/generators/f65b8464b007/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f65b8464b007/workspace/parametric/README.md
+@@ -0,0 +1,23 @@
++# Parametric cyclic-shift family
++
++This family keeps the source task's section parsing, fixed section colors, and
++cyclic transfer of final-band shapes.
++
++- `shift_rule=next` is the exact canonical Racket program byte-for-byte. Each
++  output section receives the next section's final-band shape.
++- `shift_rule=densest_index` first counts occupied cells in every first-band
++  shape. The unique densest shape's zero-based section index is the cyclic shift
++  applied to the final band. The sampler keeps that index at least two and varies
++  it across the first two demonstrations, so the dependency is active and is not
++  reducible to one fixed shift.
++
++The adapter supports 2–6 demonstrations and exactly four distinct queries. The
++four query roles are 9×11 ordinary transfer, 13×19 wider sections, 17×29
++boundary-width transfer, and a substantive 29×29 stress scene. Exact 30×30 is
++not lawful under this grammar: three-row bands separated by one blank row have
++height `4*b+1`; the extended five-wide/five-section grammar reaches 29×29.
++
++`evidence/current/audit.json` records a protected-Racket audit of eight finite
++rules on matched inputs. It is bounded evidence, not a universal uniqueness or
++learning claim. Query answers, settings, and programs remain private in native
++qualification/export records.
+diff --git a/repo/generators/f65b8464b007/workspace/parametric/adapter.py b/repo/generators/f65b8464b007/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f65b8464b007/workspace/parametric/adapter.py
+@@ -0,0 +1,25 @@
++"""Native promotion adapter for the reviewed cyclic-shift prototype."""
++from importlib.util import module_from_spec, spec_from_file_location
++from pathlib import Path
++
++
++# Load exact adjacent bytes. Another adapter may already have imported a module
++# called ``prototype`` in the worker process.
++_path = Path(__file__).with_name("prototype.py")
++_spec = spec_from_file_location("_cyclic_shift_f65b8464b007", _path)
++_prototype = module_from_spec(_spec)
++_spec.loader.exec_module(_prototype)
++
++
++def program(settings):
++    return _prototype.program(settings)
++
++
++def generate(seed, settings, demos, queries):
++    selected = _prototype._settings(settings)
++    return _prototype.generate_episode(
++        seed,
++        shift_rule=selected["shift_rule"],
++        demos=demos,
++        queries=queries,
++    )
+diff --git a/repo/generators/f65b8464b007/workspace/parametric/evidence/current/audit.json b/repo/generators/f65b8464b007/workspace/parametric/evidence/current/audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f65b8464b007/workspace/parametric/evidence/current/audit.json
+@@ -0,0 +1,161 @@
++{
++  "demos": 3,
++  "distinct_inputs": true,
++  "exact_30x30_limit": "Impossible under three-row bands with one blank row between bands: height is 4*b+1. The 29x29 query is the largest square <=30 in the extended 3x5-section grammar.",
++  "large_query_nonzero_cells": 280,
++  "matched_inputs": true,
++  "prototype_sha256": "560318078daa7313b535b460908392073c45879ebaf7b20312bf941aa209fd65",
++  "public_projection_query_outputs_omitted": true,
++  "public_projection_sha256": "b810a96c5f6e16f5425661fa6ac347318ba9d3a0ac35a61afd800de40a1f2d8b",
++  "queries": 4,
++  "query_densest_indices": [
++    2,
++    3,
++    2,
++    4
++  ],
++  "query_shapes": [
++    [
++      9,
++      11
++    ],
++    [
++      13,
++      19
++    ],
++    [
++      17,
++      29
++    ],
++    [
++      29,
++      29
++    ]
++  ],
++  "racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "racket_evaluations": 56,
++  "rivals": [
++    "next",
++    "densest_index",
++    "no_shift",
++    "fixed_two",
++    "fixed_three",
++    "right_one",
++    "sparsest_index",
++    "densest_count_mod"
++  ],
++  "schema": "arcpuzzles-parametric-self-audit-v1",
++  "scope": "Finite audit of eight declared rules on one matched 3-demo/4-query episode per setting; not a universal uniqueness or learning claim.",
++  "seed": 107,
++  "settings": [
++    {
++      "demo_survivors": [
++        "next"
++      ],
++      "label_sha256": "c08797a725b3d6dde97c9a621a291f6b98d01cd685bbfc5c9ad27e2c256cadd2",
++      "program_sha256": "ba35f9832d4d966f4ac04fb92bd2045977c9e8c17e0a3acba06a223305a67361",
++      "query_disagreements": {
++        "densest_count_mod": [
++          0,
++          1,
++          2,
++          3
++        ],
++        "densest_index": [
++          0,
++          1,
++          2,
++          3
++        ],
++        "fixed_three": [
++          0,
++          1,
++          2,
++          3
++        ],
++        "fixed_two": [
++          0,
++          1,
++          2,
++          3
++        ],
++        "no_shift": [
++          0,
++          1,
++          2,
++          3
++        ],
++        "right_one": [
++          0,
++          1,
++          2,
++          3
++        ],
++        "sparsest_index": [
++          0,
++          1,
++          2,
++          3
++        ]
++      },
++      "settings": {
++        "shift_rule": "next"
++      }
++    },
++    {
++      "demo_survivors": [
++        "densest_index"
++      ],
++      "label_sha256": "ff59e0ed834d111cf4f7946fe96f24e4887b18d8c6391ad7f5256a4ac85d2261",
++      "program_sha256": "3ab9abe69060787a877992015bd8d4f7106ed0a5d5a6dc34bcc3cdc27235cfe4",
++      "query_disagreements": {
++        "densest_count_mod": [
++          2
++        ],
++        "fixed_three": [
++          0,
++          2,
++          3
++        ],
++        "fixed_two": [
++          1,
++          3
++        ],
++        "next": [
++          0,
++          1,
++          2,
++          3
++        ],
++        "no_shift": [
++          0,
++          1,
++          2,
++          3
++        ],
++        "right_one": [
++          2
++        ],
++        "sparsest_index": [
++          0,
++          1,
++          2,
++          3
++        ]
++      },
++      "settings": {
++        "shift_rule": "densest_index"
++      }
++    }
++  ],
++  "task_id": "f65b8464b007"
++}
+diff --git a/repo/generators/f65b8464b007/workspace/parametric/evidence/current/audit.py b/repo/generators/f65b8464b007/workspace/parametric/evidence/current/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f65b8464b007/workspace/parametric/evidence/current/audit.py
+@@ -0,0 +1,187 @@
++"""Run a bounded protected-Racket learnability audit for f65b8464b007."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import public_challenge_bytes
++
++
++def _load_prototype():
++    path = Path(__file__).resolve().parents[2] / "prototype.py"
++    spec = importlib.util.spec_from_file_location("_f65_audit_prototype", path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module, path
++
++
++def _literal(grid):
++    return "'(" + " ".join(
++        "(" + " ".join(map(str, row)) + ")" for row in grid
++    ) + ")"
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", required=True)
++    parser.add_argument("--seed", type=int, default=107)
++    parser.add_argument("--demos", type=int, default=3)
++    args = parser.parse_args()
++
++    prototype, source = _load_prototype()
++    settings = [
++        {"shift_rule": "next"},
++        {"shift_rule": "densest_index"},
++    ]
++    episodes = [
++        prototype.generate_episode(
++            args.seed,
++            shift_rule=setting["shift_rule"],
++            demos=args.demos,
++            queries=4,
++        )
++        for setting in settings
++    ]
++    inputs = [
++        pair["input"]
++        for split in ("train", "test")
++        for pair in episodes[0][split]
++    ]
++    if inputs != [
++        pair["input"]
++        for split in ("train", "test")
++        for pair in episodes[1][split]
++    ]:
++        raise AssertionError("settings did not receive matched inputs")
++
++    bridge = RacketBridge()
++    wrapped = {
++        name: wrap_rule(prototype.rival_program(name))
++        for name in prototype.RIVAL_NAMES
++    }
++    cache = {}
++    try:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise RuntimeError("audit requires protected Racket")
++        for name, rule in wrapped.items():
++            for index, grid in enumerate(inputs):
++                output = bridge.eval_text(f"({rule} {_literal(grid)})")
++                cache[(name, index)] = output
++                expected = prototype.transform_rival(grid, name)
++                if output != expected:
++                    raise AssertionError(f"Racket/Python disagreement for {name} input {index}")
++    finally:
++        bridge.close()
++
++    reports = []
++    for setting, episode in zip(settings, episodes):
++        labels = [
++            pair["output"]
++            for split in ("train", "test")
++            for pair in episode[split]
++        ]
++        survivors = [
++            name for name in prototype.RIVAL_NAMES
++            if all(cache[(name, index)] == labels[index]
++                   for index in range(args.demos))
++        ]
++        if survivors != [setting["shift_rule"]]:
++            raise AssertionError(f"unexpected demo survivors: {survivors}")
++        disagreements = {
++            name: [
++                index - args.demos
++                for index in range(args.demos, args.demos + 4)
++                if cache[(name, index)] != labels[index]
++            ]
++            for name in prototype.RIVAL_NAMES
++            if name != setting["shift_rule"]
++        }
++        if not all(disagreements.values()):
++            raise AssertionError(f"a rival agrees on all queries: {disagreements}")
++        reports.append({
++            "settings": setting,
++            "demo_survivors": survivors,
++            "query_disagreements": disagreements,
++            "program_sha256": hashlib.sha256(
++                prototype.program(setting).encode()
++            ).hexdigest(),
++            "label_sha256": hashlib.sha256(
++                json.dumps(labels, sort_keys=True, separators=(",", ":")).encode()
++            ).hexdigest(),
++        })
++
++    public = {
++        "train": episodes[0]["train"],
++        "test": [{"input": pair["input"]} for pair in episodes[0]["test"]],
++    }
++    public_payload = json.loads(public_challenge_bytes(public))
++    if any("output" in pair for pair in public_payload["test"]):
++        raise AssertionError("query answers leaked into public projection")
++
++    analyses = [prototype.analyze(grid) for grid in inputs]
++    result = {
++        "schema": "arcpuzzles-parametric-self-audit-v1",
++        "task_id": prototype.TASK_ID,
++        "seed": args.seed,
++        "demos": args.demos,
++        "queries": 4,
++        "rivals": list(prototype.RIVAL_NAMES),
++        "settings": reports,
++        "matched_inputs": True,
++        "distinct_inputs": len({json.dumps(grid) for grid in inputs}) == len(inputs),
++        "query_shapes": [
++            [analysis["height"], analysis["width"]]
++            for analysis in analyses[args.demos:]
++        ],
++        "query_densest_indices": [
++            analysis["densest_index"] for analysis in analyses[args.demos:]
++        ],
++        "large_query_nonzero_cells": sum(
++            value != 0 for row in inputs[-1] for value in row
++        ),
++        "exact_30x30_limit": (
++            "Impossible under three-row bands with one blank row between bands: "
++            "height is 4*b+1. The 29x29 query is the largest square <=30 in "
++            "the extended 3x5-section grammar."
++        ),
++        "public_projection_sha256": hashlib.sha256(
++            public_challenge_bytes(public)
++        ).hexdigest(),
++        "public_projection_query_outputs_omitted": True,
++        "racket": {
++            key: identity[key]
++            for key in (
++                "schema", "backend", "protected", "binary_sha256",
++                "prelude_sha256", "bridge_sha256", "boot_script_sha256",
++                "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        },
++        "racket_evaluations": len(cache),
++        "prototype_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
++        "scope": (
++            "Finite audit of eight declared rules on one matched 3-demo/4-query "
++            "episode per setting; not a universal uniqueness or learning claim."
++        ),
++    }
++    target = Path(args.out)
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({
++        "out": str(target),
++        "racket_evaluations": result["racket_evaluations"],
++        "settings": [row["demo_survivors"] for row in reports],
++        "query_shapes": result["query_shapes"],
++    }, sort_keys=True))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/repo/generators/f65b8464b007/workspace/parametric/evidence/manifest.json b/repo/generators/f65b8464b007/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f65b8464b007/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,77 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "ba35f9832d4d966f4ac04fb92bd2045977c9e8c17e0a3acba06a223305a67361",
++  "canonical_rule_hash": "ca4a7208d4ef",
++  "default": {
++    "shift_rule": "next"
++  },
++  "evidence_root": "generators/f65b8464b007/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 16635,
++      "path": "generators/f65b8464b007/generator.py",
++      "sha256": "547d56da13f2c444627c83b1cc092c74ba294d86ab70469ad14271a9ea13a99a"
++    },
++    {
++      "bytes": 17001,
++      "path": "generators/f65b8464b007/tests/test_generator_f65b8464b007.py",
++      "sha256": "0e57d1f0f663128d8e8f3b8f89aa172fc9dc6e6b1bd074c5af2bd840bc432647"
++    },
++    {
++      "bytes": 6858,
++      "path": "generators/f65b8464b007/tests/test_parametric_f65b8464b007.py",
++      "sha256": "5c3556985f1d3c759bc486b94c7f6ede63ba109e3e190e54ceb0461cb3bedc6d"
++    },
++    {
++      "bytes": 794,
++      "path": "generators/f65b8464b007/workspace/parametric/adapter.py",
++      "sha256": "4beac941a43b1037525ba4879a27c0f3fd1a6b156e01bdc21e51db00e349a743"
++    },
++    {
++      "bytes": 3604,
++      "path": "generators/f65b8464b007/workspace/parametric/evidence/current/audit.json",
++      "sha256": "81014e17ff189ac5fbf819c5cd1e9a308a58aac436292b863dea76d9757e07c5"
++    },
++    {
++      "bytes": 6650,
++      "path": "generators/f65b8464b007/workspace/parametric/evidence/current/audit.py",
++      "sha256": "e2b2f0cbb2ff830816d8909419ac11ce27b652a640baf7be008dd4ef7fc616d1"
++    },
++    {
++      "bytes": 355,
++      "path": "generators/f65b8464b007/workspace/parametric/promotion.json",
++      "sha256": "9e4bf611f9b71fb5c1dc781f406afb55469b154f5a3a88bc5df903f9d3fc871c"
++    },
++    {
++      "bytes": 18321,
++      "path": "generators/f65b8464b007/workspace/parametric/prototype.py",
++      "sha256": "560318078daa7313b535b460908392073c45879ebaf7b20312bf941aa209fd65"
++    }
++  ],
++  "generator_sha256": "547d56da13f2c444627c83b1cc092c74ba294d86ab70469ad14271a9ea13a99a",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      4,
++      4
++    ]
++  },
++  "parameters": {
++    "shift_rule": [
++      "next",
++      "densest_index"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "16 task-local tests passed; protected Racket self-audit executed 56 labels across 8 finite rules, 3 demos and 4 queries per setting; matched-input public projection omitted all query outputs and private settings; exact 30x30 is arithmetically unavailable, with substantive 29x29 stress instead.",
++  "rule_task_id": "f65b8464b007",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "f65b8464b007",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/f65b8464b007/workspace/parametric/promotion.json b/repo/generators/f65b8464b007/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f65b8464b007/workspace/parametric/promotion.json
+@@ -0,0 +1,10 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/f65b8464b007/workspace/parametric/adapter.py",
++  "parameters": {"shift_rule": ["next", "densest_index"]},
++  "default": {"shift_rule": "next"},
++  "limits": {"demos": [2, 6], "queries": [4, 4]},
++  "resources": [
++    "generators/f65b8464b007/workspace/parametric/prototype.py"
++  ]
++}
+diff --git a/repo/generators/f65b8464b007/workspace/parametric/prototype.py b/repo/generators/f65b8464b007/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/f65b8464b007/workspace/parametric/prototype.py
+@@ -0,0 +1,400 @@
++"""Reviewed parametric prototype for cyclic shape continuation.
++
++The canonical ``next`` setting returns the authoritative Racket bytes exactly.
++The alternate ``densest_index`` setting first finds the unique largest shape in
++the first band, uses its zero-based section index as an input-dependent cyclic
++shift, and applies that shift to the final band while preserving section colors.
++"""
++from __future__ import annotations
++
++from functools import lru_cache
++import hashlib
++import itertools
++import json
++import random
++
++
++TASK_ID = "f65b8464b007"
++SETTINGS = ("next", "densest_index")
++RIVAL_NAMES = (
++    "next",
++    "densest_index",
++    "no_shift",
++    "fixed_two",
++    "fixed_three",
++    "right_one",
++    "sparsest_index",
++    "densest_count_mod",
++)
++CANONICAL_PROGRAM = '(rule! (lambda (g)\n         (let* ((h (rows g))\n                (w (cols g)))\n           (let* ((sw (find-first (lambda (c)\n                                    (all? (lambda (r) (zero? (at g r c))) (range 0 h)))\n                                  (range 1 w)))\n                  (stride (+ sw 1))\n                  (n-shapes (/ (+ w 1) stride))\n                  (starts (map (lambda (i) (* i stride)) (range 0 n-shapes)))\n                  (sep-rows (filter (lambda (r)\n                                      (all? (lambda (c) (zero? (at g r c))) (range 0 w)))\n                                    (range 0 h)))\n                  (last-start (+ 1 (nth sep-rows (- (length sep-rows) 2))))\n                  (first-start (+ 1 (first sep-rows)))\n                  (colors (map (lambda (si)\n                                 (let* ((sc (nth starts si))\n                                        (vals (filter (lambda (v) (!= v 0))\n                                                      (flatmap (lambda (r)\n                                                                 (map (lambda (c)\n                                                                        (at g r c))\n                                                                      (range sc\n                                                                             (+ sc sw))))\n                                                               (range first-start\n                                                                      (+ first-start 3))))))\n                                   (first vals)))\n                               (range 0 n-shapes))))\n             (build-grid 3\n                         w\n                         (r c)\n                         (let* ((si (/ c stride))\n                                (lc (mod c stride)))\n                           (if (or (>= si n-shapes) (>= lc sw))\n                               0\n                               (let* ((src-si (mod (+ si 1) n-shapes))\n                                      (src-sc (nth starts src-si))\n                                      (src-val (at g (+ last-start r) (+ src-sc lc))))\n                                 (if (!= src-val 0) (nth colors si) 0)))))))))'
++
++# The first two demonstrations deliberately use different selector-derived
++# shifts, so the two-demo minimum rejects every fixed-shift shortcut below.
++_DEMO_PROFILES = (
++    (3, 4, 1, 2),
++    (4, 5, 2, 3),
++    (3, 5, 3, 4),
++    (5, 4, 4, 2),
++    (4, 4, 5, 3),
++    (5, 5, 6, 4),
++)
++_QUERY_PROFILES = (
++    (3, 3, 2, 2),   # 9 x 11 ordinary transfer
++    (4, 4, 3, 3),   # 13 x 19 wider sections
++    (5, 5, 4, 2),   # 17 x 29 boundary-width case
++    (5, 5, 7, 4),   # 29 x 29 maximum square under the grammar
++)
++
++
++def _integer(value, name, low, high):
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an integer in {low}..{high}; bool is forbidden")
++    return value
++
++
++def _settings(value):
++    if type(value) is not dict or set(value) != {"shift_rule"}:
++        raise ValueError("Declare exactly shift_rule=next|densest_index")
++    if value["shift_rule"] not in SETTINGS:
++        raise ValueError("shift_rule must be next or densest_index")
++    return {"shift_rule": value["shift_rule"]}
++
++
++def _rng(seed, role, index, salt=0):
++    payload = f"f65b8464b007-parametric-v1:{seed}:{role}:{index}:{salt}".encode()
++    return random.Random(int.from_bytes(hashlib.sha256(payload).digest(), "big"))
++
++
++@lru_cache(maxsize=None)
++def _masks(shape_width, count):
++    masks = []
++    for occupied in itertools.combinations(range(3 * shape_width), count):
++        cells = set(occupied)
++        if any(not any(row * shape_width + col in cells for col in range(shape_width))
++               for row in range(3)):
++            continue
++        if any(not any(row * shape_width + col in cells for row in range(3))
++               for col in range(shape_width)):
++            continue
++        masks.append("".join("1" if index in cells else "0"
++                             for index in range(3 * shape_width)))
++    if not masks:
++        raise ValueError(f"No spanning masks for width={shape_width}, count={count}")
++    return tuple(masks)
++
++
++def _counts(shape_width, n_sections, densest_index):
++    maximum = 3 * shape_width - 1
++    minimum = shape_width
++    sparsest_index = (densest_index + 1) % n_sections
++    counts = [None] * n_sections
++    counts[densest_index] = maximum
++    counts[sparsest_index] = minimum
++    next_count = minimum + 1
++    for index in range(n_sections):
++        if counts[index] is None:
++            counts[index] = next_count
++            next_count += 1
++    if not all(minimum <= count <= maximum for count in counts):
++        raise AssertionError("profile requests more distinct count levels than available")
++    return tuple(counts)
++
++
++def _build_scene(seed, role, index, profile, salt=0):
++    shape_width, n_sections, n_bands, densest_index = profile
++    if not (3 <= shape_width <= 5 and 3 <= n_sections <= 5
++            and 1 <= n_bands <= 7 and 2 <= densest_index < n_sections):
++        raise AssertionError("invalid fixed profile")
++    rng = _rng(seed, role, index, salt)
++    counts = _counts(shape_width, n_sections, densest_index)
++    base = []
++    for section, count in enumerate(counts):
++        choices = _masks(shape_width, count)
++        base.append(choices[rng.randrange(len(choices))])
++    if len(set(base)) != n_sections:
++        raise AssertionError("count schedule should make first-band masks distinct")
++    colors = rng.sample(range(1, 10), n_sections)
++    patterns = tuple(
++        tuple(base[(section + band) % n_sections] for section in range(n_sections))
++        for band in range(n_bands)
++    )
++    height = 4 * n_bands + 1
++    width = n_sections * (shape_width + 1) - 1
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    for band, band_patterns in enumerate(patterns):
++        top = 1 + 4 * band
++        for section, mask in enumerate(band_patterns):
++            left = section * (shape_width + 1)
++            color = colors[section]
++            for offset, occupied in enumerate(mask):
++                if occupied == "1":
++                    grid[top + offset // shape_width][left + offset % shape_width] = color
++    analysis = analyze(grid)
++    if analysis["densest_index"] != densest_index:
++        raise AssertionError("constructed densest selector changed")
++    return grid
++
++
++def analyze(grid):
++    if type(grid) is not list or not grid or type(grid[0]) is not list or not grid[0]:
++        raise ValueError("grid must be a nonempty list of nonempty rows")
++    width = len(grid[0])
++    if not 1 <= len(grid) <= 30 or not 1 <= width <= 30:
++        raise ValueError("grid dimensions must be within ARC's 1..30 bound")
++    if any(type(row) is not list or len(row) != width
++           or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++           for row in grid):
++        raise ValueError("grid must be rectangular with exact integer ARC colors")
++    height = len(grid)
++    try:
++        shape_width = next(
++            col for col in range(1, width)
++            if all(grid[row][col] == 0 for row in range(height))
++        )
++    except StopIteration as error:
++        raise ValueError("no all-zero separator column") from error
++    stride = shape_width + 1
++    if (width + 1) % stride:
++        raise ValueError("section width does not tile the grid")
++    n_sections = (width + 1) // stride
++    separator_rows = [row for row in range(height) if not any(grid[row])]
++    if len(separator_rows) < 2 or separator_rows[0] != 0 or separator_rows[-1] != height - 1:
++        raise ValueError("bands need blank boundary rows")
++    if any(b - a != 4 for a, b in zip(separator_rows, separator_rows[1:])):
++        raise ValueError("bands must contain exactly three content rows")
++    n_bands = len(separator_rows) - 1
++    if not 1 <= n_bands <= 7:
++        raise ValueError("one through seven bands are supported")
++    if any(grid[row][section * stride + shape_width] != 0
++           for section in range(n_sections - 1) for row in range(height)):
++        raise ValueError("section separators must remain blank")
++
++    colors = []
++    patterns = []
++    for band in range(n_bands):
++        top = separator_rows[band] + 1
++        current = []
++        for section in range(n_sections):
++            left = section * stride
++            cells = [grid[top + row][left + col]
++                     for row in range(3) for col in range(shape_width)]
++            nonzero = [value for value in cells if value]
++            if not nonzero or len(set(nonzero)) != 1:
++                raise ValueError("each band-section needs one nonzero color")
++            color = nonzero[0]
++            if band == 0:
++                colors.append(color)
++            elif color != colors[section]:
++                raise ValueError("section colors must stay fixed")
++            mask = "".join("1" if value else "0" for value in cells)
++            if any(not any(mask[row * shape_width + col] == "1"
++                           for col in range(shape_width)) for row in range(3)):
++                raise ValueError("every shape must span all three rows")
++            if any(not any(mask[row * shape_width + col] == "1" for row in range(3))
++                   for col in range(shape_width)):
++                raise ValueError("every shape must span its full section width")
++            current.append(mask)
++        patterns.append(tuple(current))
++    if len(set(colors)) != n_sections:
++        raise ValueError("section colors must be distinct")
++    if len(set(patterns[0])) != n_sections:
++        raise ValueError("first-band shapes must be distinct")
++    for index in range(1, n_bands):
++        previous = patterns[index - 1]
++        expected = tuple(previous[(section + 1) % n_sections]
++                         for section in range(n_sections))
++        if patterns[index] != expected:
++            raise ValueError("input bands must shift left one section")
++    counts = tuple(mask.count("1") for mask in patterns[0])
++    maximum = max(counts)
++    minimum = min(counts)
++    if counts.count(maximum) != 1 or counts.count(minimum) != 1:
++        raise ValueError("densest and sparsest selectors must be unique")
++    return {
++        "height": height,
++        "width": width,
++        "shape_width": shape_width,
++        "stride": stride,
++        "n_sections": n_sections,
++        "n_bands": n_bands,
++        "colors": tuple(colors),
++        "patterns": tuple(patterns),
++        "counts": counts,
++        "densest_index": counts.index(maximum),
++        "sparsest_index": counts.index(minimum),
++    }
++
++
++def _shift(name, analysis):
++    n = analysis["n_sections"]
++    if name == "next":
++        return 1
++    if name == "densest_index":
++        return analysis["densest_index"]
++    if name == "no_shift":
++        return 0
++    if name == "fixed_two":
++        return 2 % n
++    if name == "fixed_three":
++        return 3 % n
++    if name == "right_one":
++        return (n - 1) % n
++    if name == "sparsest_index":
++        return analysis["sparsest_index"]
++    if name == "densest_count_mod":
++        return max(analysis["counts"]) % n
++    raise ValueError(f"unknown rival {name}")
++
++
++def transform(grid, settings):
++    selected = _settings(settings)
++    return transform_rival(grid, selected["shift_rule"])
++
++
++def transform_rival(grid, name):
++    if name not in RIVAL_NAMES:
++        raise ValueError(f"unknown rival {name}")
++    info = analyze(grid)
++    shift = _shift(name, info)
++    output = [[0 for _ in range(info["width"])] for _ in range(3)]
++    final = info["patterns"][-1]
++    for section in range(info["n_sections"]):
++        source = final[(section + shift) % info["n_sections"]]
++        left = section * info["stride"]
++        color = info["colors"][section]
++        for offset, occupied in enumerate(source):
++            if occupied == "1":
++                output[offset // info["shape_width"]][left + offset % info["shape_width"]] = color
++    return output
++
++
++def _program_with_shift(shift_expression):
++    return f"""(rule! (lambda (g)
++  (let* ((h (rows g))
++         (w (cols g)))
++    (let* ((sw (find-first (lambda (c)
++                             (all? (lambda (r) (zero? (at g r c)))
++                                   (range 0 h)))
++                           (range 1 w)))
++           (stride (+ sw 1))
++           (n-shapes (/ (+ w 1) stride))
++           (starts (map (lambda (i) (* i stride)) (range 0 n-shapes)))
++           (sep-rows (filter (lambda (r)
++                               (all? (lambda (c) (zero? (at g r c)))
++                                     (range 0 w)))
++                             (range 0 h)))
++           (last-start (+ 1 (nth sep-rows (- (length sep-rows) 2))))
++           (first-start (+ 1 (first sep-rows)))
++           (colors (map (lambda (si)
++                          (let* ((sc (nth starts si))
++                                 (vals (filter (lambda (v) (!= v 0))
++                                               (flatmap (lambda (r)
++                                                          (map (lambda (c) (at g r c))
++                                                               (range sc (+ sc sw))))
++                                                        (range first-start (+ first-start 3))))))
++                            (first vals)))
++                        (range 0 n-shapes)))
++           (counts (map (lambda (si)
++                          (let* ((sc (nth starts si)))
++                            (length (filter (lambda (v) (!= v 0))
++                                            (flatmap (lambda (r)
++                                                       (map (lambda (c) (at g r c))
++                                                            (range sc (+ sc sw))))
++                                                     (range first-start (+ first-start 3)))))))
++                        (range 0 n-shapes)))
++           (shift {shift_expression}))
++      (build-grid 3
++                  w
++                  (r c)
++                  (let* ((si (/ c stride))
++                         (lc (mod c stride)))
++                    (if (or (>= si n-shapes) (>= lc sw))
++                        0
++                        (let* ((src-si (mod (+ si shift) n-shapes))
++                               (src-sc (nth starts src-si))
++                               (src-val (at g (+ last-start r) (+ src-sc lc))))
++                          (if (!= src-val 0) (nth colors si) 0)))))))))"""
++
++
++_SHIFT_EXPRESSIONS = {
++    "densest_index": "(find-first (lambda (si) (= (nth counts si) (max-list counts))) (range 0 n-shapes))",
++    "no_shift": "0",
++    "fixed_two": "2",
++    "fixed_three": "3",
++    "right_one": "(- n-shapes 1)",
++    "sparsest_index": "(find-first (lambda (si) (= (nth counts si) (min-list counts))) (range 0 n-shapes))",
++    "densest_count_mod": "(mod (max-list counts) n-shapes)",
++}
++
++
++def program(settings):
++    selected = _settings(settings)["shift_rule"]
++    return CANONICAL_PROGRAM if selected == "next" else _program_with_shift(_SHIFT_EXPRESSIONS[selected])
++
++
++def rival_program(name):
++    if name == "next":
++        return CANONICAL_PROGRAM
++    if name not in _SHIFT_EXPRESSIONS:
++        raise ValueError(f"unknown rival {name}")
++    return _program_with_shift(_SHIFT_EXPRESSIONS[name])
++
++
++def _grid_key(grid):
++    return json.dumps(grid, sort_keys=True, separators=(",", ":"))
++
++
++def generate_episode(seed, *, shift_rule, demos, queries):
++    _integer(seed, "seed", 0, 2**63 - 1)
++    _integer(demos, "demos", 2, 6)
++    _integer(queries, "queries", 4, 4)
++    selected = _settings({"shift_rule": shift_rule})
++    seen = set()
++    pairs = []
++    schedules = (("demo", _DEMO_PROFILES[:demos]), ("query", _QUERY_PROFILES))
++    for role, profiles in schedules:
++        for index, profile in enumerate(profiles):
++            for salt in range(32):
++                grid = _build_scene(seed, role, index, profile, salt)
++                key = _grid_key(grid)
++                if key not in seen:
++                    break
++            else:
++                raise RuntimeError("distinct input budget exhausted; no partial episode emitted")
++            seen.add(key)
++            pairs.append({"input": grid, "output": transform(grid, selected)})
++    episode = {
++        "train": pairs[:demos],
++        "test": pairs[demos:],
++        "program_solution": program(selected),
++    }
++    certificate = lesson_certificate(episode)
++    if certificate["survivors"] != [shift_rule] or not certificate["identifiable"]:
++        raise ValueError("demonstrations do not identify the selected rule among finite rivals")
++    return episode
++
++
++def lesson_certificate(episode):
++    if type(episode) is not dict or type(episode.get("train")) is not list             or type(episode.get("test")) is not list:
++        raise ValueError("episode needs train and test lists")
++    train = episode["train"]
++    test = episode["test"]
++    survivors = [
++        name for name in RIVAL_NAMES
++        if all(transform_rival(pair["input"], name) == pair["output"] for pair in train)
++    ]
++    if len(survivors) == 1:
++        selected = survivors[0]
++        query_disagreements = {
++            name: any(transform_rival(pair["input"], name) != pair["output"] for pair in test)
++            for name in RIVAL_NAMES if name != selected
++        }
++    else:
++        query_disagreements = {}
++    return {
++        "rivals": list(RIVAL_NAMES),
++        "survivors": survivors,
++        "query_disagreements": query_disagreements,
++        "identifiable": len(survivors) == 1 and bool(query_disagreements)
++                        and all(query_disagreements.values()),
++    }

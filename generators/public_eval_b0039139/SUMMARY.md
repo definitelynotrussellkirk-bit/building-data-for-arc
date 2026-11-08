@@ -1,0 +1,1 @@
+Four blue-separated panels specify a yellow template, connected green repetition markers, and two palette colors. Crop, recolor, and tile once per marker along the panel axis. The opt-in relay reflects individual copies according to their corresponding marker component area parity.

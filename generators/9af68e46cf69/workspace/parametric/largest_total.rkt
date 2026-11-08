@@ -1,0 +1,20 @@
+(rule!
+ (lambda (g)
+  (let* ((bg 9)
+         (regions (find-0-regions g bg))
+         (objs (objects g bg)))
+   (define (object-score obj)
+    (with-bbox obj (r1 c1 r2 c2)
+     (for/fold ((best 0)) ((region regions))
+      (if (for/and ((p region))
+           (and (< r1 (fst p) r2) (< c1 (snd p) c2)))
+          (+ best (length region))
+          best))))
+   (let ((maximum-score
+          (for/fold ((largest 0)) ((obj objs))
+           (max largest (object-score obj)))))
+    (paint-objects-by g objs
+     (lambda (obj)
+      (and (> maximum-score 0)
+           (= (object-score obj) maximum-score)
+           8)))))))

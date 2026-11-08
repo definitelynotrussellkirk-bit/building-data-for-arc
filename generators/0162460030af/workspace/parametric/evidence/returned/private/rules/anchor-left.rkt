@@ -1,0 +1,11 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((objs (sort-by (objects g 0) obj-c1))
+                  (n (length objs)))
+             (reduce (lambda (acc i)
+                       (let* ((obj (nth objs i))
+                              (color (if (= (mod i 2) 0) 8 2)))
+                         (paint-cells acc (obj-cells obj) color)))
+                     g
+                     (range 0 n))))))

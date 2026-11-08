@@ -1,0 +1,78 @@
+# Working notes: generic_waypoint_route_gen2
+
+The selected rule is the final-panel typed-cursor variant inspired by public
+evaluation task `5545f144`. Its two-cell cursor has distinct head and tail
+colors; the head color repeats on singleton waypoints. Starting from that head,
+consume each uniquely row- or column-aligned remaining waypoint, then render
+only the final cursor with its tail opposite the last travel vector.
+
+`reference.rkt` preserves the existing embedded `PROGRAM` byte for byte:
+normalized rule hash `46236b0fd524`, exact program SHA-256
+`878c6fe795d8abb2d50c6b9e78e222ebbfd35c0b374c038909e2f1ddd08b04f7`.
+Selected `generator.py` remains unchanged at SHA-256
+`a4317b9a443121b6c8342c79a651e94e0ffa741facdbb545f81d6a5ebf040b15`.
+The task-owned proposed canonical record is
+`workspace/canonical-candidate.json`; it contains three demonstrations and four
+queries, all labeled by actual protected Racket 8.10 execution. Reproduce it
+with `workspace/materialize_canonical.py --out NEW_IGNORED_DIRECTORY` from a
+prepared checkout. `evidence/reference-rule/manifest.json` binds that material,
+the exact sampler dependency, runtime identity, and focused tests.
+
+Current limits:
+
+- This is a semantic variant, not a solution or difficulty-equivalence claim
+  for the original evaluation task. The rule reads only the panel after the
+  last full-height separator. Earlier panels are unused context: an owner-run
+  Racket test erases their colored cells while preserving the label. This
+  registration does not repair cross-panel history dependence or clear any
+  applicable audit.
+- Sequential reasoning is bounded to the route remaining in the final panel.
+  Four hand-rendered rotation cases exercise two dependent hops and all final
+  directions; the next hop changes the position from which the following
+  aligned waypoint is identified. Ten palette rotations exercise typed head
+  and tail roles without fixed color assumptions.
+- `generate_task` still emits three demonstrations and one query. The fixed
+  canonical record's four queries do not add a configurable four-query
+  generator API; runtime requests beyond the emitted counts remain unsupported.
+- The Racket authority assumes the lawful generated domain: a unique cursor,
+  unique aligned successor at each hop, non-touching waypoints, and a dominant
+  background. It is not an arbitrary-input validator. Python domain checks
+  reject malformed or ambiguous routes rather than proving the Racket rule
+  rejects every such input.
+- Gen2 imports gen1's `_sample_route`. Focused tests explicitly stage both
+  selected generators; this is repository-local dependency use, not a sibling
+  checkout dependency. Single-task staging also requires gen1 in the catalog's
+  declared runtime dependency closure.
+
+The focused suite passed 35 tests, including 72 generated pairs over six seeds
+in each of easy/medium/hard, ten palette rotations, four hand-rendered route
+directions, seven fixed canonical pairs, and the earlier-panel erasure limit.
+These are bounded execution checks, not a full battery, safety review, universal
+identifiability result, or training admission. Existing `unreviewed` safety and
+zero mix weight remain unchanged.
+
+## Proposed history-dependent family
+
+`workspace/parametric/` now provides episode-fixed `mode=finish|history` with
+independent 3–16 demonstrations and 1–32 queries (default three plus four).
+`finish` preserves the exact canonical program. `history` infers the number of
+consumed hops from the earlier panel, advances the final cursor by that count,
+and retains unconsumed waypoints. Its first two demonstrations share an identical
+final panel but require different answers, proving dependence on earlier-state
+information rather than merely adding another decorative frame.
+
+Inputs are identical across settings for equal seeds/counts. Four default query
+shapes extend through 30×29 with routes distributed across the canvas. The
+bounded grammar, eleven-hypothesis teaching check, public/private exporter and
+saved-file Racket replay are documented in the workspace guide. Owner execution
+passed 26 focused tests, the existing 35 canonical tests, and 364 protected Racket
+evaluations across retained examples, replay and count boundaries. The evidence
+manifest binds the exact sources. The prototype is proposed; base approval,
+production API, existing audits and training admission remain unchanged. The
+standard promotion gate refuses it because the production base is unapproved.
+
+<!-- arcpuzzles-current-supplementary:start -->
+## Current supplementary checks
+
+Current source-bound ticket observations: `generators/generic_waypoint_route_gen2/evidence/supplementary-current.json`. Results are reviewer-reported; blocked or unknown stays explicit. These observations do not approve a generator or variant, resolve audits, or admit data to training.
+<!-- arcpuzzles-current-supplementary:end -->

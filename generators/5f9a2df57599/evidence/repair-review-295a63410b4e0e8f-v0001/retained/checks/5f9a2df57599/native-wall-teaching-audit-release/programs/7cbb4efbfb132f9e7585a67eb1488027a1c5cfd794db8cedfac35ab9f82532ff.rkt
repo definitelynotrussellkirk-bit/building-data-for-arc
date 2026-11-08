@@ -1,0 +1,6 @@
+(rule! (lambda (g)
+      (let* ((h (rows g)) (w (cols g))
+             (zero-regions (objects g 5))
+             (eligible (filter (lambda (obj) (with-bbox obj (r1 c1 r2 c2) (and (and (> r1 0) (for/and ((c (range c1 (+ c2 1)))) (= (at g (- r1 1) c) 5))) (and (< r2 (- h 1)) (for/and ((c (range c1 (+ c2 1)))) (= (at g (+ r2 1) c) 5))) (and (> c1 0) (for/and ((r (range r1 (+ r2 1)))) (= (at g r (- c1 1)) 5))) (not (and (= c1 0) (= c2 0) (> r2 r1)))))) zero-regions))
+             (selected eligible))
+        (paint-objects g selected 4))))

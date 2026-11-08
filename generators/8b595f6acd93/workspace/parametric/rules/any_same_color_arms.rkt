@@ -1,0 +1,13 @@
+(rule!
+ (let ((dirs4 (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1))))
+   (define (uniform-nonzero-plus? grid r c)
+     (and (= (at grid r c) 0)
+          (> r 0) (< r (- (rows grid) 1))
+          (> c 0) (< c (- (cols grid) 1))
+          (let ((v (at grid (- r 1) c)))
+            (and (!= v 0)
+                 (= (at grid (+ r 1) c) v)
+                 (= (at grid r (- c 1)) v)
+                 (= (at grid r (+ c 1)) v)))))
+   (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range (cols g))))
+     (if (uniform-nonzero-plus? g r c) (set-cell out r c 4) out))))

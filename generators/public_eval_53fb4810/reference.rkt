@@ -1,0 +1,67 @@
+(rule!
+ ;; Blue anchors carry a noncyan strip at one cardinal face. Read the attached
+ ;; strip outward from the anchor, including all complete observed slices.
+ ;; Its shortest prefix-period is the input-dependent repeated word.
+ ;; Preserve every observed slice. Continue only beyond the observed end,
+ ;; repeating the word through the boundary. A new trail may cross an old one.
+ (lambda (g)
+  (let ()
+   (define bounce? #f)
+   (define phase-offset 0)
+   (define max-extension 60)
+   (define background-only? #f)
+   (define reverse-word? #f)
+   (define mirror-lanes? #f)
+   (define first-only? #f)
+   (define anchors (filter (lambda (o) (= (obj-color o) 1)) (objects g 8)))
+   (define directions (list (list -1 0) (list 1 0) (list 0 -1) (list 0 1)))
+   (define (minimal-period strips)
+    (for/first ((p (range 1 (+ 1 (length strips))))
+      #:when (for/and ((i (range (length strips))))
+               (equal? (nth strips i) (nth strips (modulo i p))))) p))
+   (define rays
+    (apply append
+     (for/list ((o anchors))
+      (let ((b (obj-bbox o)))
+       (filter (lambda (x) x)
+        (for/list ((d directions))
+         (let* ((dr (first d)) (dc (second d))
+                (face (if (= dc 0)
+                    (for/list ((c (range (second b) (+ 1 (fourth b)))))
+                     (list (if (< dr 0) (first b) (third b)) c))
+                    (for/list ((r (range (first b) (+ 1 (third b)))))
+                     (list r (if (< dc 0) (second b) (fourth b)))))))
+          (define starts
+           (for/list ((p face)
+            #:when (and (= (at g (first p) (second p)) 1)
+                        (in-bounds? (+ (first p) dr) (+ (second p) dc) h w)
+                        (not (member (at g (+ (first p) dr) (+ (second p) dc)) (list 8 1)))))
+            (list (+ (first p) dr) (+ (second p) dc))))
+          (if (null? starts) #f
+           (let ()
+            (define strips
+             (let loop ((k 0) (acc (list)))
+              (if (for/and ((p starts))
+                   (and (in-bounds? (+ (first p) (* k dr)) (+ (second p) (* k dc)) h w)
+                        (not (member (at g (+ (first p) (* k dr)) (+ (second p) (* k dc))) (list 8 1)))))
+               (loop (+ k 1) (append acc (list (map (lambda (p) (at g (+ (first p) (* k dr)) (+ (second p) (* k dc)))) starts))))
+               acc)))
+            (list dr dc starts strips))))))))))
+   (for/fold ((out g)) ((ray (if first-only? (take rays (min 1 (length rays))) rays)))
+    (let* ((dr (first ray)) (dc (second ray)) (starts (third ray)) (strips (fourth ray)))
+     (define period (minimal-period strips))
+     (define initial-word (take strips period))
+     (define ordered-word (if reverse-word? (reverse initial-word) initial-word))
+     (define word (if mirror-lanes? (map reverse ordered-word) ordered-word))
+     (for/fold ((canvas out)) ((k (range (length strips) (min 60 (+ (length strips) max-extension))))
+       #:when (for/and ((p starts)) (in-bounds? (+ (first p) (* k dr)) (+ (second p) (* k dc)) h w)))
+      (define phase (+ k phase-offset))
+      (define cycle (if (and bounce? (> period 1)) (- (* 2 period) 2) period))
+      (define slot (modulo phase cycle))
+      (define index (if (< slot period) slot (- cycle slot)))
+      (for/fold ((painted canvas)) ((lane (range (length starts))))
+       (define p (nth starts lane))
+       (define rr (+ (first p) (* k dr)))
+       (define cc (+ (second p) (* k dc)))
+       (if (and background-only? (not (= (at g rr cc) 8))) painted
+           (set-cell painted rr cc (nth (nth word index) lane))))))))))

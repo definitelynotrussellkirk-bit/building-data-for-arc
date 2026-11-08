@@ -1,0 +1,43 @@
+# Solve work log
+
+During this solve DO NOT consult the Racket rule, generator implementation,
+reference solutions, private query labels, or earlier solution explanations.
+Use only challenge.json, your own Python, and the check command's feedback.
+
+Record what you saw before this step, especially earlier Racket-rule exposure.
+For each revision, summarize your hypothesis, probes/commands, observed results,
+why you changed the program, alternatives, and remaining uncertainty. Describe
+your reasoning in your own words; preserve failed ideas as well as successful ones.
+
+## Revision 1 — pre-implementation check
+
+Earlier exposure: none known. I had not opened any generator, canonical rule,
+reference solution, private label, prior notes, or audit evidence for this task.
+The untouched template raised `NotImplementedError`, giving the expected red
+check before implementation (`visible_passed: 0/3`, execution status `error`).
+
+## Hypothesis
+
+Each red (`2`) and yellow (`4`) object is translated conceptually so the
+upper-left corner of its own bounding box is at `(0, 0)`. The desired pattern is
+set subtraction: red cells that are not occupied by yellow in this normalized
+overlay. Place that relative pattern at the maroon (`9`) pixel, recolor it `6`,
+and clip cells outside the original grid.
+
+Evidence from the visible examples:
+
+- Example 0: normalized yellow covers the red shape's two right-hand cells,
+  leaving the two-cell vertical red column shown in the output.
+- Example 1: normalized red and yellow do not overlap, so the whole normalized
+  red object is stamped at the marker.
+- Example 2: subtraction leaves `(1, 1)` and `(3, 0)`; `(1, 1)` lands one column
+  beyond the right border, leaving only the displayed bottom cell.
+
+Alternatives considered and rejected included direct object translation,
+intersection, nearest-corner alignment, and rotations/reflections. They fail at
+least one visible example; in particular no plain translated intersection can
+produce all five output cells in example 1.
+
+The implementation directly extracts the three colors, normalizes the two
+colored shapes, subtracts the yellow set from the red set, stamps at the marker,
+and bounds-checks each output cell.

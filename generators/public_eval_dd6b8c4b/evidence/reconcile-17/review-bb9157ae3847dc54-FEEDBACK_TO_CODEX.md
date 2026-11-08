@@ -1,0 +1,1 @@
+F1: The reusable audit assumed exactly two settings and the relocation checker hard-coded the previous task pair; this return replaces those assumptions with pairwise setting comparisons and repeatable `--task` arguments, covered by executed regressions. Carry these interfaces forward rather than editing task constants or duplicating audit scripts in later rounds.

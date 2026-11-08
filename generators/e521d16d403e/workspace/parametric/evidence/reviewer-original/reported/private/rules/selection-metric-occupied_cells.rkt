@@ -1,0 +1,28 @@
+(rule!
+  ;; alt: filter `(objects g 0)` by LR symmetry, sort by `obj-size`, then crop the winner's bbox.
+  (lambda (g)
+    (define objs (objects g 0))
+    (define (bbox-lr-symmetric? bb)
+      (let* ((r0 (first bb))
+             (c0 (second bb))
+             (r1 (third bb))
+             (c1 (fourth bb))
+             (w (+ 1 (- c1 c0))))
+        (and (> w 1)
+             (for*/and ((r (in-range r0 (+ r1 1)))
+                        (c (in-range c0 (+ c1 1))))
+               (= (at g r c)
+                  (at g r (- (+ c0 c1) c)))))))
+    (define symmetric-objs
+      (filter (lambda (o) (bbox-lr-symmetric? (obj-bbox o))) objs))
+    (define chosen
+      (if (empty? symmetric-objs)
+          (first objs)
+          (first (sort symmetric-objs
+                       (lambda (a b) (> (obj-size a) (obj-size b)))))))
+    (let* ((bb (obj-bbox chosen))
+           (r0 (first bb))
+           (c0 (second bb))
+           (r1 (third bb))
+           (c1 (fourth bb)))
+      (subgrid g r0 c0 r1 c1))))

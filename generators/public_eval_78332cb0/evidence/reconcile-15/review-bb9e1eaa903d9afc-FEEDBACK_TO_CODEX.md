@@ -1,0 +1,1 @@
+F1: Biggest avoidable friction: repeated public-family returns need nearly identical source-bound audit, visible-turn validation and generator-closure plumbing. Promote the retained task-local `verify.py` / `public_io.py` / relocation-test pattern into a reviewed shared authoring utility, while keeping task-specific rivals and causal metadata local.

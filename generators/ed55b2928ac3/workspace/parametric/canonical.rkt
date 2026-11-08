@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (define (transform-by-key grid key) (cond ((= key 1) (rotate-cw grid)) ((= key 2) (rotate-180 grid)) ((= key 3) (flip-lr grid)) ((= key 4) (flip-ud grid)) (else grid))) (let* ((key (at g 0 0)) (work (set-cell g 0 0 0)) (crop (crop-to-content work 0))) (transform-by-key crop key))))

@@ -1,0 +1,4503 @@
+diff --git a/repo/generators/8e5125b84b87/notes.md b/repo/generators/8e5125b84b87/notes.md
+--- a/repo/generators/8e5125b84b87/notes.md
++++ b/repo/generators/8e5125b84b87/notes.md
+@@ -2,3 +2,26 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 optional source-bound control probe
++
++Generator SHA-256:
++`aa0eb0e01c4077a5f95a91e2e00e1f4a948280da8fb3b87acd729e0cd78009af`.
++
++The advertised `cyan_count` range and interacting controls are not exact. On a
++14×14 grid, the axis text permits counts through 98, but `cyan_count=50` is
++rejected because the implementation bounds the draw at `h*w/4 = 49`. The
++maximum accepted request, 49, produces only 14 cyan cells under `row` and 13
++under `column`; both truncated grids pass `self_check`. For the matched
++`diagonal` calls, `cyan_row_bias=top` and `bottom` produce identical bytes.
++An unknown control is also accepted.
++
++`workspace/review_probe.py` is a reusable reproducer. The retained report at
++`checks/8e5125b84b87/peer-probe.json` includes exact requests, grid/source
++hashes, validator results, the canonical protected-Racket output, and runtime
++identity. This optional audit did not modify or approve the generator.
++
++Suggested repair: define layout-specific feasible count ranges and reject
++incompatible requests, or constructively realize the requested count; make the
++diagonal layout consume row bias or declare the combination invalid; reject
++unknown controls.
+diff --git a/repo/generators/8e5125b84b87/tests/test_peer_8e5125_control_probe.py b/repo/generators/8e5125b84b87/tests/test_peer_8e5125_control_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8e5125b84b87/tests/test_peer_8e5125_control_probe.py
+@@ -0,0 +1,42 @@
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++
++
++HERE = Path(__file__).resolve().parents[1]
++
++
++def _load():
++    path = HERE / "workspace" / "review_probe.py"
++    assert path.is_file(), f"missing peer probe: {path}"
++    spec = importlib.util.spec_from_file_location("peer_8e5125_probe", path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_probe_reproduces_cyan_control_contract_failures() -> None:
++    probe = _load()
++    report = probe.build_report(include_racket=False)
++    assert report["schema"] == "arcpuzzles-peer-control-probe-v1"
++    assert report["task_id"] == "8e5125b84b87"
++    assert report["status"] == "finding"
++    source = HERE / "generator.py"
++    assert report["generator_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
++
++    assert report["advertised_count_rejected"]["requested"] == 50
++    assert report["advertised_count_rejected"]["advertised_upper_bound"] == 98
++    assert report["advertised_count_rejected"]["accepted"] is False
++    assert report["advertised_count_rejected"]["error"] == "ValueError"
++
++    assert report["accepted_count_truncated"]["requested"] == 49
++    assert report["accepted_count_truncated"]["row_actual"] == 14
++    assert report["accepted_count_truncated"]["column_actual"] == 13
++    assert report["accepted_count_truncated"]["row_self_check"] == []
++    assert report["accepted_count_truncated"]["column_self_check"] == []
++
++    assert report["row_bias_ignored_by_diagonal"]["same_grid"] is True
++    assert report["unknown_override"]["accepted"] is True
+diff --git a/repo/generators/8e5125b84b87/workspace/review_probe.py b/repo/generators/8e5125b84b87/workspace/review_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8e5125b84b87/workspace/review_probe.py
+@@ -0,0 +1,230 @@
++"""Source-bound reproducer for cyan-count and interacting-control defects."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any
++
++
++TASK_ID = "8e5125b84b87"
++HOME = Path(__file__).resolve().parents[1]
++ROOT = HOME.parents[1]
++for candidate in (ROOT / "src", ROOT / "shared/runtime"):
++    if str(candidate) not in sys.path:
++        sys.path.insert(0, str(candidate))
++
++from arc_repl.racket_bridge import RacketBridge
++from arcpuzzles import Catalog
++from puzzle_generators.rule_wrap import wrap_rule
++
++
++def _raw(value: Any) -> bytes:
++    return (
++        json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False)
++        + "\n"
++    ).encode("utf-8")
++
++
++def _hash_bytes(value: bytes) -> str:
++    return hashlib.sha256(value).hexdigest()
++
++
++def _grid_hash(grid: list[list[int]]) -> str:
++    return _hash_bytes(
++        json.dumps(grid, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
++    )
++
++
++def _load_generator():
++    path = HOME / "generator.py"
++    name = "_peer_8e5125_" + _hash_bytes(path.read_bytes())
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(f"cannot load {path}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return path, module
++
++
++def _canonical_program() -> str:
++    record = Catalog(ROOT).get(TASK_ID)
++    programs = {
++        row["program_solution"]
++        for row in record["variants"]
++        if isinstance(row.get("program_solution"), str)
++    }
++    if len(programs) != 1:
++        raise ValueError("expected one selected canonical program")
++    return next(iter(programs))
++
++
++def _literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join(
++        "(" + " ".join(map(str, row)) + ")" for row in grid
++    ) + ")"
++
++
++def _cyan_count(grid: list[list[int]]) -> int:
++    return sum(value == 8 for row in grid for value in row)
++
++
++def build_report(*, include_racket: bool = True) -> dict[str, Any]:
++    source, generator = _load_generator()
++    source_hash = _hash_bytes(source.read_bytes())
++
++    advertised = {
++        "requested": 50,
++        "height": 14,
++        "width": 14,
++        "advertised_upper_bound": (14 * 14) // 2,
++    }
++    try:
++        grid = generator.generate(
++            0,
++            0,
++            difficulty="hard",
++            grid_h=14,
++            grid_w=14,
++            cyan_count=50,
++            cyan_layout="row",
++            cyan_row_bias="spread",
++            decoy_palette_size=0,
++        )
++        advertised.update(
++            {
++                "accepted": True,
++                "actual": _cyan_count(grid),
++                "grid_sha256": _grid_hash(grid),
++            }
++        )
++    except Exception as exc:
++        advertised.update(
++            {
++                "accepted": False,
++                "error": type(exc).__name__,
++                "message": str(exc),
++            }
++        )
++
++    common = {
++        "difficulty": "hard",
++        "grid_h": 14,
++        "grid_w": 14,
++        "cyan_count": 49,
++        "cyan_row_bias": "spread",
++        "decoy_palette_size": 0,
++    }
++    row_grid = generator.generate(0, 0, **common, cyan_layout="row")
++    column_grid = generator.generate(0, 0, **common, cyan_layout="column")
++    truncated = {
++        "requested": 49,
++        "row_actual": _cyan_count(row_grid),
++        "column_actual": _cyan_count(column_grid),
++        "row_grid_sha256": _grid_hash(row_grid),
++        "column_grid_sha256": _grid_hash(column_grid),
++        "row_self_check": generator.self_check(row_grid),
++        "column_self_check": generator.self_check(column_grid),
++    }
++
++    diagonal_common = {
++        "difficulty": "hard",
++        "grid_h": 14,
++        "grid_w": 14,
++        "cyan_count": 6,
++        "cyan_layout": "diagonal",
++        "decoy_palette_size": 0,
++    }
++    top = generator.generate(13, 2, **diagonal_common, cyan_row_bias="top")
++    bottom = generator.generate(13, 2, **diagonal_common, cyan_row_bias="bottom")
++    row_bias = {
++        "requested_values": ["top", "bottom"],
++        "same_grid": top == bottom,
++        "top_sha256": _grid_hash(top),
++        "bottom_sha256": _grid_hash(bottom),
++        "actual_cyan_count": _cyan_count(top),
++    }
++
++    try:
++        unknown_grid = generator.generate(0, 0, difficulty="easy", unknown_control=7)
++        unknown = {
++            "accepted": True,
++            "grid_sha256": _grid_hash(unknown_grid),
++            "dimensions": [len(unknown_grid), len(unknown_grid[0])],
++            "self_check": generator.self_check(unknown_grid),
++        }
++    except Exception as exc:
++        unknown = {
++            "accepted": False,
++            "error": type(exc).__name__,
++            "message": str(exc),
++        }
++
++    racket = None
++    if include_racket:
++        program = _canonical_program()
++        with RacketBridge(max_calls_before_restart=8) as bridge:
++            output = bridge.eval_text(f"({wrap_rule(program)} {_literal(row_grid)})")
++            racket = {
++                "program_sha256": _hash_bytes(program.encode("utf-8")),
++                "input": row_grid,
++                "input_sha256": _grid_hash(row_grid),
++                "output": output,
++                "output_sha256": _grid_hash(output),
++                "runtime": bridge.runtime_identity,
++            }
++
++    test_path = HOME / "tests" / "test_peer_8e5125_control_probe.py"
++    probe_path = HOME / "workspace" / "review_probe.py"
++    return {
++        "schema": "arcpuzzles-peer-control-probe-v1",
++        "task_id": TASK_ID,
++        "status": "finding",
++        "generator_sha256": source_hash,
++        "probe_sha256": _hash_bytes(probe_path.read_bytes()),
++        "test_sha256": _hash_bytes(test_path.read_bytes()),
++        "advertised_count_rejected": advertised,
++        "accepted_count_truncated": truncated,
++        "row_bias_ignored_by_diagonal": row_bias,
++        "unknown_override": unknown,
++        "protected_racket": racket,
++        "finding": (
++            "cyan_count is advertised through h*w/2, but values above h*w/4 are "
++            "rejected; even the maximum accepted request is silently truncated by "
++            "row/column layouts. diagonal also ignores cyan_row_bias, and unknown "
++            "controls are accepted."
++        ),
++        "recommended_repair": (
++            "Define layout-specific feasible count ranges and reject incompatible "
++            "combinations, or constructively realize the exact requested count; "
++            "make diagonal consume row bias or declare that interaction invalid; "
++            "reject unknown controls."
++        ),
++        "scope": "Source-bound bounded reproducer; no generator source was modified or approved.",
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", required=True, type=Path)
++    args = parser.parse_args(argv)
++    if args.out.exists() or args.out.is_symlink():
++        raise FileExistsError(f"choose a new output: {args.out}")
++    report = build_report(include_racket=True)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_bytes(_raw(report))
++    print(json.dumps({
++        "task_id": TASK_ID,
++        "status": report["status"],
++        "generator_sha256": report["generator_sha256"],
++        "output": str(args.out),
++    }, indent=2, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/991b11986b7a/notes.md b/repo/generators/991b11986b7a/notes.md
+--- a/repo/generators/991b11986b7a/notes.md
++++ b/repo/generators/991b11986b7a/notes.md
+@@ -2,3 +2,25 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 optional source-bound control and validator probe
++
++Generator SHA-256:
++`1848059e1af39129e244e60ebde9da11a3359e4a64a3a09c7d8585e17684be50`.
++
++Matched calls that vary `palette_kind`, `anchor_corner`, and
++`asymmetry_force` produce the exact same grid SHA-256
++`88c63bc11da59faf4fb160c2545eff23b33c523b60c2281bb5becfaba18e5ce3`.
++Those advertised controls are not consumed by the generator. `self_check`
++accepts `[[1,2],[2,1]]`, a 2×2 checker with no required pair of broken
++near-full separator rows or columns, and an unknown control is accepted.
++
++`workspace/review_probe.py` is a reusable reproducer. The retained report at
++`checks/991b11986b7a/peer-probe.json` includes the matched requests, exact
++source/grid hashes, the invalid validator witness, the canonical
++protected-Racket output, and runtime identity. This optional audit did not
++modify or approve the generator.
++
++Suggested repair: implement or remove the dead axes; reject unknown controls;
++and replace the color-count-only validator with the exact two-row/two-column
++broken-separator structural contract, including declared dimension bounds.
+diff --git a/repo/generators/991b11986b7a/tests/test_peer_991b119_control_probe.py b/repo/generators/991b11986b7a/tests/test_peer_991b119_control_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/991b11986b7a/tests/test_peer_991b119_control_probe.py
+@@ -0,0 +1,39 @@
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++
++
++HERE = Path(__file__).resolve().parents[1]
++
++
++def _load():
++    path = HERE / "workspace" / "review_probe.py"
++    assert path.is_file(), f"missing peer probe: {path}"
++    spec = importlib.util.spec_from_file_location("peer_991b119_probe", path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_probe_reproduces_dead_axes_and_weak_validator() -> None:
++    probe = _load()
++    report = probe.build_report(include_racket=False)
++    assert report["schema"] == "arcpuzzles-peer-control-probe-v1"
++    assert report["task_id"] == "991b11986b7a"
++    assert report["status"] == "finding"
++    source = HERE / "generator.py"
++    assert report["generator_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
++
++    dead = report["dead_axes"]
++    assert dead["controls"] == ["palette_kind", "anchor_corner", "asymmetry_force"]
++    assert dead["all_grids_identical"] is True
++    assert len(set(dead["grid_sha256"])) == 1
++
++    weak = report["weak_self_check"]
++    assert weak["grid"] == [[1, 2], [2, 1]]
++    assert weak["errors"] == []
++    assert weak["has_required_separator_structure"] is False
++    assert report["unknown_override"]["accepted"] is True
+diff --git a/repo/generators/991b11986b7a/workspace/review_probe.py b/repo/generators/991b11986b7a/workspace/review_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/991b11986b7a/workspace/review_probe.py
+@@ -0,0 +1,200 @@
++"""Source-bound reproducer for dead controls and the weak separator validator."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any
++
++
++TASK_ID = "991b11986b7a"
++HOME = Path(__file__).resolve().parents[1]
++ROOT = HOME.parents[1]
++for candidate in (ROOT / "src", ROOT / "shared/runtime"):
++    if str(candidate) not in sys.path:
++        sys.path.insert(0, str(candidate))
++
++from arc_repl.racket_bridge import RacketBridge
++from arcpuzzles import Catalog
++from puzzle_generators.rule_wrap import wrap_rule
++
++
++def _raw(value: Any) -> bytes:
++    return (
++        json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False)
++        + "\n"
++    ).encode("utf-8")
++
++
++def _hash_bytes(value: bytes) -> str:
++    return hashlib.sha256(value).hexdigest()
++
++
++def _grid_hash(grid: list[list[int]]) -> str:
++    return _hash_bytes(
++        json.dumps(grid, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
++    )
++
++
++def _load_generator():
++    path = HOME / "generator.py"
++    name = "_peer_991b119_" + _hash_bytes(path.read_bytes())
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(f"cannot load {path}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return path, module
++
++
++def _canonical_program() -> str:
++    record = Catalog(ROOT).get(TASK_ID)
++    programs = {
++        row["program_solution"]
++        for row in record["variants"]
++        if isinstance(row.get("program_solution"), str)
++    }
++    if len(programs) != 1:
++        raise ValueError("expected one selected canonical program")
++    return next(iter(programs))
++
++
++def _literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join(
++        "(" + " ".join(map(str, row)) + ")" for row in grid
++    ) + ")"
++
++
++def _has_required_separator_structure(grid: list[list[int]]) -> bool:
++    height = len(grid)
++    width = len(grid[0])
++    colors = {value for row in grid for value in row}
++    for color in colors:
++        rows = [
++            row
++            for row in range(height)
++            if sum(grid[row][col] == color for col in range(width)) == width - 2
++        ]
++        cols = [
++            col
++            for col in range(width)
++            if sum(grid[row][col] == color for row in range(height)) == height - 2
++        ]
++        if len(rows) == 2 and len(cols) == 2:
++            if all(grid[row][col] != color for row in rows for col in cols):
++                return True
++    return False
++
++
++def build_report(*, include_racket: bool = True) -> dict[str, Any]:
++    source, generator = _load_generator()
++    source_hash = _hash_bytes(source.read_bytes())
++    base = {
++        "difficulty": "hard",
++        "height": 14,
++        "width": 15,
++        "sep_position_r": "centered",
++        "sep_position_c": "wide_spread",
++    }
++    settings = [
++        {"palette_kind": "warm", "anchor_corner": False, "asymmetry_force": False, "palette_size": 3},
++        {"palette_kind": "cool", "anchor_corner": True, "asymmetry_force": True, "palette_size": 3},
++        {"palette_kind": "primary", "anchor_corner": False, "asymmetry_force": True, "palette_size": 3},
++    ]
++    grids = [generator.generate(7, 1, **base, **setting) for setting in settings]
++    dead_axes = {
++        "controls": ["palette_kind", "anchor_corner", "asymmetry_force"],
++        "requests": settings,
++        "all_grids_identical": grids[0] == grids[1] == grids[2],
++        "grid_sha256": [_grid_hash(grid) for grid in grids],
++        "self_check": [generator.self_check(grid) for grid in grids],
++    }
++
++    invalid = [[1, 2], [2, 1]]
++    weak = {
++        "grid": invalid,
++        "errors": generator.self_check(invalid),
++        "has_required_separator_structure": _has_required_separator_structure(invalid),
++    }
++
++    try:
++        unknown_grid = generator.generate(0, 0, difficulty="easy", unknown_control=7)
++        unknown = {
++            "accepted": True,
++            "grid_sha256": _grid_hash(unknown_grid),
++            "dimensions": [len(unknown_grid), len(unknown_grid[0])],
++            "self_check": generator.self_check(unknown_grid),
++        }
++    except Exception as exc:
++        unknown = {
++            "accepted": False,
++            "error": type(exc).__name__,
++            "message": str(exc),
++        }
++
++    racket = None
++    if include_racket:
++        program = _canonical_program()
++        with RacketBridge(max_calls_before_restart=8) as bridge:
++            output = bridge.eval_text(f"({wrap_rule(program)} {_literal(grids[0])})")
++            racket = {
++                "program_sha256": _hash_bytes(program.encode("utf-8")),
++                "input": grids[0],
++                "input_sha256": _grid_hash(grids[0]),
++                "output": output,
++                "output_sha256": _grid_hash(output),
++                "runtime": bridge.runtime_identity,
++            }
++
++    test_path = HOME / "tests" / "test_peer_991b119_control_probe.py"
++    probe_path = HOME / "workspace" / "review_probe.py"
++    return {
++        "schema": "arcpuzzles-peer-control-probe-v1",
++        "task_id": TASK_ID,
++        "status": "finding",
++        "generator_sha256": source_hash,
++        "probe_sha256": _hash_bytes(probe_path.read_bytes()),
++        "test_sha256": _hash_bytes(test_path.read_bytes()),
++        "dead_axes": dead_axes,
++        "weak_self_check": weak,
++        "unknown_override": unknown,
++        "protected_racket": racket,
++        "finding": (
++            "palette_kind, anchor_corner, and asymmetry_force are advertised but "
++            "do not affect the generated grid in the retained matched calls. "
++            "self_check accepts a 2x2 two-color checker with no separator rows or "
++            "columns, and unknown controls are accepted."
++        ),
++        "recommended_repair": (
++            "Implement or remove the dead axes; reject unknown controls; replace "
++            "the color-count-only validator with an exact two-row/two-column "
++            "broken-separator structural check and enforce declared dimensions."
++        ),
++        "scope": "Source-bound bounded reproducer; no generator source was modified or approved.",
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", required=True, type=Path)
++    args = parser.parse_args(argv)
++    if args.out.exists() or args.out.is_symlink():
++        raise FileExistsError(f"choose a new output: {args.out}")
++    report = build_report(include_racket=True)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_bytes(_raw(report))
++    print(json.dumps({
++        "task_id": TASK_ID,
++        "status": report["status"],
++        "generator_sha256": report["generator_sha256"],
++        "output": str(args.out),
++    }, indent=2, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/9baf979683ef/notes.md b/repo/generators/9baf979683ef/notes.md
+--- a/repo/generators/9baf979683ef/notes.md
++++ b/repo/generators/9baf979683ef/notes.md
+@@ -213,3 +213,39 @@
+ source-bound distribution/cyclic analysis.
+ 
+ **Result.** The selected portable task-test stage passes 9/9.
++
++## 2026-10-24 native parametric receiver-action extension
++
++The canonical default remains the exact selected Racket source. The new
++`receiver_action=absorb_color` setting composes canonical reflection (A) with an
++input-dependent receiver absorption (B): only the reflected intermediate
++creates a source-color contact with one color-9 component, and B consumes that
++contact to choose both the component and recolor value.
++
++The first sampler draft could exhaust every legal receiver location after a
++dense mirror field was drawn. Receiver geometry is now reserved before the
++remaining source field. A wider seed sweep then found that greedy decoy
++placement could consume the only footprint for a later receiver; bounded joint
++backtracking replaced the greedy draw. The protected causal audit exposed a
++separate witness-only defect: the Python counterfactual helper inspected
++*predicted* mirror coordinates and treated an absent mirror as a zero-color
++contact. It now inspects actual source-colored cells in the supplied
++intermediate, matching the standalone Racket B program.
++
++Retained source-bound evidence:
++
++- `workspace/parametric/evidence/current/summary.json`: 64 seeds, 128 episodes,
++  1,280 labeled pairs, 640 teaching checks, zero failures.
++- `workspace/parametric/evidence/current/protected-racket.json`: 40 label
++  evaluations plus four A/B counterfactual evaluations, zero mismatches.
++- `workspace/parametric/evidence/current/causal-witness.json`: exact programs,
++  input, intermediate, lawful output, skip-A output, and wrong-intermediate
++  output.
++- `workspace/parametric/evidence/manifest.json`: current source/evidence
++  inventory; reviewer-reported only.
++- `checks/9baf979683ef/qualification/qualification.json` and sibling
++  `execution.json`: native qualification for two settings × seeds 0/17,
++  40 protected-Racket evaluations, status `qualified`.
++
++This finite family is reviewer-ready and owner-pending. It is not accepted,
++training-admitted, or a proof against arbitrary alternative programs.
+diff --git a/repo/generators/9baf979683ef/tests/test_parametric_receiver_action.py b/repo/generators/9baf979683ef/tests/test_parametric_receiver_action.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/tests/test_parametric_receiver_action.py
+@@ -0,0 +1,260 @@
++"""Focused contract for the divider-mirror receiver-action family."""
++from __future__ import annotations
++
++import copy
++import hashlib
++import importlib.util
++import json
++import random
++from pathlib import Path
++
++import pytest
++
++from arc_repl.racket_bridge import RacketBridge
++from arcpuzzles import Catalog
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import find_root, public_challenge_bytes
++
++
++TASK_ID = "9baf979683ef"
++ROOT = find_root(__file__)
++HOME = ROOT / "generators" / TASK_ID / "workspace" / "parametric"
++
++
++def _load(name: str):
++    path = HOME / f"{name}.py"
++    assert path.is_file(), f"missing parametric source: {path}"
++    spec = importlib.util.spec_from_file_location(f"receiver_action_{name}", path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _canonical() -> str:
++    record = Catalog(ROOT).get(TASK_ID)
++    programs = {
++        variant["program_solution"]
++        for variant in record["variants"]
++        if isinstance(variant.get("program_solution"), str)
++    }
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def _apply(bridge: RacketBridge, program: str, grid: list[list[int]]) -> list[list[int]]:
++    literal = "'(" + " ".join(
++        "(" + " ".join(map(str, row)) + ")" for row in grid
++    ) + ")"
++    return bridge.eval_text(f"({wrap_rule(program)} {literal})")
++
++
++def _inputs(episode: dict) -> list[list[list[int]]]:
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def test_default_program_is_byte_exact_and_setting_validation_is_closed() -> None:
++    adapter = _load("adapter")
++    canonical = _canonical()
++    assert adapter.program({"receiver_action": "preserve"}) == canonical
++    alternate = adapter.program({"receiver_action": "absorb_color"})
++    assert alternate != canonical
++    assert "intermediate" in alternate
++    assert "obj-cells" in alternate
++
++    bad = (
++        {},
++        {"receiver_action": "other"},
++        {"receiver_action": True},
++        {"receiver_action": "preserve", "extra": 1},
++        [],
++    )
++    for settings in bad:
++        with pytest.raises((TypeError, ValueError)):
++            adapter.program(settings)
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(0, settings, 3, 4)
++
++
++def test_minimum_two_demos_identify_each_setting_and_refute_declared_rivals() -> None:
++    adapter = _load("adapter")
++    proto = _load("prototype")
++    for seed in (0, 17, 63):
++        for action in ("preserve", "absorb_color"):
++            episode = adapter.generate(seed, {"receiver_action": action}, 2, 4)
++            report = proto.teaching_report(episode["train"], episode["test"], action)
++            assert report["selected_setting"] == action
++            assert report["surviving_settings"] == [action]
++            assert report["query_ambiguities"] == []
++            assert report["surviving_rivals"] == []
++            assert report["tested_rivals"] == [
++                "all_receivers",
++                "contact_cell_only",
++                "fixed_color_two",
++                "largest_receiver",
++                "leftmost_receiver",
++                "nearest_divider",
++                "smallest_receiver",
++            ]
++
++
++def test_counts_are_independent_inputs_are_matched_and_first_query_is_stable() -> None:
++    adapter = _load("adapter")
++    full = adapter.generate(31, {"receiver_action": "absorb_color"}, 6, 4)
++    minimum = adapter.generate(31, {"receiver_action": "absorb_color"}, 2, 1)
++    canonical = adapter.generate(31, {"receiver_action": "preserve"}, 6, 4)
++
++    assert minimum["train"] == full["train"][:2]
++    assert minimum["test"] == full["test"][:1]
++    assert _inputs(full) == _inputs(canonical)
++    assert [pair["output"] for pair in full["train"]] != [
++        pair["output"] for pair in canonical["train"]
++    ]
++    assert len({json.dumps(grid, separators=(",", ":")) for grid in _inputs(full)}) == 10
++    assert public_challenge_bytes({"train": minimum["train"], "test": minimum["test"]}) == public_challenge_bytes(minimum)
++
++
++def test_request_validation_determinism_freshness_and_global_rng_purity() -> None:
++    adapter = _load("adapter")
++    settings = {"receiver_action": "preserve"}
++    for args in (
++        (True, settings, 3, 4),
++        (-1, settings, 3, 4),
++        (2**63, settings, 3, 4),
++        (0, settings, 1, 4),
++        (0, settings, 7, 4),
++        (0, settings, True, 4),
++        (0, settings, 3, 0),
++        (0, settings, 3, 5),
++        (0, settings, 3, 1.0),
++    ):
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(*args)
++
++    random.seed(20261024)
++    before = random.getstate()
++    first = adapter.generate(91, settings, 4, 4)
++    second = adapter.generate(91, settings, 4, 4)
++    assert first == second
++    assert random.getstate() == before
++    first["train"][0]["input"][0][0] = 9
++    assert first != second
++
++
++def test_scene_grammar_varies_target_rank_and_has_substantive_boundary_stress() -> None:
++    adapter = _load("adapter")
++    proto = _load("prototype")
++    episode = adapter.generate(41, {"receiver_action": "absorb_color"}, 6, 4)
++
++    observations = [proto.observables(grid) for grid in _inputs(episode)]
++    assert all(proto.domain_errors(grid) == [] for grid in _inputs(episode))
++    first_two = observations[:2]
++    assert {row["target_size_rank"] for row in first_two} == {"largest", "smallest"}
++    assert {row["target_horizontal_rank"] for row in first_two} == {"leftmost", "rightmost"}
++    assert all(row["receiver_count"] >= 3 for row in observations)
++    assert all(row["contact_color"] not in (0, 5, 9) for row in observations)
++    assert len({row["contact_color"] for row in observations[:6]}) >= 3
++
++    stress = episode["test"][3]["input"]
++    stress_obs = proto.observables(stress)
++    assert len(stress) == len(stress[0]) == 30
++    assert stress_obs["touches_right_boundary"] is True
++    assert stress_obs["source_count"] >= 24
++    assert stress_obs["receiver_count"] >= 4
++    assert stress_obs["target_size"] >= 8
++
++
++def test_python_claims_match_protected_racket_for_both_programs() -> None:
++    adapter = _load("adapter")
++    proto = _load("prototype")
++    grids = _inputs(adapter.generate(7, {"receiver_action": "preserve"}, 2, 2))
++    with RacketBridge(max_calls_before_restart=64) as bridge:
++        for action in ("preserve", "absorb_color"):
++            settings = {"receiver_action": action}
++            program = adapter.program(settings)
++            for grid in grids:
++                assert _apply(bridge, program, grid) == proto.transform(grid, action)
++
++
++def test_causal_witness_changes_under_skip_a_and_wrong_intermediate() -> None:
++    proto = _load("prototype")
++    witness = proto.causal_witness(seed=0)
++    assert witness["step_a"] == "mirror every left-side source cell across the divider"
++    assert witness["step_b"] == "recolor the contacted receiver component with the adjacent mirrored color"
++    assert witness["final_output"] != witness["skip_a_output"]
++    assert witness["final_output"] != witness["wrong_intermediate_output"]
++    assert witness["intermediate"] != witness["input"]
++    assert witness["selected_receiver_cells"]
++
++
++def test_public_projection_hides_settings_program_and_query_answers() -> None:
++    adapter = _load("adapter")
++    proto = _load("prototype")
++    episode = adapter.generate(12, {"receiver_action": "absorb_color"}, 3, 4)
++    public = proto.public_challenge(episode)
++    assert set(public) == {"train", "test"}
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert all(set(pair) == {"input"} for pair in public["test"])
++    raw = public_challenge_bytes(public).decode("utf-8")
++    for forbidden in ("receiver_action", "absorb_color", "program_solution", "seed", "query_answers"):
++        assert forbidden not in raw
++
++    changed = copy.deepcopy(episode)
++    changed["program_solution"] = "private replacement"
++    changed["settings"] = {"receiver_action": "secret"}
++    changed["test"][0]["output"] = [[9]]
++    assert public_challenge_bytes(proto.public_challenge(changed)) == public_challenge_bytes(public)
++
++
++def test_audit_writes_source_bound_protected_racket_evidence(tmp_path: Path) -> None:
++    audit = _load("audit")
++    destination = tmp_path / "evidence"
++    result = audit.run_audit(destination, seeds=(0, 1), racket_seeds=(0,))
++
++    assert result["schema"] == "arcpuzzles-receiver-action-audit-v1"
++    assert result["task_id"] == TASK_ID
++    assert result["status"] == "pass"
++    assert result["bounded_sweep"] == {
++        "seed_count": 2,
++        "episode_count": 4,
++        "teaching_checks": 20,
++        "labeled_pairs": 40,
++        "failures": [],
++    }
++    assert result["protected_racket"]["seed_count"] == 1
++    assert result["protected_racket"]["label_evaluations"] == 20
++    assert result["protected_racket"]["causal_evaluations"] == 4
++    assert result["protected_racket"]["failures"] == []
++
++    expected = {
++        "summary.json",
++        "sweep.json",
++        "protected-racket.json",
++        "causal-witness.json",
++        "public-projection.json",
++        "sources.json",
++    }
++    assert expected <= {path.name for path in destination.iterdir() if path.is_file()}
++    sources = json.loads((destination / "sources.json").read_text(encoding="utf-8"))
++    source_paths = {row["path"] for row in sources["files"]}
++    assert f"generators/{TASK_ID}/workspace/parametric/audit.py" in source_paths
++    assert f"generators/{TASK_ID}/workspace/parametric/prototype.py" in source_paths
++    assert f"generators/{TASK_ID}/generator.py" in source_paths
++    assert all(len(row["sha256"]) == 64 and row["bytes"] > 0 for row in sources["files"])
++
++    causal = json.loads((destination / "causal-witness.json").read_text(encoding="utf-8"))
++    assert causal["protected_racket"]["step_a_output"] == causal["intermediate"]
++    assert causal["protected_racket"]["full_output"] == causal["final_output"]
++    assert causal["protected_racket"]["skip_a_output"] != causal["final_output"]
++    assert causal["protected_racket"]["wrong_intermediate_output"] != causal["final_output"]
++
++    public = json.loads((destination / "public-projection.json").read_text(encoding="utf-8"))
++    assert public["count"] == 4
++    assert len(public["ids"]) == 4
++    for identifier in public["ids"]:
++        payload = destination / "public" / f"{identifier}.json"
++        assert payload.is_file()
++        assert hashlib.sha256(payload.read_bytes()).hexdigest() == identifier
++
++    with pytest.raises(FileExistsError):
++        audit.run_audit(destination, seeds=(0,), racket_seeds=())
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/README.md b/repo/generators/9baf979683ef/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/README.md
+@@ -0,0 +1,90 @@
++# Native receiver-action family for `9baf979683ef`
++
++## Rule family
++
++The private episode parameter is `receiver_action`:
++
++- `preserve` executes the selected canonical divider reflection **byte-for-byte**.
++- `absorb_color` first executes the same reflection, then finds the unique
++  color-9 receiver component touched by a newly mirrored source cell and
++  recolors the entire receiver with that cell's color.
++
++The input stream is identical across settings for the same seed and requested
++counts. Settings, programs, and query answers remain private.
++
++## Sequential dependency
++
++The alternate rule is deliberately non-collapsing:
++
++1. **A — mirror:** reflect every nonzero, non-divider source cell across the
++   full-height color-5 divider.
++2. **Intermediate:** the new mirrored field creates exactly one contact between
++   a source color and one of at least three separated color-9 receiver
++   components.
++3. **B — absorb:** select the contacted component and paint all of its cells
++   with the adjacent mirrored color.
++
++B cannot select a receiver or its color from the original grid. The retained
++protected-Racket witness executes the canonical A program, the full A→B
++program, B alone on the original input, and B on an intermediate with the
++contact removed. Both counterfactual final outputs differ from the lawful one:
++`evidence/current/causal-witness.json`.
++
++## Generation contract
++
++`adapter.py` exposes `program(settings)` and
++`generate(seed, settings, demos, queries)`. `promotion.json` supports:
++
++- 2–6 demonstrations;
++- 1–4 controller-side queries, with stable prefix behavior;
++- exactly two settings, with `preserve` as the canonical default.
++
++Each full episode contains ten distinct inputs. The six constructive
++training profiles swap receiver size and horizontal ranks in the first two
++examples, so the minimum two demonstrations distinguish the declared settings
++and seven explicit shortcuts. The four query profiles are novel; the last is a
++30×30 boundary case with four receivers and at least 28 source cells.
++
++The finite rival audit tests: recolor every receiver, recolor only the contact
++cell, use fixed color 2, choose the largest/smallest/leftmost/nearest-divider
++receiver. Passing this finite list is not a universal uniqueness proof.
++
++## Retained evidence
++
++`audit.py` is the reusable authoring check. The retained run covers seeds 0–63:
++
++- 128 maximum-size episodes and 1,280 labeled pairs;
++- 640 teaching checks across every supported demonstration count;
++- all seven non-divider source colors;
++- smallest, middle, and largest target-size ranks;
++- leftmost and rightmost receiver positions;
++- every declared dimension profile, including 128 setting-specific 30×30
++  boundary queries;
++- 40 protected-Racket label replays and four protected-Racket causal
++  counterfactual evaluations;
++- four hash-named exact public projections with no private fields or query
++  answers.
++
++The native qualification retains two settings × seeds 0 and 17, with three
++visible demonstrations and four private queries. It performed 40 protected
++Racket evaluations and found only the selected setting surviving each lesson.
++Qualification is reviewer evidence, not owner acceptance or training admission.
++
++## Reproduce
++
++From the packet root:
++
++```sh
++python3 review.py run python3 -m pytest -q \
++  generators/9baf979683ef/tests/test_parametric_receiver_action.py
++
++python3 review.py run python3 \
++  generators/9baf979683ef/workspace/parametric/audit.py \
++  --out generators/9baf979683ef/workspace/parametric/evidence/new-run
++
++python3 review.py run python3 -m arcpuzzles parametric qualify \
++  9baf979683ef --out ../checks/9baf979683ef/qualification-new --summary
++```
++
++Use a new audit/qualification destination. The source-bound manifest is
++`evidence/manifest.json`; replacing it requires the exact prior manifest hash.
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/adapter.py b/repo/generators/9baf979683ef/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/adapter.py
+@@ -0,0 +1,19 @@
++"""Native adapter for the divider-mirror receiver-action family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_NAME = "_arc_9baf979683ef_receiver_" + hashlib.sha256(str(_PATH).encode()).hexdigest()
++_SPEC = importlib.util.spec_from_file_location(_NAME, _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(f"cannot load parametric prototype from {_PATH}")
++_MODULE = importlib.util.module_from_spec(_SPEC)
++sys.modules[_NAME] = _MODULE
++_SPEC.loader.exec_module(_MODULE)
++
++program = _MODULE.program
++generate = _MODULE.generate
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/audit.py b/repo/generators/9baf979683ef/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/audit.py
+@@ -0,0 +1,560 @@
++"""Source-bound bounded audit for the divider receiver-action family.
++
++This tool retains three kinds of evidence without accepting the prototype:
++
++* a deterministic 64-seed census over every supported demonstration count;
++* protected-Racket replay of both declared programs and the sequential witness;
++* exact public projections whose filenames are their visible-byte SHA-256 IDs.
++
++Run from the repository root through the packet wrapper, for example::
++
++    python3 review.py run python3 \
++      generators/9baf979683ef/workspace/parametric/audit.py \
++      --out generators/9baf979683ef/workspace/parametric/evidence/current
++"""
++from __future__ import annotations
++
++import argparse
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any, Iterable
++
++
++HOME = Path(__file__).resolve().parent
++ROOT = HOME.parents[3]
++TASK_ID = "9baf979683ef"
++ACTIONS = ("preserve", "absorb_color")
++
++for candidate in (ROOT / "src", ROOT / "shared/runtime"):
++    if str(candidate) not in sys.path:
++        sys.path.insert(0, str(candidate))
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import public_challenge_bytes, public_challenge_id
++
++
++def _json_bytes(value: Any) -> bytes:
++    return (
++        json.dumps(
++            value,
++            sort_keys=True,
++            indent=2,
++            ensure_ascii=False,
++            allow_nan=False,
++        )
++        + "\n"
++    ).encode("utf-8")
++
++
++def _sha256(data: bytes) -> str:
++    return hashlib.sha256(data).hexdigest()
++
++
++def _write_json(path: Path, value: Any) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_bytes(_json_bytes(value))
++
++
++def _load_prototype():
++    path = HOME / "prototype.py"
++    name = "_receiver_action_audit_" + _sha256(path.read_bytes())
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(f"cannot load prototype from {path}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join(
++        "(" + " ".join(map(str, row)) + ")" for row in grid
++    ) + ")"
++
++
++def _apply(bridge: RacketBridge, program: str, grid: list[list[int]]) -> list[list[int]]:
++    return bridge.eval_text(f"({wrap_rule(program)} {_literal(grid)})")
++
++
++def _step_b_program() -> str:
++    """Return B alone, consuming whichever intermediate grid it is given."""
++    return """(rule! (let* ((intermediate g)
++                    (h (rows intermediate))
++                    (w (cols intermediate))
++                    (source-color?
++                     (lambda (v)
++                       (and (not (= v 0)) (not (= v 5)) (not (= v 9)))))
++                    (touch-color
++                     (lambda (obj)
++                       (find-first
++                        (lambda (color)
++                          (and (source-color? color)
++                               (for/or ((p (in-list (obj-cells obj))))
++                                 (for/or ((d (in-list cardinal-deltas)))
++                                   (let ((r (+ (first p) (first d)))
++                                         (c (+ (second p) (second d))))
++                                     (and (in-bounds? r c h w)
++                                          (= (at intermediate r c) color)))))))
++                        (grid-colors intermediate)))))
++               (for/fold ((out intermediate))
++                         ((obj (in-list
++                                (filter (lambda (o) (= (obj-color o) 9))
++                                        (objects intermediate 0)))))
++                 (let ((color (touch-color obj)))
++                   (if color
++                       (paint-cells out (obj-cells obj) color)
++                       out)))))"""
++
++
++def _source_inventory() -> dict[str, Any]:
++    paths = [
++        HOME / "audit.py",
++        HOME / "adapter.py",
++        HOME / "prototype.py",
++        HOME / "promotion.json",
++        HOME / "canonical.rkt",
++        ROOT / f"generators/{TASK_ID}/generator.py",
++        ROOT / f"generators/{TASK_ID}/tests/test_parametric_receiver_action.py",
++        ROOT / "shared/runtime/reviewer_support.py",
++        ROOT / "shared/runtime/puzzle_generators/rule_wrap.py",
++        ROOT / "shared/runtime/arc_repl/racket_bridge.py",
++    ]
++    rows = []
++    for path in sorted(paths):
++        if not path.is_file() or path.is_symlink():
++            raise FileNotFoundError(f"missing regular audit source: {path}")
++        raw = path.read_bytes()
++        rows.append(
++            {
++                "path": path.relative_to(ROOT).as_posix(),
++                "bytes": len(raw),
++                "sha256": _sha256(raw),
++            }
++        )
++    return {
++        "schema": "arcpuzzles-source-inventory-v1",
++        "task_id": TASK_ID,
++        "files": rows,
++    }
++
++
++def _inputs(episode: dict[str, Any]) -> list[list[list[int]]]:
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def _bounded_sweep(proto, seeds: tuple[int, ...]) -> dict[str, Any]:
++    failures: list[dict[str, Any]] = []
++    episode_count = 0
++    teaching_checks = 0
++    labeled_pairs = 0
++    contact_colors: set[int] = set()
++    target_size_ranks: set[str] = set()
++    target_horizontal_ranks: set[str] = set()
++    receiver_counts: set[int] = set()
++    dimensions: set[tuple[int, int]] = set()
++    boundary_stress_count = 0
++
++    for seed in seeds:
++        episodes: dict[str, dict[str, Any]] = {}
++        for action in ACTIONS:
++            try:
++                episode = proto.generate(seed, {"receiver_action": action}, 6, 4)
++                episodes[action] = episode
++                episode_count += 1
++                labeled_pairs += len(episode["train"]) + len(episode["test"])
++                grids = _inputs(episode)
++                serialized = {
++                    json.dumps(grid, sort_keys=True, separators=(",", ":"))
++                    for grid in grids
++                }
++                if len(serialized) != 10:
++                    raise AssertionError("episode inputs are not all distinct")
++                for pair in episode["train"] + episode["test"]:
++                    errors = proto.domain_errors(pair["input"])
++                    if errors:
++                        raise AssertionError("domain errors: " + "; ".join(errors))
++                    expected = proto.transform(pair["input"], action)
++                    if pair["output"] != expected:
++                        raise AssertionError("Python label does not match transform")
++                    observed = proto.observables(pair["input"])
++                    contact_colors.add(observed["contact_color"])
++                    target_size_ranks.add(observed["target_size_rank"])
++                    target_horizontal_ranks.add(observed["target_horizontal_rank"])
++                    receiver_counts.add(observed["receiver_count"])
++                    dimensions.add((observed["height"], observed["width"]))
++                    boundary_stress_count += int(
++                        observed["height"] == 30
++                        and observed["width"] == 30
++                        and observed["touches_right_boundary"]
++                    )
++                for demos in range(2, 7):
++                    report = proto.teaching_report(
++                        episode["train"][:demos], episode["test"], action
++                    )
++                    teaching_checks += 1
++                    if report["surviving_settings"] != [action]:
++                        raise AssertionError(
++                            f"setting survivors at {demos} demos: "
++                            f"{report['surviving_settings']}"
++                        )
++                    if report["surviving_rivals"] or report["query_ambiguities"]:
++                        raise AssertionError(
++                            f"lesson ambiguity at {demos} demos: {report}"
++                        )
++            except Exception as exc:  # Retain the exact bounded failure.
++                failures.append(
++                    {
++                        "seed": seed,
++                        "settings": {"receiver_action": action},
++                        "error": type(exc).__name__,
++                        "message": str(exc),
++                    }
++                )
++        if set(episodes) == set(ACTIONS):
++            if _inputs(episodes[ACTIONS[0]]) != _inputs(episodes[ACTIONS[1]]):
++                failures.append(
++                    {
++                        "seed": seed,
++                        "error": "InputMismatch",
++                        "message": "matched settings did not receive identical inputs",
++                    }
++                )
++
++    return {
++        "schema": "arcpuzzles-receiver-action-sweep-v1",
++        "task_id": TASK_ID,
++        "seed_range": list(seeds),
++        "seed_count": len(seeds),
++        "episode_count": episode_count,
++        "teaching_checks": teaching_checks,
++        "labeled_pairs": labeled_pairs,
++        "failures": failures,
++        "coverage": {
++            "contact_colors": sorted(contact_colors),
++            "target_size_ranks": sorted(target_size_ranks),
++            "target_horizontal_ranks": sorted(target_horizontal_ranks),
++            "receiver_counts": sorted(receiver_counts),
++            "dimensions": [list(item) for item in sorted(dimensions)],
++            "boundary_stress_count": boundary_stress_count,
++            "declared_rivals": list(proto.RIVAL_NAMES),
++            "demonstration_counts": [2, 3, 4, 5, 6],
++            "query_count": 4,
++        },
++        "scope": (
++            "Finite deterministic census over the listed seeds and declared rivals; "
++            "not a universal induction proof or owner acceptance."
++        ),
++    }
++
++
++def _protected_racket(proto, seeds: tuple[int, ...]) -> tuple[dict[str, Any], dict[str, Any]]:
++    failures: list[dict[str, Any]] = []
++    label_evaluations = 0
++    causal_evaluations = 0
++    runtime: dict[str, Any] | None = None
++    causal = proto.causal_witness(seed=seeds[0] if seeds else 0)
++    causal_doc = copy.deepcopy(causal)
++
++    if not seeds:
++        return (
++            {
++                "schema": "arcpuzzles-receiver-action-protected-racket-v1",
++                "task_id": TASK_ID,
++                "seeds": [],
++                "seed_count": 0,
++                "label_evaluations": 0,
++                "causal_evaluations": 0,
++                "failures": [],
++                "runtime": None,
++            },
++            causal_doc,
++        )
++
++    try:
++        with RacketBridge(max_calls_before_restart=96) as bridge:
++            runtime = bridge.runtime_identity
++            for seed in seeds:
++                grids = _inputs(
++                    proto.generate(seed, {"receiver_action": "preserve"}, 6, 4)
++                )
++                for action in ACTIONS:
++                    program = proto.program({"receiver_action": action})
++                    for index, grid in enumerate(grids):
++                        observed = _apply(bridge, program, grid)
++                        label_evaluations += 1
++                        expected = proto.transform(grid, action)
++                        if observed != expected:
++                            failures.append(
++                                {
++                                    "kind": "label_mismatch",
++                                    "seed": seed,
++                                    "settings": {"receiver_action": action},
++                                    "pair_index": index,
++                                }
++                            )
++
++            step_b = _step_b_program()
++            protected = {
++                "step_a_output": _apply(
++                    bridge,
++                    proto.program({"receiver_action": "preserve"}),
++                    causal["input"],
++                ),
++                "full_output": _apply(
++                    bridge,
++                    proto.program({"receiver_action": "absorb_color"}),
++                    causal["input"],
++                ),
++                "skip_a_output": _apply(bridge, step_b, causal["input"]),
++                "wrong_intermediate_output": _apply(
++                    bridge, step_b, causal["wrong_intermediate"]
++                ),
++            }
++            causal_evaluations = 4
++            expected = {
++                "step_a_output": causal["intermediate"],
++                "full_output": causal["final_output"],
++                "skip_a_output": causal["skip_a_output"],
++                "wrong_intermediate_output": causal["wrong_intermediate_output"],
++            }
++            for name, grid in expected.items():
++                if protected[name] != grid:
++                    failures.append(
++                        {
++                            "kind": "causal_mismatch",
++                            "field": name,
++                        }
++                    )
++            if protected["full_output"] == protected["skip_a_output"]:
++                failures.append(
++                    {
++                        "kind": "causal_collapse",
++                        "field": "skip_a_output",
++                    }
++                )
++            if protected["full_output"] == protected["wrong_intermediate_output"]:
++                failures.append(
++                    {
++                        "kind": "causal_collapse",
++                        "field": "wrong_intermediate_output",
++                    }
++                )
++            causal_doc.update(
++                {
++                    "step_a_program": proto.program(
++                        {"receiver_action": "preserve"}
++                    ),
++                    "full_program": proto.program(
++                        {"receiver_action": "absorb_color"}
++                    ),
++                    "step_b_program": step_b,
++                    "protected_racket": protected,
++                    "runtime": runtime,
++                }
++            )
++    except Exception as exc:
++        failures.append(
++            {
++                "kind": "protected_racket_error",
++                "error": type(exc).__name__,
++                "message": str(exc),
++            }
++        )
++
++    report = {
++        "schema": "arcpuzzles-receiver-action-protected-racket-v1",
++        "task_id": TASK_ID,
++        "seeds": list(seeds),
++        "seed_count": len(seeds),
++        "label_evaluations": label_evaluations,
++        "causal_evaluations": causal_evaluations,
++        "failures": failures,
++        "runtime": runtime,
++        "scope": (
++            "Protected-Racket replay of both declared settings on ten distinct "
++            "inputs per seed plus one four-evaluation sequential counterfactual."
++        ),
++    }
++    return report, causal_doc
++
++
++def _public_projections(proto, destination: Path, seeds: tuple[int, ...]) -> dict[str, Any]:
++    public_dir = destination / "public"
++    public_dir.mkdir(parents=True, exist_ok=True)
++    ids: list[str] = []
++    records: list[dict[str, Any]] = []
++    failures: list[dict[str, Any]] = []
++    for seed in seeds[:2]:
++        for action in ACTIONS:
++            episode = proto.generate(seed, {"receiver_action": action}, 2, 1)
++            public = proto.public_challenge(episode)
++            raw = public_challenge_bytes(public)
++            identifier = public_challenge_id(public)
++            if _sha256(raw) != identifier:
++                failures.append(
++                    {"seed": seed, "action": action, "error": "identifier mismatch"}
++                )
++                continue
++            path = public_dir / f"{identifier}.json"
++            if path.exists() and path.read_bytes() != raw:
++                failures.append(
++                    {"seed": seed, "action": action, "error": "ID collision"}
++                )
++                continue
++            path.write_bytes(raw)
++            ids.append(identifier)
++            decoded = raw.decode("utf-8")
++            forbidden = [
++                term
++                for term in (
++                    "receiver_action",
++                    "absorb_color",
++                    "program_solution",
++                    "query_answers",
++                    '"seed"',
++                )
++                if term in decoded
++            ]
++            if forbidden:
++                failures.append(
++                    {
++                        "seed": seed,
++                        "action": action,
++                        "error": "private fields leaked",
++                        "terms": forbidden,
++                    }
++                )
++            records.append(
++                {
++                    "seed": seed,
++                    "settings": {"receiver_action": action},
++                    "id": identifier,
++                    "bytes": len(raw),
++                    "path": f"public/{identifier}.json",
++                }
++            )
++    if len(ids) != len(set(ids)):
++        failures.append({"error": "duplicate public identifier"})
++    return {
++        "schema": "arcpuzzles-receiver-action-public-projection-v1",
++        "task_id": TASK_ID,
++        "count": len(ids),
++        "ids": ids,
++        "records": records,
++        "failures": failures,
++        "scope": (
++            "Each retained file contains labeled demonstrations and one unlabeled "
++            "query only; filenames are SHA-256 of exact visible bytes."
++        ),
++    }
++
++
++def _normalize_seeds(values: Iterable[int], name: str) -> tuple[int, ...]:
++    result = tuple(values)
++    if not result:
++        return result
++    if any(type(value) is not int or not 0 <= value <= 2**63 - 1 for value in result):
++        raise ValueError(f"{name} must contain exact integer seeds in 0..2^63-1")
++    if len(result) != len(set(result)):
++        raise ValueError(f"{name} must not contain duplicates")
++    return result
++
++
++def run_audit(
++    destination: Path | str,
++    *,
++    seeds: Iterable[int] = range(64),
++    racket_seeds: Iterable[int] = (0, 17),
++) -> dict[str, Any]:
++    """Write a new immutable evidence directory and return its summary."""
++    destination = Path(destination)
++    if destination.exists() or destination.is_symlink():
++        raise FileExistsError(f"choose a new audit destination: {destination}")
++    seed_tuple = _normalize_seeds(seeds, "seeds")
++    racket_seed_tuple = _normalize_seeds(racket_seeds, "racket_seeds")
++    if not seed_tuple:
++        raise ValueError("at least one bounded-sweep seed is required")
++    destination.mkdir(parents=True)
++
++    proto = _load_prototype()
++    sweep = _bounded_sweep(proto, seed_tuple)
++    protected, causal = _protected_racket(proto, racket_seed_tuple)
++    public = _public_projections(proto, destination, seed_tuple)
++    sources = _source_inventory()
++
++    _write_json(destination / "sweep.json", sweep)
++    _write_json(destination / "protected-racket.json", protected)
++    _write_json(destination / "causal-witness.json", causal)
++    _write_json(destination / "public-projection.json", public)
++    _write_json(destination / "sources.json", sources)
++
++    status = (
++        "pass"
++        if not sweep["failures"]
++        and not protected["failures"]
++        and not public["failures"]
++        else "fail"
++    )
++    summary = {
++        "schema": "arcpuzzles-receiver-action-audit-v1",
++        "task_id": TASK_ID,
++        "status": status,
++        "bounded_sweep": {
++            key: sweep[key]
++            for key in (
++                "seed_count",
++                "episode_count",
++                "teaching_checks",
++                "labeled_pairs",
++                "failures",
++            )
++        },
++        "protected_racket": {
++            key: protected[key]
++            for key in (
++                "seed_count",
++                "label_evaluations",
++                "causal_evaluations",
++                "failures",
++            )
++        },
++        "public_projection": {
++            "count": public["count"],
++            "failures": public["failures"],
++        },
++        "source_file_count": len(sources["files"]),
++        "scope": (
++            "Reviewer-generated finite evidence only. Pass does not mean owner "
++            "acceptance, universal learnability, or training admission."
++        ),
++    }
++    _write_json(destination / "summary.json", summary)
++    return summary
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", required=True, type=Path)
++    parser.add_argument("--seed-count", type=int, default=64)
++    parser.add_argument("--racket-seed", type=int, action="append", default=None)
++    args = parser.parse_args(argv)
++    if not 1 <= args.seed_count <= 1024:
++        parser.error("--seed-count must be in 1..1024")
++    racket_seeds = tuple(args.racket_seed) if args.racket_seed is not None else (0, 17)
++    summary = run_audit(
++        args.out,
++        seeds=range(args.seed_count),
++        racket_seeds=racket_seeds,
++    )
++    print(json.dumps(summary, sort_keys=True, indent=2))
++    return 0 if summary["status"] == "pass" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/canonical.rkt b/repo/generators/9baf979683ef/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (let ((divider (first (filter (lambda (c) (all? (lambda (r) (= (at g r c) 5)) (range (rows g)))) (range (cols g)))))) (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range divider))) (let ((v (at g r c)) (mc (- (* 2 divider) c))) (if (and (not (member? v (list 0 5))) (in-bounds? r mc (rows g) (cols g))) (set-cell out r mc v) out))))))
+\ No newline at end of file
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/causal-witness.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/causal-witness.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/causal-witness.json
+@@ -0,0 +1,1610 @@
++{
++  "final_output": [
++    [
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      6
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      1,
++      0,
++      0,
++      5,
++      0,
++      0,
++      1,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      1,
++      7,
++      5,
++      7,
++      1,
++      1,
++      1,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      4,
++      0,
++      0,
++      2,
++      5,
++      2,
++      0,
++      0,
++      4,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      6,
++      5,
++      6,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0
++    ]
++  ],
++  "full_program": "(rule! (let* ((intermediate (let ((dummy 0)) (let ((divider (first (filter (lambda (c) (all? (lambda (r) (= (at g r c) 5)) (range (rows g)))) (range (cols g)))))) (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range divider))) (let ((v (at g r c)) (mc (- (* 2 divider) c))) (if (and (not (member? v (list 0 5))) (in-bounds? r mc (rows g) (cols g))) (set-cell out r mc v) out))))))\n                    (h (rows intermediate))\n                    (w (cols intermediate))\n                    (source-color?\n                     (lambda (v)\n                       (and (not (= v 0)) (not (= v 5)) (not (= v 9)))))\n                    (touch-color\n                     (lambda (obj)\n                       (find-first\n                        (lambda (color)\n                          (and (source-color? color)\n                               (for/or ((p (in-list (obj-cells obj))))\n                                 (for/or ((d (in-list cardinal-deltas)))\n                                   (let ((r (+ (first p) (first d)))\n                                         (c (+ (second p) (second d))))\n                                     (and (in-bounds? r c h w)\n                                          (= (at intermediate r c) color)))))))\n                        (grid-colors intermediate)))))\n               (for/fold ((out intermediate))\n                         ((obj (in-list\n                                (filter (lambda (o) (= (obj-color o) 9))\n                                        (objects intermediate 0)))))\n                 (let ((color (touch-color obj)))\n                   (if color\n                       (paint-cells out (obj-cells obj) color)\n                       out)))))",
++  "input": [
++    [
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      1,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      1,
++      7,
++      5,
++      0,
++      0,
++      9,
++      9,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      4,
++      0,
++      0,
++      2,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      6,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ]
++  ],
++  "intermediate": [
++    [
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      6
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      1,
++      0,
++      0,
++      5,
++      0,
++      0,
++      1,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      1,
++      7,
++      5,
++      7,
++      1,
++      9,
++      9,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      4,
++      0,
++      0,
++      2,
++      5,
++      2,
++      0,
++      0,
++      4,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      6,
++      5,
++      6,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0
++    ]
++  ],
++  "intermediate_description": "the mirrored copy creates the only source-color contact with one color-9 receiver",
++  "program": "(rule! (let* ((intermediate (let ((dummy 0)) (let ((divider (first (filter (lambda (c) (all? (lambda (r) (= (at g r c) 5)) (range (rows g)))) (range (cols g)))))) (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range divider))) (let ((v (at g r c)) (mc (- (* 2 divider) c))) (if (and (not (member? v (list 0 5))) (in-bounds? r mc (rows g) (cols g))) (set-cell out r mc v) out))))))\n                    (h (rows intermediate))\n                    (w (cols intermediate))\n                    (source-color?\n                     (lambda (v)\n                       (and (not (= v 0)) (not (= v 5)) (not (= v 9)))))\n                    (touch-color\n                     (lambda (obj)\n                       (find-first\n                        (lambda (color)\n                          (and (source-color? color)\n                               (for/or ((p (in-list (obj-cells obj))))\n                                 (for/or ((d (in-list cardinal-deltas)))\n                                   (let ((r (+ (first p) (first d)))\n                                         (c (+ (second p) (second d))))\n                                     (and (in-bounds? r c h w)\n                                          (= (at intermediate r c) color)))))))\n                        (grid-colors intermediate)))))\n               (for/fold ((out intermediate))\n                         ((obj (in-list\n                                (filter (lambda (o) (= (obj-color o) 9))\n                                        (objects intermediate 0)))))\n                 (let ((color (touch-color obj)))\n                   (if color\n                       (paint-cells out (obj-cells obj) color)\n                       out)))))",
++  "protected_racket": {
++    "full_output": [
++      [
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        6
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        1,
++        0,
++        0,
++        5,
++        0,
++        0,
++        1,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        1,
++        7,
++        5,
++        7,
++        1,
++        1,
++        1,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        4,
++        0,
++        0,
++        2,
++        5,
++        2,
++        0,
++        0,
++        4,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        8,
++        0,
++        0,
++        6,
++        5,
++        6,
++        0,
++        0,
++        8,
++        0,
++        0,
++        0
++      ]
++    ],
++    "skip_a_output": [
++      [
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        1,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        1,
++        7,
++        5,
++        0,
++        0,
++        9,
++        9,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        4,
++        0,
++        0,
++        2,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        8,
++        0,
++        0,
++        6,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ]
++    ],
++    "step_a_output": [
++      [
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        6
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        1,
++        0,
++        0,
++        5,
++        0,
++        0,
++        1,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        1,
++        7,
++        5,
++        7,
++        1,
++        9,
++        9,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        4,
++        0,
++        0,
++        2,
++        5,
++        2,
++        0,
++        0,
++        4,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        8,
++        0,
++        0,
++        6,
++        5,
++        6,
++        0,
++        0,
++        8,
++        0,
++        0,
++        0
++      ]
++    ],
++    "wrong_intermediate_output": [
++      [
++        6,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        6
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        1,
++        0,
++        0,
++        5,
++        0,
++        0,
++        1,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        1,
++        7,
++        5,
++        7,
++        0,
++        9,
++        9,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        4,
++        0,
++        0,
++        2,
++        5,
++        2,
++        0,
++        0,
++        4,
++        0,
++        9,
++        9
++      ],
++      [
++        0,
++        0,
++        0,
++        8,
++        0,
++        0,
++        6,
++        5,
++        6,
++        0,
++        0,
++        8,
++        0,
++        0,
++        0
++      ]
++    ]
++  },
++  "runtime": {
++    "backend": "racket",
++    "binary_path": "/mnt/data/arcp_review_173145/input/WORK/.review/racket-runtime/racket/bin/racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_path": "/mnt/data/arcp_review_173145/input/WORK/repo/shared/runtime/arc_repl/racket_bridge.py",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_environment": "empty-environment-variables-v1",
++    "candidate_exit_handler": "deny-process-exit-v1",
++    "candidate_input": "empty-string-port-v1",
++    "candidate_output": "discard-string-ports-v1",
++    "candidate_symbol_policy_schema": "arc-racket-candidate-symbol-policy-v1",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "deterministic": true,
++    "evaluation_custodian": "fresh-per-eval-shutdown-before-reply-v1",
++    "evaluation_resource_limit": "nested-thread-512MiB-v1",
++    "prelude_path": "/mnt/data/arcp_review_173145/input/WORK/repo/shared/runtime/arc_repl/racket_prelude/arc-prelude.rkt",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1",
++    "security_canary": {
++      "environment": "pass",
++      "exit": "pass",
++      "filesystem": "pass",
++      "input": "pass",
++      "memory": "pass",
++      "network": "pass",
++      "subprocess": "pass"
++    },
++    "security_guard": "deny-filesystem-network-link-v1",
++    "startup_handshake": "pass",
++    "subprocess_environment": "explicit-allowlist-v1"
++  },
++  "schema": "arcpuzzles-sequential-witness-v1",
++  "selected_receiver_cells": [
++    [
++      4,
++      10
++    ],
++    [
++      4,
++      11
++    ]
++  ],
++  "settings": {
++    "receiver_action": "absorb_color"
++  },
++  "skip_a_output": [
++    [
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      1,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      1,
++      7,
++      5,
++      0,
++      0,
++      9,
++      9,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      4,
++      0,
++      0,
++      2,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      6,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ]
++  ],
++  "step_a": "mirror every left-side source cell across the divider",
++  "step_a_program": "(rule! (let ((dummy 0)) (let ((divider (first (filter (lambda (c) (all? (lambda (r) (= (at g r c) 5)) (range (rows g)))) (range (cols g)))))) (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range divider))) (let ((v (at g r c)) (mc (- (* 2 divider) c))) (if (and (not (member? v (list 0 5))) (in-bounds? r mc (rows g) (cols g))) (set-cell out r mc v) out))))))",
++  "step_b": "recolor the contacted receiver component with the adjacent mirrored color",
++  "step_b_program": "(rule! (let* ((intermediate g)\n                    (h (rows intermediate))\n                    (w (cols intermediate))\n                    (source-color?\n                     (lambda (v)\n                       (and (not (= v 0)) (not (= v 5)) (not (= v 9)))))\n                    (touch-color\n                     (lambda (obj)\n                       (find-first\n                        (lambda (color)\n                          (and (source-color? color)\n                               (for/or ((p (in-list (obj-cells obj))))\n                                 (for/or ((d (in-list cardinal-deltas)))\n                                   (let ((r (+ (first p) (first d)))\n                                         (c (+ (second p) (second d))))\n                                     (and (in-bounds? r c h w)\n                                          (= (at intermediate r c) color)))))))\n                        (grid-colors intermediate)))))\n               (for/fold ((out intermediate))\n                         ((obj (in-list\n                                (filter (lambda (o) (= (obj-color o) 9))\n                                        (objects intermediate 0)))))\n                 (let ((color (touch-color obj)))\n                   (if color\n                       (paint-cells out (obj-cells obj) color)\n                       out)))))",
++  "task_id": "9baf979683ef",
++  "why_b_depends_on_a": "before A, no receiver touches a source color; deleting the mirrored contact prevents receiver selection",
++  "wrong_intermediate": [
++    [
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      6
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      1,
++      0,
++      0,
++      5,
++      0,
++      0,
++      1,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      1,
++      7,
++      5,
++      7,
++      0,
++      9,
++      9,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      4,
++      0,
++      0,
++      2,
++      5,
++      2,
++      0,
++      0,
++      4,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      6,
++      5,
++      6,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0
++    ]
++  ],
++  "wrong_intermediate_output": [
++    [
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      6
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      1,
++      0,
++      0,
++      5,
++      0,
++      0,
++      1,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      1,
++      7,
++      5,
++      7,
++      0,
++      9,
++      9,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      4,
++      0,
++      0,
++      2,
++      5,
++      2,
++      0,
++      0,
++      4,
++      0,
++      9,
++      9
++    ],
++    [
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      6,
++      5,
++      6,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0
++    ]
++  ]
++}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/focused-tests.log b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/focused-tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/focused-tests.log
+@@ -0,0 +1,2 @@
++.........                                                                [100%]
++9 passed in 9.56s
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/protected-racket.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/protected-racket.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/protected-racket.json
+@@ -0,0 +1,46 @@
++{
++  "causal_evaluations": 4,
++  "failures": [],
++  "label_evaluations": 40,
++  "runtime": {
++    "backend": "racket",
++    "binary_path": "/mnt/data/arcp_review_173145/input/WORK/.review/racket-runtime/racket/bin/racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_path": "/mnt/data/arcp_review_173145/input/WORK/repo/shared/runtime/arc_repl/racket_bridge.py",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_environment": "empty-environment-variables-v1",
++    "candidate_exit_handler": "deny-process-exit-v1",
++    "candidate_input": "empty-string-port-v1",
++    "candidate_output": "discard-string-ports-v1",
++    "candidate_symbol_policy_schema": "arc-racket-candidate-symbol-policy-v1",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "deterministic": true,
++    "evaluation_custodian": "fresh-per-eval-shutdown-before-reply-v1",
++    "evaluation_resource_limit": "nested-thread-512MiB-v1",
++    "prelude_path": "/mnt/data/arcp_review_173145/input/WORK/repo/shared/runtime/arc_repl/racket_prelude/arc-prelude.rkt",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1",
++    "security_canary": {
++      "environment": "pass",
++      "exit": "pass",
++      "filesystem": "pass",
++      "input": "pass",
++      "memory": "pass",
++      "network": "pass",
++      "subprocess": "pass"
++    },
++    "security_guard": "deny-filesystem-network-link-v1",
++    "startup_handshake": "pass",
++    "subprocess_environment": "explicit-allowlist-v1"
++  },
++  "schema": "arcpuzzles-receiver-action-protected-racket-v1",
++  "scope": "Protected-Racket replay of both declared settings on ten distinct inputs per seed plus one four-evaluation sequential counterfactual.",
++  "seed_count": 2,
++  "seeds": [
++    0,
++    17
++  ],
++  "task_id": "9baf979683ef"
++}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public-projection.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public-projection.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public-projection.json
+@@ -0,0 +1,51 @@
++{
++  "count": 4,
++  "failures": [],
++  "ids": [
++    "6e42b3e116c721786ba3b71567b2ce0d1eaf2c46be147fa288ae0012e7e9f6cb",
++    "b3a55aedc5ffed913c8fe2501ff7a386dd5608d2e374a7ace122d610afae36b5",
++    "548164c7d61702c2bf2b8f85a2d1b4a5edad42daa8b62553464947b7d62e9fcc",
++    "e9516a63f21265d6db487a9e8217b0427eae42b37a733827eb8b98dff5d9a010"
++  ],
++  "records": [
++    {
++      "bytes": 1715,
++      "id": "6e42b3e116c721786ba3b71567b2ce0d1eaf2c46be147fa288ae0012e7e9f6cb",
++      "path": "public/6e42b3e116c721786ba3b71567b2ce0d1eaf2c46be147fa288ae0012e7e9f6cb.json",
++      "seed": 0,
++      "settings": {
++        "receiver_action": "preserve"
++      }
++    },
++    {
++      "bytes": 1715,
++      "id": "b3a55aedc5ffed913c8fe2501ff7a386dd5608d2e374a7ace122d610afae36b5",
++      "path": "public/b3a55aedc5ffed913c8fe2501ff7a386dd5608d2e374a7ace122d610afae36b5.json",
++      "seed": 0,
++      "settings": {
++        "receiver_action": "absorb_color"
++      }
++    },
++    {
++      "bytes": 1715,
++      "id": "548164c7d61702c2bf2b8f85a2d1b4a5edad42daa8b62553464947b7d62e9fcc",
++      "path": "public/548164c7d61702c2bf2b8f85a2d1b4a5edad42daa8b62553464947b7d62e9fcc.json",
++      "seed": 1,
++      "settings": {
++        "receiver_action": "preserve"
++      }
++    },
++    {
++      "bytes": 1715,
++      "id": "e9516a63f21265d6db487a9e8217b0427eae42b37a733827eb8b98dff5d9a010",
++      "path": "public/e9516a63f21265d6db487a9e8217b0427eae42b37a733827eb8b98dff5d9a010.json",
++      "seed": 1,
++      "settings": {
++        "receiver_action": "absorb_color"
++      }
++    }
++  ],
++  "schema": "arcpuzzles-receiver-action-public-projection-v1",
++  "scope": "Each retained file contains labeled demonstrations and one unlabeled query only; filenames are SHA-256 of exact visible bytes.",
++  "task_id": "9baf979683ef"
++}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/548164c7d61702c2bf2b8f85a2d1b4a5edad42daa8b62553464947b7d62e9fcc.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/548164c7d61702c2bf2b8f85a2d1b4a5edad42daa8b62553464947b7d62e9fcc.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/548164c7d61702c2bf2b8f85a2d1b4a5edad42daa8b62553464947b7d62e9fcc.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[0,0,0,0,3,0,6,0,5,0,0,0,0,0,0,0],[0,0,0,0,7,1,0,8,5,0,0,0,0,0,0,0],[0,0,0,0,0,4,0,0,5,0,0,0,0,0,9,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,9,9],[0,0,0,0,0,0,7,3,5,0,0,9,9,0,9,0],[0,0,0,0,0,0,0,6,5,0,0,9,0,0,0,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,9,9,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,9,9,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,9,9,0],[0,7,0,0,0,0,1,0,5,0,0,0,0,9,0,0]]}],"train":[{"input":[[0,0,0,0,0,0,3,5,0,0,0,9,9,0,9],[0,0,0,0,0,0,0,5,0,0,0,9,9,0,9],[0,0,0,0,4,0,0,5,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,0,9],[0,0,0,0,0,3,2,5,0,0,9,9,0,0,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,0,9],[0,0,7,0,0,0,0,5,0,0,0,0,0,0,0],[0,0,0,0,0,8,0,5,0,0,0,0,0,0,0],[0,0,0,1,0,3,0,5,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,3,5,3,0,0,9,9,0,9],[0,0,0,0,0,0,0,5,0,0,0,9,9,0,9],[0,0,0,0,4,0,0,5,0,0,4,0,0,0,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,0,9],[0,0,0,0,0,3,2,5,2,3,9,9,0,0,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,0,9],[0,0,7,0,0,0,0,5,0,0,0,0,7,0,0],[0,0,0,0,0,8,0,5,0,8,0,0,0,0,0],[0,0,0,1,0,3,0,5,0,3,0,1,0,0,0]]},{"input":[[0,0,0,0,0,2,0,0,5,0,0,0,0,0,0,0,0],[0,6,1,7,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,8,6,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,9,0,0,0,0,0,0,9],[0,0,3,0,0,2,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,9,9,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,9,0,0,0,0,0,0],[0,4,1,0,0,0,0,0,5,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,2,0,0,5,0,0,2,0,0,0,0,0],[0,6,1,7,0,0,0,0,5,0,0,0,0,7,1,6,9],[0,0,0,0,8,6,0,0,5,0,0,6,8,0,0,0,9],[0,0,0,0,0,0,0,0,5,9,0,0,0,0,0,0,9],[0,0,3,0,0,2,0,0,5,0,0,2,0,0,3,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,9,9,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,9,0,0,0,0,0,0],[0,4,1,0,0,0,0,0,5,0,0,0,0,0,1,4,0]]}]}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/6e42b3e116c721786ba3b71567b2ce0d1eaf2c46be147fa288ae0012e7e9f6cb.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/6e42b3e116c721786ba3b71567b2ce0d1eaf2c46be147fa288ae0012e7e9f6cb.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/6e42b3e116c721786ba3b71567b2ce0d1eaf2c46be147fa288ae0012e7e9f6cb.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[0,4,6,0,8,3,0,1,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,7,0,5,0,0,0,0,0,0,9],[0,0,0,0,0,0,2,4,5,0,0,9,9,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,9,0,0,0,9],[0,0,0,0,0,0,6,0,5,0,0,0,9,9,0,9],[0,0,0,0,0,0,8,0,5,0,0,0,9,9,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,9,0,0,9],[0,0,0,3,0,0,0,0,5,0,0,0,0,0,0,9]]}],"train":[{"input":[[6,0,0,0,0,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,0,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,1,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,0,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,0,1,7,5,0,0,9,9,0,0,0],[0,0,0,0,0,0,0,5,0,0,0,0,0,9,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,9,9],[0,0,0,4,0,0,2,5,0,0,0,0,0,9,9],[0,0,0,8,0,0,6,5,0,0,0,0,0,0,0]],"output":[[6,0,0,0,0,0,0,5,0,0,0,0,9,0,6],[0,0,0,0,0,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,1,0,0,5,0,0,1,0,9,0,0],[0,0,0,0,0,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,0,1,7,5,7,1,9,9,0,0,0],[0,0,0,0,0,0,0,5,0,0,0,0,0,9,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,9,9],[0,0,0,4,0,0,2,5,2,0,0,4,0,9,9],[0,0,0,8,0,0,6,5,6,0,0,8,0,0,0]]},{"input":[[0,0,0,7,0,0,6,0,5,0,0,0,0,0,0,0,0],[0,3,8,2,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,4,0,0,0,5,9,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,3,7,6,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,9,9,9,0,0,0,0],[0,0,0,1,0,0,0,0,5,0,0,0,0,0,0,0,0]],"output":[[0,0,0,7,0,0,6,0,5,0,6,0,0,7,0,0,0],[0,3,8,2,0,0,0,0,5,0,0,0,0,2,8,3,9],[0,0,0,0,4,0,0,0,5,9,0,0,4,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,3,7,6,0,5,0,6,7,3,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,9,9,9,0,0,0,0],[0,0,0,1,0,0,0,0,5,0,0,0,0,1,0,0,0]]}]}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/b3a55aedc5ffed913c8fe2501ff7a386dd5608d2e374a7ace122d610afae36b5.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/b3a55aedc5ffed913c8fe2501ff7a386dd5608d2e374a7ace122d610afae36b5.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/b3a55aedc5ffed913c8fe2501ff7a386dd5608d2e374a7ace122d610afae36b5.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[0,4,6,0,8,3,0,1,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0],[0,0,0,0,0,0,7,0,5,0,0,0,0,0,0,9],[0,0,0,0,0,0,2,4,5,0,0,9,9,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,9,0,0,0,9],[0,0,0,0,0,0,6,0,5,0,0,0,9,9,0,9],[0,0,0,0,0,0,8,0,5,0,0,0,9,9,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,9,0,0,9],[0,0,0,3,0,0,0,0,5,0,0,0,0,0,0,9]]}],"train":[{"input":[[6,0,0,0,0,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,0,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,1,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,0,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,0,1,7,5,0,0,9,9,0,0,0],[0,0,0,0,0,0,0,5,0,0,0,0,0,9,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,9,9],[0,0,0,4,0,0,2,5,0,0,0,0,0,9,9],[0,0,0,8,0,0,6,5,0,0,0,0,0,0,0]],"output":[[6,0,0,0,0,0,0,5,0,0,0,0,9,0,6],[0,0,0,0,0,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,1,0,0,5,0,0,1,0,9,0,0],[0,0,0,0,0,0,0,5,0,0,0,0,9,0,0],[0,0,0,0,0,1,7,5,7,1,1,1,0,0,0],[0,0,0,0,0,0,0,5,0,0,0,0,0,9,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,9,9],[0,0,0,4,0,0,2,5,2,0,0,4,0,9,9],[0,0,0,8,0,0,6,5,6,0,0,8,0,0,0]]},{"input":[[0,0,0,7,0,0,6,0,5,0,0,0,0,0,0,0,0],[0,3,8,2,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,4,0,0,0,5,9,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,3,7,6,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,9,9,9,0,0,0,0],[0,0,0,1,0,0,0,0,5,0,0,0,0,0,0,0,0]],"output":[[0,0,0,7,0,0,6,0,5,0,6,0,0,7,0,0,0],[0,3,8,2,0,0,0,0,5,0,0,0,0,2,8,3,3],[0,0,0,0,4,0,0,0,5,9,0,0,4,0,0,0,3],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,3],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,3],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,3],[0,0,0,0,3,7,6,0,5,0,6,7,3,0,0,0,3],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,3],[0,0,0,0,0,0,0,0,5,0,9,9,9,0,0,0,0],[0,0,0,1,0,0,0,0,5,0,0,0,0,1,0,0,0]]}]}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/e9516a63f21265d6db487a9e8217b0427eae42b37a733827eb8b98dff5d9a010.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/e9516a63f21265d6db487a9e8217b0427eae42b37a733827eb8b98dff5d9a010.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/public/e9516a63f21265d6db487a9e8217b0427eae42b37a733827eb8b98dff5d9a010.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[0,0,0,0,3,0,6,0,5,0,0,0,0,0,0,0],[0,0,0,0,7,1,0,8,5,0,0,0,0,0,0,0],[0,0,0,0,0,4,0,0,5,0,0,0,0,0,9,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,9,9],[0,0,0,0,0,0,7,3,5,0,0,9,9,0,9,0],[0,0,0,0,0,0,0,6,5,0,0,9,0,0,0,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,9,9,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,9,9,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,9,9,0],[0,7,0,0,0,0,1,0,5,0,0,0,0,9,0,0]]}],"train":[{"input":[[0,0,0,0,0,0,3,5,0,0,0,9,9,0,9],[0,0,0,0,0,0,0,5,0,0,0,9,9,0,9],[0,0,0,0,4,0,0,5,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,0,9],[0,0,0,0,0,3,2,5,0,0,9,9,0,0,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,0,9],[0,0,7,0,0,0,0,5,0,0,0,0,0,0,0],[0,0,0,0,0,8,0,5,0,0,0,0,0,0,0],[0,0,0,1,0,3,0,5,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,3,5,3,0,0,9,9,0,9],[0,0,0,0,0,0,0,5,0,0,0,9,9,0,9],[0,0,0,0,4,0,0,5,0,0,4,0,0,0,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,0,9],[0,0,0,0,0,3,2,5,2,3,3,3,0,0,9],[0,0,0,0,0,0,0,5,0,0,0,0,0,0,9],[0,0,7,0,0,0,0,5,0,0,0,0,7,0,0],[0,0,0,0,0,8,0,5,0,8,0,0,0,0,0],[0,0,0,1,0,3,0,5,0,3,0,1,0,0,0]]},{"input":[[0,0,0,0,0,2,0,0,5,0,0,0,0,0,0,0,0],[0,6,1,7,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,8,6,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,9,0,0,0,0,0,0,9],[0,0,3,0,0,2,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,9,9,0,0,0,0,9],[0,0,0,0,0,0,0,0,5,0,9,0,0,0,0,0,0],[0,4,1,0,0,0,0,0,5,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,2,0,0,5,0,0,2,0,0,0,0,0],[0,6,1,7,0,0,0,0,5,0,0,0,0,7,1,6,6],[0,0,0,0,8,6,0,0,5,0,0,6,8,0,0,0,6],[0,0,0,0,0,0,0,0,5,9,0,0,0,0,0,0,6],[0,0,3,0,0,2,0,0,5,0,0,2,0,0,3,0,6],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,6],[0,0,0,0,0,0,0,0,5,0,0,0,0,0,0,0,6],[0,0,0,0,0,0,0,0,5,0,9,9,0,0,0,0,6],[0,0,0,0,0,0,0,0,5,0,9,0,0,0,0,0,0],[0,4,1,0,0,0,0,0,5,0,0,0,0,0,1,4,0]]}]}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/sources.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/sources.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/sources.json
+@@ -0,0 +1,56 @@
++{
++  "files": [
++    {
++      "bytes": 20113,
++      "path": "generators/9baf979683ef/generator.py",
++      "sha256": "29f83f4da2ccb13bfc121f6497a76461a39f7c8adf89abff5802d400d2ac71a5"
++    },
++    {
++      "bytes": 10624,
++      "path": "generators/9baf979683ef/tests/test_parametric_receiver_action.py",
++      "sha256": "a7848456779195c8be40f899edc2600bb879260db3e2ead79e3fe23761ad3917"
++    },
++    {
++      "bytes": 667,
++      "path": "generators/9baf979683ef/workspace/parametric/adapter.py",
++      "sha256": "a923c2cce3aa5474e9ef0c7d47f5917fc6bec945a04b2f0b04cb5013c833e707"
++    },
++    {
++      "bytes": 21130,
++      "path": "generators/9baf979683ef/workspace/parametric/audit.py",
++      "sha256": "ec954590bc71b775dbca544c9b5201cb33fb0b0e6b67dd0a3596e6fad9a73d1b"
++    },
++    {
++      "bytes": 365,
++      "path": "generators/9baf979683ef/workspace/parametric/canonical.rkt",
++      "sha256": "1fce392f92a1cbd8774b429b914f5925b34ded5b8383f1ee73579003f176c907"
++    },
++    {
++      "bytes": 548,
++      "path": "generators/9baf979683ef/workspace/parametric/promotion.json",
++      "sha256": "4cefbfb797d74d221031a93f41dcda57086e81bedfd7172835af4fd75223cad1"
++    },
++    {
++      "bytes": 28264,
++      "path": "generators/9baf979683ef/workspace/parametric/prototype.py",
++      "sha256": "066ca282463005e4569e0ddd0aedff827a043e3dd9edf7856db953794d5578ce"
++    },
++    {
++      "bytes": 41464,
++      "path": "shared/runtime/arc_repl/racket_bridge.py",
++      "sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323"
++    },
++    {
++      "bytes": 12273,
++      "path": "shared/runtime/puzzle_generators/rule_wrap.py",
++      "sha256": "25e01f3f9c93ae496f5c332b8985dd5cd4d333453f95221eb4bf33308cdbd2cc"
++    },
++    {
++      "bytes": 13382,
++      "path": "shared/runtime/reviewer_support.py",
++      "sha256": "1806fe007fcdfa99c9306c5743489c388c103d08c398eeb1282f6fe4056e99c8"
++    }
++  ],
++  "schema": "arcpuzzles-source-inventory-v1",
++  "task_id": "9baf979683ef"
++}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/summary.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/summary.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/summary.json
+@@ -0,0 +1,24 @@
++{
++  "bounded_sweep": {
++    "episode_count": 128,
++    "failures": [],
++    "labeled_pairs": 1280,
++    "seed_count": 64,
++    "teaching_checks": 640
++  },
++  "protected_racket": {
++    "causal_evaluations": 4,
++    "failures": [],
++    "label_evaluations": 40,
++    "seed_count": 2
++  },
++  "public_projection": {
++    "count": 4,
++    "failures": []
++  },
++  "schema": "arcpuzzles-receiver-action-audit-v1",
++  "scope": "Reviewer-generated finite evidence only. Pass does not mean owner acceptance, universal learnability, or training admission.",
++  "source_file_count": 10,
++  "status": "pass",
++  "task_id": "9baf979683ef"
++}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/current/sweep.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/sweep.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/current/sweep.json
+@@ -0,0 +1,160 @@
++{
++  "coverage": {
++    "boundary_stress_count": 128,
++    "contact_colors": [
++      1,
++      2,
++      3,
++      4,
++      6,
++      7,
++      8
++    ],
++    "declared_rivals": [
++      "all_receivers",
++      "contact_cell_only",
++      "fixed_color_two",
++      "largest_receiver",
++      "leftmost_receiver",
++      "nearest_divider",
++      "smallest_receiver"
++    ],
++    "demonstration_counts": [
++      2,
++      3,
++      4,
++      5,
++      6
++    ],
++    "dimensions": [
++      [
++        9,
++        15
++      ],
++      [
++        10,
++        16
++      ],
++      [
++        10,
++        17
++      ],
++      [
++        11,
++        18
++      ],
++      [
++        12,
++        19
++      ],
++      [
++        13,
++        20
++      ],
++      [
++        14,
++        21
++      ],
++      [
++        16,
++        23
++      ],
++      [
++        18,
++        25
++      ],
++      [
++        30,
++        30
++      ]
++    ],
++    "query_count": 4,
++    "receiver_counts": [
++      3,
++      4
++    ],
++    "target_horizontal_ranks": [
++      "leftmost",
++      "rightmost"
++    ],
++    "target_size_ranks": [
++      "largest",
++      "middle",
++      "smallest"
++    ]
++  },
++  "episode_count": 128,
++  "failures": [],
++  "labeled_pairs": 1280,
++  "schema": "arcpuzzles-receiver-action-sweep-v1",
++  "scope": "Finite deterministic census over the listed seeds and declared rivals; not a universal induction proof or owner acceptance.",
++  "seed_count": 64,
++  "seed_range": [
++    0,
++    1,
++    2,
++    3,
++    4,
++    5,
++    6,
++    7,
++    8,
++    9,
++    10,
++    11,
++    12,
++    13,
++    14,
++    15,
++    16,
++    17,
++    18,
++    19,
++    20,
++    21,
++    22,
++    23,
++    24,
++    25,
++    26,
++    27,
++    28,
++    29,
++    30,
++    31,
++    32,
++    33,
++    34,
++    35,
++    36,
++    37,
++    38,
++    39,
++    40,
++    41,
++    42,
++    43,
++    44,
++    45,
++    46,
++    47,
++    48,
++    49,
++    50,
++    51,
++    52,
++    53,
++    54,
++    55,
++    56,
++    57,
++    58,
++    59,
++    60,
++    61,
++    62,
++    63
++  ],
++  "task_id": "9baf979683ef",
++  "teaching_checks": 640
++}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/evidence/manifest.json b/repo/generators/9baf979683ef/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,127 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "1fce392f92a1cbd8774b429b914f5925b34ded5b8383f1ee73579003f176c907",
++  "canonical_rule_hash": "1fce392f92a1",
++  "default": {
++    "receiver_action": "preserve"
++  },
++  "evidence_root": "generators/9baf979683ef/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 20113,
++      "path": "generators/9baf979683ef/generator.py",
++      "sha256": "29f83f4da2ccb13bfc121f6497a76461a39f7c8adf89abff5802d400d2ac71a5"
++    },
++    {
++      "bytes": 10624,
++      "path": "generators/9baf979683ef/tests/test_parametric_receiver_action.py",
++      "sha256": "a7848456779195c8be40f899edc2600bb879260db3e2ead79e3fe23761ad3917"
++    },
++    {
++      "bytes": 667,
++      "path": "generators/9baf979683ef/workspace/parametric/adapter.py",
++      "sha256": "a923c2cce3aa5474e9ef0c7d47f5917fc6bec945a04b2f0b04cb5013c833e707"
++    },
++    {
++      "bytes": 21130,
++      "path": "generators/9baf979683ef/workspace/parametric/audit.py",
++      "sha256": "ec954590bc71b775dbca544c9b5201cb33fb0b0e6b67dd0a3596e6fad9a73d1b"
++    },
++    {
++      "bytes": 365,
++      "path": "generators/9baf979683ef/workspace/parametric/canonical.rkt",
++      "sha256": "1fce392f92a1cbd8774b429b914f5925b34ded5b8383f1ee73579003f176c907"
++    },
++    {
++      "bytes": 22389,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/causal-witness.json",
++      "sha256": "9f513d54c50429e5d398c09e8439bdca73aeda3a694dfaf41dc4806c32960f55"
++    },
++    {
++      "bytes": 98,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/focused-tests.log",
++      "sha256": "81258aa7a1c18f3805bd4a5c5e7771b6a5e8696cdbed8c451102d322a93e99df"
++    },
++    {
++      "bytes": 2090,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/protected-racket.json",
++      "sha256": "3b222f37762de1a34ad32fc630d37a1236ec6f6ee8c23c19b7c0f385e6f57a91"
++    },
++    {
++      "bytes": 1715,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/public/548164c7d61702c2bf2b8f85a2d1b4a5edad42daa8b62553464947b7d62e9fcc.json",
++      "sha256": "548164c7d61702c2bf2b8f85a2d1b4a5edad42daa8b62553464947b7d62e9fcc"
++    },
++    {
++      "bytes": 1715,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/public/6e42b3e116c721786ba3b71567b2ce0d1eaf2c46be147fa288ae0012e7e9f6cb.json",
++      "sha256": "6e42b3e116c721786ba3b71567b2ce0d1eaf2c46be147fa288ae0012e7e9f6cb"
++    },
++    {
++      "bytes": 1715,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/public/b3a55aedc5ffed913c8fe2501ff7a386dd5608d2e374a7ace122d610afae36b5.json",
++      "sha256": "b3a55aedc5ffed913c8fe2501ff7a386dd5608d2e374a7ace122d610afae36b5"
++    },
++    {
++      "bytes": 1715,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/public/e9516a63f21265d6db487a9e8217b0427eae42b37a733827eb8b98dff5d9a010.json",
++      "sha256": "e9516a63f21265d6db487a9e8217b0427eae42b37a733827eb8b98dff5d9a010"
++    },
++    {
++      "bytes": 1762,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/public-projection.json",
++      "sha256": "e8e36938e562275e1dd9953e28a3b183ca6d175da924d99a126d01fa9e9b8e5d"
++    },
++    {
++      "bytes": 1950,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/sources.json",
++      "sha256": "e3fd9032d266b6ebdc78fc65fc8805287366d27ef33382104324d4ae9cc75ae9"
++    },
++    {
++      "bytes": 609,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/summary.json",
++      "sha256": "058800b1ae031b876d96d86688a0c949db68c56ca6eaaede65e1a77a122473d2"
++    },
++    {
++      "bytes": 1953,
++      "path": "generators/9baf979683ef/workspace/parametric/evidence/current/sweep.json",
++      "sha256": "e0bfe70c652b7a41f926f1f40ec9246532d5a1480d3c43c56f1efcd91290bddc"
++    },
++    {
++      "bytes": 548,
++      "path": "generators/9baf979683ef/workspace/parametric/promotion.json",
++      "sha256": "4cefbfb797d74d221031a93f41dcda57086e81bedfd7172835af4fd75223cad1"
++    },
++    {
++      "bytes": 28264,
++      "path": "generators/9baf979683ef/workspace/parametric/prototype.py",
++      "sha256": "066ca282463005e4569e0ddd0aedff827a043e3dd9edf7856db953794d5578ce"
++    }
++  ],
++  "generator_sha256": "29f83f4da2ccb13bfc121f6497a76461a39f7c8adf89abff5802d400d2ac71a5",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "receiver_action": [
++      "preserve",
++      "absorb_color"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "9 focused pytest checks passed. A 64-seed sweep retained 128 episodes, 1,280 labeled pairs and 640 teaching checks across every supported demonstration count with zero failures against both declared settings and seven explicit rivals. Protected Racket matched 40 labels and four sequential counterfactual evaluations. Four hash-named public projections passed exact-byte privacy checks. These are bounded reviewer checks, not owner acceptance or training admission.",
++  "rule_task_id": "9baf979683ef",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "9baf979683ef",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/focused-tests.log b/repo/generators/9baf979683ef/workspace/parametric/focused-tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/focused-tests.log
+@@ -0,0 +1,2 @@
++.........                                                                [100%]
++9 passed in 9.56s
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/promotion.json b/repo/generators/9baf979683ef/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/promotion.json
+@@ -0,0 +1,28 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/9baf979683ef/workspace/parametric/adapter.py",
++  "parameters": {
++    "receiver_action": [
++      "preserve",
++      "absorb_color"
++    ]
++  },
++  "default": {
++    "receiver_action": "preserve"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/9baf979683ef/workspace/parametric/prototype.py",
++    "generators/9baf979683ef/workspace/parametric/canonical.rkt"
++  ]
++}
+diff --git a/repo/generators/9baf979683ef/workspace/parametric/prototype.py b/repo/generators/9baf979683ef/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9baf979683ef/workspace/parametric/prototype.py
+@@ -0,0 +1,729 @@
++"""Divider reflection with an episode-fixed receiver post-action.
++
++The canonical setting preserves the exact selected Racket source.  The alternate
++setting first executes that mirror, then finds the unique color-9 receiver
++component touched by a newly mirrored source cell and recolors the entire
++receiver with the touching source color.
++"""
++from __future__ import annotations
++
++from collections import deque
++import copy
++import hashlib
++from pathlib import Path
++import random
++from typing import Any, Iterable
++
++
++TASK_ID = "9baf979683ef"
++ACTIONS = ("preserve", "absorb_color")
++SOURCE_COLORS = (1, 2, 3, 4, 6, 7, 8)
++CARDINAL = ((-1, 0), (1, 0), (0, -1), (0, 1))
++CANONICAL_PATH = Path(__file__).with_name("canonical.rkt")
++CANONICAL = CANONICAL_PATH.read_text(encoding="utf-8")
++
++# The first two demonstrations deliberately swap both receiver-size and
++# horizontal-position ranks.  This constructively refutes common shortcuts at
++# the minimum supported demonstration count.
++TRAIN_PROFILES = (
++    # height, width, target size, horizontal rank, decoy sizes, source count
++    (9, 15, 2, "leftmost", (4, 6), 8),
++    (10, 17, 7, "rightmost", (1, 3), 10),
++    (11, 18, 4, "leftmost", (2, 7), 12),
++    (12, 19, 3, "rightmost", (5, 8), 14),
++    (14, 21, 8, "leftmost", (2, 5), 17),
++    (16, 23, 5, "rightmost", (2, 9), 20),
++)
++TEST_PROFILES = (
++    (10, 16, 3, "leftmost", (5, 7), 11),
++    (13, 20, 9, "rightmost", (2, 4), 15),
++    (18, 25, 6, "leftmost", (3, 9, 11), 21),
++    (30, 30, 10, "rightmost", (2, 4, 7), 28),
++)
++
++
++def _integer(value: Any, low: int, high: int, name: str) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++    return value
++
++
++def _action(settings: Any) -> str:
++    if (
++        type(settings) is not dict
++        or set(settings) != {"receiver_action"}
++        or type(settings["receiver_action"]) is not str
++        or settings["receiver_action"] not in ACTIONS
++    ):
++        raise ValueError(
++            "settings must be exactly {'receiver_action': 'preserve'|'absorb_color'}"
++        )
++    return settings["receiver_action"]
++
++
++def _body(source: str) -> str:
++    if not source.startswith("(rule! ") or not source.endswith(")"):
++        raise ValueError("canonical source is not one outer rule! form")
++    return source[len("(rule! ") : -1]
++
++
++def program(settings: dict[str, Any]) -> str:
++    """Return complete exact Racket source for one declared setting."""
++    action = _action(settings)
++    if action == "preserve":
++        return CANONICAL
++    canonical_body = _body(CANONICAL)
++    return f"""(rule! (let* ((intermediate {canonical_body})
++                    (h (rows intermediate))
++                    (w (cols intermediate))
++                    (source-color?
++                     (lambda (v)
++                       (and (not (= v 0)) (not (= v 5)) (not (= v 9)))))
++                    (touch-color
++                     (lambda (obj)
++                       (find-first
++                        (lambda (color)
++                          (and (source-color? color)
++                               (for/or ((p (in-list (obj-cells obj))))
++                                 (for/or ((d (in-list cardinal-deltas)))
++                                   (let ((r (+ (first p) (first d)))
++                                         (c (+ (second p) (second d))))
++                                     (and (in-bounds? r c h w)
++                                          (= (at intermediate r c) color)))))))
++                        (grid-colors intermediate)))))
++               (for/fold ((out intermediate))
++                         ((obj (in-list
++                                (filter (lambda (o) (= (obj-color o) 9))
++                                        (objects intermediate 0)))))
++                 (let ((color (touch-color obj)))
++                   (if color
++                       (paint-cells out (obj-cells obj) color)
++                       out)))))"""
++
++
++def _rng(seed: int, split: str, index: int, purpose: str) -> random.Random:
++    material = f"{TASK_ID}/receiver-v1/{seed}/{split}/{index}/{purpose}".encode("ascii")
++    return random.Random(int.from_bytes(hashlib.sha256(material).digest(), "big"))
++
++
++def _neighbors(cell: tuple[int, int]) -> Iterable[tuple[int, int]]:
++    r, c = cell
++    for dr, dc in CARDINAL:
++        yield r + dr, c + dc
++
++
++def _connected_components(cells: set[tuple[int, int]]) -> list[set[tuple[int, int]]]:
++    unseen = set(cells)
++    result: list[set[tuple[int, int]]] = []
++    while unseen:
++        start = min(unseen)
++        unseen.remove(start)
++        component = {start}
++        queue = deque([start])
++        while queue:
++            cell = queue.popleft()
++            for neighbor in _neighbors(cell):
++                if neighbor in unseen:
++                    unseen.remove(neighbor)
++                    component.add(neighbor)
++                    queue.append(neighbor)
++        result.append(component)
++    return result
++
++
++def _target_component(
++    height: int,
++    width: int,
++    divider: int,
++    size: int,
++    horizontal_rank: str,
++) -> tuple[set[tuple[int, int]], tuple[int, int], tuple[int, int]]:
++    if horizontal_rank == "rightmost":
++        contact_col = width - 1
++        target_height = size
++        contact_row = max(0, (height - target_height) // 2)
++        cells = {(contact_row + i, contact_col) for i in range(size)}
++    else:
++        contact_col = divider + 3
++        target_height = (size + 1) // 2
++        contact_row = max(0, min(height - target_height, height // 2 - target_height // 2))
++        cells = {
++            (contact_row + i // 2, contact_col + i % 2)
++            for i in range(size)
++        }
++    mirror_anchor = contact_row, contact_col - 1
++    source_anchor = contact_row, 2 * divider - mirror_anchor[1]
++    if not (0 <= source_anchor[1] < divider):
++        raise ValueError("profile cannot place the source anchor")
++    return cells, mirror_anchor, source_anchor
++
++
++def _shape_variants(size: int) -> list[set[tuple[int, int]]]:
++    variants = [
++        {(i, 0) for i in range(size)},
++        {(0, i) for i in range(size)},
++        {(i // 2, i % 2) for i in range(size)},
++    ]
++    unique: list[set[tuple[int, int]]] = []
++    seen = set()
++    for cells in variants:
++        key = tuple(sorted(cells))
++        if key not in seen:
++            seen.add(key)
++            unique.append(cells)
++    return unique
++
++
++def _translate(shape: set[tuple[int, int]], row: int, col: int) -> set[tuple[int, int]]:
++    return {(row + r, col + c) for r, c in shape}
++
++
++def _adjacent_or_overlap(a: set[tuple[int, int]], b: set[tuple[int, int]]) -> bool:
++    if a & b:
++        return True
++    return any(neighbor in b for cell in a for neighbor in _neighbors(cell))
++
++
++def _decoy_candidates(
++    *,
++    height: int,
++    width: int,
++    divider: int,
++    size: int,
++    horizontal_rank: str,
++    target: set[tuple[int, int]],
++    mirror_cells: set[tuple[int, int]],
++) -> list[set[tuple[int, int]]]:
++    candidates: list[set[tuple[int, int]]] = []
++    target_min = min(c for _, c in target)
++    target_max = max(c for _, c in target)
++    for shape in _shape_variants(size):
++        shape_h = max(r for r, _ in shape) + 1
++        shape_w = max(c for _, c in shape) + 1
++        for row in range(height - shape_h + 1):
++            for col in range(divider + 1, width - shape_w + 1):
++                cells = _translate(shape, row, col)
++                if horizontal_rank == "leftmost" and min(c for _, c in cells) <= target_min:
++                    continue
++                if horizontal_rank == "rightmost" and max(c for _, c in cells) >= target_max:
++                    continue
++                if _adjacent_or_overlap(cells, target):
++                    continue
++                if _adjacent_or_overlap(cells, mirror_cells):
++                    continue
++                candidates.append(cells)
++    return candidates
++
++
++def _place_decoys(
++    *,
++    height: int,
++    width: int,
++    divider: int,
++    sizes: tuple[int, ...],
++    horizontal_rank: str,
++    target: set[tuple[int, int]],
++    mirror_cells: set[tuple[int, int]],
++    rng: random.Random,
++) -> list[set[tuple[int, int]]]:
++    """Place all decoys with a bounded backtracking search.
++
++    A one-pass greedy draw can consume the only footprint needed by the next
++    receiver.  Joint placement makes each declared profile total while retaining
++    deterministic seed-controlled geometry.
++    """
++    ordered = sorted(sizes, reverse=True)
++    candidate_lists = []
++    for size in ordered:
++        candidates = _decoy_candidates(
++            height=height,
++            width=width,
++            divider=divider,
++            size=size,
++            horizontal_rank=horizontal_rank,
++            target=target,
++            mirror_cells=mirror_cells,
++        )
++        rng.shuffle(candidates)
++        if not candidates:
++            raise ValueError(f"could not place decoy receiver of size {size}")
++        candidate_lists.append(candidates)
++
++    selected: list[set[tuple[int, int]]] = []
++
++    def search(index: int, occupied: set[tuple[int, int]]) -> bool:
++        if index == len(candidate_lists):
++            return True
++        for component in candidate_lists[index]:
++            if _adjacent_or_overlap(component, occupied):
++                continue
++            selected.append(component)
++            if search(index + 1, occupied | component):
++                return True
++            selected.pop()
++        return False
++
++    if not search(0, set(target)):
++        raise ValueError(f"could not jointly place decoy receivers {tuple(ordered)}")
++    return selected
++
++
++def _profile(split: str, index: int) -> tuple[int, int, int, str, tuple[int, ...], int]:
++    profiles = TRAIN_PROFILES if split == "train" else TEST_PROFILES
++    return profiles[index]
++
++
++def sample_input(seed: int, split: str, index: int) -> list[list[int]]:
++    """Construct one setting-neutral scene without retries."""
++    _integer(seed, 0, 2**63 - 1, "seed")
++    if type(split) is not str or split not in ("train", "test"):
++        raise ValueError("split must be 'train' or 'test'")
++    maximum = len(TRAIN_PROFILES) - 1 if split == "train" else len(TEST_PROFILES) - 1
++    _integer(index, 0, maximum, "index")
++    height, width, target_size, horizontal_rank, decoy_sizes, source_count = _profile(split, index)
++    divider = width // 2
++    target, mirror_anchor, source_anchor = _target_component(
++        height, width, divider, target_size, horizontal_rank
++    )
++
++    source_cells = {source_anchor}
++    # A short line toward the divider makes the mirror operation visually
++    # explicit while keeping only its far endpoint adjacent to the receiver.
++    for step in range(1, 3):
++        cell = source_anchor[0], source_anchor[1] + step
++        mirror = cell[0], 2 * divider - cell[1]
++        if cell[1] < divider and not _adjacent_or_overlap({mirror}, target):
++            source_cells.add(cell)
++
++    # Reserve the receiver geometry before filling the source field.  Future
++    # mirrored cells are then sampled around those reserved components, instead
++    # of letting a dense random mirror field make receiver placement impossible.
++    primary_mirrors = {(row, 2 * divider - col) for row, col in source_cells}
++    receiver_components = [set(target)]
++    receiver_components.extend(
++        _place_decoys(
++            height=height,
++            width=width,
++            divider=divider,
++            sizes=decoy_sizes,
++            horizontal_rank=horizontal_rank,
++            target=target,
++            mirror_cells=primary_mirrors,
++            rng=_rng(seed, split, index, "decoys"),
++        )
++    )
++    receivers = set().union(*receiver_components)
++
++    legal_min = max(0, 2 * divider - (width - 1))
++    candidates = [
++        (row, col)
++        for row in range(height)
++        for col in range(legal_min, divider)
++        if (row, col) not in source_cells
++        and not _adjacent_or_overlap({(row, 2 * divider - col)}, receivers)
++    ]
++    rng = _rng(seed, split, index, "source")
++    rng.shuffle(candidates)
++
++    # Guarantee meaningful boundary content before filling the remaining spread.
++    boundary_candidates = [
++        cell
++        for cell in candidates
++        if cell[0] in (0, height - 1) or cell[1] == legal_min
++    ]
++    for cell in boundary_candidates[: min(3, source_count - len(source_cells))]:
++        source_cells.add(cell)
++        candidates.remove(cell)
++    for cell in candidates:
++        if len(source_cells) >= source_count:
++            break
++        source_cells.add(cell)
++    if len(source_cells) != source_count:
++        raise ValueError("profile cannot realize requested source count")
++
++    mirror_cells = {(row, 2 * divider - col) for row, col in source_cells}
++    if mirror_anchor not in mirror_cells:
++        raise ValueError("anchor reflection was lost")
++
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    for row in range(height):
++        grid[row][divider] = 5
++    for row, col in receivers:
++        grid[row][col] = 9
++
++    contact_palette = (1, 3, 6, 2, 7, 4, 8)
++    contact_color = contact_palette[(seed + index + (0 if split == "train" else 3)) % len(contact_palette)]
++    color_rng = _rng(seed, split, index, "colors")
++    palette = list(SOURCE_COLORS)
++    color_rng.shuffle(palette)
++    ordered = sorted(source_cells)
++    for position, (row, col) in enumerate(ordered):
++        grid[row][col] = contact_color if (row, col) == source_anchor else palette[position % len(palette)]
++
++    errors = domain_errors(grid)
++    if errors:
++        raise ValueError("internal receiver scene failure: " + "; ".join(errors))
++    return grid
++
++
++def _basic_analysis(grid: Any) -> tuple[list[str], dict[str, Any]]:
++    errors: list[str] = []
++    if type(grid) is not list or not grid or type(grid[0]) is not list or not grid[0]:
++        return ["grid must be a non-empty list of non-empty rows"], {}
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width for row in grid):
++        return ["grid must be rectangular"], {}
++    height = len(grid)
++    if not (1 <= height <= 30 and 1 <= width <= 30):
++        errors.append("grid dimensions must be in 1..30")
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        errors.append("grid values must be exact integer ARC colors 0..9")
++        return errors, {"height": height, "width": width}
++    dividers = [
++        col for col in range(width) if all(grid[row][col] == 5 for row in range(height))
++    ]
++    if len(dividers) != 1:
++        errors.append(f"expected one full-height color-5 divider, got {dividers}")
++        return errors, {"height": height, "width": width}
++    divider = dividers[0]
++    if any(grid[r][c] == 5 for r in range(height) for c in range(width) if c != divider):
++        errors.append("color 5 may occur only in the divider")
++    source = {
++        (r, c)
++        for r in range(height)
++        for c in range(divider)
++        if grid[r][c] not in (0, 5)
++    }
++    if any(grid[r][c] == 9 for r, c in source):
++        errors.append("source cells may not use receiver color 9")
++    if len(source) < 6:
++        errors.append("need at least six source cells")
++    right_nonzero = {
++        (r, c)
++        for r in range(height)
++        for c in range(divider + 1, width)
++        if grid[r][c] != 0
++    }
++    if any(grid[r][c] != 9 for r, c in right_nonzero):
++        errors.append("initial right-side content must consist only of color-9 receivers")
++    mirror_cells = set()
++    for r, c in source:
++        mc = 2 * divider - c
++        if not 0 <= mc < width:
++            errors.append(f"reflection of {(r, c)} is out of bounds")
++            continue
++        mirror_cells.add((r, mc))
++        if grid[r][mc] != 0:
++            errors.append(f"reflection target {(r, mc)} is not empty")
++    receiver_cells = {(r, c) for r, c in right_nonzero if grid[r][c] == 9}
++    components = _connected_components(receiver_cells)
++    if len(components) < 3:
++        errors.append("need at least three separate receiver components")
++    if len({len(component) for component in components}) != len(components):
++        errors.append("receiver component sizes must be distinct")
++    return errors, {
++        "height": height,
++        "width": width,
++        "divider": divider,
++        "source": source,
++        "mirror_cells": mirror_cells,
++        "receiver_components": components,
++    }
++
++
++def _mirror_without_validation(grid: list[list[int]], analysis: dict[str, Any]) -> list[list[int]]:
++    result = [row[:] for row in grid]
++    divider = analysis["divider"]
++    for row, col in analysis["source"]:
++        result[row][2 * divider - col] = grid[row][col]
++    return result
++
++
++def _contact_info(
++    intermediate: list[list[int]], analysis: dict[str, Any]
++) -> list[tuple[set[tuple[int, int]], set[int], set[tuple[int, int]]]]:
++    result = []
++    mirrors = analysis["mirror_cells"]
++    for component in analysis["receiver_components"]:
++        adjacent_mirrors = {
++            neighbor
++            for cell in component
++            for neighbor in _neighbors(cell)
++            if neighbor in mirrors
++        }
++        colors = {intermediate[r][c] for r, c in adjacent_mirrors}
++        result.append((component, colors, adjacent_mirrors))
++    return result
++
++
++def domain_errors(grid: Any) -> list[str]:
++    errors, analysis = _basic_analysis(grid)
++    if errors:
++        return errors
++    intermediate = _mirror_without_validation(grid, analysis)
++    touched = [entry for entry in _contact_info(intermediate, analysis) if entry[1]]
++    if len(touched) != 1:
++        errors.append(f"expected one contacted receiver, got {len(touched)}")
++    elif len(touched[0][1]) != 1:
++        errors.append("contacted receiver must see exactly one mirrored source color")
++    return errors
++
++
++def _analysis(grid: list[list[int]]) -> tuple[dict[str, Any], list[list[int]], tuple]:
++    errors, analysis = _basic_analysis(grid)
++    if errors:
++        raise ValueError("invalid receiver scene: " + "; ".join(errors))
++    intermediate = _mirror_without_validation(grid, analysis)
++    touched = [entry for entry in _contact_info(intermediate, analysis) if entry[1]]
++    if len(touched) != 1 or len(touched[0][1]) != 1:
++        raise ValueError("invalid receiver contact structure")
++    return analysis, intermediate, touched[0]
++
++
++def mirror(grid: list[list[int]]) -> list[list[int]]:
++    analysis, intermediate, _ = _analysis(grid)
++    del analysis
++    return intermediate
++
++
++def transform(grid: list[list[int]], action: str) -> list[list[int]]:
++    if type(action) is not str or action not in ACTIONS:
++        raise ValueError(f"unknown receiver action: {action!r}")
++    _, intermediate, (target, colors, _) = _analysis(grid)
++    if action == "preserve":
++        return intermediate
++    color = next(iter(colors))
++    result = [row[:] for row in intermediate]
++    for row, col in target:
++        result[row][col] = color
++    return result
++
++
++def observables(grid: list[list[int]]) -> dict[str, Any]:
++    analysis, intermediate, (target, colors, adjacent) = _analysis(grid)
++    components = analysis["receiver_components"]
++    sizes = sorted(len(component) for component in components)
++    size = len(target)
++    size_rank = "smallest" if size == sizes[0] else "largest" if size == sizes[-1] else "middle"
++    positions = sorted(min(c for _, c in component) for component in components)
++    target_position = min(c for _, c in target)
++    horizontal_rank = (
++        "leftmost"
++        if target_position == positions[0]
++        else "rightmost"
++        if target_position == positions[-1]
++        else "middle"
++    )
++    return {
++        "height": analysis["height"],
++        "width": analysis["width"],
++        "divider": analysis["divider"],
++        "source_count": len(analysis["source"]),
++        "receiver_count": len(components),
++        "receiver_sizes": sizes,
++        "target_size": size,
++        "target_size_rank": size_rank,
++        "target_horizontal_rank": horizontal_rank,
++        "contact_color": next(iter(colors)),
++        "contact_cells": sorted(adjacent),
++        "selected_receiver_cells": sorted(target),
++        "touches_right_boundary": any(c == analysis["width"] - 1 for _, c in target),
++        "intermediate": intermediate,
++    }
++
++
++def _recolor_cells(grid: list[list[int]], cells: Iterable[tuple[int, int]], color: int) -> list[list[int]]:
++    result = [row[:] for row in grid]
++    for row, col in cells:
++        result[row][col] = color
++    return result
++
++
++def rival_output(grid: list[list[int]], name: str) -> list[list[int]]:
++    analysis, intermediate, (target, colors, adjacent) = _analysis(grid)
++    color = next(iter(colors))
++    components = analysis["receiver_components"]
++    if name == "all_receivers":
++        return _recolor_cells(intermediate, set().union(*components), color)
++    if name == "contact_cell_only":
++        cells = {
++            cell
++            for cell in target
++            if any(neighbor in adjacent for neighbor in _neighbors(cell))
++        }
++        return _recolor_cells(intermediate, cells, color)
++    if name == "fixed_color_two":
++        return _recolor_cells(intermediate, target, 2)
++    if name == "largest_receiver":
++        chosen = max(components, key=lambda component: (len(component), sorted(component)))
++        return _recolor_cells(intermediate, chosen, color)
++    if name == "smallest_receiver":
++        chosen = min(components, key=lambda component: (len(component), sorted(component)))
++        return _recolor_cells(intermediate, chosen, color)
++    if name in ("leftmost_receiver", "nearest_divider"):
++        chosen = min(components, key=lambda component: (min(c for _, c in component), sorted(component)))
++        return _recolor_cells(intermediate, chosen, color)
++    raise ValueError(f"unknown rival: {name!r}")
++
++
++RIVAL_NAMES = (
++    "all_receivers",
++    "contact_cell_only",
++    "fixed_color_two",
++    "largest_receiver",
++    "leftmost_receiver",
++    "nearest_divider",
++    "smallest_receiver",
++)
++
++
++def teaching_report(
++    demos: list[dict[str, Any]], queries: list[dict[str, Any]], selected: str
++) -> dict[str, Any]:
++    if type(selected) is not str or selected not in ACTIONS:
++        raise ValueError("selected action is invalid")
++    for split_name, pairs in (("demonstration", demos), ("query", queries)):
++        if type(pairs) is not list or not pairs:
++            raise ValueError(f"{split_name} pairs must be non-empty")
++        for pair in pairs:
++            if type(pair) is not dict or set(pair) < {"input", "output"}:
++                raise ValueError(f"{split_name} pair is malformed")
++            if pair["output"] != transform(pair["input"], selected):
++                raise ValueError(f"{split_name} label does not match selected action")
++
++    setting_survivors = [
++        action
++        for action in ACTIONS
++        if all(transform(pair["input"], action) == pair["output"] for pair in demos)
++    ]
++    rival_rows = {}
++    for name in RIVAL_NAMES:
++        demo_disagreements = [
++            index
++            for index, pair in enumerate(demos)
++            if rival_output(pair["input"], name) != pair["output"]
++        ]
++        query_disagreements = [
++            index
++            for index, pair in enumerate(queries)
++            if rival_output(pair["input"], name) != pair["output"]
++        ]
++        rival_rows[name] = {
++            "matches_all_demonstrations": not demo_disagreements,
++            "demonstration_disagreements": demo_disagreements,
++            "query_disagreements": query_disagreements,
++        }
++    surviving_rivals = [
++        name for name, row in rival_rows.items() if row["matches_all_demonstrations"]
++    ]
++    query_ambiguities = [
++        {"kind": "setting", "name": action}
++        for action in setting_survivors
++        if action != selected
++        and any(transform(pair["input"], action) != pair["output"] for pair in queries)
++    ] + [
++        {"kind": "rival", "name": name}
++        for name in surviving_rivals
++        if rival_rows[name]["query_disagreements"]
++    ]
++    return {
++        "selected_setting": selected,
++        "surviving_settings": setting_survivors,
++        "tested_rivals": list(RIVAL_NAMES),
++        "surviving_rivals": surviving_rivals,
++        "query_ambiguities": query_ambiguities,
++        "rivals": rival_rows,
++    }
++
++
++def generate(seed: int, settings: dict[str, Any], demos: int, queries: int) -> dict[str, Any]:
++    """Generate independent-count pairs with four stable controller-side queries."""
++    _integer(seed, 0, 2**63 - 1, "seed")
++    action = _action(settings)
++    _integer(demos, 2, 6, "demos")
++    _integer(queries, 1, 4, "queries")
++    train = []
++    test = []
++    for split, count, target in (("train", demos, train), ("test", queries, test)):
++        for index in range(count):
++            grid = sample_input(seed, split, index)
++            target.append({"input": grid, "output": transform(grid, action)})
++    return {
++        "seed": seed,
++        "settings": {"receiver_action": action},
++        "train": train,
++        "test": test,
++        "program_solution": program({"receiver_action": action}),
++    }
++
++
++def public_challenge(episode: dict[str, Any]) -> dict[str, Any]:
++    """Return the model-visible projection: demos labeled, queries input-only."""
++    return {
++        "train": [
++            {"input": copy.deepcopy(pair["input"]), "output": copy.deepcopy(pair["output"])}
++            for pair in episode["train"]
++        ],
++        "test": [{"input": copy.deepcopy(pair["input"])} for pair in episode["test"]],
++    }
++
++
++def _apply_b_to_intermediate(
++    original: list[list[int]], intermediate: list[list[int]]
++) -> tuple[list[list[int]], list[tuple[int, int]]]:
++    """Apply B to the actual source-colored contacts in ``intermediate``.
++
++    Counterfactual intermediates may omit the mirrored cells predicted from the
++    original input.  Inspecting those predicted coordinates would treat an empty
++    zero as a contact and would not match the standalone Racket B program.
++    """
++    errors, analysis = _basic_analysis(original)
++    if errors:
++        raise ValueError("invalid original scene")
++    height = len(intermediate)
++    width = len(intermediate[0])
++    touched = []
++    for component in analysis["receiver_components"]:
++        adjacent = {
++            neighbor
++            for cell in component
++            for neighbor in _neighbors(cell)
++            if 0 <= neighbor[0] < height
++            and 0 <= neighbor[1] < width
++            and intermediate[neighbor[0]][neighbor[1]] not in (0, 5, 9)
++        }
++        colors = {intermediate[row][col] for row, col in adjacent}
++        if colors:
++            touched.append((component, colors, adjacent))
++    if len(touched) != 1 or len(touched[0][1]) != 1:
++        return [row[:] for row in intermediate], []
++    target, colors, _ = touched[0]
++    return _recolor_cells(intermediate, target, next(iter(colors))), sorted(target)
++
++
++def causal_witness(seed: int = 0) -> dict[str, Any]:
++    grid = sample_input(seed, "train", 0)
++    analysis, intermediate, (target, _, adjacent) = _analysis(grid)
++    final_output, selected = _apply_b_to_intermediate(grid, intermediate)
++    skip_a_output, _ = _apply_b_to_intermediate(grid, [row[:] for row in grid])
++    wrong = [row[:] for row in intermediate]
++    contact = min(adjacent)
++    wrong[contact[0]][contact[1]] = 0
++    wrong_intermediate_output, _ = _apply_b_to_intermediate(grid, wrong)
++    return {
++        "schema": "arcpuzzles-sequential-witness-v1",
++        "task_id": TASK_ID,
++        "settings": {"receiver_action": "absorb_color"},
++        "step_a": "mirror every left-side source cell across the divider",
++        "intermediate_description": "the mirrored copy creates the only source-color contact with one color-9 receiver",
++        "step_b": "recolor the contacted receiver component with the adjacent mirrored color",
++        "why_b_depends_on_a": "before A, no receiver touches a source color; deleting the mirrored contact prevents receiver selection",
++        "input": grid,
++        "intermediate": intermediate,
++        "selected_receiver_cells": selected or sorted(target),
++        "final_output": final_output,
++        "skip_a_output": skip_a_output,
++        "wrong_intermediate": wrong,
++        "wrong_intermediate_output": wrong_intermediate_output,
++        "program": program({"receiver_action": "absorb_color"}),
++    }

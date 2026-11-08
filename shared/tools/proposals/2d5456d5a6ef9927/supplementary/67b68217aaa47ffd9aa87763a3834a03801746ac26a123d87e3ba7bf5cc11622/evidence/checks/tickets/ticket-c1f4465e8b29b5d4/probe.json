@@ -1,0 +1,2119 @@
+{
+  "elapsed_seconds": 0.19105213200236904,
+  "finished_at": "2026-10-23T09:51:06.975374+00:00",
+  "global_source_excerpts": {
+    "repo/src/arcpuzzles/cli.py": {
+      "lines": [
+        "14: from .catalog import Catalog, sha256",
+        "15: from . import review",
+        "16: from .runtime import CHECK_PHASES, STAGES, GenerationFailure, apply_rule, check, generate, generation_source_identity, parse_apply_inputs, prepare_runtime",
+        "17: from .datasets import STYLES, MODES",
+        "18: ",
+        "19: ",
+        "20: def _override(value: str) -> tuple[str, object]:",
+        "31: def _filters(parser: argparse.ArgumentParser) -> None:",
+        "32:     group = parser.add_mutually_exclusive_group()",
+        "33:     group.add_argument(\"--approved\", dest=\"approved\", action=\"store_true\", default=None,",
+        "34:                        help=\"reviewed_safe, positive weight, no veto, current generator/rule hashes\")",
+        "35:     group.add_argument(\"--not-approved\", dest=\"approved\", action=\"store_false\")",
+        "36:     parser.add_argument(\"--source\", help=\"exact source or source family, e.g. training or bank\")",
+        "37:     parser.add_argument(\"--skill\", help=\"case-insensitive exact skill tag\")",
+        "127:     export.add_argument(\"--seed\", type=int, default=0)",
+        "128:     export.add_argument(\"--style\", choices=STYLES, default=\"challenges\")",
+        "129:     export.add_argument(\"--render\", choices=(\"raw\", \"chatml\", \"harmony\"), default=\"raw\")",
+        "130:     export.add_argument(\"--sampling\", choices=(\"weighted\", \"uniform\"), default=\"weighted\")",
+        "131:     export.add_argument(\"--train\", type=int, help=\"explicit demo count; omitted uses each generator minimum, floor 4\")",
+        "132:     export.add_argument(\"--test\", type=int, default=1)",
+        "133:     export.add_argument(\"--draw-difficulty\", choices=(\"easy\", \"medium\", \"hard\"),",
+        "147:                         help=\"native style: optional private CPU safetensors; requires tensors extra\")",
+        "148:     export.add_argument(\"--canvas-size\", type=int, default=30, help=\"tensor canvas size; oversized grids are rejected\")",
+        "149:     export.add_argument(\"--out\", type=Path, required=True, help=\"new export directory; incomplete runs retain their evidence\")",
+        "150:     inspect_export = commands.add_parser(\"inspect-export\", help=\"verify a complete dataset's hashes and public/private binding\")",
+        "151:     inspect_export.add_argument(\"directory\", type=Path)",
+        "152:     census = commands.add_parser(\"census\", help=\"compare generation with the retained historical runner; never changes approval\")",
+        "153:     _filters(census)",
+        "471:                                     system_prompt=args.system_prompt, fence=args.fence,",
+        "472:                                     group_queries=args.group_queries, tensors=args.tensors, canvas_size=args.canvas_size,",
+        "473:                                     reference=args.reference)",
+        "474:             _json({key: result[key] for key in (\"dataset_id\", \"status\", \"accepted_episodes\",",
+        "475:                                                \"attempted_episodes\", \"rendered_rows\", \"row_counts\")})",
+        "476:             return 0 if result[\"status\"] == \"complete\" else 1",
+        "477:         elif args.command == \"census\":",
+        "481:             _json(result)",
+        "482:             return 0 if not any(result[\"counts\"].get(name) for name in (\"different\", \"legacy_only\", \"infrastructure_error\")) else 1",
+        "483:         elif args.command == \"inspect-export\":",
+        "484:             from .datasets import verify_dataset",
+        "485:             _json(verify_dataset(args.directory))",
+        "486:         elif args.command == \"lesson-census\":",
+        "487:             from .lesson_census import lesson_census, census_companion",
+        "488:             summary_out = args.out.with_suffix('.summary.json')"
+      ],
+      "total_matching_context_lines": 43,
+      "truncated": false
+    },
+    "repo/src/arcpuzzles/datasets.py": {
+      "lines": [
+        "20: ",
+        "21: STYLES = (\"challenges\", \"episodes\", \"grids\", \"code\", \"dsl\", \"hindsight\", \"synthpipe\", \"native\")",
+        "22: MODES = (\"predict\", \"synth\", \"exec\", \"invert\", \"repair\", \"refine\", \"pred_facts\")",
+        "23: FILTERS = {\"approved\", \"source\", \"skill\", \"primitive\", \"difficulty\", \"kind\",",
+        "24:            \"train_safety\", \"search\", \"has_generator\", \"family\", \"split\"}",
+        "25: ",
+        "26: ",
+        "153: ",
+        "154: def export_dataset(catalog: Catalog, output: str | Path, *, count: int, seed: int = 0,",
+        "155:                    task_ids: list[str] | None = None, filters: dict[str, Any] | None = None,",
+        "156:                    style: str = \"challenges\", render: str = \"raw\", sampling: str = \"weighted\",",
+        "157:                    n_train: int | None = None, n_test: int = 1, difficulty: str | None = None,",
+        "158:                    allow_unapproved: bool = False, max_attempts: int | None = None,",
+        "159:                    timeout: float = 180, modes: list[str] | None = None,",
+        "160:                    mutations: int = 8, stages: int = 3, system_prompt: str = \"\",",
+        "161:                    fence: bool = False, group_queries: bool = False,",
+        "181:         raise ValueError(\"Unknown style or render\")",
+        "182:     if reference not in {\"canonical\", \"archival\"}:",
+        "183:         raise ValueError(\"reference must be canonical or archival\")",
+        "184:     if reference == \"archival\" and (not allow_unapproved or style == \"synthpipe\"):",
+        "185:         raise ValueError(\"Archival reference requires allow_unapproved and a generator-backed style\")",
+        "186:     if render != \"raw\" and style not in {\"grids\", \"code\"}:",
+        "187:         raise ValueError(\"Chat renders require grids or code style\")",
+        "188:     if type(group_queries) is not bool or tensors not in {\"none\", \"native\", \"bottleneck\"}:",
+        "195:         raise ValueError(\"Native tensors require individual queries and at most 10 demonstrations\")",
+        "196:     if tensors != \"none\" and any(importlib.util.find_spec(name) is None for name in (\"torch\", \"safetensors\")):",
+        "197:         raise ValueError(\"Tensor exports require the optional tensors dependencies: torch and safetensors\")",
+        "198:     if sampling not in {\"weighted\", \"uniform\"}:",
+        "199:         raise ValueError(\"sampling must be weighted or uniform\")",
+        "200:     if difficulty not in {None, \"easy\", \"medium\", \"hard\"}:",
+        "201:         raise ValueError(\"difficulty must be easy, medium, or hard\")",
+        "202:     max_attempts = count * 2 if max_attempts is None else max_attempts",
+        "208:     filters = dict(filters or {})",
+        "209:     if set(filters) - FILTERS:",
+        "210:         raise ValueError(f\"Unsupported filters: {sorted(set(filters) - FILTERS)}\")",
+        "211:     if not allow_unapproved:",
+        "212:         if filters.get(\"approved\") is False:",
+        "213:             raise ValueError(\"Unapproved sampling requires allow_unapproved\")",
+        "214:         filters[\"approved\"] = True",
+        "215:     filters[\"has_generator\"] = True",
+        "216:     pool, exclusions = [], []",
+        "217:     if style != \"synthpipe\":",
+        "221:         for row in catalog.query(**filters):",
+        "222:             if selected is not None and row[\"id\"] not in selected:",
+        "223:                 continue",
+        "224:             weight = row.get(\"mix_weight\", 0)",
+        "225:             if sampling == \"weighted\" and (type(weight) not in {int, float}",
+        "226:                                            or not math.isfinite(weight) or weight <= 0):",
+        "227:                 exclusions.append({\"task_id\": row[\"id\"], \"reason\": \"nonpositive_or_invalid_mix_weight\"})",
+        "228:                 continue",
+        "229:             pool.append(row)",
+        "230:         if selected is not None and selected - {r[\"id\"] for r in pool}:",
+        "231:             raise ValueError(f\"Requested IDs do not meet the sampling filters: {sorted(selected - {r['id'] for r in pool})}\")",
+        "232:         if not pool:",
+        "233:             raise ValueError(\"No generators match the sampling filters\")",
+        "234:     elif task_ids or set(filters) - {\"approved\", \"has_generator\"}:",
+        "235:         raise ValueError(\"synthpipe creates random program chains; generator filters do not apply\")",
+        "236: ",
+        "237:     output = Path(output).resolve()",
+        "238:     output.mkdir(parents=True, exist_ok=False)",
+        "239:     options = {\"count\": count, \"seed\": seed, \"style\": style, \"render\": render,",
+        "240:                \"filters\": filters, \"sampling\": sampling, \"n_train\": n_train, \"n_test\": n_test,",
+        "241:                \"difficulty\": difficulty, \"allow_unapproved\": allow_unapproved,",
+        "242:                \"max_attempts\": max_attempts, \"timeout_per_worker\": timeout, \"modes\": modes,",
+        "243:                \"mutations\": mutations, \"stages\": stages, \"system_prompt\": system_prompt, \"fence\": fence,",
+        "244:                \"group_queries\": group_queries, \"tensors\": tensors, \"canvas_size\": canvas_size,",
+        "265:             policies, policy_errors = {}, {}",
+        "266:             for row in pool:",
+        "267:                 try:",
+        "268:                     policies[row[\"id\"]] = demonstration_policy(stage, row, n_train, default_floor=4)",
+        "269:                 except (ValueError, SyntaxError) as exc:",
+        "270:                     # A malformed declaration is a source failure for this",
+        "271:                     # generator, not permission to weaken its lesson policy.",
+        "280:             for line in (stage / \"data/canonical/puzzles.jsonl\").read_text().splitlines():",
+        "281:                 if line.strip():",
+        "282:                     entry = json.loads(line)",
+        "283:                     canonical_index.setdefault(entry[\"task_id\"], entry)",
+        "284:             weights = [r[\"mix_weight\"] if sampling == \"weighted\" else 1 for r in pool]",
+        "285:             while accepted < count and attempts < max_attempts:",
+        "286:                 attempts += 1",
+        "287:                 row = rng.choices(pool, weights=weights, k=1)[0] if pool else None",
+        "288:                 draw_seed = rng.getrandbits(63)",
+        "289:                 draw = {\"attempt\": attempts, \"seed\": draw_seed, \"task_id\": row[\"id\"] if row else \"synthpipe\"}",
+        "290:                 _append(output / \"draws.private.jsonl\", draw)",
+        "297:                         episode, = generate_in_runtime(stage, row, count=1, seed=draw_seed,",
+        "298:                                                        difficulty=difficulty, n_train=n_train,",
+        "299:                                                        n_test=n_test, timeout=timeout, reference=reference,",
+        "300:                                                        default_n_train=4)",
+        "301:                         content = _identity({\"train\": episode[\"train\"], \"test\": episode[\"test\"]})",
+        "302:                         if content in seen:",
+        "303:                             raise ValueError(\"Duplicate episode content within this export\")",
+        "347:                                 _lineage_row(episode, public[\"episode_id\"], lineage))",
+        "348:                     for item in result[\"rows\"]:",
+        "349:                         _append(output / \"data.private.jsonl\", item)",
+        "350:                         row_counts[item.get(\"task_type\", item.get(\"kind\", style))] += 1",
+        "351:                     rendered += len(result[\"rows\"])",
+        "352:                     accepted += 1",
+        "353:                 except (ValueError, RuntimeError) as exc:"
+      ],
+      "total_matching_context_lines": 98,
+      "truncated": false
+    },
+    "repo/src/arcpuzzles/review_full_draw.py": {
+      "lines": [
+        "72:     return pool[int.from_bytes(hashlib.sha256(seed + b\":blind\").digest(), \"big\") % len(pool)]",
+        "73: ",
+        "74: ",
+        "75: def main_selection_for_seed(manifest: dict, seed: bytes) -> tuple[str, dict | None]:",
+        "76:     \"\"\"Replay old draws exactly; new packets reserve a 10% evaluation focus.\"\"\"",
+        "77:     seed = _seed(seed)",
+        "78:     policy = manifest.get('main_draw_policy')",
+        "79:     if policy is None:",
+        "83:         return pool[int.from_bytes(seed, 'big') % len(pool)], None",
+        "84:     if policy.get('schema') != 'arcpuzzles-main-draw-policy-v1':",
+        "85:         raise ValueError('Unknown main draw policy')",
+        "86:     pool = policy['normal_ids']",
+        "87:     if not pool or not set(pool) <= set(manifest['main_ids']):",
+        "88:         raise ValueError('Invalid normal main draw pool')",
+        "89:     normal = pool[int.from_bytes(seed, 'big') % len(pool)]",
+        "90:     focus = policy['evaluation_focus']",
+        "91:     if (focus.get('schema') != 'arcpuzzles-evaluation-focus-v1'",
+        "92:             or focus.get('probability') != {'numerator': 1, 'denominator': 10}):",
+        "93:         raise ValueError('Invalid evaluation focus policy')",
+        "94:     anchors = focus['anchors']",
+        "95:     roll = int.from_bytes(hashlib.sha256(seed + b':evaluation-focus').digest(), 'big') % 10",
+        "96:     if not anchors or roll != 0:",
+        "97:         return normal, None",
+        "98:     anchor = anchors[int.from_bytes(hashlib.sha256(seed + b':evaluation-origin').digest(), 'big') % len(anchors)]",
+        "99:     related = anchor['main_ids']",
+        "100:     if not set(related) <= set(manifest['main_ids']):",
+        "101:         raise ValueError('Invalid evaluation main draw pool')",
+        "102:     tid = (related[int.from_bytes(hashlib.sha256(seed + b':evaluation-generator').digest(), 'big') % len(related)]",
+        "103:            if related else normal)",
+        "104:     return tid, {",
+        "105:         'schema': 'arcpuzzles-assignment-authoring-focus-v1',",
+        "106:         'kind': 'public_evaluation', 'probability': focus['probability'],",
+        "107:         'source_split': 'evaluation', 'source_task_id': anchor['source_task_id'],",
+        "108:         'challenge_sha256': anchor['challenge_sha256'], 'source_path': anchor['source_path'],",
+        "109:         'mode': 'direct_related' if related else 'inspired_extension',",
+        "110:         'selected_tier': anchor['selected_tier'], 'relationship_verified': bool(related),",
+        "111:         'parameterization_first': True, 'training_admitted': False,",
+        "112:     }",
+        "113: ",
+        "273:         _write_draw_bytes(_contract_path(packet_root, \"BLIND_ASSIGNMENT.json\"),",
+        "274:                           _draw_json(blind), staging)",
+        "275:     priority = manifest.get(\"parametric_priority\", {})",
+        "276:     origin = priority.get(\"related_generators\", {}).get(task_id)",
+        "277:     priority_note = \"\"",
+        "278:     if origin:",
+        "279:         parents = \", \".join(f\"{item['source_split']}:{item['source_task_id']}\" for item in origin['origins'])",
+        "285:     if authoring_focus is not None:",
+        "286:         focus = authoring_focus",
+        "287:         priority_note += (",
+        "288:             f\"\\nPublic-evaluation focus (reserved 10% authoring draw): `{focus['source_task_id']}` \"",
+        "289:             f\"from `repo/{focus['source_path']}`; public challenge SHA-256 \"",
+        "290:             f\"`{focus['challenge_sha256']}`. Mode: `{focus['mode']}`.\\n\"",
+        "291:             \"After the blind solve, study this public task's demonstrations and query inputs. \"",
+        "292:             \"Prioritize parameterizing its reasoning, directly improving its related generator \"",
+        "293:             \"where assigned, or using its reasoning to enhance the assigned family. Preserve \"",
+        "294:             \"the meaningful object roles, dependencies and contextual decisions; avoid reducing \"",
+        "295:             \"it to an easier shortcut or cosmetic reskin. If the canonical family cannot support \"",
+        "466: 1. Read this generator, current notes, canonical examples and relevant open findings.",
+        "467:    Finish any assigned blind solve first. Main shortcut/teaching assessment belongs",
+        "468:    in this repair, not a separate mandatory question essay. Consult ARC-DESIGN.md",
+        "469:    and PARAMETRIC-RULES.md where relevant; do not reread unrelated historical logs.",
+        "470: 2. Work on this generator's concrete repair or small parametric extension.",
+        "471:    Verify only what you changed. A prototype/tests/notes-only change does not",
+        "472:    require a production before/after battery, unrelated authority checks or frozen",
+        "473:    fixture migration. For changed generator/rule behavior, run relevant focused",
+        "474:    tests and execute matching Racket on representative changed behavior, boundary",
+        "475:    inputs and a new lesson; check plausible rivals where teaching changed.",
+        "506: 7. Read RETURN-GUIDE.md, then run `python3 package_return.py --out review_response_{assignment_id}.zip`.",
+        "507:    Return ONLY the delta: source.patch plus compact evidence from work you did,",
+        "508:    concise docs and useful solves. No full checkout, original packet, Racket,",
+        "509:    environment or copied runtime trees. Do not invent unrelated inventories or",
+        "510:    passing checks. Use `RESULTS.json` for actual commands, stopping reason and",
+        "511:    optional `work_scope` verification statuses. The builder preserves source and",
+        "512:    patch hashes and omits copied transport/runtime material."
+      ],
+      "total_matching_context_lines": 74,
+      "truncated": false
+    }
+  },
+  "limits": [
+    "Static source/evidence inspection only; no current generator acceptance, Racket parity, linter, ambiguity, grammar, or deduplication rates measured.",
+    "At most 16 retained evidence candidates and eight parametric Python sources per sampled record; per-file limit 600000 bytes.",
+    "Historical retained results describe their recorded source/run; equal current hashes and reruns are required before treating them as current measurements."
+  ],
+  "manifest_sha256": "b46929d23479e8573d442e02be3ac618ae82096f91bed1b9399bac350c99769b",
+  "method": {
+    "generator_executions": 0,
+    "model_calls": 0,
+    "racket_executions": 0,
+    "sampling": "random.Random(int(ticket_seed,16)).sample(sorted(manifest.all_ids),3)",
+    "targeted_probe_count": 1
+  },
+  "pools": {
+    "all_count": 300,
+    "catalog_categories": {
+      "kind": {
+        "\"generic\"": 2,
+        "\"per_puzzle\"": 298
+      },
+      "mix_weight": {
+        "0.0": 2,
+        "1.0": 298
+      },
+      "split": {
+        "null": 300
+      }
+    },
+    "evaluation_anchor_count": 120,
+    "evaluation_anchors": [
+      {
+        "challenge_sha256": "81b38188c5d62658a730cf38952148c6b086d5880b5ee34bab219dbf58e028cb",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "0934a4d8"
+      },
+      {
+        "challenge_sha256": "2ee36bd848460465bcb071f05c43f7c581c0fddc7c9a6aeb3c30eede8730d695",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "135a2760"
+      },
+      {
+        "challenge_sha256": "b5909a557f7972dd0c89fdbceced5f80ea36021e35c4e61ef4a742ae73eab3d2",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "136b0064"
+      },
+      {
+        "challenge_sha256": "47b0f910fcc3683a3108d6931102fc9cbb9fd6d94bc2fb17777473e2bcf51e8e",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "13e47133"
+      },
+      {
+        "challenge_sha256": "7c238849470d35e6328fc8f6bb0b5bb3207783c15d5c8c8f7343cd1b87b4f75e",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "142ca369"
+      },
+      {
+        "challenge_sha256": "3c39fcb0f7df417a48f1c63fc5954c671afe19e422d5abc87298d1b8b20f7f6f",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "16b78196"
+      },
+      {
+        "challenge_sha256": "04f2c3b7aed8c16f787c41eb38d771d28bed8c54f4c649596974d8457a24edfd",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "16de56c4"
+      },
+      {
+        "challenge_sha256": "0265ca0e12c23d27db0ee44aa97e835dd18288f6405cbdcb4b22dfe723355a35",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "1818057f"
+      },
+      {
+        "challenge_sha256": "35a97eeeddda7887ea260f50335816bd741b9c11994b6644c6ecbc26272d8770",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "195c6913"
+      },
+      {
+        "challenge_sha256": "7d4198b51a1142d9a0040c174a280d3cfd362f540e8318768da253453aeab139",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "1ae2feb7"
+      },
+      {
+        "challenge_sha256": "274453e6216684defd605e64ce6b53fa2a34c079d7d8ea8eccfeb2bcc51883bf",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "20270e3b"
+      },
+      {
+        "challenge_sha256": "ab3f4e7a7447397a231f8c5fea9e792373bfd8ae779c24e4c0b6680e8e00777d",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "20a9e565"
+      },
+      {
+        "challenge_sha256": "e62ec3328af3ce156e3e5c85a4c4aa9cdd4c2f9271cdab6b5e5891ab13a63e94",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "21897d95"
+      },
+      {
+        "challenge_sha256": "6786fce971f57cff7a43096933963d9e100c119fd9194484d9f3420822ed502f",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "221dfab4"
+      },
+      {
+        "challenge_sha256": "7392e3a9869825c049d9e10ce63db634fc6349d4a363355db71c9485662d11ea",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "247ef758"
+      },
+      {
+        "challenge_sha256": "f484ef084f5765904c1e43fb1caec4397f9bdc9c4d511808175d371b0140a13d",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "269e22fb"
+      },
+      {
+        "challenge_sha256": "bb841929305820dbf00ce487378c17b153c38d1cfe55a295ae80280643b3d90d",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "271d71e2"
+      },
+      {
+        "challenge_sha256": "68beb53e68f288e17729cfe2fa5747a5365e8574d15048cd841ea064e7e3cf07",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "28a6681f"
+      },
+      {
+        "challenge_sha256": "efc765c2e47371acb64b54381948379bf652067f9187683b10ed59040b67d9c4",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "291dc1e1"
+      },
+      {
+        "challenge_sha256": "85a68501c08da9fdcf108d06118808bb3f8b3855af5065f548b84bd83b712f60",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "2b83f449"
+      },
+      {
+        "challenge_sha256": "8957a808e88225e1aa6c1e81be31b38bb2b4c5cf07ca2d78520af6f797e1ed98",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "2ba387bc"
+      },
+      {
+        "challenge_sha256": "39c0b101915796c2a6821491c81e437e7e2a06dbe3b26c7ce05faf8acbbf385c",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "2c181942"
+      },
+      {
+        "challenge_sha256": "78f0feb75b99d4250ce1ca38fe231965804dac8954377a2bd747a3e25bfe653c",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "2d0172a1"
+      },
+      {
+        "challenge_sha256": "ee763ca64f373917530b17b292360cb8c5470d63c48f73d9e55ae84de6625ac2",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "31f7f899"
+      },
+      {
+        "challenge_sha256": "0d1ba2624cf110182a05c4dca7f4b04cf701c06d54e4a576aec87b9cf5ed02cf",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "332f06d7"
+      },
+      {
+        "challenge_sha256": "3e63dcb28d90c95f66807ab50b3af840b510b9080d3d5e02e5f9bf1844427bde",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "35ab12c3"
+      },
+      {
+        "challenge_sha256": "bfa2a1e3b903474cf06d20440f27da413155ad66168404b2eb6cf21f9fa63d9b",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "36a08778"
+      },
+      {
+        "challenge_sha256": "2f293074a1f75685dfd51f5eeeb36fe509d12b179cada3fc856e182d0575f971",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "38007db0"
+      },
+      {
+        "challenge_sha256": "3d1de46baaed0ea9de3c1973e7d1f5a2048299b4c21d97766c5a1f1d8583b789",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "3a25b0d8"
+      },
+      {
+        "challenge_sha256": "4badbaaeb2823a512dd6309c5f81067a2a3e2f50c836a2753ea57ea18568adf8",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "3dc255db"
+      },
+      {
+        "challenge_sha256": "767b4b19cf6be3158848c589af176e2908305e0db01742413042a2240e704684",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "3e6067c3"
+      },
+      {
+        "challenge_sha256": "864126762358bb350f075473f31393da3a4134e632af268a2265df7076f32bcd",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "409aa875"
+      },
+      {
+        "challenge_sha256": "7e89d9e81225fdd1fa7d9a3f1ba87920b65379f0ce13a46eebe51627a1234e33",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "446ef5d2"
+      },
+      {
+        "challenge_sha256": "08adaedc3b2ae02781394888ed2fef2f0223ca07f149c484464f93d4c922f7ff",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "45a5af55"
+      },
+      {
+        "challenge_sha256": "89ec2f4095d7128ee8d6fdc05277581668a0b1f92d44bc0c4942c59ac1246839",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "4a21e3da"
+      },
+      {
+        "challenge_sha256": "ab885e093a2839f03332d88c905a729d5c6b4fbe5ef1c584a97749cca95bb557",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "4c3d4a41"
+      },
+      {
+        "challenge_sha256": "b53a35f75979b78fe5e622ce72a98a54ef7510a8f8af21d58144aa8ba49b0fb8",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "4c416de3"
+      },
+      {
+        "challenge_sha256": "04bebce10fb8a443ec9b5ca70d94fefd68acd352a3474f9ee1bde4a3ea47cd13",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "4c7dc4dd"
+      },
+      {
+        "challenge_sha256": "3276b276d2e3fa35f8fcc9c59a49df059aa07df3efe8785818e8af14ba56aa20",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "4e34c42c"
+      },
+      {
+        "challenge_sha256": "f7c32063cbc95d712b2fd3f728a2b631bd8958323b4aa24f4388529c4e9a5603",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "53fb4810"
+      },
+      {
+        "challenge_sha256": "6c6a4463e712e0c9b83eaa1ae0aa649e8ea64069f9b258693e71419112014e1c",
+        "main_ids": [
+          "generic_waypoint_route_gen1",
+          "generic_waypoint_route_gen2"
+        ],
+        "selected_tier": "need_repair_and_parameters",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "5545f144"
+      },
+      {
+        "challenge_sha256": "6ce66f8011df056ef7bc33badb462f46681c6da9b6cb280bd4a8e2b7f525abda",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "581f7754"
+      },
+      {
+        "challenge_sha256": "d6c60727e19c07b0aaa5c49150702c8d98d5633ac15664c314c2c012e2051865",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "58490d8a"
+      },
+      {
+        "challenge_sha256": "1c38dbfede35aa83edf39d86a7dd5df24f0278e348d2677627d872e391cfa4d7",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "58f5dbd5"
+      },
+      {
+        "challenge_sha256": "d190d5f98291d832ef2ab1ffcf5828dd8d6859f79a05f348df6d5d46a4debee1",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "5961cc34"
+      },
+      {
+        "challenge_sha256": "c9078d816bb21159b87ba63fcde3fcca7ff5a6389950a081b1b301a990cb37a6",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "5dbc8537"
+      },
+      {
+        "challenge_sha256": "98c552c5d365414c4de49ffa04963fd15bc755d6defb38333a8bf3a7e60c8af8",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "62593bfd"
+      },
+      {
+        "challenge_sha256": "afd535754b8f0e3e65c08dc4897effa6bb1950902a8db56b29f246eb3fea407b",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "64efde09"
+      },
+      {
+        "challenge_sha256": "ee576437bcd000a274eb9a3ab26c827d293736f23a2940e227f575b1423ee067",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "65b59efc"
+      },
+      {
+        "challenge_sha256": "c1a8b424d8f506718ace94ff65a091ea7b70c6d7c8d9b7ca45db6f07944cc206",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "67e490f4"
+      },
+      {
+        "challenge_sha256": "a9d5b2329c12d48b474466621e3deae3151415003bf381c2741c51b37fdd2c47",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "6e453dd6"
+      },
+      {
+        "challenge_sha256": "fa2d21e7caba5f1ec81bda28e916147a48f3f9679f6091846b030eb4829823b4",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "6e4f6532"
+      },
+      {
+        "challenge_sha256": "18f27c86a601c9b186b1283b930d1090458f24ead565763137cf6889094f32b6",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "6ffbe589"
+      },
+      {
+        "challenge_sha256": "1b719789efb1c4b9ae931e34d3c36a242c844711f9c20d7b4ab59530a7e99313",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "71e489b6"
+      },
+      {
+        "challenge_sha256": "a7f9f344c3b64f85de461275861ca3707cbd8b212964d604c408b43e93ecbc07",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "7491f3cf"
+      },
+      {
+        "challenge_sha256": "1b19ed6f202f6b9addff88314b0697b2752f581a55994c0339948f7cf3f8cd6d",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "7666fa5d"
+      },
+      {
+        "challenge_sha256": "07bf8324fe8d606b996bf13b05e3c06200fdba6e9ff2c94bfe308feb030bff9e",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "78332cb0"
+      },
+      {
+        "challenge_sha256": "77b3cd8c9fb509efbf3c2d216cf02383dae45536667295f896868001fe624219",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "7b0280bc"
+      },
+      {
+        "challenge_sha256": "092b457b609895579c7796b58a53497ae8f6bcb88f0e16fdb44aa112e50c4e85",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "7b3084d4"
+      },
+      {
+        "challenge_sha256": "315d7e752e9b4bfa2f384e346f574f6adba2ef2d91bb2433631c5f3de8d764fc",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "7b5033c1"
+      },
+      {
+        "challenge_sha256": "0474a46cdd97436d65d2bb143a376d35e3ff2c264af6940c9f70de4ec4b06f8c",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "7b80bb43"
+      },
+      {
+        "challenge_sha256": "ddf148eb2215aa408640b1aaa1303aa2ffaaa5d1209bf2a363fc09a49ecef2f2",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "7c66cb00"
+      },
+      {
+        "challenge_sha256": "d085939ca2b64b22180c97fd5a382b8498dd85fe9bcebd5b20fa06d6e24b47b6",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "7ed72f31"
+      },
+      {
+        "challenge_sha256": "12ae28e415246ffbef546cf4f9f9b9f86478d2129ac4e6caa4c74d155486ed4c",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "800d221b"
+      },
+      {
+        "challenge_sha256": "23aac99848ca57a522e32779394f1817226221d0ea82b42a3ec2501963d961df",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "80a900e0"
+      },
+      {
+        "challenge_sha256": "3789264ab69ce95ae165f9afdf0a418eaa682ce3b942a49acdd9c051f444e615",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "8698868d"
+      },
+      {
+        "challenge_sha256": "42297e323c1f8577a595ee3b05a4b12605c92967de11b6beb1d397b3e2e3ef8c",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "88bcf3b4"
+      },
+      {
+        "challenge_sha256": "50f0d670174f3796d382d209a425abb482bf54e81a051524e799a301048ca337",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "88e364bc"
+      },
+      {
+        "challenge_sha256": "3bad7de533fa330a4630224ebec293f48dc65db363fb2753f6ff0def66650022",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "89565ca0"
+      },
+      {
+        "challenge_sha256": "830589fa6baf6cfa593626ea8782a4bb331cda222066b538755dc6211e4f268a",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "898e7135"
+      },
+      {
+        "challenge_sha256": "f4e0030f4f6e7cd8583eee2f75d7648ef790f2bdf63bc0bf25937d336dd17bc5",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "8b7bacbf"
+      },
+      {
+        "challenge_sha256": "7856dcc2c4ea3cccf75fcba680222920949fbf8f8dae2a0dacea5a838cef974d",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "8b9c3697"
+      },
+      {
+        "challenge_sha256": "1932c8a87ab6c567b0c652b52ee17f29cceead52c552f2957674f3736c160a5c",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "8e5c0c38"
+      },
+      {
+        "challenge_sha256": "da2f16e0db78f392ad3f5015d3ad3c03d0c96272122968f303897a84e0a566d0",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "8f215267"
+      },
+      {
+        "challenge_sha256": "3aa12154ba355de41f7040b7479ea11b2239cef53cbf176cd4d6860c74766ac5",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "8f3a5a89"
+      },
+      {
+        "challenge_sha256": "80219e3dd4554741263a9dc5f217fcb8a068b8d89a18974f8a609e3d61d8141d",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "9385bd28"
+      },
+      {
+        "challenge_sha256": "1049271b1f9cbcb0fce1d3c728a8c1bd33d92d499546c53457845639aa98bfd9",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "97d7923e"
+      },
+      {
+        "challenge_sha256": "8263f56b72ba785cd815b9206f871d26079b4b833a282e9eb598d3d8a6e7ca82",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "981571dc"
+      },
+      {
+        "challenge_sha256": "b4eb29d8ef94c25a5effc9bb92e441c0491b8294e88efc3ad77e271355e7dc57",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "9aaea919"
+      },
+      {
+        "challenge_sha256": "709436590f6716a64f4279eb2c6b87226893480b5007f0164cd8014925c5c2a1",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "9bbf930d"
+      },
+      {
+        "challenge_sha256": "d64545cafd867d2bad861f0b1cacf3e6339308c942b0ca9512e1e099d26b5920",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "a251c730"
+      },
+      {
+        "challenge_sha256": "ec0a31a72bb25bc1666b023103af00c0ff96009a08afe65507865348ada4feb9",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "a25697e4"
+      },
+      {
+        "challenge_sha256": "304a2b1d7d323f8e04ccf31607a58f78dff326911fedc436455feb324264a985",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "a32d8b75"
+      },
+      {
+        "challenge_sha256": "966bcd0a031e6ddd64b7ffca6a5d8d781284c4f9cff25c6d223419fe872b8f5c",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "a395ee82"
+      },
+      {
+        "challenge_sha256": "6e77c56caca98802a84db9c7cc1b1b8243b23be1322fcabf6d2f80c20db82243",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "a47bf94d"
+      },
+      {
+        "challenge_sha256": "9117afd5ec36d4d701839f70c5baf85533d582f4a5f3b3b79ca4e90e383da613",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "a6f40cea"
+      },
+      {
+        "challenge_sha256": "1a37afca5146607d948c9c35a6323f5d75504b9470bc8c3a241a24e070508ada",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "aa4ec2a5"
+      },
+      {
+        "challenge_sha256": "cf099b8a93489356101c0533c91df251d9c8f56a26de0797179bfbd1103b5982",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "abc82100"
+      },
+      {
+        "challenge_sha256": "e990833ff50ff60a1b199d37fb3efc7a2b999f76c03078fe77300aec653849a8",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "b0039139"
+      },
+      {
+        "challenge_sha256": "f0b481e4b406cdb842cc1816490b4fd697ae0d384ed4baa1ec02355714858739",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "b10624e5"
+      },
+      {
+        "challenge_sha256": "e7d73c95c786c58b6cc7d81731a3efde9c212a1642580ed3585330251ab5f5f5",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "b5ca7ac4"
+      },
+      {
+        "challenge_sha256": "1e9a7f12d2d4c28921b2dc9f33d38c4e332aba08d1358518f89608b3a9c0629b",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "b6f77b65"
+      },
+      {
+        "challenge_sha256": "d540f417b3324ab3713c31ef7733ba2a8b0c3cea54dc802166734c2c674df90f",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "b99e7126"
+      },
+      {
+        "challenge_sha256": "1299d6a90ed18a7b659537b02d0aeb838e26a1210d82ba0aa3b862cfa2505e52",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "b9e38dc0"
+      },
+      {
+        "challenge_sha256": "064cd2470b9c5580a40bd2cfd9a04e70674628ca2dd51d78f6472e99c1d04641",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "bf45cf4b"
+      },
+      {
+        "challenge_sha256": "49cabbbb5b432ed7ada4b2b553404f449d1cad363bd9820f57058ed88880a4bc",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "c4d067a0"
+      },
+      {
+        "challenge_sha256": "89f5138ccf89ac7972d206e70957bc08dbafee532979a88d9e148f90bba29d86",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "c7f57c3e"
+      },
+      {
+        "challenge_sha256": "12ee5335211b3325121e7d5daec2f5c0178c6a6399083bd91a9c3e8ee19ba02f",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "cb2d8a2c"
+      },
+      {
+        "challenge_sha256": "9103881ae09dc22845b637d7899425489405d4fe0fc7ac4e71a1964a921a735d",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "cbebaa4b"
+      },
+      {
+        "challenge_sha256": "495ff6fe26d209691e5d50c0a32d723b8583c90fc05acd12a40fd23d459b4129",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "d35bdbdc"
+      },
+      {
+        "challenge_sha256": "1df30e2f02c4e10a00bbcb8b302b840362158c24d60ab57248befc023557462c",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "d59b0160"
+      },
+      {
+        "challenge_sha256": "6dece13d6599eea896cbb0ebece1f8098a602b601f2030026d3674cc08b4155c",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "d8e07eb2"
+      },
+      {
+        "challenge_sha256": "bc2872a6052ff6ee85ab01d91bc807b05ad3a294b81929f8c0701bbd2a7222af",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "da515329"
+      },
+      {
+        "challenge_sha256": "1dc8a59779967e9b0613ae5086565aa279d7db9587ed0039c2343074f2078196",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "db0c5428"
+      },
+      {
+        "challenge_sha256": "96491da664d80964cda793b8f4c9e03f9765ab8661dc1759472d305046edfba9",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "db695cfb"
+      },
+      {
+        "challenge_sha256": "1e4045ac96184d23f9dc9fa86c715bdece0d8023e81b0877d00572c475717275",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "dbff022c"
+      },
+      {
+        "challenge_sha256": "f5aef4e981254f28dbbcb9dd09402dc29f096c5a6b373fa92d248d3066ddcf77",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "dd6b8c4b"
+      },
+      {
+        "challenge_sha256": "ce1aedefdab74a264c5b3ed45900831f7ce9804f5fb4f6ffc9c3f6023b95f782",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "de809cff"
+      },
+      {
+        "challenge_sha256": "9d644e2431b28d475bae3faad79d80e8ab909decdc80c70eb48325a8241f627d",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "dfadab01"
+      },
+      {
+        "challenge_sha256": "53de6db014337c0f4ffe46708dc88fa4873cd7d693204b992333ca1bf428458a",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "e12f9a14"
+      },
+      {
+        "challenge_sha256": "b3e3ca614da6bbb3880ee92073dd4c41fbd64d0a4e8111cbcec846f2206a5208",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "e3721c99"
+      },
+      {
+        "challenge_sha256": "754a6621ecfb344a6d30aed84b0532427863f41adbd4223ff08f49e954b5a5f1",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "e376de54"
+      },
+      {
+        "challenge_sha256": "8752c5fca449718a96eb65db19b2ae31c05a4aa3953b3cf7f105088e6a871596",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "e8686506"
+      },
+      {
+        "challenge_sha256": "43891099241dc84f34695ea676032eabd8dd4ba753e82a110e7548b30df27eb2",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "e87109e9"
+      },
+      {
+        "challenge_sha256": "c9190b5e5bdd993afe9b9048180eebf462a222b6597f33d4d8da0ac950544a85",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "edb79dae"
+      },
+      {
+        "challenge_sha256": "f51196d62be0a7bc6f7207329c3703f8894bc77d42683e1aed5b73c51890f161",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "eee78d87"
+      },
+      {
+        "challenge_sha256": "b141518eed470efcd0dba940f1cbf7e722b9f3c48eba852dc6432bb66df9cea6",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "f560132c"
+      },
+      {
+        "challenge_sha256": "12fc8ffedec671355cfdc1efe8e5cf97481b35c20cae9397d6c94c4a15c26758",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "f931b4a8"
+      },
+      {
+        "challenge_sha256": "ddcf19c645525ef51809e4c67607838c9486deea166e1ae07d1dc120b75f4ca8",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "faa9f03d"
+      },
+      {
+        "challenge_sha256": "a0cc8ed473aff48b5caa5e2a678c7bbbb6a7e0b000aeeb744615ec33daa61961",
+        "main_ids": [],
+        "selected_tier": "inspired_extension",
+        "source_path": "shared/data/raw/arc-agi_evaluation_challenges.json",
+        "source_split": "evaluation",
+        "source_task_id": "fc7cae8d"
+      }
+    ],
+    "evaluation_focus_policy": {
+      "eligible_related_generators": 2,
+      "fallback": "inspired_extension_on_normal_priority_target",
+      "mapped_tasks": 1,
+      "probability": {
+        "denominator": 10,
+        "numerator": 1
+      },
+      "provided_tasks": 120,
+      "schema": "arcpuzzles-evaluation-focus-v1",
+      "scope": "Authoring focus only; proposed inspiration is not verified lineage, difficulty calibration or training admission."
+    },
+    "evaluation_related_count": 2,
+    "main_count": 164,
+    "normal_approved_count": 162,
+    "normal_count": 162
+  },
+  "sample_ids": [
+    "0281fbec1cf2",
+    "36275402c6b2",
+    "8b0844e3951e"
+  ],
+  "samples": [
+    {
+      "catalog_record": {
+        "aliases": [],
+        "canonical_rows": 2,
+        "difficulties": [],
+        "family": null,
+        "generator": "generators/0281fbec1cf2/generator.py",
+        "health": "whitelist",
+        "id": "0281fbec1cf2",
+        "kind": "per_puzzle",
+        "mix_weight": 1.0,
+        "notes_count": 1,
+        "parent_ids": [
+          "0281fbec1cf2"
+        ],
+        "primitives": [
+          "above-cols",
+          "at",
+          "bb",
+          "bbox-of-cells",
+          "below-cols",
+          "c1",
+          "c2",
+          "down-cols",
+          "find-color",
+          "fst",
+          "g2",
+          "g3",
+          "g4",
+          "gg",
+          "gg2",
+          "greens",
+          "grid-positions",
+          "left-rows",
+          "left-rows2",
+          "member",
+          "r1",
+          "r2",
+          "range",
+          "red-cells",
+          "right-rows",
+          "right-rows2",
+          "set-cell",
+          "snd",
+          "up-cols",
+          "zero?"
+        ],
+        "review_status": "improved",
+        "reviewed_generator_sha256": "074f2bad074d925d9b39b7e71a7c743031c47406a85c4893e7020de521c55bc9",
+        "reviewed_rule_hash": "0c0061f8ed33",
+        "rule_task_id": "0281fbec1cf2",
+        "runtime_generator": "puzzle_generators/per_puzzle/0281fbec1cf2/generator.py",
+        "semantic_veto": false,
+        "skills": [],
+        "sources": [
+          "augmented",
+          "training"
+        ],
+        "split": null,
+        "summary": "Extend each red-rectangle row and column outward in every unblocked direction; aligned nonzero non-red markers block one direction only.",
+        "train_safety": "reviewed_safe",
+        "version": "3.0.0",
+        "veto_reason": ""
+      },
+      "in_evaluation_related_pool": false,
+      "in_main_ids": true,
+      "in_normal_pool": true,
+      "inspected": {
+        "repo/generators/0281fbec1cf2/SUMMARY.md": {
+          "kind": "text",
+          "text": "# 0281fbec1cf2\n\nExtend each red-rectangle row and column outward in every unblocked direction; aligned nonzero non-red markers block one direction only.\n\nKind: `per_puzzle`. Imported version: `3.0.0`.\nApproval is derived by the catalog from current code and retained evidence.\n",
+          "truncated": false
+        },
+        "repo/generators/0281fbec1cf2/generator.py": {
+          "excerpt": {
+            "lines": [
+              "230:     low, high, rect_low, rect_high = _ranges(ctx.difficulty)",
+              "231:     for _ in range(80):",
+              "232:         height = rng.randint(low, high)",
+              "233:         width = rng.randint(low, high)",
+              "234:         rect_height = rng.randint(rect_low, min(rect_high, height - 4))",
+              "235:         rect_width = rng.randint(rect_low, min(rect_high, width - 4))",
+              "236:         top = rng.randint(2, height - rect_height - 2)",
+              "237:         left = rng.randint(2, width - rect_width - 2)",
+              "238:         bottom = top + rect_height - 1",
+              "239:         right = left + rect_width - 1",
+              "248:         decoy_count = 0",
+              "249:         if profile == \"open_with_decoys\":",
+              "250:             decoy_count = rng.randint(2, 5)",
+              "251:         elif profile == \"up_only\":",
+              "252:             above = {rng.choice(columns)}",
+              "272:             above, below = {rng.choice(columns)}, {rng.choice(columns)}",
+              "273:             left_rows, right_rows = {rng.choice(rows)}, {rng.choice(rows)}",
+              "274:             decoy_count = rng.randint(1, 4) if profile == \"aligned_with_decoys\" else 0",
+              "275:         elif profile == \"dense_four_sides\":",
+              "276:             above = set(columns) - {rng.choice(columns)}",
+              "282: ",
+              "283:         marker_entries = []",
+              "284:         marker_entries.extend((rng.randrange(0, top), col) for col in sorted(above))",
+              "285:         marker_entries.extend((rng.randrange(bottom + 1, height), col) for col in sorted(below))",
+              "286:         marker_entries.extend((row, rng.randrange(0, left)) for row in sorted(left_rows))",
+              "287:         marker_entries.extend((row, rng.randrange(right + 1, width)) for row in sorted(right_rows))",
+              "288:         legal_colors = [1, 3, 4, 5, 6, 7, 8, 9]",
+              "289:         if profile == \"mixed_colors_four_sides\":",
+              "290:             palette = rng.sample(legal_colors, rng.randint(2, 4))",
+              "291:         else:",
+              "292:             palette = [rng.choice(legal_colors)]",
+              "305: ",
+              "306: ",
+              "307: def generate(seed, sample_index, *, difficulty=None, **overrides):",
+              "308:     if difficulty not in (None, \"easy\", \"medium\", \"hard\"):",
+              "309:         raise ValueError(f\"unknown difficulty: {difficulty!r}\")"
+            ],
+            "total_matching_context_lines": 36,
+            "truncated": false
+          },
+          "functions": [
+            {
+              "line": 60,
+              "name": "_decode",
+              "signature": "text"
+            },
+            {
+              "line": 68,
+              "name": "_valid_grid",
+              "signature": "grid"
+            },
+            {
+              "line": 83,
+              "name": "_extract_facts",
+              "signature": "grid"
+            },
+            {
+              "line": 148,
+              "name": "_general_signature",
+              "signature": "facts"
+            },
+            {
+              "line": 181,
+              "name": "_analysis",
+              "signature": "grid"
+            },
+            {
+              "line": 199,
+              "name": "rule_mirror",
+              "signature": "grid"
+            },
+            {
+              "line": 206,
+              "name": "self_check",
+              "signature": "grid, *, difficulty=None, meta=None"
+            },
+            {
+              "line": 210,
+              "name": "canonical_profile_signature",
+              "signature": "grid"
+            },
+            {
+              "line": 214,
+              "name": "observe_overrides",
+              "signature": "grid"
+            },
+            {
+              "line": 219,
+              "name": "_ranges",
+              "signature": "difficulty"
+            },
+            {
+              "line": 229,
+              "name": "_general_scene",
+              "signature": "ctx, profile, rng"
+            },
+            {
+              "line": 307,
+              "name": "generate",
+              "signature": "seed, sample_index, *, difficulty=None, **overrides"
+            }
+          ],
+          "kind": "python"
+        },
+        "repo/generators/0281fbec1cf2/notes.md": {
+          "kind": "text",
+          "text": "# Working notes: 0281fbec1cf2\n\nRecord design decisions, hypotheses, review findings, and unresolved questions here.\nImported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.\n",
+          "truncated": false
+        }
+      },
+      "inventory": {
+        "repo/generators/0281fbec1cf2/SUMMARY.md": 277,
+        "repo/generators/0281fbec1cf2/evidence/associated_notes.jsonl": 2614,
+        "repo/generators/0281fbec1cf2/generator.py": 15126,
+        "repo/generators/0281fbec1cf2/notes.md": 216,
+        "repo/generators/0281fbec1cf2/tests/test_generator_0281fbec1cf2.py": 10070,
+        "repo/generators/0281fbec1cf2/workspace/README.md": 183
+      },
+      "limits": {
+        "available_evidence_candidates": 1,
+        "inspected_evidence_candidates": 1,
+        "max_read_bytes_per_file": 600000,
+        "prototype_python_files_inspected": 0
+      },
+      "manifest_record": {
+        "approved": true,
+        "generator": "generators/0281fbec1cf2/generator.py",
+        "generator_sha256": "074f2bad074d925d9b39b7e71a7c743031c47406a85c4893e7020de521c55bc9",
+        "rule_hash": "0c0061f8ed33",
+        "rule_task_id": "0281fbec1cf2"
+      },
+      "task_id": "0281fbec1cf2"
+    },
+    {
+      "catalog_record": {
+        "aliases": [
+          "e9b4f6fc"
+        ],
+        "approval_policy": "owner-accepted-repair-is-safety-review-20261003",
+        "approval_receipt": "REVIEW/approvals/341c099dca3999ff46fa766021e2896cf8a87d80535b12405fd82cc9135139b0.json",
+        "approval_verification_status": "reviewer_reported",
+        "canonical_rows": 1,
+        "difficulties": [],
+        "family": null,
+        "generator": "generators/36275402c6b2/generator.py",
+        "health": "historical_graylist",
+        "id": "36275402c6b2",
+        "kind": "per_puzzle",
+        "mix_weight": 1.0,
+        "notes_count": 5,
+        "parent_ids": [],
+        "primitives": [
+          "at",
+          "build-grid",
+          "cc1",
+          "cc2",
+          "cols",
+          "find",
+          "for*/list",
+          "mapping",
+          "member",
+          "nz",
+          "obj-size",
+          "objects",
+          "pair-cells",
+          "pairs",
+          "pc",
+          "range",
+          "rect",
+          "rect-h",
+          "rect-obj",
+          "rect-w",
+          "result",
+          "rows",
+          "rr1",
+          "rr2",
+          "sort-by",
+          "sorted-objs",
+          "subgrid",
+          "with-bbox"
+        ],
+        "review_status": "accepted_repair",
+        "reviewed_generator_sha256": "b65d3ab83f95f86f64fee72b91222edf31101a70fb7e1770acaf67b5befc0c58",
+        "reviewed_rule_hash": "08894540e7f2",
+        "rule_task_id": "36275402c6b2",
+        "runtime_generator": "puzzle_generators/per_puzzle/36275402c6b2/generator.py",
+        "semantic_veto": false,
+        "skills": [],
+        "sources": [
+          "training"
+        ],
+        "split": null,
+        "summary": "Find the unique largest same-colour component and crop its bounding box. Every isolated horizontal pair outside that box is read left-to-right as (replacement, source). Recolour all matching source cells inside the crop with their replacements; leave the frame cells unchanged.",
+        "train_safety": "reviewed_safe",
+        "version": "4.1.0",
+        "veto_reason": ""
+      },
+      "in_evaluation_related_pool": false,
+      "in_main_ids": true,
+      "in_normal_pool": true,
+      "inspected": {
+        "repo/generators/36275402c6b2/SUMMARY.md": {
+          "kind": "text",
+          "text": "# 36275402c6b2\n\nFind the unique largest same-colour 4-connected component and crop its bounding box. Every isolated horizontal pair outside that box is read left-to-right as (replacement, source), including pairs beside the crop. Recolour all matching source cells inside the crop, including source cells on its border; preserve the actual frame-colour cells.\n\nKind: `per_puzzle`. Reviewed version: `4.1.0`. Three demonstrations; alternating interior and border/side-witness profiles. See `notes.md` for the distribution contract and evidence limits.\nApproval is derived by the catalog from current code and retained evidence.\n",
+          "truncated": false
+        },
+        "repo/generators/36275402c6b2/evidence/review_index.json": {
+          "kind": "json",
+          "signals": [
+            {
+              "path": "$.decisions[0].approval_receipt",
+              "value": "REVIEW/approvals/341c099dca3999ff46fa766021e2896cf8a87d80535b12405fd82cc9135139b0.json"
+            },
+            {
+              "path": "$.decisions[0].verification_status",
+              "value": "reviewer_reported"
+            }
+          ],
+          "top_keys": [
+            "audits",
+            "current_source_sha256",
+            "decisions",
+            "notes_path",
+            "schema",
+            "task_id"
+          ]
+        },
+        "repo/generators/36275402c6b2/generator.py": {
+          "excerpt": {
+            "lines": [
+              "50: ",
+              "51: # The finite boundary matrix is fully supported; no multi-axis combination is",
+              "52: # intentionally rejected.",
+              "53: INCOMPATIBLE_OVERRIDE_COMBINATIONS: list[dict[str, Any]] = []",
+              "54: ",
+              "307:         raise ValueError(\"no lawful isolated legend placement\")",
+              "308: ",
+              "309:     # Random.choice(lawful) uses the same _randbelow(total) draw as randrange.",
+              "310:     # Unrank in combinations() order: the block taking i precedes skipping i.",
+              "311:     rank = rng.randrange(total)",
+              "312:     chosen = []",
+              "313:     i, remaining = 0, count",
+              "327: ",
+              "328: ",
+              "329: def generate(seed, sample_index, *, difficulty=None, **overrides):",
+              "330:     unknown = sorted(set(overrides) - set(AXES))",
+              "331:     if unknown:",
+              "355:     layout_rng = ctx.draw_rng(\"layout\")",
+              "356:     border_and_side = sample_index % 2 == 1",
+              "357:     r0 = layout_rng.randint(0, grid_h - rect_h)",
+              "358:     crop_columns = list(range(grid_w - rect_w + 1))",
+              "359:     if border_and_side:",
+              "382:     )",
+              "383:     max_cells = max(pair_count, min(len(interior), round(len(interior) * difficulty_fraction)))",
+              "384:     total_source_cells = texture_rng.randint(pair_count, max_cells)",
+              "385:     assignments = sources[:]",
+              "386:     assignments.extend(texture_rng.choice(sources) for _ in range(total_source_cells - pair_count))",
+              "467: ",
+              "468: def rule_mirror(grid) -> list[list[int]]:",
+              "469:     \"\"\"Diagnostic mirror; canonical Racket remains the sole output authority.\"\"\"",
+              "470:     return [row[:] for row in _analysis_or_raise(grid)[\"output\"]]",
+              "471: ",
+              "533: })",
+              "534: # These rivals are already refuted by canonical pairs. None is claimed to be",
+              "535: # a shortcut that fits every canonical answer.",
+              "536: CANONICAL_SHORTCUTS = {}",
+              "537: SEMANTIC_RIVALS.update({",
+              "538:     name: LESSON_COMPETITORS[name]",
+              "632: ",
+              "633: ",
+              "634: def lesson_identifiable(demos, query) -> list[str]:",
+              "635:     reasons: list[str] = []",
+              "636:     all_pairs = [*demos, query]",
+              "637:     for index, pair in enumerate(all_pairs):",
+              "638:         label = f\"demo {index}\" if index < len(demos) else \"query\"",
+              "639:         if not isinstance(pair, dict) or \"input\" not in pair or \"output\" not in pair:",
+              "640:             reasons.append(f\"{label} is not an input/output pair\")",
+              "642:         structural = self_check(pair[\"input\"])",
+              "643:         if structural:",
+              "644:             reasons.append(f\"{label} input violates teaching grammar: {structural[0]}\")",
+              "645:             continue",
+              "646:         if rule_mirror(pair[\"input\"]) != _coerce_grid(pair[\"output\"]):",
+              "651:     for name, competitor in LESSON_COMPETITORS.items():",
+              "652:         survives = all(competitor(demo[\"input\"]) == _coerce_grid(demo[\"output\"]) for demo in demos)",
+              "653:         if survives and competitor(query[\"input\"]) != _coerce_grid(query[\"output\"]):",
+              "654:             reasons.append(",
+              "655:                 f\"competing rule {name!r} fits every demo but answers the query differently\"",
+              "656:             )",
+              "657:     return reasons"
+            ],
+            "total_matching_context_lines": 59,
+            "truncated": false
+          },
+          "functions": [
+            {
+              "line": 58,
+              "name": "_coerce_grid",
+              "signature": "grid: Any"
+            },
+            {
+              "line": 84,
+              "name": "_components",
+              "signature": "grid: list[list[int]]"
+            },
+            {
+              "line": 122,
+              "name": "_analyze",
+              "signature": "grid: Any"
+            },
+            {
+              "line": 241,
+              "name": "_analysis_or_raise",
+              "signature": "grid: Any"
+            },
+            {
+              "line": 248,
+              "name": "_legend_slots",
+              "signature": "height: int, width: int, bbox: tuple[int, int, int, int]"
+            },
+            {
+              "line": 260,
+              "name": "_choose_legend_slots",
+              "signature": "height, width, bbox, count, rng, *, require_side=False"
+            },
+            {
+              "line": 329,
+              "name": "generate",
+              "signature": "seed, sample_index, *, difficulty=None, **overrides"
+            },
+            {
+              "line": 426,
+              "name": "self_check",
+              "signature": "grid, *, difficulty=None, meta=None"
+            },
+            {
+              "line": 440,
+              "name": "observe_overrides",
+              "signature": "grid"
+            },
+            {
+              "line": 452,
+              "name": "strict_canonical_like",
+              "signature": "grid"
+            },
+            {
+              "line": 468,
+              "name": "rule_mirror",
+              "signature": "grid"
+            },
+            {
+              "line": 473,
+              "name": "_rival_reverse_pair_direction",
+              "signature": "grid"
+            },
+            {
+              "line": 479,
+              "name": "_rival_first_pair_only",
+              "signature": "grid"
+            },
+            {
+              "line": 485,
+              "name": "_rival_source_to_frame",
+              "signature": "grid"
+            },
+            {
+              "line": 494,
+              "name": "_rival_recolour_whole_grid",
+              "signature": "grid"
+            },
+            {
+              "line": 502,
+              "name": "_rival_preserve_border_sources",
+              "signature": "grid"
+            },
+            {
+              "line": 513,
+              "name": "_rival_ignore_side_legends",
+              "signature": "grid"
+            },
+            {
+              "line": 543,
+              "name": "schedule_profile",
+              "signature": "seed, sample_index, difficulty=None"
+            },
+            {
+              "line": 548,
+              "name": "_valid_analysis",
+              "signature": "grid"
+            },
+            {
+              "line": 553,
+              "name": "_pair_count_is",
+              "signature": "grid, count"
+            },
+            {
+              "line": 558,
+              "name": "_rect_relation",
+              "signature": "grid, relation"
+            },
+            {
+              "line": 567,
+              "name": "_legend_above",
+              "signature": "grid"
+            },
+            {
+              "line": 572,
+              "name": "_legend_below",
+              "signature": "grid"
+            },
+            {
+              "line": 577,
+              "name": "_canonical_profile",
+              "signature": "grid"
+            },
+            {
+              "line": 581,
+              "name": "_has_border_source",
+              "signature": "grid"
+            },
+            {
+              "line": 593,
+              "name": "_has_side_legend",
+              "signature": "grid"
+            },
+            {
+              "line": 634,
+              "name": "lesson_identifiable",
+              "signature": "demos, query"
+            }
+          ],
+          "kind": "python"
+        },
+        "repo/generators/36275402c6b2/notes.md": {
+          "kind": "text",
+          "text": "# Working notes: 36275402c6b2\n\n## Current review: version 4.1.0\n\nReview assignment: `review-30f42b66093700f5`. Generator SHA-256:\n`b65d3ab83f95f86f64fee72b91222edf31101a70fb7e1770acaf67b5befc0c58`.\n\nThe rule is unchanged: crop the largest same-colour 4-connected component's\nbounding box, read isolated exterior horizontal pairs as `(replacement, source)`,\nand recolour every source-colour cell in the crop. Canonical examples already\nrequire recolouring on crop borders and reading legends beside the crop; the\nprevious generator never produced those two witnesses.\n\nEven sample indices retain an interior-source profile. Odd indices place exactly\none source on a noncorner crop-border cell and require a crop-row side legend.\nEvery source also occurs inside the crop. Legends can occupy any of the four\nsides, with one black-cell gap; the crop itself may touch a grid edge. Removing\none noncorner perimeter cell leaves the frame connected through all four corners.\nThe declared six exact override axes are unchanged.\n\nThree demonstrations are required. A lesson uses three consecutive accepted\ndraws as demonstrations and the next draw as its query. Holding out any of these\nfour pairs leaves an odd-profile witness in the remaining demonstrations, for\nboth cyclic starts of the two-profile schedule. Arbitrary subsampling or shuffling\nthat discards these witnesses is outside this guarantee.\n\nLegend placement now uses integer suffix counts and rank unranking, rather than\nmaterializing every compatible tuple. For the same ordered slots and no side\nconstraint, all ranks, outputs, and RNG continuation match the old chooser.\nThe conditional chooser is uniform over compatible placements containing a side\nlegend; this is not a claim of uniformity over complete grids.\n\n`self_check` now rejects boolean, float, and string cells in nested numeric\ngrids instead of silently converting them with `int()`. Null cells remain\nrejected. Canonical digit-string rows remain supported. Tests use the public portable root/canonical helpers.\n\nThe selected base authority's `racket_target.target_code` was synchronized to the\ncanonical program's exact whitespace. Canonical ledger bytes, normalized rule\n`08894540e7f2`, and archival `raw_code` were preserved; execution is unchanged.\n\n## Evidence retained in the review return\n\n- Final battery: 12/12 stages green, with required query rotations.\n- Focused task tests: 29 passed, zero failed/errors/skipped.\n- Hard-band joint-axis census: all 7,200 combinations at seed 98173, indices 0\n  and 1; 14,400/14,400 grids passed generation, validation, and control checks.\n- Racket-labelled lesson census: 100 lessons in each of easy/medium/hard;\n  300/300 materialized, 1,200 unique inputs, zero production ambiguities and zero\n  ambiguities in 1,200 query rotations against the six distinct declared rivals.\n- `counterexamples/border-and-side-witness.json` records an accepted generated\n  witness and actual Racket output refuting both newly declared rivals.\n- `workspace/axis_census.py` and `workspace/sampler_evidence/` are reusable probes.\n\nThe final return's `REVIEW.md`, `DECISIONS.md`, and `RESULTS.json` retain exact\ncommands, final replay evidence, earlier failures, and interpretation limits.\nThe memory benchmark measures this environment; it makes no timing assertion.\n\n## Remaining limits\n\nThe new border and side conditions are coupled on odd indices, and only one\nborder source is generated there. Multiple border replacements, independently\nvaried witness counts, and every possible frame topology are not covered.\nDeclared-rival and finite-grid checks do not prove universal identifiability or\nimproved downstream model accuracy. Approval and training admission remain\ncatalog decisions. Imported historical notes are retained unchanged in\n`evidence/associated_notes.jsonl`.\n## Current reviewer considerations\n\nSource SHA-256: `b65d3ab83f95f86f64fee72b91222edf31101a70fb7e1770acaf67b5befc0c58`.\n\n# Decisions \u2014 review-30f42b66093700f5\n\n## R1: expand the generated teaching domain without changing the rule\n\nCanonical inputs show both crop-border sources and legends beside the crop.\nThe previous implementation excluded both by construction. We add those cases\nbecause the transformation already defines them and canonical examples already\nrefute the corresponding simplifications; changing the Racket rule to match\nthe narrower sampler would erase intended behavior.\n\nThe even profile keeps interior sources. The odd profile replaces one noncorner\nperimeter cell with a source and requires a side legend. Removing one noncorner\npixel leaves the perimeter as a connected path through all four corners, so its\nbounding box remains the intended rectangle. For all 4\u20137 by 4\u20137 crop dimensions,\nthe remaining frame exceeds every possible generated same-colour source component.\nAt least three spare columns are reserved on a side on odd indices; every\nadvertised joint grid/crop width has at least four spare columns in total.\nEach exterior pair has a one-cell black gap from the crop and from conflicting\nsame-row pairs. Frame placement may touch a grid edge.\n\nRejected alternatives: random witness injection could leave some lessons with\nno witness; replacing several perimeter cells complicates connectivity without\nbeing necessary to close this demonstrated gap; introducing new override axes\nwould broaden the task contract unnecessarily. The selected repair therefore\nretains the six axes and checks all 7,200 combinations on both parities.\n\nThe source-border and side-legend conditions are coupled, and the border count\nis zero or one. This is an explicit remaining distribution restriction, not a\nclaim that all canonical-looking arrangements are generated. The source-colour\nrole remains defined by pair direction, not its numeric colour rank.\n\n## Three demonstrations and query rotation\n\nProduction assembly is three consecutive accepted draws as demonstrations,\nfollowed by one query. Either cyclic start of the period-two schedule gives\ntwo odd-profile witnesses in the four-pair bundle. Holding out any one pair\ntherefore leaves an odd witness in the other three, in their original order.\nThe focused tests exercise both starts and all held-out positions against the\nactual declared competitors. The 300-lesson Racket census tests 100 starts per\nband and reports production and rotation separately, both with zero ambiguity.\n\nWe do not label these new rivals canonical-fitting shortcuts: each fits 3/5\ncanonical pairs and is already refuted by two. `CANONICAL_SHORTCUTS` remains\nempty, while the six distinct rivals are declared in the semantic and lesson\ncollections. Arbitrary export-time subsampling or sorting requires a new lesson\ncheck; these results do not certify it.\n\n## R2: counted unranking for compatible legend placements\n\nThe old implementation enumerated every compatible pair/triple before choosing\none. A 126-slot probe reached 21,681,400 bytes peak traced memory, and the baseline\noverride battery hit its 300-second limit. The new implementation precomputes\nthe next compatible index and suffix placement counts, draws one integer rank,\nand reconstructs the corresponding lexicographic placement. The conditioned\ntable separately counts placements that contain a side slot. For fixed small\npair count, the algorithm uses O(n \u00d7 k) table space and arithmetic work.\n\nWe chose this over retries because it cannot become arbitrarily slow on a rare\nvalid placement and gives exact conditional uniformity. We rejected an arbitrary\nfirst-fit placement because it would bias geometry and change the RNG contract.\nTests exhaust every rank for all 128 subsets of a seven-slot gapped fixture,\ncheck state continuation, conditioned placements, impossible requests, and a\nmemory ceiling. The fixed-slot unconditioned behavior matches the old chooser;\nversion 4.1.0 complete grids intentionally change because candidate geometry and\nthe distribution changed.\n\n## R3: validation and portable task tests\n\nAccepting `True`, `1.5`, or `\"1\"` as nested numeric cells disguises malformed\ndata. The validator now requires actual integer cells in that representation,\nwhile preserving digit-string row support for canonical data. `None` was already\nrejected and remains covered by the regression test. This is a narrow boundary fix; unrelated inherited\nlesson-hook exception behavior and GenCtx coercion were not expanded.\n\nThe existing test's fixed `parents[...]` canonical lookup failed the supported\nruntime preflight. It now uses public root discovery and canonical pair APIs.\nThe new authority regression similarly discovers the canonical data location\nthrough public helpers. Missing isolated pytest was an environment prerequisite\nfailure, resolved in a local environment without changing shared dependencies.\n\n## R4: exact selected-authority serialization\n\nThe canonical program and selected `racket_target.target_code` were semantically\nand whitespace-normalization equivalent, but had different exact text. The\nauthority gate intentionally compares selected copies. We synchronized the\nselected target text to the canonical program, instead of weakening the gate\nor changing the canonical ledger. The archival `raw_code` is preserved byte for\nbyte. `checks/authority-formatting-change.json` records old/new hashes; the final\nauthority file SHA-256 is\n`6819067816071488bdbcdbc617675779b0a6d8c4bf18706d4294e9b9093144bb`.\nThe normalized rule remains `08894540e7f2`; this is an exact-text change to an\nauthority-bearing file, with no transformation change.\n\n## Audits and tools\n\nA97.1 and A20.1/A20.3 are reproduced control/validator issues. A97.2 and A20.2\nare narrower-distribution concerns: normal sampled cases admit a shortcut, and\nan authored broader-domain witness distinguishes it from Racket. We explicitly\nrecord whether each witness passes the target validator and whether it belongs\nto ordinary generated support. No audit is described as a normal wrong-label\nfailure. Both audited sources remain byte-identical to their assignments.\n\nThe optional ZIP resource preflight lives under `checks/tooling/resource-preflight/`.\nIt checks metadata and byte/inode capacity without extracting or deleting files.\nIt neither verifies content checksums nor chooses a destination automatically.\nIt is separated from the allowed task delta because adopting it in shared packet\ntooling requires a maintainer decision.\n\n## Handoff policy\n\nThe required final handoff replays the builder's exact source patch against a\nfresh verified extraction, initializes an isolated Git root at its `WORK/`\ndirectory (the patch paths begin `repo/`), verifies the actual top-level path,\nthen reruns focused tests with its own runtime and interpreter. Report changes\nafter that replay must not alter the source patch; final packaging compares\nits patch SHA-256 to the replayed bytes. Failures and genuine solve revisions\nare retained; no synthetic failed solve is invented.\n\n## Current seed-contract proposal\n\nUnselected seed-domain compatibility proposal. Current approved b65d3ab8/version4.1.0 accepts signed integer seeds through GenCtx/stable_rng, and public runtime.generate requires a literal integer seed without restricting its sign. Proposed14022562 preserves version4.1.0 but rejects all negative seeds; this changes lawful behavior despite the unchanged-legal-generation claim. Rebase validation/tests/notes to preserve signed integer seeds, or explicitly justify a deliberate contract migration. Reported100 paired draws establish parity only for that sampled cohort,not the whole pre-existing seed domain. Retain proposed12/12 resumed battery,70 portable/fresh tests,300 lessons/1200 unique inputs/1200 rotations with zero declared-rival ambiguity solely with proposed bytes. border_policy recolor/preserve prototype has four complete Racket-backed episodes/seeds0..3; all demos/query distinguish settings,default program exactly canonical. Bounded border-witness profile evidence only. Current malformed-scalar weakness is not claimed fixed; no sele",
+          "truncated": true
+        },
+        "repo/generators/36275402c6b2/workspace/sampler_evidence/README.md": {
+          "kind": "text",
+          "text": "# Reviewer-authored sampler evidence\n\nThese optional files record the bounded sampler repair. They are independent of\nthe generator's task behavior and are not generator inputs.\n\n## Recorded checks\n\n- `red.log` records the initial test-driven check against the original sampler:\n  seven tests passed and the 1 MB peak-allocation gate failed at 21,557,736 bytes.\n  This run preceded the addition of required-side sampling and its three tests.\n- `green.log` records all eleven focused tests passing against the proposed\n  sampler, including the optional required-side mode.\n- `benchmark.json` records an allocation probe comparing both algorithms on\n  the same original maximum layout, plus a required-side probe on a 154-slot\n  expanded layout. Measurements are descriptive; elapsed time is not a gate.\n- `probe.py` reproduces the probe from explicit before/after source paths.\n  It does not modify either source and does not add guessed runtime paths.\n\nThe tests cover every legal rank across all 128 subsets of a seven-slot universe\nwith gaps, touching starts, exact separation, and row transitions. They cover\nboth the unrestricted and required-side distributions, representative seeded\ndraws with full RNG-state equality, impossible eligibility without randomness,\nnegative and oversized counts, and generous 1 MB allocation limits.\n\n## Reproducing the probe\n\nRun in the prepared task runtime with `puzzle_generators` available. If using a\nstandalone checkout, set `PYTHONPATH` externally to that runtime's actual path.\nSupply the original and repaired generator source paths explicitly:\n\n```sh\npython probe.py \\\n  --before-source /absolute/path/to/original/generator.py \\\n  --after-source /absolute/path/to/repaired/generator.py \\\n  --output /absolute/path/to/benchmark.json\n```\n\nThe comparison freezes the original 126-slot candidate set so an accompanying\nexpansion of `_legend_slots` does not confound the algorithm comparison. The\nadditional required-side fixture includes left and right starts on crop rows\nwith a black gap and uses the same row-major ordering. RNG-state equality is\nchecked directly in addition to recording the next RNG value.\n\n## Mechanism\n\nA monotone scan computes the next compatible slot after each candidate. Suffix\ncounts use `ways[i][k] = ways[i + 1][k] + ways[next_slot[i]][k - 1]`. Optional\n`ways_side` counts selections containing a crop-row witness; choosing such a\nslot satisfies the side requirement, while choosing other slots preserves it.\nLexicographic unranking takes each selecting block before its skipping block.\nOne `randrange(total)` draws the rank and consumes the same random state as\n`Random.choice` on the corresponding explicit lawful list. Both suffix tables\nuse O(n \u00d7 k) cells and exact integer counts. There is no rejection loop.\n",
+          "truncated": false
+        },
+        "repo/generators/36275402c6b2/workspace/sampler_evidence/benchmark.json": {
+          "kind": "json",
+          "signals": [
+            {
+              "path": "$.before.elapsed_seconds_under_tracemalloc",
+              "value": 2.591950549001922
+            },
+            {
+              "path": "$.after.elapsed_seconds_under_tracemalloc",
+              "value": 0.0021024699999543373
+            },
+            {
+              "path": "$.after_required_side.elapsed_seconds_under_tracemalloc",
+              "value": 0.003224525997211458
+            }
+          ],
+          "top_keys": [
+            "fixture",
+            "before",
+            "after",
+            "same_selection",
+            "same_rng_state",
+            "expanded_required_side_fixture",
+            "after_required_side"
+          ]
+        }
+      },
+      "inventory": {
+        "repo/generators/36275402c6b2/SUMMARY.md": 627,
+        "repo/generators/36275402c6b2/__init__.py": 1,
+        "repo/generators/36275402c6b2/counterexamples/border-and-side-witness.json": 4243,
+        "repo/generators/36275402c6b2/evidence/associated_notes.jsonl": 5661,
+        "repo/generators/36275402c6b2/evidence/review_index.json": 621,
+        "repo/generators/36275402c6b2/generator.py": 24824,
+        "repo/generators/36275402c6b2/notes.md": 12201,
+        "repo/generators/36275402c6b2/tests/test_authority_binding.py": 852,
+        "repo/generators/36275402c6b2/tests/test_distribution_support.py": 3114,
+        "repo/generators/36275402c6b2/tests/test_generator_36275402c6b2.py": 4242,
+        "repo/generators/36275402c6b2/tests/test_legend_sampler.py": 7195,
+        "repo/generators/36275402c6b2/workspace/README.md": 861,
+        "repo/generators/36275402c6b2/workspace/axis_census.py": 5643,
+        "repo/generators/36275402c6b2/workspace/sampler_evidence/README.md": 2789,
+        "repo/generators/36275402c6b2/workspace/sampler_evidence/benchmark.json": 1454,
+        "repo/generators/36275402c6b2/workspace/sampler_evidence/green.log": 259,
+        "repo/generators/36275402c6b2/workspace/sampler_evidence/probe.py": 3238,
+        "repo/generators/36275402c6b2/workspace/sampler_evidence/red.log": 1357
+      },
+      "limits": {
+        "available_evidence_candidates": 4,
+        "inspected_evidence_candidates": 4,
+        "max_read_bytes_per_file": 600000,
+        "prototype_python_files_inspected": 0
+      },
+      "manifest_record": {
+        "approved": true,
+        "generator": "generators/36275402c6b2/generator.py",
+        "generator_sha256": "b65d3ab83f95f86f64fee72b91222edf31101a70fb7e1770acaf67b5befc0c58",
+        "rule_hash": "08894540e7f2",
+        "rule_task_id": "36275402c6b2"
+      },
+      "task_id": "36275402c6b2"
+    },
+    {
+      "catalog_record": {
+        "aliases": [],
+        "canonical_rows": 1,
+        "difficulties": [],
+        "family": null,
+        "generator": "generators/8b0844e3951e/generator.py",
+        "health": "whitelist",
+        "id": "8b0844e3951e",
+        "kind": "per_puzzle",
+        "mix_weight": 1.0,
+        "notes_count": 5,
+        "parent_ids": [],
+        "primitives": [
+          "cols",
+          "grid-from-fn",
+          "mode",
+          "rows"
+        ],
+        "review_status": "improved",
+        "reviewed_generator_sha256": "dd29df3ec18cda8c98a1ba1f165a0b013e2e2f4519d4eb10750f528b283af5f2",
+        "reviewed_rule_hash": "b2abbd0be28f",
+        "rule_task_id": "8b0844e3951e",
+        "runtime_generator": "puzzle_generators/per_puzzle/8b0844e3951e/generator.py",
+        "semantic_veto": false,
+        "skills": [],
+        "sources": [
+          "training"
+        ],
+        "split": null,
+        "summary": "A 3x3 to 5x5 multicolor grid has one strict most-common NONZERO color. Its lead may be clear or only one cell over the runner-up. Zero is absent, sparse, or more common than every nonzero color, so the solver must ignore zero when taking the mode. Fill an output of identical dimensions entirely with that unique nonzero mode color.",
+        "train_safety": "reviewed_safe",
+        "version": "3.0.0",
+        "veto_reason": ""
+      },
+      "in_evaluation_related_pool": false,
+      "in_main_ids": true,
+      "in_normal_pool": true,
+      "inspected": {
+        "repo/generators/8b0844e3951e/SUMMARY.md": {
+          "kind": "text",
+          "text": "# 8b0844e3951e\n\nA 3x3 to 5x5 multicolor grid has one strict most-common NONZERO color. Its lead may be clear or only one cell over the runner-up. Zero is absent, sparse, or more common than every nonzero color, so the solver must ignore zero when taking the mode. Fill an output of identical dimensions entirely with that unique nonzero mode color.\n\nKind: `per_puzzle`. Imported version: `3.0.0`.\nApproval is derived by the catalog from current code and retained evidence.\n",
+          "truncated": false
+        },
+        "repo/generators/8b0844e3951e/generator.py": {
+          "excerpt": {
+            "lines": [
+              "53: ",
+              "54: ",
+              "55: def generate(seed, sample_index, *, difficulty=None, **overrides):",
+              "56:     if difficulty not in (None, \"easy\", \"medium\", \"hard\"):",
+              "57:         raise ValueError(f\"unsupported difficulty: {difficulty!r}\")",
+              "206:     if not 1 <= n <= h * w:",
+              "207:         raise ValueError(f\"connected-cell request {n} outside 1..{h*w}\")",
+              "208:     start = (rng.randrange(h), rng.randrange(w))",
+              "209:     cells = {start}",
+              "210:     frontier = set(_neighbors(start[0], start[1], h, w))"
+            ],
+            "total_matching_context_lines": 10,
+            "truncated": false
+          },
+          "functions": [
+            {
+              "line": 55,
+              "name": "generate",
+              "signature": "seed, sample_index, *, difficulty=None, **overrides"
+            },
+            {
+              "line": 123,
+              "name": "_choose_frequency_profile",
+              "signature": "area, background_profile, mode_strength, difficulty, rng"
+            },
+            {
+              "line": 176,
+              "name": "_allocate_distractors",
+              "signature": "total, k, mode_count, mode_strength"
+            },
+            {
+              "line": 205,
+              "name": "_connected_cells",
+              "signature": "h, w, n, rng"
+            },
+            {
+              "line": 224,
+              "name": "_neighbors",
+              "signature": "r, c, h, w"
+            },
+            {
+              "line": 232,
+              "name": "observe_overrides",
+              "signature": "grid"
+            },
+            {
+              "line": 245,
+              "name": "self_check",
+              "signature": "grid, *, difficulty=None, meta=None"
+            },
+            {
+              "line": 250,
+              "name": "_analyze",
+              "signature": "grid"
+            },
+            {
+              "line": 315,
+              "name": "_component_count",
+              "signature": "grid, background"
+            }
+          ],
+          "kind": "python"
+        },
+        "repo/generators/8b0844e3951e/notes.md": {
+          "kind": "text",
+          "text": "# Working notes: 8b0844e3951e\n\nRecord design decisions, hypotheses, review findings, and unresolved questions here.\nImported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.\n",
+          "truncated": false
+        }
+      },
+      "inventory": {
+        "repo/generators/8b0844e3951e/SUMMARY.md": 473,
+        "repo/generators/8b0844e3951e/evidence/associated_notes.jsonl": 6001,
+        "repo/generators/8b0844e3951e/generator.py": 12353,
+        "repo/generators/8b0844e3951e/notes.md": 216,
+        "repo/generators/8b0844e3951e/tests/test_generator_8b0844e3951e.py": 4091,
+        "repo/generators/8b0844e3951e/workspace/README.md": 183
+      },
+      "limits": {
+        "available_evidence_candidates": 1,
+        "inspected_evidence_candidates": 1,
+        "max_read_bytes_per_file": 600000,
+        "prototype_python_files_inspected": 0
+      },
+      "manifest_record": {
+        "approved": true,
+        "generator": "generators/8b0844e3951e/generator.py",
+        "generator_sha256": "dd29df3ec18cda8c98a1ba1f165a0b013e2e2f4519d4eb10750f528b283af5f2",
+        "rule_hash": "b2abbd0be28f",
+        "rule_task_id": "8b0844e3951e"
+      },
+      "task_id": "8b0844e3951e"
+    }
+  ],
+  "schema": "arcpuzzles-allocation-static-probe-v1",
+  "source_bindings": {
+    "repo/catalog/puzzles.jsonl": {
+      "bytes": 379922,
+      "issued_sha256": "f65bc3ec5c86406d0d82aec2f0241b48e1a8f6f4d9b4455428d42c61de621412",
+      "matches_issued": true,
+      "read_from": "current_workspace",
+      "sha256": "f65bc3ec5c86406d0d82aec2f0241b48e1a8f6f4d9b4455428d42c61de621412"
+    },
+    "repo/generators/0281fbec1cf2/SUMMARY.md": {
+      "bytes": 277,
+      "issued_sha256": "0b110b8a104175ea31f4a931440ba19c57ca5f474b6f0bffc9b7ac1b5210986b",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "0b110b8a104175ea31f4a931440ba19c57ca5f474b6f0bffc9b7ac1b5210986b"
+    },
+    "repo/generators/0281fbec1cf2/generator.py": {
+      "bytes": 15126,
+      "issued_sha256": "074f2bad074d925d9b39b7e71a7c743031c47406a85c4893e7020de521c55bc9",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "074f2bad074d925d9b39b7e71a7c743031c47406a85c4893e7020de521c55bc9"
+    },
+    "repo/generators/0281fbec1cf2/notes.md": {
+      "bytes": 216,
+      "issued_sha256": "24b4003063c37b36e68999b3dbf08121d4db9b280238c193f2a4d3f59795c527",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "24b4003063c37b36e68999b3dbf08121d4db9b280238c193f2a4d3f59795c527"
+    },
+    "repo/generators/36275402c6b2/SUMMARY.md": {
+      "bytes": 627,
+      "issued_sha256": "dda97a9816f98341cf2a2d714527e4676db9063b94eaa2018d25d4c022a85482",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "dda97a9816f98341cf2a2d714527e4676db9063b94eaa2018d25d4c022a85482"
+    },
+    "repo/generators/36275402c6b2/evidence/review_index.json": {
+      "bytes": 621,
+      "issued_sha256": "d4937ef1caa3413a98d1aaf9ab3e6e0a481d4eb9e415f27210c5bd9e684c0d44",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "d4937ef1caa3413a98d1aaf9ab3e6e0a481d4eb9e415f27210c5bd9e684c0d44"
+    },
+    "repo/generators/36275402c6b2/generator.py": {
+      "bytes": 24824,
+      "issued_sha256": "b65d3ab83f95f86f64fee72b91222edf31101a70fb7e1770acaf67b5befc0c58",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "b65d3ab83f95f86f64fee72b91222edf31101a70fb7e1770acaf67b5befc0c58"
+    },
+    "repo/generators/36275402c6b2/notes.md": {
+      "bytes": 12201,
+      "issued_sha256": "f6eb371725894ed5b2363e9ab5ff567e950b1c92fbb58876a60c10ef0b6f8d76",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "f6eb371725894ed5b2363e9ab5ff567e950b1c92fbb58876a60c10ef0b6f8d76"
+    },
+    "repo/generators/36275402c6b2/workspace/sampler_evidence/README.md": {
+      "bytes": 2789,
+      "issued_sha256": "8b5c3f7bf1f5aec8dfeb712efeb3f44c1251d00fec842497e6e0e7551a35dfb1",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "8b5c3f7bf1f5aec8dfeb712efeb3f44c1251d00fec842497e6e0e7551a35dfb1"
+    },
+    "repo/generators/36275402c6b2/workspace/sampler_evidence/benchmark.json": {
+      "bytes": 1454,
+      "issued_sha256": "8335569bdcc8c0468f7ff653d44682625a81cc9ae6952236ffa0c3953851df31",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "8335569bdcc8c0468f7ff653d44682625a81cc9ae6952236ffa0c3953851df31"
+    },
+    "repo/generators/8b0844e3951e/SUMMARY.md": {
+      "bytes": 473,
+      "issued_sha256": "e2785d349d5265ac9d77ddf67f9d451a6b16861906112aaf9f8845f86d2d34ed",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "e2785d349d5265ac9d77ddf67f9d451a6b16861906112aaf9f8845f86d2d34ed"
+    },
+    "repo/generators/8b0844e3951e/generator.py": {
+      "bytes": 12353,
+      "issued_sha256": "dd29df3ec18cda8c98a1ba1f165a0b013e2e2f4519d4eb10750f528b283af5f2",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "dd29df3ec18cda8c98a1ba1f165a0b013e2e2f4519d4eb10750f528b283af5f2"
+    },
+    "repo/generators/8b0844e3951e/notes.md": {
+      "bytes": 216,
+      "issued_sha256": "8a2b0782a631aace06fd6a98816a87af9811dca0d3e1e75d860eea7a8ed0e9eb",
+      "matches_issued": true,
+      "read_from": "issued_zip",
+      "sha256": "8a2b0782a631aace06fd6a98816a87af9811dca0d3e1e75d860eea7a8ed0e9eb"
+    },
+    "repo/generators/a2d9d069c7d5/generator.py": {
+      "bytes": 20601,
+      "issued_sha256": "a9bfd8dc636a8ed242ce89c21f4fa6a977c809a5672f637891f5e1d684824e29",
+      "matches_issued": true,
+      "read_from": "current_workspace",
+      "sha256": "a9bfd8dc636a8ed242ce89c21f4fa6a977c809a5672f637891f5e1d684824e29"
+    },
+    "repo/src/arcpuzzles/cli.py": {
+      "bytes": 50413,
+      "issued_sha256": "9e7e856fc065a98d8f5dfb1dad08b2bab6b2bab44a8d92119134cedbceebae4e",
+      "matches_issued": true,
+      "read_from": "current_workspace",
+      "sha256": "9e7e856fc065a98d8f5dfb1dad08b2bab6b2bab44a8d92119134cedbceebae4e"
+    },
+    "repo/src/arcpuzzles/datasets.py": {
+      "bytes": 23334,
+      "issued_sha256": "b26a88742792672593bf04da0ed1c6ca5b8f4b77b742f6d8663bb7fd1102792d",
+      "matches_issued": true,
+      "read_from": "current_workspace",
+      "sha256": "b26a88742792672593bf04da0ed1c6ca5b8f4b77b742f6d8663bb7fd1102792d"
+    },
+    "repo/src/arcpuzzles/review_full_draw.py": {
+      "bytes": 41706,
+      "issued_sha256": "808edc62a7dea659e8054deb732c61bb6c215deadbc30027652178529984199b",
+      "matches_issued": true,
+      "read_from": "current_workspace",
+      "sha256": "808edc62a7dea659e8054deb732c61bb6c215deadbc30027652178529984199b"
+    }
+  },
+  "source_packet": "/workspace/scratch/cd86c06020be/upload/SEND-THIS-ARCpuzzles-review(2).zip",
+  "started_at": "2026-10-23T09:51:06.784511+00:00",
+  "ticket": {
+    "budget": {
+      "authoring_minutes": 10,
+      "targeted_probe_seconds": 120,
+      "targeted_probes": 1
+    },
+    "consumer": "bounded_owner_allocation_experiment_proposal",
+    "generator_sha256": "a9bfd8dc636a8ed242ce89c21f4fa6a977c809a5672f637891f5e1d684824e29",
+    "rule_hash": "e2513b1ebd3d",
+    "rule_task_id": "a2d9d069c7d5",
+    "seed": "46d0fc6ba2ecb5d90e0b6ff34203b12e8d4941710f6d226aa090c12e44e8c1b8",
+    "source": {
+      "path": "repo/generators/a2d9d069c7d5/generator.py",
+      "sha256": "a9bfd8dc636a8ed242ce89c21f4fa6a977c809a5672f637891f5e1d684824e29"
+    },
+    "task_id": "a2d9d069c7d5",
+    "ticket_id": "ticket-c1f4465e8b29b5d4",
+    "type": "allocation_quality"
+  }
+}

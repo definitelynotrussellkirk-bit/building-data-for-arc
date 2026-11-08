@@ -1,0 +1,6 @@
+# 2feb645025e2
+
+0-bg grid (h ∈ 8-18, w ∈ 11-22, by difficulty) with: (a) ONE COLOR-5 (GRAY) MIRROR COLUMN at column OLD_C ∈ 1..(w-2)//2 (constrained so 2*old_c+1 < w), with N_GRAYS ∈ 2-6 GRAY CELLS placed in that column at rows per GRAY_LAYOUT ∈ {scattered / contiguous / edges / evenly_spaced}; (b) N_PROBES ∈ 0-4 COLOR-2 (BLUE) PROBE CELLS placed between cols old_c+1 and 2*old_c per PROBE_LAYOUT ∈ {scattered / vertical / diag} — these probes lie in the 'reflection zone' between the gray column and its mirror position. Rule (MOVE EVERY GRAY-5 CELL FROM COLUMN OLD_C TO COLUMN 2*OLD_C + 1 (THE MIRROR-REFLECTED COLUMN); ANY PROBES IN THE REFLECTION ZONE GET RECOLORED PER A FIXED RULE — PER DEMOS, MAY TURN COLOR 1 OR ANOTHER MARKER): IDENTIFY the gray-5 mirror column old_c. COMPUTE new_c = 2*old_c + 1. CLEAR the gray cells from old_c. PAINT gray-5 at the same rows in column new_c. For each blue-2 probe in cols old_c..new_c: RECOLOR it per the canonical rule (e.g., color 1 to indicate it was 'crossed' by the mirror). Net: the gray column slides to its mirrored position; probes in the swept zone are marked.
+
+Kind: `per_puzzle`. Imported version: `2.0.0`.
+Approval is derived by the catalog from current code and retained evidence.

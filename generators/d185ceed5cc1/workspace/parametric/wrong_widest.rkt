@@ -1,0 +1,31 @@
+(rule! (let ((dummy 0))
+  (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((r (in-range (rows g))))
+    (let ((best
+           (let find-best ((cc 0) (best 0))
+             (cond
+               ((>= cc (cols g)) best)
+               ((= (at g r cc) 8) (find-best (+ cc 1) best))
+               (else
+                (let find-end ((end cc))
+                  (if (and (< end (cols g)) (not (= (at g r end) 8)))
+                      (find-end (+ end 1))
+                      (let* ((vals (filter (lambda (v) (not (= v 0)))
+                                           (map (lambda (x) (at g r x)) (range cc end))))
+                             (score (- end cc)))
+                        (find-best end (if (> score best) score best))))))))))
+      (let loop ((c 0) (acc out))
+        (cond
+          ((>= c (cols g)) acc)
+          ((= (at g r c) 8) (loop (+ c 1) (set-cell acc r c 8)))
+          (else
+           (let find-end ((end c))
+             (if (and (< end (cols g)) (not (= (at g r end) 8)))
+                 (find-end (+ end 1))
+                 (let* ((vals (filter (lambda (v) (not (= v 0)))
+                                      (map (lambda (x) (at g r x)) (range c end))))
+                        (score (- end c))
+                        (write (if (and (> score 0) (= score best)) c (- end (length vals))))
+                        (ordered vals)
+                        (next (for/fold ((acc2 acc)) ((v (in-list ordered)) (i (in-naturals)))
+                                (set-cell acc2 r (+ write i) v))))
+                   (loop end next)))))))))))

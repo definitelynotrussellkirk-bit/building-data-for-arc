@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (define (objs-of color) (filter (lambda (obj) (= (obj-color obj) color)) (objects g 0))) (for/fold ((out g)) ((obj (in-list (objs-of 1)))) (if (equal? (normalize-cells (obj-cells obj)) (list (list 0 0) (list 1 0) (list 2 0))) (paint-cells out (obj-cells obj) 2) out))))

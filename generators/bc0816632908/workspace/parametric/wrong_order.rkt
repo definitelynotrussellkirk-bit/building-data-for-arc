@@ -1,0 +1,11 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((comps (objects g 2))
+                  (sorted (sort-by comps (lambda (o) (min-of fst (obj-cells o))))))
+             (reduce (lambda (acc i)
+                       (if (zero? (remainder i 3))
+                           (recolor-cells acc (obj-cells (nth sorted i)) 4)
+                           acc))
+                     g
+                     (range 0 (length sorted)))))))

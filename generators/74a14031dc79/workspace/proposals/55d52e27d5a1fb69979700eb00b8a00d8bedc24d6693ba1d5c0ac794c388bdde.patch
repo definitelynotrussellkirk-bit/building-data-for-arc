@@ -1,0 +1,656 @@
+diff --git a/repo/generators/74a14031dc79/notes.md b/repo/generators/74a14031dc79/notes.md
+--- a/repo/generators/74a14031dc79/notes.md
++++ b/repo/generators/74a14031dc79/notes.md
+@@ -189,3 +189,54 @@
+ the task probe covered 128 override endpoints and 256 rotated lesson queries,
+ and 64 generated inputs matched canonical Racket output. This is a clean audit
+ within those checks, not universal approval.
++
++# Decisions for review `review-9f9da496aea2f906`
++
++## D11 — Complete the retained public-identifier correction in the prototype
++
++The selected production generator and canonical OR authority remain unchanged.
++The unfinished surface was the separate `workspace/parametric/prototype.py`:
++its v1 evidence writer named public files by seed-order ordinal, so a retained
++seed list chosen to cover OR/XOR/AND created a setting-associated identifier.
++
++Prototype v2 now projects each private episode through
++`reviewer_support.public_challenge_bytes` and derives `public_id` and
++`challenge-<sha256>.json` from exactly those visible bytes. Public bytes contain
++only demonstration inputs/outputs and query inputs. Private seed, selected
++setting, Racket source, hashes, and query answers cannot affect the name. Batch
++rows are sorted by public ID and duplicate visible payloads are rejected before
++write, preventing order-dependent names or silent overwrite.
++
++## D12 — Separate demonstration and query counts and retain four queries
++
++`make_episode` and `write_evidence` now accept independent `n_train`/`n_test`
++counts, exposed as `--demos` and `--queries`; each is restricted to literal
++integers in `1..12`. The default changed from the v1 fixed `3+1` shape to `3+4`.
++A deterministic retry loop returns exactly `n_train+n_test` distinct lawful
++inputs or raises instead of cloning or silently truncating.
++
++All labels still come from the exact episode Racket rule through one bridge.
++Each selected-generator input contains `00`, `10`, `01`, and `11`, so every
++retained demonstration refutes both nonselected parameter settings. Rival
++bookkeeping now reports dynamic demonstration and query mismatch indices; no
++query answer is borrowed to identify the setting.
++
++## D13 — Evidence and bounded adversarial result
++
++The retained command at `checks/parametric/occupancy-rule-v2/` exercises seeds
++`1,0,5`, three demonstrations and four queries per episode. It produced 3/3
++settings, 9 demonstrations, 12 distinct queries, 9 parameter-rival episode
++checks, zero ambiguity, and 6/6 canonical OR replays. All three public filenames
++match the SHA-256 of their exact bytes.
++
++The separate adversarial probe at
++`checks/parametric/occupancy-rule-v2-adversarial/result.json` exercised the
++maximum supported `12+12` episode: 24/24 inputs were distinct, every input had
++the complete occupancy truth table, all finite rivals were resolved from the 12
++demonstrations, private metadata/query-answer mutation preserved the public ID,
++and duplicate visible IDs were rejected.
++
++Limits remain explicit: the parameter variants are proposed and unapproved;
++the finite rivals do not prove unique induction against arbitrary programs; the
++retained evidence covers three seeds; and requested counts above 12 per split are
++unsupported rather than silently degraded.
+diff --git a/repo/generators/74a14031dc79/tests/test_parametric_occupancy_rule.py b/repo/generators/74a14031dc79/tests/test_parametric_occupancy_rule.py
+--- a/repo/generators/74a14031dc79/tests/test_parametric_occupancy_rule.py
++++ b/repo/generators/74a14031dc79/tests/test_parametric_occupancy_rule.py
+@@ -1,15 +1,22 @@
+ """Focused tests for the proposed, unapproved occupancy-rule prototype."""
+ from __future__ import annotations
+ 
++import copy
+ import hashlib
+ import importlib.util
+ import json
+ from pathlib import Path
++import re
+ 
+ import pytest
+ 
+ from arc_repl.racket_bridge import RacketBridge
+-from reviewer_support import canonical_pairs, find_root
++from reviewer_support import (
++    canonical_pairs,
++    find_root,
++    public_challenge_bytes,
++    public_challenge_id,
++)
+ 
+ ROOT = find_root(__file__)
+ PROTOTYPE_PATH = ROOT / "generators/74a14031dc79/workspace/parametric/prototype.py"
+@@ -91,22 +98,71 @@
+ def test_episode_draws_one_rule_and_demonstrations_refute_all_other_settings(bridge):
+     expected = {1: "or", 0: "xor", 5: "and"}
+     for seed, setting in expected.items():
+-        episode = prototype.make_episode(seed, root=ROOT, bridge=bridge)
++        episode = prototype.make_episode(
++            seed,
++            n_train=3,
++            n_test=4,
++            root=ROOT,
++            bridge=bridge,
++        )
+         assert episode["parameters"] == {"occupancy_rule": setting}
++        assert episode["n_train"] == 3
++        assert episode["n_test"] == 4
+         assert len(episode["train"]) == 3
+-        assert len(episode["test"]) == 1
++        assert len(episode["test"]) == 4
+         assert episode["ambiguities"] == []
+         matching = [row for row in episode["parameter_rivals"] if row["status"] == "matches_episode"]
+         refuted = [row for row in episode["parameter_rivals"] if row["status"] == "refuted_by_demonstrations"]
+         assert [row["occupancy_rule"] for row in matching] == [setting]
+         assert {row["occupancy_rule"] for row in refuted} == set(prototype.ALLOWED_OCCUPANCY_RULES) - {setting}
+-        assert all(row["demonstration_mismatch_indices"] for row in refuted)
+-        assert all(row["query_mismatch_indices"] == [0] for row in refuted)
++        assert all(row["demonstration_mismatch_indices"] == [0, 1, 2] for row in refuted)
++        assert all(row["query_mismatch_indices"] == [0, 1, 2, 3] for row in refuted)
+         assert all(prototype.relation_set(pair["input"]) == {"00", "10", "01", "11"} for pair in episode["train"] + episode["test"])
++        digests = [
++            prototype.grid_sha256(pair["input"])
++            for pair in episode["train"] + episode["test"]
++        ]
++        assert len(digests) == len(set(digests)) == 7
++
++
++def test_episode_supports_independent_nondefault_counts(bridge):
++    episode = prototype.make_episode(
++        1,
++        n_train=2,
++        n_test=5,
++        root=ROOT,
++        bridge=bridge,
++    )
++    assert episode["n_train"] == len(episode["train"]) == 2
++    assert episode["n_test"] == len(episode["test"]) == 5
++    assert episode["ambiguities"] == []
++    for row in episode["parameter_rivals"]:
++        if row["occupancy_rule"] == "or":
++            assert row["status"] == "matches_episode"
++            assert row["demonstration_mismatch_indices"] == []
++            assert row["query_mismatch_indices"] == []
++        else:
++            assert row["status"] == "refuted_by_demonstrations"
++            assert row["demonstration_mismatch_indices"] == [0, 1]
++            assert row["query_mismatch_indices"] == [0, 1, 2, 3, 4]
++
++
++@pytest.mark.parametrize("name", ["n_train", "n_test"])
++@pytest.mark.parametrize("value", [True, False, 0, -1, 1.5, "4", 13])
++def test_episode_counts_require_plain_integers_in_supported_range(name, value):
++    kwargs = {"n_train": 3, "n_test": 4, name: value}
++    with pytest.raises(ValueError, match=name):
++        prototype.make_episode(1, root=ROOT, **kwargs)
+ 
+ 
+ def test_public_challenge_is_allowlisted_and_does_not_alias_private_episode(bridge):
+-    episode = prototype.make_episode(1, root=ROOT, bridge=bridge)
++    episode = prototype.make_episode(
++        1,
++        n_train=2,
++        n_test=4,
++        root=ROOT,
++        bridge=bridge,
++    )
+     before = json.loads(json.dumps(episode))
+     public = prototype.public_challenge(episode)
+     assert set(public) == {"train", "test"}
+@@ -119,13 +175,57 @@
+     assert episode == before
+ 
+ 
++def test_public_filename_uses_only_exact_visible_bytes(bridge):
++    episode = prototype.make_episode(
++        1,
++        n_train=2,
++        n_test=4,
++        root=ROOT,
++        bridge=bridge,
++    )
++    public = prototype.public_challenge(episode)
++    expected_id = public_challenge_id(public)
++    filename = prototype.public_filename(public)
++    assert filename == f"challenge-{expected_id}.json"
++    assert re.fullmatch(r"challenge-[0-9a-f]{64}\.json", filename)
++
++    changed = copy.deepcopy(episode)
++    changed["seed"] = 999
++    changed["parameters"] = {"occupancy_rule": "and"}
++    changed["rule"]["racket_source"] = "private mutation"
++    changed["test"][0]["output"] = [[9]]
++    assert public_challenge_bytes(changed) == public_challenge_bytes(episode)
++    assert prototype.public_filename(prototype.public_challenge(changed)) == filename
++
++
++def test_episode_row_sorting_rejects_duplicate_visible_ids():
++    rows = [
++        {"public_id": "b", "seed": 1},
++        {"public_id": "a", "seed": 0},
++    ]
++    assert [row["public_id"] for row in prototype._sorted_unique_episode_rows(rows)] == [
++        "a",
++        "b",
++    ]
++    with pytest.raises(ValueError, match="duplicate visible public challenge"):
++        prototype._sorted_unique_episode_rows([rows[0], copy.deepcopy(rows[0])])
++
++
+ def test_evidence_writer_hashes_files_and_keeps_query_answers_private(tmp_path):
+     out = tmp_path / "evidence"
+-    report = prototype.write_evidence((1, 0, 5), out=out, root=ROOT)
++    report = prototype.write_evidence(
++        (1, 0, 5),
++        out=out,
++        n_train=3,
++        n_test=4,
++        root=ROOT,
++    )
+     assert report["status"] == "proposed_unapproved"
+     assert report["counts"]["episodes"] == 3
+     assert report["counts"]["episode_settings_exercised"] == 3
+     assert report["counts"]["ambiguous_parameter_rivals"] == 0
++    assert report["counts"]["train_pairs"] == 9
++    assert report["counts"]["query_pairs"] == 12
+     assert report["counts"]["canonical_pairs_checked"] == len(
+         canonical_pairs(prototype.TASK_ID, root=ROOT, labeled_only=True)
+     )
+@@ -133,16 +233,32 @@
+         prototype.ALLOWED_OCCUPANCY_RULES
+     )
+ 
++    public_ids = [row["public_id"] for row in report["episodes"]]
++    assert public_ids == sorted(public_ids)
++    assert len(public_ids) == len(set(public_ids)) == 3
++
+     for episode_row in report["episodes"]:
+-        public = json.loads((out / episode_row["public_path"]).read_text())
++        public_path = out / episode_row["public_path"]
++        public = json.loads(public_path.read_text())
+         private = json.loads((out / episode_row["private_path"]).read_text())
+         assert public == prototype.public_challenge(private)
++        assert public_path.name == prototype.public_filename(public)
++        assert public_path.read_bytes() == public_challenge_bytes(public)
++        assert episode_row["public_id"] == public_challenge_id(public)
++        assert episode_row["n_train"] == len(public["train"]) == 3
++        assert episode_row["n_test"] == len(public["test"]) == 4
+         assert "output" not in public["test"][0]
+         assert "output" in private["test"][0]
+     for row in report["files"]:
+         assert hashlib.sha256((out / row["path"]).read_bytes()).hexdigest() == row["sha256"]
+     with pytest.raises(FileExistsError):
+-        prototype.write_evidence((1, 0, 5), out=out, root=ROOT)
++        prototype.write_evidence(
++            (1, 0, 5),
++            out=out,
++            n_train=3,
++            n_test=4,
++            root=ROOT,
++        )
+ 
+ 
+ @pytest.mark.parametrize("seed", [False, -1, 2**63, 1.5, "0"])
+diff --git a/repo/generators/74a14031dc79/workspace/parametric/README.md b/repo/generators/74a14031dc79/workspace/parametric/README.md
+--- a/repo/generators/74a14031dc79/workspace/parametric/README.md
++++ b/repo/generators/74a14031dc79/workspace/parametric/README.md
+@@ -1,7 +1,8 @@
+ # Proposed occupancy-rule parameter prototype
+ 
+ Status: **proposed and unapproved**. This workspace does not alter the selected
+-production generator's canonical `OR` rule or its `RULE_HASH`.
++production generator's canonical `OR` rule, `RULE_HASH`, approval, or ordinary
++sampling path.
+ 
+ The episode-level parameter is `occupancy_rule` with bounded values:
+ 
+@@ -11,34 +12,49 @@
+ 
+ The object roles, `3 + separator + 3` geometry, aligned-cell comparison, and
+ blue output code remain invariant. The parameter is selected once from the
+-episode seed and reused for all three demonstrations and the query. Every input
+-is drawn from the selected production generator and contains the complete
+-`00`, `10`, `01`, `11` occupancy truth table, so the demonstrations refute the
+-two unselected settings before the query.
++episode seed and reused for every demonstration and query. Demonstration and
++query counts are requested independently with `--demos` and `--queries`; each
++must be a literal integer in `1..12`. The writer returns exactly the requested
++number of distinct inputs or fails rather than cloning examples or silently
++returning fewer.
+ 
+-All retained outputs are computed by executing the exact materialized Racket
+-program through `RacketBridge`; there is no Python answer implementation. Public
+-challenge files omit the seed, hidden parameter, Racket source, and query output.
++Every input is drawn from the selected production generator and contains the
++complete `00`, `10`, `01`, `11` occupancy truth table. Therefore each retained
++demonstration distinguishes `or`, `xor`, and `and`; the demonstrations alone
++identify the selected finite-rule setting before any query answer is considered.
++All labels are computed by executing the exact materialized Racket program
++through one `RacketBridge`; there is no Python answer implementation.
+ 
+-From the outer extracted packet directory, run:
++Public challenge bytes contain only demonstration inputs/outputs and query
++inputs. Their filenames are `challenge-<sha256>.json`, where the digest is of
++the exact visible bytes written by `reviewer_support.public_challenge_bytes`.
++Seeds, settings, Racket source, rule hashes, and query outputs remain private,
++and changing those private fields does not change the public ID.
++
++From the outer extracted packet directory, generate the retained three-setting,
++four-query evidence:
+ 
+ ```sh
+ python3 review.py run python3 \
+   generators/74a14031dc79/workspace/parametric/prototype.py \
+   --seeds 1 0 5 \
+-  --out ../checks/parametric/occupancy-rule-v1
++  --demos 3 \
++  --queries 4 \
++  --out ../checks/parametric/occupancy-rule-v2
+ ```
+ 
+-The three specified seeds exercise `or`, `xor`, and `and`, respectively. The
+-output directory must not already exist. Focused tests:
++The three seeds exercise `or`, `xor`, and `and`, respectively. The output
++directory must not already exist. Focused tests:
+ 
+ ```sh
+ python3 review.py run python3 -m pytest -q \
+   generators/74a14031dc79/tests/test_parametric_occupancy_rule.py
+ ```
+ 
+-The evidence writer produces private source-bound episodes, allowlisted public
+-challenges, exact rule snapshots, canonical replay results, a distinguishing
+-witness, source/file hashes, and a manifest. Its finite rival check covers only
+-the three declared settings and the supplied seeds; it does not prove unique
+-induction against every conceivable rule or approve these variants for training.
++The evidence writer produces private source-bound episodes, exact rule
++snapshots, canonical replay results, a distinguishing witness, content-addressed
++public challenges, source/file hashes, and a manifest. The retained run contains
++three demonstrations and four distinct queries for each setting. Its finite
++rival check covers only the three declared settings and supplied seeds; it does
++not prove unique induction against every conceivable rule or approve these
++variants for production or training.
+diff --git a/repo/generators/74a14031dc79/workspace/parametric/prototype.py b/repo/generators/74a14031dc79/workspace/parametric/prototype.py
+--- a/repo/generators/74a14031dc79/workspace/parametric/prototype.py
++++ b/repo/generators/74a14031dc79/workspace/parametric/prototype.py
+@@ -21,10 +21,17 @@
+ from typing import Any
+ 
+ from arc_repl.racket_bridge import RacketBridge, racket_runtime_status
+-from reviewer_support import canonical_pairs, canonical_path, find_root, normalize_grid
++from reviewer_support import (
++    canonical_pairs,
++    canonical_path,
++    find_root,
++    normalize_grid,
++    public_challenge_bytes,
++    public_challenge_id,
++)
+ 
+ TASK_ID = "74a14031dc79"
+-VERSION = "proposed-occupancy-rule-v1"
++VERSION = "proposed-occupancy-rule-v2"
+ ALLOWED_OCCUPANCY_RULES = ("or", "xor", "and")
+ DEFAULT_OCCUPANCY_RULE = "or"
+ CANONICAL_RULE_HASH = "582367af483f"
+@@ -63,6 +70,11 @@
+ def _validate_seed(seed: Any) -> None:
+     if type(seed) is not int or not 0 <= seed < 2**63:
+         raise ValueError("seed must be a literal integer in 0..2**63-1")
++
++
++def _validate_count(name: str, value: Any) -> None:
++    if type(value) is not int or not 1 <= value <= 12:
++        raise ValueError(f"{name} must be a literal integer in 1..12")
+ 
+ 
+ def _check_canonical_source(source: str) -> str:
+@@ -207,28 +219,56 @@
+     return module
+ 
+ 
+-def episode_inputs(seed: Any, *, root: str | Path | None = None) -> list[list[list[int]]]:
+-    """Draw four lawful inputs independently of the hidden rule setting."""
++def episode_inputs(
++    seed: Any,
++    count: Any,
++    *,
++    root: str | Path | None = None,
++) -> list[list[list[int]]]:
++    """Draw exactly ``count`` unique lawful inputs independent of the setting."""
+     _validate_seed(seed)
++    if type(count) is not int or not 2 <= count <= 24:
++        raise ValueError("count must be a literal integer in 2..24")
+     root_path = find_root(__file__) if root is None else Path(root)
+     generator = _load_selected_generator(root_path)
+     bands = ("easy", "medium", "hard", "medium")
+     inputs: list[list[list[int]]] = []
+-    for offset, band in enumerate(bands):
+-        input_seed = 740_031 + seed * 97 + offset
+-        sample_index = 40 + seed * 4 + offset
++    seen: set[str] = set()
++    attempt = 0
++    max_attempts = max(64, count * 32)
++    while len(inputs) < count and attempt < max_attempts:
++        band = bands[attempt % len(bands)]
++        input_seed = 740_031 + seed * 97 + attempt
++        sample_index = 40 + seed * 31 + attempt
++        attempt += 1
+         grid = generator.generate(input_seed, sample_index, difficulty=band)
+         if relation_set(grid) != {"00", "10", "01", "11"}:
+             raise AssertionError("selected generator emitted a prototype input without the full truth table")
+-        inputs.append(normalize_grid(grid))
++        normalized = normalize_grid(grid)
++        digest = grid_sha256(normalized)
++        if digest in seen:
++            continue
++        seen.add(digest)
++        inputs.append(normalized)
++    if len(inputs) != count:
++        raise RuntimeError(
++            f"could only generate {len(inputs)} distinct inputs out of requested {count} "
++            f"after {max_attempts} attempts"
++        )
+     return inputs
+ 
+ 
+-def _make_episode_with_bridge(seed: int, root: Path, bridge: RacketBridge) -> dict[str, Any]:
++def _make_episode_with_bridge(
++    seed: int,
++    n_train: int,
++    n_test: int,
++    root: Path,
++    bridge: RacketBridge,
++) -> dict[str, Any]:
+     parameters = parameters_for_seed(seed)
+     selected = parameters["occupancy_rule"]
+     selected_source = materialize_rule(selected, root=root)
+-    inputs = episode_inputs(seed, root=root)
++    inputs = episode_inputs(seed, n_train + n_test, root=root)
+     outputs_by_setting = {
+         setting: execute_rule_many(
+             materialize_rule(setting, root=root), inputs, bridge=bridge, root=root
+@@ -239,9 +279,12 @@
+ 
+     train = [
+         {"input": copy.deepcopy(grid), "output": copy.deepcopy(output)}
+-        for grid, output in zip(inputs[:3], selected_outputs[:3])
++        for grid, output in zip(inputs[:n_train], selected_outputs[:n_train], strict=True)
+     ]
+-    test = [{"input": copy.deepcopy(inputs[3]), "output": copy.deepcopy(selected_outputs[3])}]
++    test = [
++        {"input": copy.deepcopy(grid), "output": copy.deepcopy(output)}
++        for grid, output in zip(inputs[n_train:], selected_outputs[n_train:], strict=True)
++    ]
+ 
+     rivals: list[dict[str, Any]] = []
+     ambiguities: list[str] = []
+@@ -249,9 +292,13 @@
+         source = materialize_rule(setting, root=root)
+         outputs = outputs_by_setting[setting]
+         demo_mismatches = [
+-            index for index in range(3) if outputs[index] != selected_outputs[index]
++            index for index in range(n_train) if outputs[index] != selected_outputs[index]
+         ]
+-        query_mismatches = [0] if outputs[3] != selected_outputs[3] else []
++        query_mismatches = [
++            query_index
++            for query_index in range(n_test)
++            if outputs[n_train + query_index] != selected_outputs[n_train + query_index]
++        ]
+         status = "matches_episode" if not demo_mismatches else "refuted_by_demonstrations"
+         rivals.append(
+             {
+@@ -271,6 +318,8 @@
+         "prototype_version": VERSION,
+         "seed": seed,
+         "parameters": parameters,
++        "n_train": n_train,
++        "n_test": n_test,
+         "rule": {
+             "occupancy_rule": selected,
+             "racket_source": selected_source,
+@@ -292,26 +341,50 @@
+ def make_episode(
+     seed: Any,
+     *,
++    n_train: Any = 3,
++    n_test: Any = 4,
+     root: str | Path | None = None,
+     bridge: RacketBridge | None = None,
+ ) -> dict[str, Any]:
+     _validate_seed(seed)
++    _validate_count("n_train", n_train)
++    _validate_count("n_test", n_test)
+     root_path = find_root(__file__) if root is None else Path(root)
+     if bridge is None:
+         with RacketBridge() as owned:
+-            return _make_episode_with_bridge(seed, root_path, owned)
+-    return _make_episode_with_bridge(seed, root_path, bridge)
++            return _make_episode_with_bridge(seed, n_train, n_test, root_path, owned)
++    return _make_episode_with_bridge(seed, n_train, n_test, root_path, bridge)
+ 
+ 
+ def public_challenge(episode: dict[str, Any]) -> dict[str, Any]:
+     """Return an allowlisted challenge with the query answer and rule hidden."""
+-    return {
++    public = {
+         "train": [
+             {"input": copy.deepcopy(pair["input"]), "output": copy.deepcopy(pair["output"])}
+             for pair in episode["train"]
+         ],
+         "test": [{"input": copy.deepcopy(pair["input"])} for pair in episode["test"]],
+     }
++    public_challenge_bytes(public)
++    return public
++
++
++def public_filename(challenge: dict[str, Any]) -> str:
++    """Return an opaque filename derived from the exact visible bytes."""
++    return f"challenge-{public_challenge_id(challenge)}.json"
++
++
++def _sorted_unique_episode_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
++    """Sort batch metadata by visible ID and reject duplicate public payloads."""
++    seen: set[str] = set()
++    for row in rows:
++        public_id = row.get("public_id")
++        if not isinstance(public_id, str) or not public_id:
++            raise ValueError("episode row is missing a visible public challenge ID")
++        if public_id in seen:
++            raise ValueError(f"duplicate visible public challenge ID: {public_id}")
++        seen.add(public_id)
++    return sorted(rows, key=lambda row: row["public_id"])
+ 
+ 
+ def _canonical_check(root: Path, bridge: RacketBridge) -> dict[str, Any]:
+@@ -367,6 +440,8 @@
+     seeds: tuple[int, ...] | list[int],
+     *,
+     out: str | Path,
++    n_train: Any = 3,
++    n_test: Any = 4,
+     root: str | Path | None = None,
+ ) -> dict[str, Any]:
+     """Execute all labels in Racket and write public/private source-bound evidence."""
+@@ -377,6 +452,8 @@
+         _validate_seed(seed)
+     if len(seed_values) != len(set(seed_values)):
+         raise ValueError("episode seeds must be unique")
++    _validate_count("n_train", n_train)
++    _validate_count("n_test", n_test)
+ 
+     root_path = find_root(__file__) if root is None else Path(root)
+     out_path = Path(out)
+@@ -418,11 +495,18 @@
+             )
+ 
+         episode_rows = []
++        seen_public_ids: set[str] = set()
+         ambiguous_count = 0
+-        for index, seed in enumerate(seed_values):
+-            episode = make_episode(seed, root=root_path, bridge=bridge)
++        for seed in seed_values:
++            episode = make_episode(
++                seed,
++                n_train=n_train,
++                n_test=n_test,
++                root=root_path,
++                bridge=bridge,
++            )
+             replay_parameters = parameters_for_seed(seed)
+-            replay_inputs = episode_inputs(seed, root=root_path)
++            replay_inputs = episode_inputs(seed, n_train + n_test, root=root_path)
+             deterministic = (
+                 replay_parameters == episode["parameters"]
+                 and [grid_sha256(grid) for grid in replay_inputs]
+@@ -432,15 +516,23 @@
+                 raise AssertionError(
+                     f"episode seed {seed} did not replay its parameters and inputs deterministically"
+                 )
+-            private_rel = Path("private") / f"episode-{index:03d}.json"
+-            public_rel = Path("public") / f"episode-{index:03d}.json"
++            public_payload = public_challenge(episode)
++            public_id = public_challenge_id(public_payload)
++            if public_id in seen_public_ids:
++                raise ValueError(f"duplicate visible public challenge ID: {public_id}")
++            seen_public_ids.add(public_id)
++            private_rel = Path("private") / f"episode-{public_id}.json"
++            public_rel = Path("public") / public_filename(public_payload)
+             _write_json(out_path / private_rel, episode)
+-            _write_json(out_path / public_rel, public_challenge(episode))
++            (out_path / public_rel).write_bytes(public_challenge_bytes(public_payload))
+             ambiguous_count += len(episode["ambiguities"])
+             episode_rows.append(
+                 {
++                    "public_id": public_id,
+                     "seed": seed,
+                     "parameters": episode["parameters"],
++                    "n_train": n_train,
++                    "n_test": n_test,
+                     "private_path": private_rel.as_posix(),
+                     "public_path": public_rel.as_posix(),
+                     "episode_sha256": _sha256(_stable_json(episode)),
+@@ -448,6 +540,7 @@
+                     "parameter_rivals": episode["parameter_rivals"],
+                 }
+             )
++        episode_rows = _sorted_unique_episode_rows(episode_rows)
+ 
+     shutil.copy2(prototype_path, snapshot_dir / "prototype.py")
+     shutil.copy2(test_path, snapshot_dir / "test_parametric_occupancy_rule.py")
+@@ -484,8 +577,12 @@
+             "evaluate a fixed episode-level Boolean occupancy rule, and paint active output cells blue"
+         ),
+         "input_scope": (
+-            "four deterministic selected-generator inputs per episode; each input contains "
+-            "00, left-only 10, right-only 01, and overlap 11"
++            f"{n_train + n_test} deterministic distinct selected-generator inputs per episode; "
++            "each input contains 00, left-only 10, right-only 01, and overlap 11"
++        ),
++        "public_identifier": (
++            "SHA-256 of exact visible demonstration input/output and query-input bytes; "
++            "private seeds, settings, Racket source, and query answers are excluded"
+         ),
+         "rules": rule_rows,
+         "episodes": episode_rows,
+@@ -493,8 +590,8 @@
+             "episodes": len(episode_rows),
+             "episode_settings_exercised": len(settings_exercised),
+             "settings_exercised": len(ALLOWED_OCCUPANCY_RULES),
+-            "train_pairs": 3 * len(episode_rows),
+-            "query_pairs": len(episode_rows),
++            "train_pairs": n_train * len(episode_rows),
++            "query_pairs": n_test * len(episode_rows),
+             "parameter_rival_episode_checks": len(ALLOWED_OCCUPANCY_RULES) * len(episode_rows),
+             "ambiguous_parameter_rivals": ambiguous_count,
+             "canonical_pairs_checked": len(canonical_check["pairs"]),
+@@ -524,6 +621,7 @@
+             "Rival checks cover only occupancy_rule in {'or','xor','and'}.",
+             "Every retained demonstration deliberately contains all four occupancy relations; weaker lessons may be ambiguous.",
+             "The OR setting is source-identical to the pinned canonical Racket rule and is replayed on every labeled canonical pair.",
++            "Requested demonstration and query counts are limited to 1..12 each; generation fails rather than cloning or silently returning fewer distinct inputs.",
+         ],
+         "effective_cwd": os.getcwd(),
+         "process_argv": sys.argv,
+@@ -554,9 +652,16 @@
+ def main(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--seeds", nargs="+", type=int, required=True)
++    parser.add_argument("--demos", type=int, default=3)
++    parser.add_argument("--queries", type=int, default=4)
+     parser.add_argument("--out", type=Path, required=True)
+     args = parser.parse_args(argv)
+-    report = write_evidence(tuple(args.seeds), out=args.out)
++    report = write_evidence(
++        tuple(args.seeds),
++        out=args.out,
++        n_train=args.demos,
++        n_test=args.queries,
++    )
+     print(json.dumps({"report": str(args.out / "report.json"), "counts": report["counts"]}, sort_keys=True))
+     return 0
+ 

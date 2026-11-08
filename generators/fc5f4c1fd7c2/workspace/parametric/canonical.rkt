@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (for/fold ((out g)) ((obj (in-list (filter (lambda (obj) (= (obj-color obj) 4)) (objects g 0))))) (let ((bb (obj-bbox obj))) (paint-cells out (list (list (first bb) (second bb)) (list (first bb) (fourth bb)) (list (third bb) (second bb)) (list (third bb) (fourth bb))) 1)))))

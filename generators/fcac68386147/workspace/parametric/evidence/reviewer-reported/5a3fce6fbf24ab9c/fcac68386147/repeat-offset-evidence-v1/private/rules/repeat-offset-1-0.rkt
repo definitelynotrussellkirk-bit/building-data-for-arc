@@ -1,0 +1,5 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((n (rows g)))
+             (build-grid (* n (+ n 1)) (* n n) (r c) (at g (mod r n) (mod c n)))))))

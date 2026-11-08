@@ -1,0 +1,1 @@
+F1: Biggest avoidable friction: repository tests assume catalog records absent from the review packet. Add a packet-aware baseline test manifest or explicit fixture-availability skips, while keeping the isolated task tests mandatory.

@@ -1,0 +1,136 @@
+--- a/src/arcpuzzles/review_workspace_files/review.py
++++ b/src/arcpuzzles/review_workspace_files/review.py
+@@ -424,6 +424,23 @@
+         print("Bare python/python3 uses this controller's interpreter; bare arcpuzzles uses that interpreter with -m arcpuzzles.")
+         print("Example: python3 review.py run --receipt checks/probe/command.json python3 generators/TASK/tests/probe.py")
+         print("Receipts record launcher exit status, not semantic validation; help starts no runtime.")
++        return 0
++    if command == "task-tests" and (rest in (["--help"], ["-h"]) or
++            (len(rest) == 2 and rest[-1] in {"--help", "-h"} and not rest[0].startswith("-"))):
++        task_id = rest[0] if len(rest) == 2 else "TASK_ID"
++        assignment = WORK / "ASSIGNMENT.json"
++        if task_id == "TASK_ID" and assignment.is_file():
++            task_id = read_json(assignment).get("task_id", task_id)
++        if not isinstance(task_id, str) or not re.fullmatch(r"[A-Za-z0-9_]+", task_id):
++            task_id = "TASK_ID"
++        print("Usage: python3 review.py task-tests [TASK_ID] [--phase before|after|audit] --out NEW_DIR [check options]")
++        print("The task_tests stage is selected automatically; omit --stage and --battery.")
++        print("Omitting TASK_ID selects the current assignment. Help does not start runtime setup or tests.")
++        print("Run from the outer packet folder; payload outputs resolve from WORK/repo.")
++        print("Use a new ../checks/... directory for each run, including retries; WORK/checks/... is not a payload path.")
++        print(f"Example: python3 review.py task-tests {task_id} --phase after --out ../checks/{task_id}-tests")
++        print("This command selects the packet Racket runtime and staged test environment; no bare pytest invocation is needed.")
++        print("A missing final result is incomplete evidence, not a semantic pass.")
+         return 0
+     if command == "verify":
+         changed = []
+--- a/src/arcpuzzles/review_full_packet_files/run_with_racket.py
++++ b/src/arcpuzzles/review_full_packet_files/run_with_racket.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import os
++import shlex
+ from pathlib import Path
+ import sys
+ 
+@@ -30,8 +31,21 @@
+     if not args:
+         print(HELP, file=sys.stderr)
+         return 2
++    repo = ROOT / "repo"
++    # Diagnose a misplaced outer entry point before setup, without rewriting
++    # legitimate repo-local scripts or explicit paths to other commands.
++    script_index = (1 if len(args) > 1 and Path(args[0]).name in
++                    {"python", "python3", Path(sys.executable).name} else 0)
++    script = args[script_index]
++    outer = ROOT.parent / "review.py"
++    if (script in {"review.py", "./review.py"} and not (repo / script).exists()
++            and outer.is_file()):
++        corrected = [sys.executable, str(outer), *args[script_index + 1:]]
++        print(f"Payload cwd is {repo} (WORK/repo); review.py is the outer entry point. "
++              "Run it directly, not through run_with_racket.py:\n  " + shlex.join(corrected),
++              file=sys.stderr)
++        return 2
+     binary = ensure_racket()
+-    repo = ROOT / "repo"
+     env = dict(os.environ)
+     env["RACKET_PATH"] = str(binary)
+     env["PATH"] = str(binary.parent) + os.pathsep + env.get("PATH", "")
+--- a/shared/tools/README.md
++++ b/shared/tools/README.md
+@@ -37,6 +37,15 @@
+ direct library ancestor wins. It does not inspect cwd, `ARCPUZZLES_HOME`,
+ arbitrary siblings, or escaping repository/ledger symlinks. Scripts under other
+ layouts still need an explicit supported repository root.
++
++`python3 review.py task-tests --help` gives wrapper-specific help and a
++copyable protected test command for the current assignment; use
++`task-tests TASK_ID --help` for an explicit target. It selects the test stage
++itself and does not advertise a redundant stage option. Outputs use a new
++`../checks/...` path relative to `WORK/repo`, including for retries. Invoke the
++outer `review.py` directly from the packet folder, not as a payload of
++`run_with_racket.py`; a misplaced outer-entry command is diagnosed before setup.
++These are invocation conveniences, not additional reviewer duties.
+ 
+ In an extracted packet, `review.py run arcpuzzles ...` uses the launcher's
+ Python interpreter with `-m arcpuzzles`, so no installed console script is
+--- /dev/null
++++ b/tests/test_review_wrapper_help.py
+@@ -0,0 +1,56 @@
++"""Wrapper help and misplaced-entry diagnostics run before runtime setup."""
++import json
++import shlex
++import subprocess
++import sys
++
++import pytest
++
++from test_review_run_receipt import packet
++
++
++def call(packet, script, args):
++    return subprocess.run([sys.executable, str(packet/script), *args], cwd=packet.parent,
++                          text=True, capture_output=True, timeout=10)
++
++
++@pytest.mark.parametrize('flag', ['--help', '-h'])
++@pytest.mark.parametrize('explicit', [False, True])
++def test_task_tests_help_is_wrapper_specific_and_does_not_start_runtime(packet, flag, explicit):
++    (packet/'WORK/setup_racket.py').write_text('def ensure_racket(): raise RuntimeError("NO SETUP")\n')
++    args = ['task-tests', *(['aaaa00000001'] if explicit else []), flag]
++    result = call(packet, 'review.py', args)
++    assert result.returncode == 0, result.stderr
++    assert 'Usage: python3 review.py task-tests' in result.stdout
++    assert '--stage task_tests' not in result.stdout
++    assert '--phase after --out ../checks/' in result.stdout
++    assert 'WORK/repo' in result.stdout and 'new' in result.stdout
++    if explicit:
++        assert 'task-tests aaaa00000001 --phase after --out ../checks/aaaa00000001-tests' in result.stdout
++    assert not (packet/'WORK/checks').exists()
++
++
++def test_task_tests_help_uses_current_assignment_in_copyable_example(packet):
++    (packet/'WORK/ASSIGNMENT.json').write_text(json.dumps({'task_id': 'aaaa00000002'}))
++    result = call(packet, 'review.py', ['task-tests', '--help'])
++    assert result.returncode == 0
++    assert 'task-tests aaaa00000002 --phase after --out ../checks/aaaa00000002-tests' in result.stdout
++
++
++@pytest.mark.parametrize('prefix', [['review.py'], ['python3', 'review.py'], [sys.executable, './review.py']])
++def test_misplaced_outer_entry_reports_runnable_correction_before_setup(packet, prefix):
++    (packet/'WORK/setup_racket.py').write_text('def ensure_racket(): raise RuntimeError("NO SETUP")\n')
++    result = call(packet, 'WORK/run_with_racket.py', [*prefix, 'task-tests', '--help'])
++    assert result.returncode == 2
++    assert 'WORK/repo' in result.stderr and 'outer entry point' in result.stderr
++    assert 'NO SETUP' not in result.stderr
++    corrected = shlex.split(next(line.strip() for line in result.stderr.splitlines() if line.startswith('  ')))
++    assert corrected == [sys.executable, str(packet/'review.py'), 'task-tests', '--help']
++    replay = subprocess.run(corrected, cwd=packet.parent, capture_output=True, text=True, timeout=10)
++    assert replay.returncode == 0, replay.stderr
++
++
++def test_real_repository_review_script_still_runs(packet):
++    (packet/'WORK/repo/review.py').write_text('print("repo-local helper")\n')
++    result = call(packet, 'WORK/run_with_racket.py', [sys.executable, 'review.py'])
++    assert result.returncode == 0 and result.stdout.strip() == 'repo-local helper'

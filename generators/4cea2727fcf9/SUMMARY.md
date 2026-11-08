@@ -1,0 +1,6 @@
+# 4cea2727fcf9
+
+0-bg grid (h ∈ 7-16, w ∈ 10-18, by difficulty) with: (a) ONE COLOR-1 START at random position; (b) ONE COLOR-3 CHECKPOINT placed ≥3 Manhattan from start; (c) ONE COLOR-2 GOAL placed ≥3 Manhattan from checkpoint; (d) PARTIAL COLOR-8 WALL COLUMN at a random interior col wcol — each cell in that column painted 8 with 60% probability (creating a partial barrier); (e) N_WALLS ∈ 2-10 ADDITIONAL random COLOR-8 wall cells; (f) WITH 50% PROBABILITY, ONE COLOR-4 PORTAL PAIR (exactly 2 cells) placed at random free positions — portals teleport between each other. Rule (BFS FROM START THROUGH BG/PORTAL CELLS, MUST PASS THROUGH THE CHECKPOINT, TO REACH THE GOAL; PORTALS LET YOU TELEPORT BETWEEN THE 2 COLOR-4 CELLS FOR 1 STEP; PAINT THE FOUND PATH WITH COLOR 7): RUN BFS from START. ENFORCE that the path must VISIT the CHECKPOINT (color-3 cell) before reaching GOAL (color-2). WALLS (color-8) block traversal. PORTAL PAIR (if present): stepping ONTO one portal teleports to the other (in addition to 4-neighbor moves). For EACH cell on the found path (excluding start/goal/checkpoint): PAINT g[r][c] = COLOR 7. Net: optimal must-checkpoint maze path highlighted in cyan.
+
+Kind: `per_puzzle`. Imported version: `2.1.1`.
+Approval is derived by the catalog from current code and retained evidence.

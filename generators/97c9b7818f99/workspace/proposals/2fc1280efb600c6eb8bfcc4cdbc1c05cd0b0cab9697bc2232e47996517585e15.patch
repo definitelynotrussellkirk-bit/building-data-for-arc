@@ -1,0 +1,2441 @@
+diff --git a/repo/generators/50a1b00ebe2f/generator.py b/repo/generators/50a1b00ebe2f/generator.py
+--- a/repo/generators/50a1b00ebe2f/generator.py
++++ b/repo/generators/50a1b00ebe2f/generator.py
+@@ -1,174 +1,265 @@
+-"""Generator for ARC task 5d2a5c43.
+-
+-Rule: input is h × 9 (4 + 1 sep + 4). Output is h × 4: OR of nonzero
+-across panels → 8, else 0.
++"""Constructive semantic generator for ARC task 50a1b00ebe2f.
++
++The input contains two aligned four-column panels separated by one solid
++separator column.  The output is their Boolean occupancy union: an output cell
++is 8 when either aligned input cell is nonzero and 0 otherwise.
++
++Every generated lesson contains all four aligned occupancy cases—neither,
++left-only, right-only, and both—so the canonical OR rule is separated from the
++plausible copy-left, copy-right, AND, XOR, and solid-fill shortcuts by each
++individual example.
+ """
+ from __future__ import annotations
+ 
++from typing import Any
++
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "50a1b00ebe2f"
+-VERSION = "1.1.2"
+ TASK_ID = "50a1b00ebe2f"
+-SUMMARY = "Two 4-column panels separated by col 4; OR of nonzero-occupancy → 8, else 0."
++VERSION = "2.0.0"
++RULE_HASH = "0e612514a2ed"
++SUMMARY = "Take the occupancy union of two aligned 4-column panels and paint occupied output cells 8."
++
++TRUTH_PROFILES = ("balanced", "left_heavy", "right_heavy", "overlap_heavy")
++HELPFUL_TEXTURES = ()
++DEGENERATE_TEXTURES = ()
+ 
+ INVARIANTS = [
+-    "input width is 9 (4 left + 1 separator + 4 right)",
+-    "col 4 is a separator",
+-    "≥1 non-zero cell across the panels",
+-    "at least one aligned cell-pair is blank so the OR output is not solid",
++    "the input has width 9: four left columns, one separator, and four right columns",
++    "the separator column is a uniform nonzero color",
++    "each panel uses one nonzero foreground color on a zero background",
++    "all four aligned occupancy signatures occur: neither, left-only, right-only, and both",
++    "the output is 8 exactly where either aligned panel cell is nonzero, otherwise 0",
+ ]
+ 
+-PANEL_PATTERNS = ("random", "blob", "stripes", "checker", "border", "diagonal")
+-DEGENERATE_TEXTURES = ("all_zero", "all_filled", "disjoint_panels")
+-HELPFUL_TEXTURES = PANEL_PATTERNS
+-
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 3..14", "valid": "1..30"},
+-    "left_color":     {"type": "color", "default": "rng (≠0)", "valid": "1..9"},
+-    "right_color":    {"type": "color", "default": "rng (≠0,left)", "valid": "1..9"},
+-    "sep_color":      {"type": "color", "default": "rng (≠0)", "valid": "1..9"},
+-    "left_density":   {"type": "float", "default": "rng 0.3..0.6", "valid": "0..1"},
+-    "right_density":  {"type": "float", "default": "rng 0.3..0.6", "valid": "0..1"},
+-    "panel_pattern":  {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(PANEL_PATTERNS)},
+-    "or_target":      {"type": "int", "default": "rng 1..max", "valid": "1..h*4"},
+-    "texture":        {"type": "str", "default": "alias for panel_pattern",
+-                       "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "grid_h": {"type": "int", "default": "keyed draw", "valid": "2..30"},
++    "left_color": {"type": "color", "default": "keyed nonzero draw", "valid": "1..9"},
++    "right_color": {
++        "type": "color",
++        "default": "keyed nonzero draw distinct from left_color",
++        "valid": "1..9",
++    },
++    "sep_color": {
++        "type": "color",
++        "default": "keyed nonzero draw distinct from both panel colors",
++        "valid": "1..9",
++    },
++    "or_count": {
++        "type": "int",
++        "default": "keyed exact occupied-output count",
++        "valid": "6..4*grid_h-1",
++    },
++    "truth_profile": {
++        "type": "str",
++        "default": "keyed draw",
++        "valid": "|".join(TRUTH_PROFILES),
++    },
+ }
+ 
++_ALLOWED_DIFFICULTIES = (None, "easy", "medium", "hard")
++_ALLOWED_OVERRIDES = frozenset(AXES)
++_SIGNATURES = ((False, False), (True, False), (False, True), (True, True))
++
++
++def _validate_call(seed: Any, sample_index: Any, difficulty: Any, overrides: dict[str, Any]) -> None:
++    if type(seed) is not int:
++        raise TypeError("seed must be an integer (not bool)")
++    if type(sample_index) is not int or sample_index < 0:
++        raise TypeError("sample_index must be a nonnegative integer (not bool)")
++    if difficulty not in _ALLOWED_DIFFICULTIES:
++        raise ValueError(f"unknown difficulty: {difficulty!r}")
++    unknown = sorted(set(overrides) - _ALLOWED_OVERRIDES)
++    if unknown:
++        raise ValueError("unknown override(s): " + ", ".join(unknown))
++
++
++def _profile_counts(or_count: int, profile: str) -> tuple[int, int, int]:
++    """Return exact (left-only, right-only, both) counts."""
++    if profile == "balanced":
++        quotient, remainder = divmod(or_count, 3)
++        counts = [quotient, quotient, quotient]
++        for index in range(remainder):
++            counts[index] += 1
++        return tuple(counts)  # type: ignore[return-value]
++    if profile == "left_heavy":
++        return or_count - 2, 1, 1
++    if profile == "right_heavy":
++        return 1, or_count - 2, 1
++    if profile == "overlap_heavy":
++        return 1, 1, or_count - 2
++    raise ValueError(f"unknown truth_profile: {profile!r}")
++
++
++def _build_grid(
++    height: int,
++    left_color: int,
++    right_color: int,
++    sep_color: int,
++    or_count: int,
++    truth_profile: str,
++    rng,
++) -> list[list[int]]:
++    grid = full_grid(height, 9, 0)
++    for row in range(height):
++        grid[row][4] = sep_color
++
++    coordinates = [(row, col) for row in range(height) for col in range(4)]
++    rng.shuffle(coordinates)
++    occupied = coordinates[:or_count]
++
++    left_count, right_count, both_count = _profile_counts(or_count, truth_profile)
++    categories = (["left"] * left_count + ["right"] * right_count + ["both"] * both_count)
++    rng.shuffle(categories)
++    for (row, col), category in zip(occupied, categories):
++        if category in ("left", "both"):
++            grid[row][col] = left_color
++        if category in ("right", "both"):
++            grid[row][col + 5] = right_color
++    return grid
++
++
++def _valid_grid(grid: Any) -> list[str]:
++    errors: list[str] = []
++    if not isinstance(grid, list) or not grid:
++        return ["grid must be a nonempty list"]
++    if not 2 <= len(grid) <= 30:
++        errors.append(f"height must be in 2..30, got {len(grid)}")
++
++    if any(not isinstance(row, list) for row in grid):
++        errors.append("every row must be a list")
++        return errors
++    widths = {len(row) for row in grid}
++    if widths != {9}:
++        errors.append(f"every row must have width 9, got {sorted(widths)}")
++        return errors
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        errors.append("grid values must be integer colors 0..9 (not bool)")
++        return errors
++
++    separator = {row[4] for row in grid}
++    if len(separator) != 1 or 0 in separator:
++        errors.append("separator column 4 must be one uniform nonzero color")
++
++    left_palette = {grid[row][col] for row in range(len(grid)) for col in range(4) if grid[row][col] != 0}
++    right_palette = {grid[row][col + 5] for row in range(len(grid)) for col in range(4) if grid[row][col + 5] != 0}
++    if len(left_palette) != 1:
++        errors.append(f"left panel must use exactly one nonzero color, got {sorted(left_palette)}")
++    if len(right_palette) != 1:
++        errors.append(f"right panel must use exactly one nonzero color, got {sorted(right_palette)}")
++
++    signatures = {
++        (grid[row][col] != 0, grid[row][col + 5] != 0)
++        for row in range(len(grid))
++        for col in range(4)
++    }
++    missing = set(_SIGNATURES) - signatures
++    if missing:
++        errors.append(f"missing aligned occupancy signature(s): {sorted(missing)}")
++    return errors
++
++
++def _signature_counts(grid: list[list[int]]) -> dict[tuple[bool, bool], int]:
++    counts = {signature: 0 for signature in _SIGNATURES}
++    for row in range(len(grid)):
++        for col in range(4):
++            counts[(grid[row][col] != 0, grid[row][col + 5] != 0)] += 1
++    return counts
++
++
++def _infer_truth_profile(grid: list[list[int]]) -> str | None:
++    counts = _signature_counts(grid)
++    left = counts[(True, False)]
++    right = counts[(False, True)]
++    both = counts[(True, True)]
++    if max(left, right, both) - min(left, right, both) <= 1:
++        return "balanced"
++    if right == both == 1 and left > 1:
++        return "left_heavy"
++    if left == both == 1 and right > 1:
++        return "right_heavy"
++    if left == right == 1 and both > 1:
++        return "overlap_heavy"
++    return None
++
+ 
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Verify: grid width=9; col 4 is non-zero separator; >=1 non-zero cell in panels."""
+-    if not grid or not grid[0]:
+-        return ["empty grid"]
+-    h, w = len(grid), len(grid[0])
+-    errs = []
+-    if w != 9:
+-        errs.append(f"expected width=9 (4+1+4), got {w}")
++    del difficulty, meta
++    return _valid_grid(grid)
++
++
++def rule_mirror(grid: list[list[int]]) -> list[list[int]]:
++    errors = _valid_grid(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    return [
++        [8 if grid[row][col] != 0 or grid[row][col + 5] != 0 else 0 for col in range(4)]
++        for row in range(len(grid))
++    ]
++
++
++def observe_overrides(grid: list[list[int]]) -> dict[str, Any]:
++    if _valid_grid(grid):
++        return {}
++    left_palette = {grid[row][col] for row in range(len(grid)) for col in range(4) if grid[row][col] != 0}
++    right_palette = {grid[row][col + 5] for row in range(len(grid)) for col in range(4) if grid[row][col + 5] != 0}
++    counts = _signature_counts(grid)
++    profile = _infer_truth_profile(grid)
++    if profile is None:
++        return {}
++    return {
++        "grid_h": len(grid),
++        "left_color": next(iter(left_palette)),
++        "right_color": next(iter(right_palette)),
++        "sep_color": grid[0][4],
++        "or_count": sum(counts[signature] for signature in ((True, False), (False, True), (True, True))),
++        "truth_profile": profile,
++    }
++
++
++def _height_bounds(difficulty: str | None) -> tuple[int, int]:
++    if difficulty == "easy":
++        return 2, 8
++    if difficulty == "medium":
++        return 6, 18
++    if difficulty == "hard":
++        return 15, 30
++    return 2, 30
++
++
++def generate(seed, sample_index, *, difficulty=None, **overrides):
++    _validate_call(seed, sample_index, difficulty, overrides)
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++    if "grid_h" in overrides and overrides["grid_h"] is not None:
++        # Explicit controls retain the full declared domain in every difficulty band.
++        height = ctx.draw_int_strict("grid_h", 2, 30)
+     else:
+-        # col 4 should be separator (all same non-zero value)
+-        sep_vals = {grid[r][4] for r in range(h)}
+-        if 0 in sep_vals or len(sep_vals) != 1:
+-            errs.append(f"col 4 separator expected uniform non-zero, got {sep_vals}")
+-        # >=1 non-zero in left panel (cols 0-3) or right panel (cols 5-8).
+-        has_panel = any(grid[r][c] != 0 for r in range(h) for c in list(range(4)) + list(range(5, 9)))
+-        if not has_panel:
+-            errs.append("no non-zero cells in panels (cols 0-3 or 5-8)")
+-        if all(grid[r][c] != 0 or grid[r][c + 5] != 0 for r in range(h) for c in range(4)):
+-            errs.append("all aligned panel pairs are occupied; OR output would be solid 8")
+-    return errs
+-
+-
+-def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
+-    if difficulty == "easy":
+-        h_lo, h_hi = 3, 5
+-    elif difficulty == "hard":
+-        h_lo, h_hi = 10, 14
+-    else:
+-        h_lo, h_hi = 3, 14
+-    h = ctx.draw_int("grid_h", h_lo, h_hi)
+-    rng = ctx.draw_rng("panels")
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], h, rng)
+-    left_c = int(overrides.get("left_color", ctx.draw_color("left_color", exclude={0})))
+-    right_c = int(overrides.get("right_color", ctx.draw_color("right_color", exclude={0, left_c})))
+-    sep = int(overrides.get("sep_color", ctx.draw_color("sep_color", exclude={0, left_c, right_c})))
+-    ld = float(overrides.get("left_density", ctx.draw_rng("left_density").uniform(0.3, 0.6)))
+-    rd = float(overrides.get("right_density", ctx.draw_rng("right_density").uniform(0.3, 0.6)))
+-    pattern = (overrides.get("texture") or overrides.get("panel_pattern")
+-               or ctx.draw_choice("panel_pattern", list(PANEL_PATTERNS)))
+-    g = full_grid(h, 9, 0)
+-    for r in range(h):
+-        g[r][4] = sep
+-    _fill_panel(g, 0, 4, h, pattern, ld, left_c, rng)
+-    _fill_panel(g, 5, 9, h, pattern, rd, right_c, rng)
+-    target = int(overrides.get("or_target",
+-                               ctx.draw_int("or_target", 1, max(1, h))))
+-    _ensure_or(g, h, target, left_c, rng)
+-    _ensure_non_solid_or(g, h, rng)
+-    return g
+-
+-
+-def _fill_panel(g, c0, c1, h, pattern, density, fg, rng):
+-    if pattern == "random":
+-        for r in range(h):
+-            for c in range(c0, c1):
+-                g[r][c] = fg if rng.random() < density else 0
+-    elif pattern == "blob":
+-        bh = max(1, int(h * density)); bw = max(1, int((c1 - c0) * density))
+-        r0 = rng.randint(0, h - bh); cc = rng.randint(c0, c1 - bw)
+-        for r in range(r0, r0 + bh):
+-            for c in range(cc, cc + bw):
+-                g[r][c] = fg
+-    elif pattern == "stripes":
+-        for r in range(h):
+-            if r % 2 == 0:
+-                for c in range(c0, c1):
+-                    g[r][c] = fg
+-    elif pattern == "checker":
+-        for r in range(h):
+-            for c in range(c0, c1):
+-                if (r + c) % 2 == 0:
+-                    g[r][c] = fg
+-    elif pattern == "border":
+-        for c in range(c0, c1):
+-            g[0][c] = fg; g[h - 1][c] = fg
+-        for r in range(h):
+-            g[r][c0] = fg; g[r][c1 - 1] = fg
+-    elif pattern == "diagonal":
+-        for k in range(min(h, c1 - c0)):
+-            g[k][c0 + k] = fg
+-
+-
+-def _ensure_or(g, h, target, fg, rng):
+-    have = sum(1 for r in range(h) for c in range(4)
+-               if g[r][c] != 0 or g[r][c + 5] != 0)
+-    if have >= target:
+-        return
+-    cells = [(r, c) for r in range(h) for c in range(4)]
+-    rng.shuffle(cells)
+-    for (r, c) in cells:
+-        if have >= target: break
+-        if g[r][c] == 0 and g[r][c + 5] == 0:
+-            g[r][c] = fg
+-            have += 1
+-
+-
+-def _ensure_non_solid_or(g, h, rng):
+-    """Keep default examples from degenerating to a solid all-8 OR target."""
+-    if any(g[r][c] == 0 and g[r][c + 5] == 0 for r in range(h) for c in range(4)):
+-        return
+-    r, c = rng.choice([(rr, cc) for rr in range(h) for cc in range(4)])
+-    g[r][c] = 0
+-    g[r][c + 5] = 0
+-
+-
+-def _draw_from_degenerate(name, h, rng):
+-    g = full_grid(h, 9, 0)
+-    left_c = rng.choice([1, 2, 3, 4, 5])
+-    right_c = rng.choice([6, 7, 8, 9])
+-    sep = rng.choice([c for c in range(1, 10) if c not in {left_c, right_c}])
+-    for r in range(h):
+-        g[r][4] = sep
+-    if name == "all_zero":
+-        return g
+-    if name == "all_filled":
+-        for r in range(h):
+-            for c in range(4):
+-                g[r][c] = left_c
+-                g[r][c + 5] = right_c
+-        return g
+-    if name == "disjoint_panels":
+-        for r in range(h):
+-            for c in range(4):
+-                if rng.random() < 0.5:
+-                    g[r][c] = left_c
+-                else:
+-                    g[r][c + 5] = right_c
+-        return g
+-    return g
++        lower, upper = _height_bounds(difficulty)
++        height = ctx.draw_int_strict("grid_h", lower, upper)
++    left_color = ctx.draw_color_strict("left_color", exclude={0})
++    right_color = ctx.draw_color_strict("right_color", exclude={0, left_color})
++    sep_color = ctx.draw_color_strict("sep_color", exclude={0, left_color, right_color})
++    or_count = ctx.draw_int_strict("or_count", 6, height * 4 - 1)
++    truth_profile = ctx.draw_choice("truth_profile", TRUTH_PROFILES)
++    grid = _build_grid(
++        height,
++        left_color,
++        right_color,
++        sep_color,
++        or_count,
++        truth_profile,
++        ctx.draw_rng("layout"),
++    )
++    errors = _valid_grid(grid)
++    if errors:
++        raise AssertionError("constructed invalid grid: " + "; ".join(errors))
++    return grid
+diff --git a/repo/generators/50a1b00ebe2f/notes.md b/repo/generators/50a1b00ebe2f/notes.md
+--- a/repo/generators/50a1b00ebe2f/notes.md
++++ b/repo/generators/50a1b00ebe2f/notes.md
+@@ -2,3 +2,25 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Current repair: constructive OR truth-table lessons
++
++- Version 1.1.2 sampled the two panels independently and only prevented a solid
++  union. It did not require left-only, right-only, and both-occupied aligned
++  cells, so plausible copy-left, copy-right, AND, or XOR rules could survive an
++  individual lesson. Controls were permissively coerced, `or_target` was not
++  exact over its declared domain, malformed ragged grids could crash
++  `self_check`, and there was no Python rule mirror or focused suite.
++- Version 2.0.0 replaces that sampler with a finite constructor. Every generated
++  example contains all four Boolean occupancy signatures, has an exact union
++  count, exposes four count profiles, supports exact 2–30 row controls, uses
++  strict nonzero distinct colors, and rejects unknown/ill-typed controls.
++  Difficulty now selects observable default height bands while explicit height
++  overrides retain the full declared range.
++- Added a strict `rule_mirror`, observable controls, canonical-pair parity tests,
++  boundary tests, finite-rival tests, and the reusable
++  `workspace/adversarial_review.py` protected-Racket audit.
++- Final focused suite: 78 passed. The audit checked 128 generated cases (127
++  unique inputs/outputs), four exact boundary cases, seven canonical pairs, six
++  executable rivals defeated on all 128 cases, and 27 protected-Racket labels.
++  This task remains catalog-unapproved and owner integration is pending.
+diff --git a/repo/generators/50a1b00ebe2f/tests/test_generator_50a1b00ebe2f.py b/repo/generators/50a1b00ebe2f/tests/test_generator_50a1b00ebe2f.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/50a1b00ebe2f/tests/test_generator_50a1b00ebe2f.py
+@@ -0,0 +1,212 @@
++from __future__ import annotations
++
++import copy
++import importlib
++import random
++
++import pytest
++
++from reviewer_support import canonical_pairs as load_canonical_pairs, find_root
++
++
++TASK = "50a1b00ebe2f"
++MODULE = importlib.import_module(f"puzzle_generators.per_puzzle.{TASK}.generator")
++ROOT = find_root(__file__)
++
++
++def canonical_pairs():
++    return load_canonical_pairs(TASK, root=ROOT, labeled_only=True)
++
++
++def independent_oracle(grid):
++    return [
++        [8 if grid[row][col] != 0 or grid[row][col + 5] != 0 else 0 for col in range(4)]
++        for row in range(len(grid))
++    ]
++
++
++def occupancy_signatures(grid):
++    return {
++        (grid[row][col] != 0, grid[row][col + 5] != 0)
++        for row in range(len(grid))
++        for col in range(4)
++    }
++
++
++def left_only(grid):
++    return [[8 if grid[row][col] != 0 else 0 for col in range(4)] for row in range(len(grid))]
++
++
++def right_only(grid):
++    return [[8 if grid[row][col + 5] != 0 else 0 for col in range(4)] for row in range(len(grid))]
++
++
++def conjunction(grid):
++    return [[8 if grid[row][col] != 0 and grid[row][col + 5] != 0 else 0 for col in range(4)] for row in range(len(grid))]
++
++
++def exclusive_or(grid):
++    return [[8 if (grid[row][col] != 0) != (grid[row][col + 5] != 0) else 0 for col in range(4)] for row in range(len(grid))]
++
++
++def signature_counts(grid):
++    counts = {(False, False): 0, (True, False): 0, (False, True): 0, (True, True): 0}
++    for row in range(len(grid)):
++        for col in range(4):
++            counts[(grid[row][col] != 0, grid[row][col + 5] != 0)] += 1
++    return counts
++
++
++@pytest.mark.parametrize("pair", canonical_pairs())
++def test_every_canonical_pair_matches_independent_oracle(pair):
++    assert independent_oracle(pair["input"]) == pair["output"]
++    assert MODULE.rule_mirror(pair["input"]) == pair["output"]
++    assert not MODULE.self_check(pair["input"])
++
++
++@pytest.mark.parametrize("difficulty", [None, "easy", "medium", "hard"])
++@pytest.mark.parametrize("profile", ["balanced", "left_heavy", "right_heavy", "overlap_heavy"])
++def test_each_profile_is_strict_and_individually_refutes_boolean_shortcuts(difficulty, profile):
++    grid = MODULE.generate(7_000 + len(profile), 11, difficulty=difficulty, truth_profile=profile)
++    expected = independent_oracle(grid)
++    assert not MODULE.self_check(grid)
++    assert MODULE.rule_mirror(grid) == expected
++    assert occupancy_signatures(grid) == {(False, False), (True, False), (False, True), (True, True)}
++    assert left_only(grid) != expected
++    assert right_only(grid) != expected
++    assert conjunction(grid) != expected
++    assert exclusive_or(grid) != expected
++    assert [[8] * 4 for _ in grid] != expected
++
++
++@pytest.mark.parametrize(
++    "height,target",
++    [
++        (2, 6),
++        (2, 7),
++        (6, 6),
++        (6, 23),
++        (30, 6),
++        (30, 119),
++    ],
++)
++@pytest.mark.parametrize("profile", ["balanced", "left_heavy", "right_heavy", "overlap_heavy"])
++def test_exact_boundary_controls_are_observable(height, target, profile):
++    grid = MODULE.generate(
++        17,
++        3,
++        grid_h=height,
++        or_count=target,
++        left_color=2,
++        right_color=6,
++        sep_color=1,
++        truth_profile=profile,
++    )
++    observed = MODULE.observe_overrides(grid)
++    assert len(grid) == height
++    assert observed == {
++        "grid_h": height,
++        "left_color": 2,
++        "right_color": 6,
++        "sep_color": 1,
++        "or_count": target,
++        "truth_profile": profile,
++    }
++    counts = signature_counts(grid)
++    assert sum(counts[key] for key in ((True, False), (False, True), (True, True))) == target
++    assert counts[(False, False)] == height * 4 - target
++
++
++def test_profile_count_contract_is_literal():
++    target = 17
++    results = {}
++    for profile in MODULE.TRUTH_PROFILES:
++        grid = MODULE.generate(29, 5, grid_h=6, or_count=target, truth_profile=profile)
++        counts = signature_counts(grid)
++        results[profile] = (counts[(True, False)], counts[(False, True)], counts[(True, True)])
++    assert max(results["balanced"]) - min(results["balanced"]) <= 1
++    assert results["left_heavy"] == (target - 2, 1, 1)
++    assert results["right_heavy"] == (1, target - 2, 1)
++    assert results["overlap_heavy"] == (1, 1, target - 2)
++
++
++@pytest.mark.parametrize(
++    "difficulty,lower,upper",
++    [("easy", 2, 8), ("medium", 6, 18), ("hard", 15, 30)],
++)
++def test_default_height_band_is_observable_but_does_not_restrict_overrides(difficulty, lower, upper):
++    heights = {len(MODULE.generate(seed, 4, difficulty=difficulty)) for seed in range(16)}
++    assert heights
++    assert min(heights) >= lower
++    assert max(heights) <= upper
++    assert len(MODULE.generate(1, 0, difficulty=difficulty, grid_h=2, or_count=6)) == 2
++    assert len(MODULE.generate(1, 0, difficulty=difficulty, grid_h=30, or_count=6)) == 30
++
++
++def test_determinism_fresh_returns_and_global_rng_independence():
++    random.seed(887)
++    state = random.getstate()
++    first = MODULE.generate(61, 8, difficulty="medium", truth_profile="balanced")
++    assert random.getstate() == state
++    second = MODULE.generate(61, 8, difficulty="medium", truth_profile="balanced")
++    assert first == second and first is not second and first[0] is not second[0]
++    first[0][0] = 9
++    assert MODULE.generate(61, 8, difficulty="medium", truth_profile="balanced") == second
++
++
++@pytest.mark.parametrize(
++    "kwargs",
++    [
++        {"difficulty": "expert"},
++        {"unknown": 1},
++        {"grid_h": 1},
++        {"grid_h": 31},
++        {"grid_h": True},
++        {"grid_h": 6.0},
++        {"grid_h": "6"},
++        {"or_count": 5},
++        {"grid_h": 2, "or_count": 8},
++        {"or_count": True},
++        {"or_count": "6"},
++        {"left_color": 0},
++        {"left_color": True},
++        {"left_color": "2"},
++        {"left_color": 2, "right_color": 2},
++        {"left_color": 2, "right_color": 6, "sep_color": 6},
++        {"truth_profile": "unknown"},
++    ],
++)
++def test_invalid_controls_fail_closed(kwargs):
++    with pytest.raises((TypeError, ValueError)):
++        MODULE.generate(1, 0, **kwargs)
++
++
++@pytest.mark.parametrize(
++    "grid",
++    [
++        [],
++        [[]],
++        [[0] * 8 for _ in range(6)],
++        [[0] * 9 for _ in range(31)],
++        [[0] * 9 for _ in range(5)] + [[0] * 8],
++        [[False] * 9 for _ in range(6)],
++        [[0] * 9 for _ in range(6)],
++        [[0, 0, 0, 0, 1, 0, 0, 0, 0] for _ in range(6)],
++    ],
++)
++def test_malformed_or_unteachable_grids_fail_closed(grid):
++    assert MODULE.self_check(grid)
++
++
++def test_axis_contract_is_literal_and_minimal():
++    assert set(MODULE.AXES) == {
++        "grid_h",
++        "left_color",
++        "right_color",
++        "sep_color",
++        "or_count",
++        "truth_profile",
++    }
++    assert MODULE.AXES["grid_h"]["valid"] == "2..30"
++    assert MODULE.AXES["truth_profile"]["valid"].split("|") == list(MODULE.TRUTH_PROFILES)
++    assert MODULE.HELPFUL_TEXTURES == MODULE.DEGENERATE_TEXTURES == ()
+diff --git a/repo/generators/50a1b00ebe2f/workspace/adversarial_review.py b/repo/generators/50a1b00ebe2f/workspace/adversarial_review.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/50a1b00ebe2f/workspace/adversarial_review.py
+@@ -0,0 +1,235 @@
++#!/usr/bin/env python3
++"""Source-bound semantic and finite-rival audit for 50a1b00ebe2f.
++
++This utility is intentionally task-local so a future reviewer can rerun the same
++bounded checks against the exact selected generator bytes.  It verifies Python
++oracle parity, per-example separation from six plausible Boolean shortcuts, and
++a representative set of labels through the protected canonical Racket rule.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++from typing import Callable
++
++from arc_repl.racket_bridge import RacketBridge
++from arcpuzzles import Catalog
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_pairs, load_selected_generator
++
++TASK = "50a1b00ebe2f"
++
++
++def oracle(grid):
++    return [
++        [8 if grid[row][col] != 0 or grid[row][col + 5] != 0 else 0 for col in range(4)]
++        for row in range(len(grid))
++    ]
++
++
++def left_only(grid):
++    return [[8 if grid[row][col] != 0 else 0 for col in range(4)] for row in range(len(grid))]
++
++
++def right_only(grid):
++    return [[8 if grid[row][col + 5] != 0 else 0 for col in range(4)] for row in range(len(grid))]
++
++
++def conjunction(grid):
++    return [[8 if grid[row][col] != 0 and grid[row][col + 5] != 0 else 0 for col in range(4)] for row in range(len(grid))]
++
++
++def exclusive_or(grid):
++    return [[8 if (grid[row][col] != 0) != (grid[row][col + 5] != 0) else 0 for col in range(4)] for row in range(len(grid))]
++
++
++def solid_fill(grid):
++    return [[8] * 4 for _ in grid]
++
++
++def preserve_source_color(grid):
++    return [
++        [grid[row][col] or grid[row][col + 5] for col in range(4)]
++        for row in range(len(grid))
++    ]
++
++
++RIVALS: dict[str, Callable] = {
++    "left_only": left_only,
++    "right_only": right_only,
++    "and": conjunction,
++    "xor": exclusive_or,
++    "solid_fill": solid_fill,
++    "preserve_source_color": preserve_source_color,
++}
++
++
++def unique_program(root: Path) -> str:
++    record = Catalog(root).get(TASK)
++    programs = {
++        variant["program_solution"]
++        for variant in record["variants"]
++        if isinstance(variant.get("program_solution"), str)
++    }
++    if len(programs) != 1:
++        raise ValueError(f"expected one canonical program, found {len(programs)}")
++    return next(iter(programs))
++
++
++def evaluate_racket(bridge: RacketBridge, wrapped_program: str, grid, index: int):
++    name = f"peer50-case-{index}"
++    bridge.define_grid(name, grid)
++    return bridge.eval_text(f"({wrapped_program} {name})")
++
++
++def run(root: Path) -> dict:
++    module, source, source_sha256 = load_selected_generator(TASK, root=root)
++    program = unique_program(root)
++    wrapped_program = wrap_rule(program)
++    failures: list[str] = []
++    rival_defeats = {name: 0 for name in RIVALS}
++    generated = []
++    seen_inputs = set()
++    seen_outputs = set()
++
++    difficulties = (None, "easy", "medium", "hard")
++    profiles = tuple(module.TRUTH_PROFILES)
++    for difficulty in difficulties:
++        for seed in range(8):
++            for profile_index, profile in enumerate(profiles):
++                grid = module.generate(seed, profile_index, difficulty=difficulty, truth_profile=profile)
++                expected = oracle(grid)
++                errors = module.self_check(grid)
++                if errors:
++                    failures.append(f"generated {difficulty}/{seed}/{profile}: {errors}")
++                if module.rule_mirror(grid) != expected:
++                    failures.append(f"Python mirror mismatch for {difficulty}/{seed}/{profile}")
++                for name, rival in RIVALS.items():
++                    if rival(grid) == expected:
++                        failures.append(f"rival {name} survived {difficulty}/{seed}/{profile}")
++                    else:
++                        rival_defeats[name] += 1
++                generated.append(
++                    {
++                        "difficulty": difficulty,
++                        "seed": seed,
++                        "sample_index": profile_index,
++                        "profile": profile,
++                        "grid": grid,
++                        "output": expected,
++                    }
++                )
++                seen_inputs.add(tuple(map(tuple, grid)))
++                seen_outputs.add(tuple(map(tuple, expected)))
++
++    boundary_specs = (
++        {"grid_h": 2, "or_count": 6, "truth_profile": "balanced"},
++        {"grid_h": 2, "or_count": 7, "truth_profile": "overlap_heavy"},
++        {"grid_h": 30, "or_count": 6, "truth_profile": "left_heavy"},
++        {"grid_h": 30, "or_count": 119, "truth_profile": "right_heavy"},
++    )
++    boundaries = []
++    for index, overrides in enumerate(boundary_specs):
++        grid = module.generate(900 + index, index, **overrides)
++        expected = oracle(grid)
++        observed = module.observe_overrides(grid)
++        if module.rule_mirror(grid) != expected or module.self_check(grid):
++            failures.append(f"boundary {index} failed mirror/self-check")
++        for key, value in overrides.items():
++            if observed.get(key) != value:
++                failures.append(f"boundary {index} did not expose {key}={value!r}: {observed}")
++        boundaries.append({"overrides": overrides, "observed": observed, "grid": grid, "output": expected})
++
++    canonical = canonical_pairs(TASK, root=root, labeled_only=True)
++    for index, pair in enumerate(canonical):
++        if oracle(pair["input"]) != pair["output"]:
++            failures.append(f"canonical Python oracle mismatch at pair {index}")
++        if module.rule_mirror(pair["input"]) != pair["output"]:
++            failures.append(f"canonical module mirror mismatch at pair {index}")
++
++    racket_cases = [
++        {"kind": "canonical", "name": f"canonical-{index}", "grid": pair["input"], "expected": pair["output"]}
++        for index, pair in enumerate(canonical)
++    ]
++    # Cover all profiles, all difficulty labels, and both exact height extremes.
++    racket_cases.extend(
++        {
++            "kind": "generated",
++            "name": f"generated-{index}",
++            "grid": case["grid"],
++            "expected": case["output"],
++        }
++        for index, case in enumerate(generated[:16])
++    )
++    racket_cases.extend(
++        {
++            "kind": "boundary",
++            "name": f"boundary-{index}",
++            "grid": case["grid"],
++            "expected": case["output"],
++        }
++        for index, case in enumerate(boundaries)
++    )
++
++    racket_rows = []
++    with RacketBridge(timeout=20, max_calls_before_restart=64) as bridge:
++        runtime = bridge.runtime_identity
++        for index, case in enumerate(racket_cases):
++            actual = evaluate_racket(bridge, wrapped_program, case["grid"], index)
++            if actual != case["expected"]:
++                failures.append(f"protected Racket mismatch for {case['name']}")
++            racket_rows.append({"kind": case["kind"], "name": case["name"], "matched": actual == case["expected"]})
++
++    return {
++        "schema": "50a1b00ebe2f-adversarial-review-v1",
++        "status": "passed" if not failures else "failed",
++        "task_id": TASK,
++        "generator_version": module.VERSION,
++        "source_path": source.relative_to(root).as_posix(),
++        "source_sha256": source_sha256,
++        "rule_hash": module.RULE_HASH,
++        "canonical_program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++        "generated_cases": len(generated),
++        "unique_generated_inputs": len(seen_inputs),
++        "unique_generated_outputs": len(seen_outputs),
++        "boundary_cases": len(boundaries),
++        "canonical_pairs": len(canonical),
++        "rival_defeats": rival_defeats,
++        "racket_evaluations": len(racket_rows),
++        "racket_rows": racket_rows,
++        "racket_runtime": runtime,
++        "failures": failures,
++        "scope": "Finite six-rival audit plus representative protected-Racket parity; not a proof of universal rule uniqueness.",
++        "training_admitted": False,
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    root = Path.cwd().resolve()
++    report = run(root)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(
++        json.dumps(
++            {
++                "status": report["status"],
++                "generated_cases": report["generated_cases"],
++                "unique_generated_inputs": report["unique_generated_inputs"],
++                "unique_generated_outputs": report["unique_generated_outputs"],
++                "rival_defeats": report["rival_defeats"],
++                "racket_evaluations": report["racket_evaluations"],
++                "failures": report["failures"],
++            },
++            sort_keys=True,
++        )
++    )
++    return 0 if report["status"] == "passed" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/554712910457/generator.py b/repo/generators/554712910457/generator.py
+--- a/repo/generators/554712910457/generator.py
++++ b/repo/generators/554712910457/generator.py
+@@ -11,7 +11,7 @@
+ 
+ GENERATOR_ID = "554712910457"
+ TASK_ID = "554712910457"
+-VERSION = "3.0.0"
++VERSION = "3.1.0"
+ RULE_HASH = "71fde72d5413"
+ SUMMARY = "Fill each zero with its nearer red or green Manhattan seed, preserving equal-distance zeros and all nonzero distractors."
+ INVARIANTS = [
+@@ -24,6 +24,9 @@
+ ]
+ 
+ PUBLIC_PROFILES = ("public_1", "public_2", "public_3", "public_4", "public_5")
++MANHATTAN_WITNESS_PROFILES = ("down_right_unequal", "down_left_unequal")
++LESSON_WINDOW = 3
++
+ GENERAL_PROFILES = (
+     "horizontal_even_tie",
+     "horizontal_odd_no_tie",
+@@ -118,6 +121,30 @@
+     if facts["errors"]:
+         raise ValueError("; ".join(facts["errors"]))
+     return [row[:] for row in facts["output"]]
++
++
++def squared_euclidean_rival(grid):
++    """Executable lesson rival: squared-Euclidean nearest-seed coloring."""
++    errors = _valid_grid(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    facts = _extract_facts(grid)
++    if facts["errors"]:
++        raise ValueError("; ".join(facts["errors"]))
++    red, green = facts["red"], facts["green"]
++    output = [list(row) for row in grid]
++    for row, values in enumerate(grid):
++        for col, value in enumerate(values):
++            if value != 0:
++                continue
++            d2 = (row - red[0]) ** 2 + (col - red[1]) ** 2
++            d3 = (row - green[0]) ** 2 + (col - green[1]) ** 2
++            output[row][col] = 2 if d2 < d3 else 3 if d3 < d2 else 0
++    return output
++
++
++def _distinguishes_squared_euclidean(grid):
++    return rule_mirror(grid) != squared_euclidean_rival(grid)
+ 
+ 
+ def _profile_for(grid, facts):
+@@ -268,6 +295,8 @@
+             continue
+         analysis = _analysis(grid)
+         if not analysis["errors"] and analysis["scene_profile"] == profile:
++            if profile in MANHATTAN_WITNESS_PROFILES and not _distinguishes_squared_euclidean(grid):
++                continue
+             return grid
+     raise AssertionError(f"could not construct {profile}")
+ 
+@@ -279,7 +308,12 @@
+     if unknown:
+         raise ValueError("unknown override(s): " + ", ".join(unknown))
+     ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION, task_id=TASK_ID, difficulty=difficulty, overrides=overrides)
+-    profile = ctx.draw_choice("scene_profile", PUBLIC_PROFILES * 2 + GENERAL_PROFILES * 6)
++    if "scene_profile" in overrides:
++        profile = ctx.draw_choice("scene_profile", list(SCENE_PROFILES))
++    elif sample_index % LESSON_WINDOW == 0:
++        profile = ctx.draw_choice("scene_profile", list(MANHATTAN_WITNESS_PROFILES))
++    else:
++        profile = ctx.draw_choice("scene_profile", PUBLIC_PROFILES * 2 + GENERAL_PROFILES * 6)
+     if profile not in SCENE_PROFILES:
+         raise ValueError(f"unknown scene_profile: {profile!r}")
+     if profile in PUBLIC_PROFILES:
+diff --git a/repo/generators/554712910457/notes.md b/repo/generators/554712910457/notes.md
+--- a/repo/generators/554712910457/notes.md
++++ b/repo/generators/554712910457/notes.md
+@@ -2,3 +2,22 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Current repair: force a Manhattan-specific witness in every three-demo window
++
++- The version 3.0.0 default schedule had a concrete lesson ambiguity: for seed
++  1, sample indices 0–2 all fit squared-Euclidean nearest-seed coloring, while
++  index 3 disagreed with the canonical Manhattan rule. The exact four labels
++  were replayed through protected Racket in
++  `checks/554712910457/euclidean-before.json`.
++- Version 3.1.0 preserves rule hash `71fde72d5413` and all exact public profiles.
++  Every third default sample now uses one of two constructive diagonal profiles
++  that is retained only when Manhattan and squared-Euclidean predictions differ.
++  Therefore every consecutive three-example default lesson contains a visible
++  Manhattan-specific witness without increasing the demonstration count.
++- Also repaired the task test's fixed-parent canonical-data lookup by using the
++  portable `reviewer_support` root/canonical helpers.
++- Final focused suite: 70 passed. The bounded after-audit covers 1,536 examples,
++  1,280 sliding three-demo windows, all four difficulty labels, zero surviving
++  squared-Euclidean windows, and four protected-Racket representative labels.
++  The conclusion is finite-rival evidence, not universal uniqueness or approval.
+diff --git a/repo/generators/554712910457/tests/test_generator_554712910457.py b/repo/generators/554712910457/tests/test_generator_554712910457.py
+--- a/repo/generators/554712910457/tests/test_generator_554712910457.py
++++ b/repo/generators/554712910457/tests/test_generator_554712910457.py
+@@ -2,24 +2,20 @@
+ 
+ import copy
+ import importlib
+-import json
+ import random
+-from pathlib import Path
+ 
+ import pytest
++
++from reviewer_support import canonical_pairs as load_canonical_pairs, find_root
+ 
+ 
+ TASK = "554712910457"
+ MODULE = importlib.import_module(f"puzzle_generators.per_puzzle.{TASK}.generator")
+-ROOT = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
+ 
+ 
+ def canonical_pairs():
+-    for line in (ROOT / "data/canonical/puzzles.jsonl").read_text().splitlines():
+-        row = json.loads(line)
+-        if row.get("task_id") == TASK:
+-            return row["train"] + row["test"]
+-    raise AssertionError("canonical row missing")
++    return load_canonical_pairs(TASK, root=ROOT, labeled_only=True)
+ 
+ 
+ def independent_oracle(grid):
+@@ -144,3 +140,29 @@
+     assert set(MODULE.AXES) == {"scene_profile"}
+     assert set(MODULE.SCENE_PROFILES) == set(MODULE.AXES["scene_profile"]["valid"].split("|"))
+     assert MODULE.HELPFUL_TEXTURES == MODULE.DEGENERATE_TEXTURES == ()
++
++
++def squared_euclidean_oracle(grid):
++    red = next((r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == 2)
++    green = next((r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == 3)
++    output = copy.deepcopy(grid)
++    for row, values in enumerate(grid):
++        for col, value in enumerate(values):
++            if value != 0:
++                continue
++            d2 = (row - red[0]) ** 2 + (col - red[1]) ** 2
++            d3 = (row - green[0]) ** 2 + (col - green[1]) ** 2
++            output[row][col] = 2 if d2 < d3 else 3 if d3 < d2 else 0
++    return output
++
++
++def test_every_three_default_examples_include_a_manhattan_specific_witness():
++    for difficulty in (None, "easy", "medium", "hard"):
++        for seed in range(12):
++            grids = [MODULE.generate(seed, index, difficulty=difficulty) for index in range(12)]
++            outputs = [MODULE.rule_mirror(grid) for grid in grids]
++            for start in range(10):
++                assert any(
++                    squared_euclidean_oracle(grids[index]) != outputs[index]
++                    for index in range(start, start + 3)
++                ), (difficulty, seed, start, [MODULE.observe_overrides(grids[index]) for index in range(start, start + 3)])
+diff --git a/repo/generators/97c9b7818f99/notes.md b/repo/generators/97c9b7818f99/notes.md
+--- a/repo/generators/97c9b7818f99/notes.md
++++ b/repo/generators/97c9b7818f99/notes.md
+@@ -25,3 +25,23 @@
+   draws and 12 lessons. The first intentionally broader census exceeded its
+   five-minute budget and was replaced by the bounded targeted sweep. No full
+   twelve-stage battery was run. The canonical Racket authority was not changed.
++
++## Current parametric proposal: fill versus smallest-region highlight
++
++- The approved production generator remains byte-identical at
++  `1c8a6546e04a3696caad1b85ac48888f0685c840c1c3414c1208fc26820cd6aa`.
++- Built a native episode-fixed `finish=fill_only|highlight_smallest_region`
++  family under `workspace/parametric/`. `fill_only` returns the exact canonical
++  Racket bytes. The alternative first constructs the canonical Manhattan
++  unique-owner partition, computes the filled-region size table, selects the
++  unique smallest owner region, and recolors that region to 9 while retaining
++  gray ties.
++- The adapter supports 2–6 demonstrations, four sequentially revealed queries,
++  matched inputs across settings, and a substantive 30×30 query. The bounded
++  authoring audit covers 108 episodes and eleven declared finite rivals.
++- Native qualification passed four jobs (two settings × two fresh seeds) with
++  40 protected-Racket evaluations. The source-bound wrong-intermediate witness
++  is `reviewer_replayed`: correct region sizes `{2:65, 5:38, 6:49}` select color
++  5, while skipping that table selects color 2 and changes 103 final cells.
++- This is reviewer-ready only. Exact-source owner acceptance and any subsequent
++  catalog/training admission remain pending.
+diff --git a/repo/generators/97c9b7818f99/tests/test_parametric_smallest_region.py b/repo/generators/97c9b7818f99/tests/test_parametric_smallest_region.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/97c9b7818f99/tests/test_parametric_smallest_region.py
+@@ -0,0 +1,324 @@
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import random
++
++import pytest
++
++from reviewer_support import find_root, public_challenge_bytes, public_challenge_id
++
++TASK_ID = "97c9b7818f99"
++ROOT = find_root(__file__)
++PARAMETRIC = ROOT / "generators" / TASK_ID / "workspace" / "parametric"
++ADAPTER_PATH = PARAMETRIC / "adapter.py"
++CANONICAL_PATH = PARAMETRIC / "canonical.rkt"
++ALTERNATIVE_PATH = PARAMETRIC / "highlight_smallest_region.rkt"
++COUNTERFACTUAL_PATH = PARAMETRIC / "skip_region_sizes.rkt"
++AUDIT_PATH = PARAMETRIC / "audit.py"
++MODES = ("fill_only", "highlight_smallest_region")
++
++
++def _load(path: Path, stem: str):
++    name = f"_{stem}_{hashlib.sha256(str(path).encode()).hexdigest()[:16]}"
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def adapter():
++    return _load(ADAPTER_PATH, "voronoi_parametric_adapter")
++
++
++def audit_module():
++    return _load(AUDIT_PATH, "voronoi_parametric_audit")
++
++
++def canonical_program() -> str:
++    return CANONICAL_PATH.read_text(encoding="utf-8")
++
++
++def _copy(grid: list[list[int]]) -> list[list[int]]:
++    return [row[:] for row in grid]
++
++
++def independent_fill(grid: list[list[int]], *, squared: bool = False) -> list[list[int]]:
++    out = _copy(grid)
++    seeds = [
++        (r, c, value)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value not in (0, 8)
++    ]
++    for r in range(1, len(grid) - 1):
++        for c in range(1, len(grid[0]) - 1):
++            if grid[r][c] != 0:
++                continue
++            distances = [
++                (r - sr) ** 2 + (c - sc) ** 2
++                if squared
++                else abs(r - sr) + abs(c - sc)
++                for sr, sc, _ in seeds
++            ]
++            minimum = min(distances)
++            owners = [seed for seed, distance in zip(seeds, distances) if distance == minimum]
++            out[r][c] = 5 if len(owners) > 1 else owners[0][2]
++    return out
++
++
++def independent_smallest(grid: list[list[int]]) -> tuple[list[list[int]], int, dict[int, int]]:
++    filled = independent_fill(grid)
++    seeds = [
++        (r, c, value)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value not in (0, 8)
++    ]
++    owned: dict[int, set[tuple[int, int]]] = {value: set() for _, _, value in seeds}
++    for r in range(1, len(grid) - 1):
++        for c in range(1, len(grid[0]) - 1):
++            distances = [abs(r - sr) + abs(c - sc) for sr, sc, _ in seeds]
++            minimum = min(distances)
++            owners = [seed for seed, distance in zip(seeds, distances) if distance == minimum]
++            if len(owners) == 1:
++                owned[owners[0][2]].add((r, c))
++    counts = {color: len(cells) for color, cells in owned.items()}
++    selected = min(counts, key=lambda color: (counts[color], color))
++    out = _copy(filled)
++    for r, c in owned[selected]:
++        out[r][c] = 9
++    return out, selected, counts
++
++
++def literal_input() -> list[list[int]]:
++    # The center-right seed has the unique smallest Manhattan region, while its
++    # color is neither the lowest nor highest seed color.
++    return [
++        [8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8],
++        [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8],
++        [8, 0, 2, 0, 0, 0, 0, 0, 0, 0, 8],
++        [8, 0, 0, 0, 0, 0, 0, 0, 4, 0, 8],
++        [8, 0, 0, 0, 0, 0, 6, 0, 0, 0, 8],
++        [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8],
++        [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8],
++        [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8],
++        [8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8],
++    ]
++
++
++@pytest.fixture(scope="module")
++def racket():
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    with RacketBridge(timeout=20) as bridge:
++        assert bridge.runtime_identity["backend"] == "racket"
++        assert bridge.runtime_identity["protected"] is True
++        counter = 0
++
++        def apply(program: str, grid: list[list[int]]) -> list[list[int]]:
++            nonlocal counter
++            counter += 1
++            name = f"voronoi-parametric-test-{counter}"
++            bridge.define_grid(name, grid)
++            return bridge.eval_text(f"({wrap_rule(program)} {name})")
++
++        yield apply
++
++
++def all_inputs(episode: dict) -> list[list[list[int]]]:
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def test_default_program_is_byte_exact_canonical_and_alternative_is_distinct():
++    module = adapter()
++    default = module.program({"finish": "fill_only"})
++    alternative = module.program({"finish": "highlight_smallest_region"})
++    assert default == canonical_program()
++    assert alternative == ALTERNATIVE_PATH.read_text(encoding="utf-8")
++    assert alternative != default
++
++
++@pytest.mark.parametrize("finish", MODES)
++def test_literal_labels_match_independent_reference_and_protected_racket(racket, finish):
++    module = adapter()
++    source = literal_input()
++    expected = independent_fill(source)
++    if finish == "highlight_smallest_region":
++        expected, selected, counts = independent_smallest(source)
++        assert selected not in (min(counts), max(counts))
++        assert list(counts.values()).count(min(counts.values())) == 1
++    assert module.transform(source, finish) == expected
++    assert racket(module.program({"finish": finish}), source) == expected
++    assert source == literal_input()
++
++
++def test_dependency_explanation_uses_filled_region_sizes():
++    explanation = adapter().explain_dependency(literal_input())
++    expected, selected, counts = independent_smallest(literal_input())
++    assert explanation["step_a"].startswith("fill every empty interior cell")
++    assert explanation["intermediate"]["region_sizes"] == {str(k): v for k, v in counts.items()}
++    assert explanation["intermediate"]["selected_color"] == selected
++    assert explanation["step_b"].startswith("recolor every cell")
++    assert explanation["final"] == expected
++
++
++def test_skip_region_size_counterfactual_is_executable_and_changes_output(racket):
++    module = adapter()
++    source = literal_input()
++    actual = racket(module.program({"finish": "highlight_smallest_region"}), source)
++    wrong = racket(COUNTERFACTUAL_PATH.read_text(encoding="utf-8"), source)
++    expected, selected, counts = independent_smallest(source)
++    assert actual == expected
++    assert selected != min(counts)
++    assert wrong != actual
++
++
++@pytest.mark.parametrize("finish", MODES)
++def test_generation_is_setting_neutral_deterministic_prefix_stable_and_rng_pure(finish):
++    module = adapter()
++    before = random.getstate()
++    episode = module.generate(17, {"finish": finish}, 2, 4)
++    other_finish = next(value for value in MODES if value != finish)
++    other = module.generate(17, {"finish": other_finish}, 2, 4)
++    one_query = module.generate(17, {"finish": finish}, 2, 1)
++    six_demo = module.generate(17, {"finish": finish}, 6, 4)
++
++    assert all_inputs(episode) == all_inputs(other)
++    assert episode == module.generate(17, {"finish": finish}, 2, 4)
++    assert random.getstate() == before
++    assert episode["train"] == six_demo["train"][:2]
++    assert episode["test"] == six_demo["test"]
++    assert one_query["train"] == episode["train"]
++    assert one_query["test"][0] == episode["test"][0]
++    keys = [json.dumps(value, separators=(",", ":")) for value in all_inputs(six_demo)]
++    assert len(keys) == len(set(keys)) == 10
++
++
++@pytest.mark.parametrize("seed", [0, 1, 17, 2**63 - 1])
++@pytest.mark.parametrize("finish", MODES)
++def test_supported_count_boundaries_generate_identifiable_lessons(seed, finish):
++    module = adapter()
++    for demos, queries in ((2, 1), (2, 4), (3, 4), (6, 1), (6, 4)):
++        episode = module.generate(seed, {"finish": finish}, demos, queries)
++        certificate = module.certificate(
++            episode["train"], [pair["input"] for pair in episode["test"]]
++        )
++        assert certificate["survivors"] == [finish]
++        assert certificate["demonstrations"] == demos
++        assert certificate["queries"] == queries
++        assert set(certificate["query_disagreements"]) == set(module.HYPOTHESES) - {finish}
++
++
++def test_fourth_query_is_substantive_30x30_and_depends_on_full_partition():
++    module = adapter()
++    canonical = module.generate(91, {"finish": "fill_only"}, 3, 4)["test"][3]
++    alternative = module.generate(91, {"finish": "highlight_smallest_region"}, 3, 4)["test"][3]
++    source = canonical["input"]
++    info = module.observe(source)
++    assert (len(source), len(source[0])) == (30, 30)
++    assert info["seed_count"] == 4
++    assert info["tie_count"] >= 10
++    assert min(info["region_sizes"].values()) >= 20
++    assert max(info["region_sizes"].values()) - min(info["region_sizes"].values()) >= 20
++    rows = [seed[0] for seed in info["seeds"]]
++    cols = [seed[1] for seed in info["seeds"]]
++    assert min(rows) <= 5 and max(rows) >= 24
++    assert min(cols) <= 5 and max(cols) >= 24
++    assert canonical["output"] != alternative["output"]
++    changed = sum(
++        left != right
++        for left_row, right_row in zip(canonical["output"], alternative["output"])
++        for left, right in zip(left_row, right_row)
++    )
++    assert changed == min(info["region_sizes"].values())
++
++
++@pytest.mark.parametrize("finish", MODES)
++def test_two_demos_identify_setting_and_declared_shortcuts(finish):
++    module = adapter()
++    episode = module.generate(23, {"finish": finish}, 2, 4)
++    certificate = module.certificate(
++        episode["train"], [pair["input"] for pair in episode["test"]]
++    )
++    assert certificate["survivors"] == [finish]
++    assert set(certificate["declared_hypotheses"]) >= {
++        "fill_only",
++        "highlight_smallest_region",
++        "highlight_largest_region",
++        "highlight_second_smallest_region",
++        "highlight_lowest_color",
++        "highlight_highest_color",
++        "highlight_smallest_seed_only",
++        "highlight_smallest_bbox",
++        "euclidean_smallest_region",
++        "identity",
++    }
++
++
++@pytest.mark.parametrize(
++    "seed,settings,demos,queries",
++    [
++        (True, {"finish": "fill_only"}, 2, 4),
++        (-1, {"finish": "fill_only"}, 2, 4),
++        (2**63, {"finish": "fill_only"}, 2, 4),
++        (0, {"finish": "wrong"}, 2, 4),
++        (0, {"finish": "fill_only", "extra": 1}, 2, 4),
++        (0, {"finish": "fill_only"}, 1, 4),
++        (0, {"finish": "fill_only"}, 7, 4),
++        (0, {"finish": "fill_only"}, 2, 0),
++        (0, {"finish": "fill_only"}, 2, 5),
++        (0, {"finish": "fill_only"}, 2, True),
++    ],
++)
++def test_bad_requests_fail_explicitly(seed, settings, demos, queries):
++    with pytest.raises(ValueError):
++        adapter().generate(seed, settings, demos, queries)
++
++
++def test_boolean_grid_cells_are_rejected():
++    source = literal_input()
++    source[1][1] = False
++    with pytest.raises(ValueError):
++        adapter().transform(source, "highlight_smallest_region")
++
++
++def test_public_projection_hides_settings_program_answers_and_future_queries():
++    module = adapter()
++    episode = module.generate(5, {"finish": "highlight_smallest_region"}, 3, 4)
++    first_turn = {"train": episode["train"], "test": [episode["test"][0]]}
++    raw = public_challenge_bytes(first_turn)
++    public = json.loads(raw)
++    assert set(public) == {"train", "test"}
++    assert len(public["test"]) == 1 and set(public["test"][0]) == {"input"}
++    assert b"settings" not in raw and b"program_solution" not in raw
++    assert public_challenge_id(first_turn) == hashlib.sha256(raw).hexdigest()
++
++    one_query = module.generate(5, {"finish": "highlight_smallest_region"}, 3, 1)
++    assert public_challenge_bytes(one_query) == raw
++
++
++def test_all_generated_labels_match_protected_racket(racket):
++    module = adapter()
++    for finish in MODES:
++        episode = module.generate(7, {"finish": finish}, 6, 4)
++        selected_program = module.program({"finish": finish})
++        for pair in episode["train"] + episode["test"]:
++            assert racket(selected_program, pair["input"]) == pair["output"]
++
++
++def test_audit_tool_checks_bounded_lessons_and_writes_machine_report(tmp_path):
++    report = audit_module().run_audit(seed_start=0, seed_count=8)
++    assert report["status"] == "passed"
++    assert report["episodes"] == 8 * 2 * 3
++    assert report["failures"] == []
++    assert report["declared_hypotheses"] >= 10
++    assert report["exact_30x30_pairs"] == 8 * 2 * 3
++    output = tmp_path / "audit.json"
++    audit_module().write_report(output, report)
++    assert json.loads(output.read_text()) == report
+diff --git a/repo/generators/97c9b7818f99/workspace/parametric/README.md b/repo/generators/97c9b7818f99/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/97c9b7818f99/workspace/parametric/README.md
+@@ -0,0 +1,38 @@
++# Parametric family for `97c9b7818f99`
++
++This family keeps one private, episode-fixed `finish` setting:
++
++- `fill_only` executes the byte-exact canonical Manhattan-nearest-seed fill.
++- `highlight_smallest_region` first constructs the same unique-owner Voronoi
++  partition, counts each seed's owned cells, selects the unique smallest region,
++  and recolors all cells owned by that seed to `9`. Geometric tie cells remain `5`.
++
++The alternative is deliberately sequential: the selected seed cannot be known
++until the input-derived ownership partition and region-size table exist. The
++counterfactual `skip_region_sizes.rkt` skips that intermediate and selects the
++lowest seed color instead; the retained protected-Racket witness changes the
++final grid.
++
++The adapter supports 2–6 demonstrations and 1–4 requested queries. Production
++qualification uses three demonstrations and four queries. For a fixed seed and
++counts, both settings receive identical inputs. The fourth query is a substantive
++30×30 scene; all ten maximum-count inputs are distinct. Public projections expose
++only demonstrations and the currently revealed query input—not settings, program
++text, query answers, future queries, seeds, or total-count hints.
++
++From the packet extraction root:
++
++```bash
++python3 review.py run bash -lc \
++  'PYTHONPATH=shared/runtime:src pytest -q generators/97c9b7818f99/tests/test_parametric_smallest_region.py'
++python3 review.py run python3 generators/97c9b7818f99/workspace/parametric/audit.py \
++  --out generators/97c9b7818f99/workspace/parametric/evidence/current/authoring-audit.json \
++  --seed-start 0 --seed-count 18
++python3 review.py run python3 -m arcpuzzles parametric qualify 97c9b7818f99 \
++  --seed 0 --seed 17 --demos 3 --queries 4 \
++  --out ../checks/97c9b7818f99/qualification --summary
++```
++
++The finite rival audit is evidence for the declared hypotheses only; it is not a
++proof that no other rule can fit the demonstrations. Qualification and this
++inventory do not grant owner acceptance or admit data to training.
+diff --git a/repo/generators/97c9b7818f99/workspace/parametric/adapter.py b/repo/generators/97c9b7818f99/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/97c9b7818f99/workspace/parametric/adapter.py
+@@ -0,0 +1,555 @@
++"""Native parametric adapter for ``97c9b7818f99``.
++
++``fill_only`` is the byte-exact canonical Manhattan Voronoi fill.  The nearby
++``highlight_smallest_region`` setting first constructs the same input-dependent
++nearest-seed ownership partition, then counts each seed's uniquely owned cells
++(including the seed), selects the unique smallest region, and recolors exactly
++that region to 9.  True tie cells stay gray even when gray itself is an input
++seed, so the second stage cannot be reduced to counting output colors.
++"""
++from __future__ import annotations
++
++from functools import lru_cache
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any, Iterable
++
++TASK_ID = "97c9b7818f99"
++HERE = Path(__file__).resolve().parent
++MODES = ("fill_only", "highlight_smallest_region")
++HYPOTHESES = MODES + (
++    "highlight_largest_region",
++    "highlight_second_smallest_region",
++    "highlight_lowest_color",
++    "highlight_highest_color",
++    "highlight_smallest_seed_only",
++    "highlight_smallest_bbox",
++    "highlight_smallest_color_frequency",
++    "euclidean_smallest_region",
++    "identity",
++)
++
++# Dimensions, seed count, and whether gray is a genuine input seed.  The first
++# two profiles are deliberately complementary so the minimum two-demo lesson
++# exposes gray's dual role and a non-gray case.
++_DEMO_PROFILES: tuple[tuple[int, int, int, bool], ...] = (
++    (9, 11, 4, True),
++    (10, 12, 3, False),
++    (12, 14, 4, False),
++    (14, 16, 3, True),
++    (18, 20, 4, False),
++    (22, 24, 4, True),
++)
++_QUERY_PROFILES: tuple[tuple[int, int, int, bool], ...] = (
++    (13, 17, 3, True),
++    (18, 21, 4, True),
++    (24, 27, 4, False),
++    (30, 30, 4, True),
++)
++_SEED_PALETTE = (1, 2, 3, 4, 5, 6, 7)
++
++
++def _integer(value: object, name: str, low: int, high: int) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++    return value
++
++
++def _mode(value: object) -> str:
++    if type(value) is not str or value not in MODES:
++        raise ValueError(f"finish must be one of {MODES!r}")
++    return value
++
++
++def _settings(value: object) -> dict[str, str]:
++    if type(value) is not dict or set(value) != {"finish"}:
++        raise ValueError("settings must contain exactly the finish key")
++    return {"finish": _mode(value["finish"])}
++
++
++def _copy(value: list[list[int]]) -> list[list[int]]:
++    return [row[:] for row in value]
++
++
++def grid(value: object) -> list[list[int]]:
++    if (
++        type(value) is not list
++        or not 3 <= len(value) <= 30
++        or type(value[0]) is not list
++        or not 3 <= len(value[0]) <= 30
++        or any(
++            type(row) is not list
++            or len(row) != len(value[0])
++            or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++            for row in value
++        )
++    ):
++        raise ValueError("grid must be rectangular 3..30 with exact integer colors 0..9")
++    return value
++
++
++@lru_cache(maxsize=1)
++def canonical_program() -> str:
++    return (HERE / "canonical.rkt").read_text(encoding="utf-8")
++
++
++@lru_cache(maxsize=1)
++def alternative_program() -> str:
++    return (HERE / "highlight_smallest_region.rkt").read_text(encoding="utf-8")
++
++
++def program(settings: object) -> str:
++    selected = _settings(settings)["finish"]
++    return canonical_program() if selected == "fill_only" else alternative_program()
++
++
++def _seeds(source: list[list[int]]) -> list[tuple[int, int, int]]:
++    return [
++        (r, c, value)
++        for r, row in enumerate(source)
++        for c, value in enumerate(row)
++        if value not in (0, 8)
++    ]
++
++
++def _distance(seed: tuple[int, int, int], r: int, c: int, *, squared: bool) -> int:
++    dr = r - seed[0]
++    dc = c - seed[1]
++    return dr * dr + dc * dc if squared else abs(dr) + abs(dc)
++
++
++def _partition(
++    source: list[list[int]], *, squared: bool = False
++) -> tuple[list[tuple[int, int, int]], dict[int, set[tuple[int, int]]], set[tuple[int, int]]]:
++    seeds = _seeds(source)
++    owned = {index: set() for index in range(len(seeds))}
++    ties: set[tuple[int, int]] = set()
++    for r in range(1, len(source) - 1):
++        for c in range(1, len(source[0]) - 1):
++            distances = [_distance(seed, r, c, squared=squared) for seed in seeds]
++            minimum = min(distances)
++            owners = [index for index, distance in enumerate(distances) if distance == minimum]
++            if len(owners) == 1:
++                owned[owners[0]].add((r, c))
++            else:
++                ties.add((r, c))
++    return seeds, owned, ties
++
++
++def _fill(source: list[list[int]], *, squared: bool = False) -> list[list[int]]:
++    seeds, owned, ties = _partition(source, squared=squared)
++    out = _copy(source)
++    for index, cells in owned.items():
++        color = seeds[index][2]
++        for r, c in cells:
++            if out[r][c] == 0:
++                out[r][c] = color
++    for r, c in ties:
++        if out[r][c] == 0:
++            out[r][c] = 5
++    return out
++
++
++def _ranked_regions(source: list[list[int]], *, squared: bool = False):
++    seeds, owned, ties = _partition(source, squared=squared)
++    ranked = sorted(
++        range(len(seeds)),
++        key=lambda index: (len(owned[index]), seeds[index][2]),
++    )
++    return seeds, owned, ties, ranked
++
++
++def _highlight_owner(
++    source: list[list[int]], index: int, *, squared: bool = False
++) -> list[list[int]]:
++    seeds, owned, _ties = _partition(source, squared=squared)
++    out = _fill(source, squared=squared)
++    for r, c in owned[index]:
++        out[r][c] = 9
++    return out
++
++
++def _highlight_bbox(source: list[list[int]], index: int) -> list[list[int]]:
++    seeds, owned, _ties = _partition(source)
++    out = _fill(source)
++    cells = owned[index]
++    r0 = min(r for r, _ in cells)
++    r1 = max(r for r, _ in cells)
++    c0 = min(c for _, c in cells)
++    c1 = max(c for _, c in cells)
++    for r in range(r0, r1 + 1):
++        for c in range(c0, c1 + 1):
++            out[r][c] = 9
++    return out
++
++
++def _color_frequency_smallest(source: list[list[int]]) -> list[list[int]]:
++    filled = _fill(source)
++    colors = [seed[2] for seed in _seeds(source)]
++    chosen = min(
++        colors,
++        key=lambda color: (
++            sum(value == color for row in filled for value in row),
++            color,
++        ),
++    )
++    return [[9 if value == chosen else value for value in row] for row in filled]
++
++
++def transform(value: object, finish: object) -> list[list[int]]:
++    selected = _mode(finish)
++    source = _copy(grid(value))
++    observe(source)
++    if selected == "fill_only":
++        return _fill(source)
++    seeds, owned, _ties, ranked = _ranked_regions(source)
++    del seeds, owned
++    return _highlight_owner(source, ranked[0])
++
++
++def _predict(value: list[list[int]], hypothesis: str) -> list[list[int]]:
++    source = _copy(grid(value))
++    info = observe(source)
++    seeds, owned, _ties, ranked = _ranked_regions(source)
++    if hypothesis == "fill_only":
++        return _fill(source)
++    if hypothesis == "highlight_smallest_region":
++        return _highlight_owner(source, ranked[0])
++    if hypothesis == "highlight_largest_region":
++        return _highlight_owner(source, ranked[-1])
++    if hypothesis == "highlight_second_smallest_region":
++        return _highlight_owner(source, ranked[1])
++    if hypothesis == "highlight_lowest_color":
++        return _highlight_owner(source, min(range(len(seeds)), key=lambda i: seeds[i][2]))
++    if hypothesis == "highlight_highest_color":
++        return _highlight_owner(source, max(range(len(seeds)), key=lambda i: seeds[i][2]))
++    if hypothesis == "highlight_smallest_seed_only":
++        out = _fill(source)
++        r, c, _color = seeds[ranked[0]]
++        out[r][c] = 9
++        return out
++    if hypothesis == "highlight_smallest_bbox":
++        return _highlight_bbox(source, ranked[0])
++    if hypothesis == "highlight_smallest_color_frequency":
++        return _color_frequency_smallest(source)
++    if hypothesis == "euclidean_smallest_region":
++        euclidean_seeds, _euclidean_owned, _euclidean_ties, euclidean_ranked = _ranked_regions(
++            source, squared=True
++        )
++        del euclidean_seeds
++        return _highlight_owner(source, euclidean_ranked[0], squared=True)
++    if hypothesis == "identity":
++        return source
++    raise ValueError(f"unknown declared hypothesis {hypothesis!r}; info={info!r}")
++
++
++def observe(value: object) -> dict[str, Any]:
++    source = _copy(grid(value))
++    h, w = len(source), len(source[0])
++    if h < 7 or w < 8:
++        raise ValueError("parametric grammar requires at least 7x8")
++    for r in range(h):
++        for c in range(w):
++            boundary = r in (0, h - 1) or c in (0, w - 1)
++            if boundary and source[r][c] != 8:
++                raise ValueError("the complete outer border must be cyan (8)")
++            if not boundary and source[r][c] == 8:
++                raise ValueError("cyan (8) may appear only on the border")
++    seeds = _seeds(source)
++    if not 3 <= len(seeds) <= 4:
++        raise ValueError("parametric grammar requires three or four seeds")
++    colors = [seed[2] for seed in seeds]
++    if len(set(colors)) != len(colors):
++        raise ValueError("seed colors must be distinct")
++    if any(color == 9 for color in colors):
++        raise ValueError("color 9 is reserved for the alternative finish")
++    if any(color not in _SEED_PALETTE for color in colors):
++        raise ValueError("seed colors must come from 1..7 excluding cyan")
++    seeds, owned, ties, ranked = _ranked_regions(source)
++    region_sizes = {seeds[index][2]: len(owned[index]) for index in range(len(seeds))}
++    smallest_size = len(owned[ranked[0]])
++    if sum(size == smallest_size for size in region_sizes.values()) != 1:
++        raise ValueError("the smallest ownership region must be unique")
++    selected = seeds[ranked[0]]
++    selected_cells = owned[ranked[0]]
++    r0 = min(r for r, _ in selected_cells)
++    r1 = max(r for r, _ in selected_cells)
++    c0 = min(c for _, c in selected_cells)
++    c1 = max(c for _, c in selected_cells)
++    bbox_area = (r1 - r0 + 1) * (c1 - c0 + 1)
++    return {
++        "height": h,
++        "width": w,
++        "seed_count": len(seeds),
++        "seeds": [list(seed) for seed in seeds],
++        "seed_colors": colors,
++        "includes_gray_seed": 5 in colors,
++        "tie_count": len(ties),
++        "region_sizes": region_sizes,
++        "ranked_colors": [seeds[index][2] for index in ranked],
++        "selected_color": selected[2],
++        "selected_seed": list(selected),
++        "selected_cells": [list(cell) for cell in sorted(selected_cells)],
++        "selected_bbox_area": bbox_area,
++        "selected_region_nonrectangular": bbox_area != len(selected_cells),
++        "manhattan_euclidean_disagree": _fill(source) != _fill(source, squared=True),
++    }
++
++
++def explain_dependency(value: object) -> dict[str, object]:
++    source = _copy(grid(value))
++    info = observe(source)
++    return {
++        "step_a": "fill every empty interior cell by Manhattan-nearest seed and retain the unique-owner partition",
++        "intermediate": {
++            "region_sizes": {str(k): v for k, v in info["region_sizes"].items()},
++            "selected_color": info["selected_color"],
++            "tie_count": info["tie_count"],
++        },
++        "step_b": "recolor every cell uniquely owned by the smallest region's seed to 9 while preserving tie cells",
++        "final": transform(source, "highlight_smallest_region"),
++    }
++
++
++def _rng(seed: int, split: str, index: int, purpose: str) -> random.Random:
++    payload = f"97c9b7818f99-parametric-v1:{seed}:{split}:{index}:{purpose}".encode()
++    return random.Random(hashlib.sha256(payload).digest())
++
++
++def _zones(h: int, w: int, n_seeds: int, *, stress: bool) -> list[tuple[range, range]]:
++    if stress:
++        return [
++            (range(1, 6), range(1, 6)),
++            (range(1, 7), range(w - 6, w - 1)),
++            (range(h - 6, h - 1), range(1, 7)),
++            (range(h // 2 - 2, h - 5), range(w // 2 + 1, w - 5)),
++        ]
++    if n_seeds == 3:
++        return [
++            (range(1, max(2, h // 3 + 1)), range(1, max(2, w // 3 + 1))),
++            (range(1, max(2, h // 2 + 1)), range(max(1, 2 * w // 3), w - 1)),
++            (range(max(1, 2 * h // 3), h - 1), range(max(1, w // 3), min(w - 1, 2 * w // 3 + 1))),
++        ]
++    return [
++        (range(1, max(2, h // 3 + 1)), range(1, max(2, w // 3 + 1))),
++        (range(1, max(2, h // 3 + 2)), range(max(1, 2 * w // 3), w - 1)),
++        (range(max(1, 2 * h // 3), h - 1), range(1, max(2, w // 3 + 2))),
++        (range(max(1, h // 2), h - 2), range(max(1, w // 2), w - 2)),
++    ]
++
++
++def _sample_positions(
++    h: int,
++    w: int,
++    n_seeds: int,
++    rng: random.Random,
++    *,
++    stress: bool,
++    require_gray_confound: bool,
++) -> tuple[list[tuple[int, int]], int]:
++    zones = _zones(h, w, n_seeds, stress=stress)
++    for _attempt in range(2000):
++        positions = [
++            (rng.choice(tuple(rows)), rng.choice(tuple(cols)))
++            for rows, cols in zones
++        ]
++        if len(set(positions)) != n_seeds:
++            continue
++        if min(
++            abs(r1 - r2) + abs(c1 - c2)
++            for index, (r1, c1) in enumerate(positions)
++            for r2, c2 in positions[index + 1 :]
++        ) < 3:
++            continue
++        provisional = [[0] * w for _ in range(h)]
++        for c in range(w):
++            provisional[0][c] = provisional[h - 1][c] = 8
++        for r in range(h):
++            provisional[r][0] = provisional[r][w - 1] = 8
++        for index, (r, c) in enumerate(positions):
++            provisional[r][c] = index + 1
++        seeds, owned, ties, ranked = _ranked_regions(provisional)
++        sizes = [len(owned[index]) for index in range(n_seeds)]
++        if len(set(sizes)) != n_seeds:
++            continue
++        selected_owner_index = ranked[0]
++        selected_position_index = positions.index(seeds[selected_owner_index][:2])
++        selected_cells = owned[selected_owner_index]
++        min_required = max(4, ((h - 2) * (w - 2)) // 40)
++        if min(sizes) < min_required:
++            continue
++        if len(ties) < (10 if stress else 2):
++            continue
++        if selected_position_index in (0, n_seeds - 1):
++            continue
++        r0, r1 = min(r for r, _ in selected_cells), max(r for r, _ in selected_cells)
++        c0, c1 = min(c for _, c in selected_cells), max(c for _, c in selected_cells)
++        if (r1 - r0 + 1) * (c1 - c0 + 1) == len(selected_cells):
++            continue
++        if _fill(provisional) == _fill(provisional, squared=True):
++            continue
++        if stress:
++            rows = [r for r, _ in positions]
++            cols = [c for _, c in positions]
++            if not (min(rows) <= 5 and max(rows) >= h - 6 and min(cols) <= 5 and max(cols) >= w - 6):
++                continue
++            if max(sizes) - min(sizes) < 20:
++                continue
++        # For gray-seed lessons the selected region will receive gray; enough
++        # ties must inflate visible gray frequency so count-color selects a
++        # different seed than the ownership table does.
++        if require_gray_confound:
++            gray_visible = sizes[selected_owner_index] + len(ties)
++            if gray_visible <= sorted(sizes)[1]:
++                continue
++        return positions, selected_position_index
++    raise ValueError(
++        f"could not construct {h}x{w} scene with {n_seeds} seeds and required witnesses"
++    )
++
++
++def _assign_colors(
++    n_seeds: int,
++    selected_index: int,
++    include_gray: bool,
++    rng: random.Random,
++) -> list[int]:
++    if include_gray:
++        if n_seeds < 3:
++            raise ValueError("gray confound needs at least three seeds")
++        low = rng.choice([1, 2, 3, 4])
++        high = rng.choice([6, 7])
++        pool = [color for color in [1, 2, 3, 4, 6, 7] if color not in (low, high)]
++        others = [low, high, *rng.sample(pool, n_seeds - 3)]
++        rng.shuffle(others)
++        colors = others[:]
++        colors.insert(selected_index, 5)
++        return colors
++    chosen = sorted(rng.sample([1, 2, 3, 4, 6, 7], n_seeds))
++    middle_options = chosen[1:-1]
++    selected_color = rng.choice(middle_options)
++    remaining = [color for color in chosen if color != selected_color]
++    rng.shuffle(remaining)
++    colors: list[int] = []
++    iterator = iter(remaining)
++    for index in range(n_seeds):
++        colors.append(selected_color if index == selected_index else next(iterator))
++    return colors
++
++
++@lru_cache(maxsize=256)
++def _scene_template(seed: int, split: str, index: int) -> tuple[tuple[int, ...], ...]:
++    profiles = _DEMO_PROFILES if split == "demo" else _QUERY_PROFILES
++    h, w, n_seeds, include_gray = profiles[index]
++    position_rng = _rng(seed, split, index, "positions")
++    positions, selected_index = _sample_positions(
++        h,
++        w,
++        n_seeds,
++        position_rng,
++        stress=split == "query" and index == 3,
++        require_gray_confound=include_gray,
++    )
++    colors = _assign_colors(
++        n_seeds,
++        selected_index,
++        include_gray,
++        _rng(seed, split, index, "colors"),
++    )
++    out = [[0] * w for _ in range(h)]
++    for c in range(w):
++        out[0][c] = out[h - 1][c] = 8
++    for r in range(h):
++        out[r][0] = out[r][w - 1] = 8
++    for (r, c), color in zip(positions, colors):
++        out[r][c] = color
++
++    info = observe(out)
++    if info["selected_seed"][:2] != list(positions[selected_index]):
++        raise AssertionError("color assignment changed selected geometry")
++    if info["selected_color"] in (min(colors), max(colors)):
++        raise AssertionError("selected color must defeat low/high-color shortcuts")
++    if not info["selected_region_nonrectangular"]:
++        raise AssertionError("selected region must defeat bounding-box shortcut")
++    if not info["manhattan_euclidean_disagree"]:
++        raise AssertionError("scene must distinguish Manhattan and Euclidean partitions")
++    if include_gray and _color_frequency_smallest(out) == transform(out, "highlight_smallest_region"):
++        raise AssertionError("gray lesson must defeat output-color-frequency selection")
++    return tuple(tuple(row) for row in out)
++
++
++def _scene(seed: int, split: str, index: int) -> list[list[int]]:
++    return [list(row) for row in _scene_template(seed, split, index)]
++
++
++def generate(seed: object, settings: object, demos: object, queries: object) -> dict[str, object]:
++    seed = _integer(seed, "seed", 0, 2**63 - 1)
++    selected = _settings(settings)
++    demos = _integer(demos, "demos", 2, 6)
++    queries = _integer(queries, "queries", 1, 4)
++    finish = selected["finish"]
++
++    demo_inputs = [_scene(seed, "demo", index) for index in range(6)]
++    query_inputs = [_scene(seed, "query", index) for index in range(4)]
++    train = [{"input": value, "output": transform(value, finish)} for value in demo_inputs[:demos]]
++    test = [{"input": value, "output": transform(value, finish)} for value in query_inputs[:queries]]
++    keys = [json.dumps(pair["input"], separators=(",", ":")) for pair in train + test]
++    if len(keys) != len(set(keys)):
++        raise ValueError("all demonstration and query inputs must be distinct")
++    episode = {"train": train, "test": test, "program_solution": program(selected)}
++    if certificate(train, [pair["input"] for pair in test])["survivors"] != [finish]:
++        raise ValueError("constructed demonstrations do not identify the chosen setting")
++    return episode
++
++
++def certificate(train: object, query_inputs: object) -> dict[str, object]:
++    if type(train) is not list or not 2 <= len(train) <= 6:
++        raise ValueError("certificate requires 2..6 demonstrations")
++    if type(query_inputs) is not list or not 1 <= len(query_inputs) <= 4:
++        raise ValueError("certificate requires 1..4 query inputs")
++    normalized_train: list[dict[str, list[list[int]]]] = []
++    for pair in train:
++        if type(pair) is not dict or not {"input", "output"} <= set(pair):
++            raise ValueError("demonstrations need input and output")
++        source = _copy(grid(pair["input"]))
++        output = _copy(grid(pair["output"]))
++        observe(source)
++        normalized_train.append({"input": source, "output": output})
++    normalized_queries = [_copy(grid(value)) for value in query_inputs]
++    for value in normalized_queries:
++        observe(value)
++    survivors = [
++        name
++        for name in HYPOTHESES
++        if all(_predict(pair["input"], name) == pair["output"] for pair in normalized_train)
++    ]
++    selected = survivors[0] if len(survivors) == 1 and survivors[0] in MODES else None
++    disagreements: list[str] = []
++    if selected:
++        selected_outputs = [_predict(value, selected) for value in normalized_queries]
++        for name in HYPOTHESES:
++            if name == selected:
++                continue
++            if any(
++                _predict(value, name) != expected
++                for value, expected in zip(normalized_queries, selected_outputs)
++            ):
++                disagreements.append(name)
++    return {
++        "declared_hypotheses": list(HYPOTHESES),
++        "survivors": survivors,
++        "demonstrations": len(normalized_train),
++        "queries": len(normalized_queries),
++        "query_disagreements": disagreements,
++        "predicted_query_sha256": [
++            hashlib.sha256(
++                json.dumps(_predict(value, selected), separators=(",", ":")).encode()
++            ).hexdigest()
++            for value in normalized_queries
++        ]
++        if selected
++        else [],
++        "scope": "Finite declared rivals checked from demonstrations only; not a proof of universal rule uniqueness.",
++    }
+diff --git a/repo/generators/97c9b7818f99/workspace/parametric/audit.py b/repo/generators/97c9b7818f99/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/97c9b7818f99/workspace/parametric/audit.py
+@@ -0,0 +1,137 @@
++#!/usr/bin/env python3
++"""Bounded learnability and grammar audit for the 97c9b7818f99 family."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++ADAPTER = HERE / "adapter.py"
++
++
++def _adapter():
++    name = "_97c9_parametric_audit_" + hashlib.sha256(str(ADAPTER).encode()).hexdigest()[:16]
++    spec = importlib.util.spec_from_file_location(name, ADAPTER)
++    if spec is None or spec.loader is None:
++        raise RuntimeError("unable to load adapter")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _inputs(episode: dict) -> list:
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def run_audit(*, seed_start: int, seed_count: int) -> dict:
++    if type(seed_start) is not int or seed_start < 0:
++        raise ValueError("seed_start must be a nonnegative exact integer")
++    if type(seed_count) is not int or not 1 <= seed_count <= 256:
++        raise ValueError("seed_count must be an exact integer in 1..256")
++    module = _adapter()
++    failures: list[str] = []
++    episodes = 0
++    exact_30x30_pairs = 0
++    gray_seed_pairs = 0
++    min_region_cells = None
++    max_region_cells = 0
++    for seed in range(seed_start, seed_start + seed_count):
++        for demos in (2, 3, 6):
++            by_mode = {}
++            for mode in module.MODES:
++                try:
++                    episode = module.generate(seed, {"finish": mode}, demos, 4)
++                    certificate = module.certificate(
++                        episode["train"], [pair["input"] for pair in episode["test"]]
++                    )
++                    if certificate["survivors"] != [mode]:
++                        failures.append(
++                            f"seed {seed} demos {demos} mode {mode}: survivors {certificate['survivors']}"
++                        )
++                    missing = set(module.HYPOTHESES) - {mode} - set(certificate["query_disagreements"])
++                    if missing:
++                        failures.append(
++                            f"seed {seed} demos {demos} mode {mode}: query-agreeing rivals {sorted(missing)}"
++                        )
++                    by_mode[mode] = episode
++                    for pair in episode["train"] + episode["test"]:
++                        info = module.observe(pair["input"])
++                        exact_30x30_pairs += int(
++                            (len(pair["input"]), len(pair["input"][0])) == (30, 30)
++                        )
++                        gray_seed_pairs += int(info["includes_gray_seed"])
++                        local_min = min(info["region_sizes"].values())
++                        min_region_cells = local_min if min_region_cells is None else min(min_region_cells, local_min)
++                        max_region_cells = max(max_region_cells, max(info["region_sizes"].values()))
++                    episodes += 1
++                except Exception as exc:
++                    failures.append(
++                        f"seed {seed} demos {demos} mode {mode}: {type(exc).__name__}: {exc}"
++                    )
++            if set(by_mode) == set(module.MODES):
++                left, right = (by_mode[mode] for mode in module.MODES)
++                if _inputs(left) != _inputs(right):
++                    failures.append(f"seed {seed} demos {demos}: inputs depend on hidden setting")
++    source_hashes = {
++        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
++        for path in (
++            ADAPTER,
++            HERE / "canonical.rkt",
++            HERE / "highlight_smallest_region.rkt",
++            HERE / "skip_region_sizes.rkt",
++        )
++    }
++    return {
++        "schema": "97c9b7818f99-parametric-self-audit-v1",
++        "status": "passed" if not failures else "failed",
++        "seed_start": seed_start,
++        "seed_count": seed_count,
++        "demo_counts": [2, 3, 6],
++        "query_count": 4,
++        "settings": list(module.MODES),
++        "declared_hypotheses": len(module.HYPOTHESES),
++        "episodes": episodes,
++        "exact_30x30_pairs": exact_30x30_pairs,
++        "gray_seed_pairs": gray_seed_pairs,
++        "observed_region_size_range": [min_region_cells, max_region_cells],
++        "source_sha256": source_hashes,
++        "failures": failures,
++        "scope": "Finite deterministic Python-mirror audit; protected Racket parity is checked by focused tests and native qualification.",
++    }
++
++
++def write_report(path: Path, report: dict) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seed-start", type=int, default=0)
++    parser.add_argument("--seed-count", type=int, default=32)
++    args = parser.parse_args()
++    report = run_audit(seed_start=args.seed_start, seed_count=args.seed_count)
++    write_report(args.out, report)
++    print(
++        json.dumps(
++            {
++                key: report[key]
++                for key in (
++                    "status",
++                    "episodes",
++                    "exact_30x30_pairs",
++                    "gray_seed_pairs",
++                    "failures",
++                )
++            }
++        )
++    )
++    return 0 if report["status"] == "passed" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/97c9b7818f99/workspace/parametric/canonical.rkt b/repo/generators/97c9b7818f99/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/97c9b7818f99/workspace/parametric/canonical.rkt
+@@ -0,0 +1,14 @@
++(rule!
++  (let ((seeds (filter (lambda (cell) (and (not (= (third cell) 0))
++                                           (not (= (third cell) 8))))
++                       (grid-cells g))))
++    (define (dist cell r c)
++      (+ (abs (- r (first cell))) (abs (- c (second cell)))))
++    (define (fill-value r c)
++      (let* ((dmin (apply min (map (lambda (cell) (dist cell r c)) seeds)))
++             (nearest (filter (lambda (cell) (= (dist cell r c) dmin)) seeds)))
++        (if (>= (length nearest) 2) 5 (third (first nearest)))))
++    (for*/fold ([out g])
++               ([r (in-range 1 (- (rows g) 1))]
++                [c (in-range 1 (- (cols g) 1))])
++      (if (= (at out r c) 0) (set-cell out r c (fill-value r c)) out))))
+\ No newline at end of file
+diff --git a/repo/generators/97c9b7818f99/workspace/parametric/evidence/current/authoring-audit.json b/repo/generators/97c9b7818f99/workspace/parametric/evidence/current/authoring-audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/97c9b7818f99/workspace/parametric/evidence/current/authoring-audit.json
+@@ -0,0 +1,32 @@
++{
++  "declared_hypotheses": 11,
++  "demo_counts": [
++    2,
++    3,
++    6
++  ],
++  "episodes": 108,
++  "exact_30x30_pairs": 108,
++  "failures": [],
++  "gray_seed_pairs": 504,
++  "observed_region_size_range": [
++    6,
++    396
++  ],
++  "query_count": 4,
++  "schema": "97c9b7818f99-parametric-self-audit-v1",
++  "scope": "Finite deterministic Python-mirror audit; protected Racket parity is checked by focused tests and native qualification.",
++  "seed_count": 18,
++  "seed_start": 0,
++  "settings": [
++    "fill_only",
++    "highlight_smallest_region"
++  ],
++  "source_sha256": {
++    "adapter.py": "912fb9d5bc535406bcdca2f5ce9b21f7e53d8d515f353b2000cece02cb3d9296",
++    "canonical.rkt": "26f6d6812ea772dc16b6f80e4a2fe4f55172f5d04467ef3e8e87f5cd310fb3aa",
++    "highlight_smallest_region.rkt": "6e1ee5b4f50b86a251fac7bf7848397f1ff9f2a5a28e5a18f3d54f4e6c44365b",
++    "skip_region_sizes.rkt": "d4e046010d95dea5d0f4d62e2b049ea12b6dfb9d80676c1eddc486f8b444573c"
++  },
++  "status": "passed"
++}
+diff --git a/repo/generators/97c9b7818f99/workspace/parametric/evidence/manifest.json b/repo/generators/97c9b7818f99/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/97c9b7818f99/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,87 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "26f6d6812ea772dc16b6f80e4a2fe4f55172f5d04467ef3e8e87f5cd310fb3aa",
++  "canonical_rule_hash": "af2297af758f",
++  "default": {
++    "finish": "fill_only"
++  },
++  "evidence_root": "generators/97c9b7818f99/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 27426,
++      "path": "generators/97c9b7818f99/generator.py",
++      "sha256": "1c8a6546e04a3696caad1b85ac48888f0685c840c1c3414c1208fc26820cd6aa"
++    },
++    {
++      "bytes": 12631,
++      "path": "generators/97c9b7818f99/tests/test_parametric_smallest_region.py",
++      "sha256": "50f346a75b770179bf7b2d6401669616ff585a17830e60829c5f6e24e3e70cf1"
++    },
++    {
++      "bytes": 2027,
++      "path": "generators/97c9b7818f99/workspace/parametric/README.md",
++      "sha256": "24c78ff63b66609241af099a526ca1d5cf955ad1598604af2e329faa396912c2"
++    },
++    {
++      "bytes": 21580,
++      "path": "generators/97c9b7818f99/workspace/parametric/adapter.py",
++      "sha256": "912fb9d5bc535406bcdca2f5ce9b21f7e53d8d515f353b2000cece02cb3d9296"
++    },
++    {
++      "bytes": 5537,
++      "path": "generators/97c9b7818f99/workspace/parametric/audit.py",
++      "sha256": "001f3e90b730878c7d3a0196c12fc7e569c287f5cfdbf4c27d68729e08c55cfb"
++    },
++    {
++      "bytes": 720,
++      "path": "generators/97c9b7818f99/workspace/parametric/canonical.rkt",
++      "sha256": "26f6d6812ea772dc16b6f80e4a2fe4f55172f5d04467ef3e8e87f5cd310fb3aa"
++    },
++    {
++      "bytes": 961,
++      "path": "generators/97c9b7818f99/workspace/parametric/evidence/current/authoring-audit.json",
++      "sha256": "110356c6e8d980661559f0ad877bf2a6769b48f105d6382f21160cd09a330b14"
++    },
++    {
++      "bytes": 1699,
++      "path": "generators/97c9b7818f99/workspace/parametric/highlight_smallest_region.rkt",
++      "sha256": "6e1ee5b4f50b86a251fac7bf7848397f1ff9f2a5a28e5a18f3d54f4e6c44365b"
++    },
++    {
++      "bytes": 562,
++      "path": "generators/97c9b7818f99/workspace/parametric/promotion.json",
++      "sha256": "54966d7804223f2c89e5f260c22dce3add6b1199351838b496a09b0628cd1dd7"
++    },
++    {
++      "bytes": 1386,
++      "path": "generators/97c9b7818f99/workspace/parametric/skip_region_sizes.rkt",
++      "sha256": "d4e046010d95dea5d0f4d62e2b049ea12b6dfb9d80676c1eddc486f8b444573c"
++    }
++  ],
++  "generator_sha256": "1c8a6546e04a3696caad1b85ac48888f0685c840c1c3414c1208fc26820cd6aa",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "finish": [
++      "fill_only",
++      "highlight_smallest_region"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "39 task-local tests; 24 protected-Racket evaluations in focused parametric tests; 108 finite teaching episodes across seeds 0-17, demo counts 2/3/6, both settings and four queries; all 11 declared hypotheses separated; 108 exact 30x30 stress pairs; canonical program byte-exact against the selected catalog reference.",
++  "rule_task_id": "97c9b7818f99",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "97c9b7818f99",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/97c9b7818f99/workspace/parametric/highlight_smallest_region.rkt b/repo/generators/97c9b7818f99/workspace/parametric/highlight_smallest_region.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/97c9b7818f99/workspace/parametric/highlight_smallest_region.rkt
+@@ -0,0 +1,40 @@
++(rule!
++  (let ((seeds (filter (lambda (cell) (and (not (= (third cell) 0))
++                                           (not (= (third cell) 8))))
++                       (grid-cells g))))
++    (define (dist cell r c)
++      (+ (abs (- r (first cell))) (abs (- c (second cell)))))
++    (define (nearest r c)
++      (let* ((dmin (apply min (map (lambda (cell) (dist cell r c)) seeds))))
++        (filter (lambda (cell) (= (dist cell r c) dmin)) seeds)))
++    (define interior
++      (for*/list ([r (in-range 1 (- (rows g) 1))]
++                  [c (in-range 1 (- (cols g) 1))])
++        (list r c)))
++    (define (owned-by? seed p)
++      (let ((owners (nearest (first p) (second p))))
++        (and (= (length owners) 1) (equal? (first owners) seed))))
++    (define (owned-count seed)
++      (count-if (lambda (p) (owned-by? seed p)) interior))
++    (define ranked
++      (sort (map (lambda (seed) (list seed (owned-count seed))) seeds)
++            (lambda (a b)
++              (if (= (second a) (second b))
++                  (< (third (first a)) (third (first b)))
++                  (< (second a) (second b))))))
++    (define selected (first (first ranked)))
++    (define filled
++      (for*/fold ([out g])
++                 ([r (in-range 1 (- (rows g) 1))]
++                  [c (in-range 1 (- (cols g) 1))])
++        (if (= (at out r c) 0)
++            (let ((owners (nearest r c)))
++              (set-cell out r c
++                        (if (>= (length owners) 2)
++                            5
++                            (third (first owners)))))
++            out)))
++    (for/fold ([out filled]) ([p (in-list interior)])
++      (if (owned-by? selected p)
++          (set-cell out (first p) (second p) 9)
++          out))))
+diff --git a/repo/generators/97c9b7818f99/workspace/parametric/promotion.json b/repo/generators/97c9b7818f99/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/97c9b7818f99/workspace/parametric/promotion.json
+@@ -0,0 +1,28 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/97c9b7818f99/workspace/parametric/adapter.py",
++  "parameters": {
++    "finish": [
++      "fill_only",
++      "highlight_smallest_region"
++    ]
++  },
++  "default": {
++    "finish": "fill_only"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/97c9b7818f99/workspace/parametric/canonical.rkt",
++    "generators/97c9b7818f99/workspace/parametric/highlight_smallest_region.rkt"
++  ]
++}
+diff --git a/repo/generators/97c9b7818f99/workspace/parametric/skip_region_sizes.rkt b/repo/generators/97c9b7818f99/workspace/parametric/skip_region_sizes.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/97c9b7818f99/workspace/parametric/skip_region_sizes.rkt
+@@ -0,0 +1,33 @@
++(rule!
++  (let ((seeds (filter (lambda (cell) (and (not (= (third cell) 0))
++                                           (not (= (third cell) 8))))
++                       (grid-cells g))))
++    (define (dist cell r c)
++      (+ (abs (- r (first cell))) (abs (- c (second cell)))))
++    (define (nearest r c)
++      (let* ((dmin (apply min (map (lambda (cell) (dist cell r c)) seeds))))
++        (filter (lambda (cell) (= (dist cell r c) dmin)) seeds)))
++    (define selected
++      (first (sort seeds (lambda (a b) (< (third a) (third b))))))
++    (define interior
++      (for*/list ([r (in-range 1 (- (rows g) 1))]
++                  [c (in-range 1 (- (cols g) 1))])
++        (list r c)))
++    (define (owned-by? seed p)
++      (let ((owners (nearest (first p) (second p))))
++        (and (= (length owners) 1) (equal? (first owners) seed))))
++    (define filled
++      (for*/fold ([out g])
++                 ([r (in-range 1 (- (rows g) 1))]
++                  [c (in-range 1 (- (cols g) 1))])
++        (if (= (at out r c) 0)
++            (let ((owners (nearest r c)))
++              (set-cell out r c
++                        (if (>= (length owners) 2)
++                            5
++                            (third (first owners)))))
++            out)))
++    (for/fold ([out filled]) ([p (in-list interior)])
++      (if (owned-by? selected p)
++          (set-cell out (first p) (second p) 9)
++          out))))

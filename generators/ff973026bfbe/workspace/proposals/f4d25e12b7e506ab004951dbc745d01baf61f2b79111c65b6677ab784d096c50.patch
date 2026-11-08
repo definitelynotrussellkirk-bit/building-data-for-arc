@@ -1,0 +1,2149 @@
+diff --git a/repo/generators/2827181c35c3/SUMMARY.md b/repo/generators/2827181c35c3/SUMMARY.md
+--- a/repo/generators/2827181c35c3/SUMMARY.md
++++ b/repo/generators/2827181c35c3/SUMMARY.md
+@@ -1,6 +1,19 @@
+ # 2827181c35c3
+ 
+-Row-0 commands (codes 1..4) at distinct columns; each non-row-0 component is matched to nearest command by column; rule transforms (rotate/flip) each, sorts by size desc + color asc, packs left-to-right from row 1, col 0.
++Version `3.0.0` generates a 10–16 by 12–22 grid with two to four row-0
++commands and the same number of isolated, distinctly coloured body components.
++Each component is matched to its nearest command by horizontal bbox centre,
++transformed (`1=rotate-cw`, `2=rotate-180`, `3=flip-lr`, `4=flip-ud`), sorted by
++size descending then colour ascending, and packed left-to-right from row 1 with
++one blank column between crops.
+ 
+-Kind: `per_puzzle`. Imported version: `2.0.1`.
+-Approval is derived by the catalog from current code and retained evidence.
++The exact public surface is only `grid_h`, `grid_w`, and `n_objs`; all joint
++combinations are constructive and observable.  The old palette/density/texture
++pseudo-axes and the invalid `no_commands`, `no_objects`, and
++`identity_commands` controls were removed.  `rule_mirror`, strict self-checks,
++and protected-Racket tests guard authority parity and lossless packing.
++
++Selected program SHA-256:
++`5b774bdc9397018cc8f934fc02d3c5b72ca17c2b2b1869710b86523a8ccd3737`.
++Generator SHA-256:
++`44b5caa04bab1418d858b0b3d49425b2015a7dadc32f1012dc3b95ce3084bde2`.
+diff --git a/repo/generators/2827181c35c3/generator.py b/repo/generators/2827181c35c3/generator.py
+--- a/repo/generators/2827181c35c3/generator.py
++++ b/repo/generators/2827181c35c3/generator.py
+@@ -1,186 +1,373 @@
+-"""Generator for arc_additional_puzzles_21_set12_bundle:H78 — zone commands transform and pack.
+-
+-Rule: row 0 holds N commands (each non-zero cell = transform code 1..4) at distinct
+-columns. Below row 0 there are N components; each is associated with the nearest top-row
+-command (by horizontal-center distance). Apply that command's transform to the cropped
+-component, sort transforms by (cell_count desc, min_color asc), and pack the
+-transformed crops left-to-right starting at row 1, col 0 with one blank column
+-between them. Output is same size as input.
+-
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, palette_size,
+-position_bias, n_distinct_colors, density, texture.
+-Degenerates: no_commands (row 0 empty → rule has no transforms);
+-no_objects (commands but no body components → rule has nothing to
+-transform); identity_commands (all command codes = identity → output
+-== input shape order).
++"""Generator for 2827181c35c3: command-transform-sort-pack.
++
++The first row contains transform commands.  Each body component is paired
++with its nearest command by horizontal centre, transformed, sorted by
++(nonzero size descending, colour ascending), and packed from row 1 with a
++single blank column between crops.
++
++Version 3 removes several historical pseudo-axes and three advertised
++"degenerate textures" that were not lawful controls of the protected Racket
++program.  The public override surface now contains only dimensions and object
++count, all of which are exact and constructive across every difficulty band.
+ """
+ from __future__ import annotations
+ 
++from collections import deque
++from typing import Iterable, Sequence
++
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "2827181c35c3"
+-VERSION = "2.0.1"
+-TASK_ID = "2827181c35c3"
+-
+-SUMMARY = "Row-0 commands (codes 1..4) at distinct columns; each non-row-0 component is matched to nearest command by column; rule transforms (rotate/flip) each, sorts by size desc + color asc, packs left-to-right from row 1, col 0."
+-
+-# Rivals: 'output = input' refuted by ≥1 demo where transformed crops
+-# differ from originals. 'pack by input order' refuted by ≥2 demos
+-# where size-sort changes the order. 'discard commands' refuted by
+-# any demo where commands clearly affect the transform.
+-# 'pack vertically' refuted by ≥2 demos showing horizontal packing.
+-# 4 demos with varied commands + shapes cover this.
++TASK_ID = GENERATOR_ID
++VERSION = "3.0.0"
++
++SUMMARY = (
++    "Two to four row-0 transform commands (1=rotate clockwise, "
++    "2=rotate 180, 3=flip left/right, 4=flip up/down) control the nearest "
++    "same-colour body components.  Transform their tight crops, sort by "
++    "nonzero size descending then colour ascending, and pack horizontally "
++    "from row 1 with one blank column between crops."
++)
+ EXAMPLES_NEEDED = 4
+-
+ INVARIANTS = [
+-    "background is 0",
+-    "row 0 has 2-3 non-zero cells (transform codes 1..4) at distinct columns",
+-    "below row 0, exactly that many isolated 4-connected components in distinct colors",
+-    "components are placed in horizontal zones near their assigned command",
++    "background is 0 and row 0 contains exactly 2..4 command cells valued 1..4",
++    "the body contains the same number of isolated same-colour components in distinct colours",
++    "every command is the unique nearest command of one body component",
++    "transformed tight crops fit losslessly in the output width",
+ ]
+ 
+-PALETTE_KINDS = ("default", "warm", "cool", "varied")
+-DEGENERATE_TEXTURES = ("no_commands", "no_objects", "identity_commands")
+-HELPFUL_TEXTURES = PALETTE_KINDS
++PALETTE_KINDS = ("default",)
++DEGENERATE_TEXTURES: tuple[str, ...] = ()
++LAWFUL_DEGENERATE_TEXTURES: tuple[str, ...] = ()
++HELPFUL_TEXTURES: tuple[str, ...] = ()
++INCOMPATIBLE_OVERRIDE_COMBINATIONS: list[dict[str, object]] = []
+ 
+ AXES = {
+-    "grid_h":            {"type": "int", "default": "rng 11..13", "valid": "10..16"},
+-    "grid_w":            {"type": "int", "default": "rng 14..18", "valid": "12..22"},
+-    "n_objs":            {"type": "int", "default": "rng 2..3", "valid": "2..4"},
+-    "palette_kind":      {"type": "str", "default": "rng helpful",
+-                          "valid": "|".join(PALETTE_KINDS)},
+-    "palette_size":      {"type": "int", "default": "rng 3..4", "valid": "3..5"},
+-    "position_bias":     {"type": "str", "default": "row0_commands_with_zoned_objects",
+-                          "valid": "row0_commands_with_zoned_objects"},
+-    "n_distinct_colors": {"type": "int", "default": "rng 3..4", "valid": "3..5"},
+-    "density":           {"type": "str", "default": "sparse", "valid": "sparse"},
+-    "texture":           {"type": "str", "default": "alias for palette_kind",
+-                          "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "grid_h": {"type": "int", "default": "difficulty-aware 10..16", "valid": "10..16"},
++    "grid_w": {"type": "int", "default": "difficulty-aware 12..22", "valid": "12..22"},
++    "n_objs": {"type": "int", "default": "difficulty-aware 2..4", "valid": "2..4"},
+ }
++_INT_BOUNDS = {
++    "grid_h": (10, 16),
++    "grid_w": (12, 22),
++    "n_objs": (2, 4),
++}
++_BAND_BOUNDS = {
++    None: {"grid_h": (11, 14), "grid_w": (14, 18), "n_objs": (2, 3)},
++    "easy": {"grid_h": (10, 12), "grid_w": (12, 15), "n_objs": (2, 2)},
++    "medium": {"grid_h": (11, 14), "grid_w": (14, 18), "n_objs": (2, 3)},
++    "hard": {"grid_h": (13, 16), "grid_w": (18, 22), "n_objs": (3, 4)},
++}
++
++# All source shapes have a two-column tight bounding box.  At most one command
++# has code 1, so at most one transformed crop becomes three columns wide.  The
++# worst case for four objects is therefore 3+2+2+2 plus three separators = 12,
++# exactly the minimum public width.  This is the constructive reason that the
++# three advertised axes have no incompatible combinations.
++_SHAPE_BANK: tuple[tuple[tuple[int, int], ...], ...] = (
++    ((0, 0), (0, 1), (1, 0)),                              # 3 cells, 2x2
++    ((0, 0), (1, 0), (1, 1), (2, 1)),                      # 4 cells, 3x2
++    ((0, 0), (0, 1), (1, 1), (2, 0), (2, 1)),              # 5 cells, 3x2
++    ((0, 0), (1, 0), (2, 0), (2, 1), (1, 1)),              # 5 cells, 3x2
++)
++
++Grid = list[list[int]]
++Cell = tuple[int, int]
++
++
++def _validate_difficulty(difficulty) -> None:
++    if difficulty is None or difficulty in {"easy", "medium", "hard"}:
++        return
++    raise ValueError("difficulty must be None, 'easy', 'medium', or 'hard'")
++
++
++def _validate_overrides(overrides: dict[str, object]) -> None:
++    unknown = sorted(set(overrides) - set(AXES))
++    if unknown:
++        raise ValueError(f"unknown override(s): {unknown}; valid axes: {sorted(AXES)}")
++    for name, value in overrides.items():
++        if type(value) is not int:
++            raise TypeError(f"{name} override must be an integer (not bool/float/string/None)")
++        lo, hi = _INT_BOUNDS[name]
++        if not lo <= value <= hi:
++            raise ValueError(f"{name} override must be in {lo}..{hi}, got {value}")
++
++
++def _draw_axis(ctx, overrides: dict[str, object], name: str, difficulty) -> int:
++    lo, hi = _INT_BOUNDS[name] if name in overrides else _BAND_BOUNDS[difficulty][name]
++    return ctx.draw_int_strict(name, lo, hi)
++
++
++def _basic_grid_errors(grid) -> list[str]:
++    if not isinstance(grid, list) or not grid:
++        return ["grid must be a nonempty list of rows"]
++    if any(not isinstance(row, list) or not row for row in grid):
++        return ["rows must be nonempty lists"]
++    width = len(grid[0])
++    if any(len(row) != width for row in grid):
++        return ["grid must be rectangular"]
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        return ["all cells must be integer colours 0..9 (booleans are not colours)"]
++    return []
++
++
++def _commands(grid: Sequence[Sequence[int]]) -> list[tuple[int, int]]:
++    return [(col, value) for col, value in enumerate(grid[0]) if value != 0]
++
++
++def _body_components(grid: Sequence[Sequence[int]]) -> list[dict[str, object]]:
++    """Return row-major same-colour four-connected body components."""
++    h, w = len(grid), len(grid[0])
++    seen: set[Cell] = set()
++    result: list[dict[str, object]] = []
++    for r in range(1, h):
++        for c in range(w):
++            color = grid[r][c]
++            if color == 0 or (r, c) in seen:
++                continue
++            queue = deque([(r, c)])
++            seen.add((r, c))
++            cells: list[Cell] = []
++            while queue:
++                rr, cc = queue.popleft()
++                cells.append((rr, cc))
++                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
++                    nr, nc = rr + dr, cc + dc
++                    if (
++                        1 <= nr < h
++                        and 0 <= nc < w
++                        and (nr, nc) not in seen
++                        and grid[nr][nc] == color
++                    ):
++                        seen.add((nr, nc))
++                        queue.append((nr, nc))
++            rows = [p[0] for p in cells]
++            cols = [p[1] for p in cells]
++            result.append(
++                {
++                    "color": color,
++                    "cells": tuple(cells),
++                    "r1": min(rows),
++                    "c1": min(cols),
++                    "r2": max(rows),
++                    "c2": max(cols),
++                }
++            )
++    return result
++
++
++def _crop_component(grid: Sequence[Sequence[int]], obj: dict[str, object]) -> Grid:
++    r1, c1, r2, c2 = (int(obj[key]) for key in ("r1", "c1", "r2", "c2"))
++    color = int(obj["color"])
++    cells = set(obj["cells"])
++    return [
++        [color if (r, c) in cells else 0 for c in range(c1, c2 + 1)]
++        for r in range(r1, r2 + 1)
++    ]
++
++
++def _rotate_cw(grid: Sequence[Sequence[int]]) -> Grid:
++    return [list(row) for row in zip(*grid[::-1])]
++
++
++def _rotate_180(grid: Sequence[Sequence[int]]) -> Grid:
++    return [list(reversed(row)) for row in reversed(grid)]
++
++
++def _flip_lr(grid: Sequence[Sequence[int]]) -> Grid:
++    return [list(reversed(row)) for row in grid]
++
++
++def _flip_ud(grid: Sequence[Sequence[int]]) -> Grid:
++    return [list(row) for row in reversed(grid)]
++
++
++def _transform(crop: Sequence[Sequence[int]], code: int) -> Grid:
++    if code == 1:
++        return _rotate_cw(crop)
++    if code == 2:
++        return _rotate_180(crop)
++    if code == 3:
++        return _flip_lr(crop)
++    return _flip_ud(crop)
++
++
++def _nearest_command_index(obj: dict[str, object], commands: Sequence[tuple[int, int]]) -> int:
++    if not commands:
++        raise ValueError("row 0 contains no commands")
++    doubled_center = int(obj["c1"]) + int(obj["c2"])
++    best_index = 0
++    best_distance = abs(doubled_center - 2 * commands[0][0])
++    for index in range(1, len(commands)):
++        distance = abs(doubled_center - 2 * commands[index][0])
++        if distance < best_distance:  # strict: ties retain the earlier command
++            best_index = index
++            best_distance = distance
++    return best_index
++
++
++def _transformed_crops(grid: Sequence[Sequence[int]]) -> list[Grid]:
++    commands = _commands(grid)
++    crops: list[Grid] = []
++    for obj in _body_components(grid):
++        command_index = _nearest_command_index(obj, commands)
++        crops.append(_transform(_crop_component(grid, obj), commands[command_index][1]))
++    return crops
++
++
++def _nonzero_count(grid: Sequence[Sequence[int]]) -> int:
++    return sum(value != 0 for row in grid for value in row)
++
++
++def _min_nonzero(grid: Sequence[Sequence[int]]) -> int:
++    values = [value for row in grid for value in row if value != 0]
++    if not values:
++        raise ValueError("cannot rank an empty crop")
++    return min(values)
++
++
++def rule_mirror(grid: Sequence[Sequence[int]]) -> Grid:
++    """Pure-Python mirror of the selected protected Racket authority."""
++    errors = _basic_grid_errors(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    h, w = len(grid), len(grid[0])
++    commands = _commands(grid)
++    if not commands:
++        raise ValueError("row 0 contains no commands")
++    if any(not 1 <= code <= 4 for _, code in commands):
++        raise ValueError("command values must be in 1..4")
++
++    ordered = sorted(
++        _transformed_crops(grid),
++        key=lambda crop: (-_nonzero_count(crop), _min_nonzero(crop)),
++    )
++    out = full_grid(h, w, 0)
++    left = 0
++    for crop in ordered:
++        for r, row in enumerate(crop):
++            for c, value in enumerate(row):
++                rr, cc = 1 + r, left + c
++                if value != 0 and 0 <= rr < h and 0 <= cc < w:
++                    out[rr][cc] = value
++        left += len(crop[0]) + 1
++    return out
++
++
++def apply_rule(grid: Sequence[Sequence[int]]) -> Grid:
++    """Conventional alias used by repository audit tools."""
++    return rule_mirror(grid)
+ 
+ 
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Verify: row 0 has ≥2 command cells (1..4); body rows have ≥1 non-zero cell."""
+-    if not grid or not grid[0]:
+-        return ["empty grid"]
++    """Validate the exact constructive domain, including lossless packing."""
++    errors = _basic_grid_errors(grid)
++    if errors:
++        return errors
+     h, w = len(grid), len(grid[0])
+-    if any(len(row) != w for row in grid):
+-        return ["ragged grid"]
+-    texture = (meta or {}).get("texture", "")
+-    if texture in ("no_commands", "no_objects", "identity_commands"):
+-        return []
+-    errs = []
+-    commands = [v for v in grid[0] if 1 <= v <= 4]
+-    if len(commands) < 2:
+-        errs.append(f"row-0 has only {len(commands)} command cell(s) (1..4); expected ≥2")
+-    body_nonzero = sum(1 for r in range(1, h) for c in range(w) if grid[r][c] != 0)
+-    if body_nonzero == 0:
+-        errs.append("body rows have no non-zero cells")
+-    return errs
+-
+-
+-_SHAPES = [
+-    [(0, 0), (0, 1), (1, 0)],                     # L-tromino
+-    [(0, 0), (1, 0), (1, 1), (2, 1)],             # S-tet
+-    [(0, 0), (0, 1), (0, 2), (1, 1)],             # T-tet
+-    [(0, 0), (1, 0), (1, 1), (2, 0)],             # T-rot
+-    [(0, 0), (0, 1), (0, 2), (1, 0)],             # J-tet
+-    [(0, 0), (0, 1), (1, 0), (1, 1)],             # square
+-    [(0, 0), (0, 1), (0, 2), (0, 3)],             # I-tet horizontal
+-    [(0, 0), (1, 0), (2, 0), (3, 0)],             # I-tet vertical
+-    [(0, 0), (0, 1), (1, 1), (2, 1), (2, 0)],     # P-pent
+-    [(0, 0), (0, 1), (0, 2), (1, 0), (1, 2)],     # U-pent
+-]
+-
+-
+-def _free(g, r1, c1, r2, c2):
+-    h, w = len(g), len(g[0])
+-    if r1 < 0 or c1 < 0 or r2 >= h or c2 >= w: return False
+-    for r in range(max(0, r1 - 1), min(h, r2 + 2)):
+-        for c in range(max(0, c1 - 1), min(w, c2 + 2)):
+-            if g[r][c] != 0: return False
+-    return True
++    if not 10 <= h <= 16 or not 12 <= w <= 22:
++        errors.append(f"expected dimensions 10..16 by 12..22, got {h}x{w}")
++
++    commands = _commands(grid)
++    if not 2 <= len(commands) <= 4:
++        errors.append(f"expected 2..4 row-0 commands, got {len(commands)}")
++    if any(not 1 <= code <= 4 for _, code in commands):
++        errors.append("every nonzero row-0 command must be in 1..4")
++
++    objects = _body_components(grid)
++    if len(objects) != len(commands):
++        errors.append(f"expected one body component per command, got {len(objects)} objects and {len(commands)} commands")
++    colors = [int(obj["color"]) for obj in objects]
++    if len(set(colors)) != len(colors):
++        errors.append("body components must use distinct colours")
++
++    if commands and objects:
++        assigned = [_nearest_command_index(obj, commands) for obj in objects]
++        if len(set(assigned)) != len(commands):
++            errors.append("every command must be the nearest command of exactly one body component")
++        crops = _transformed_crops(grid)
++        packed_width = sum(len(crop[0]) for crop in crops) + max(0, len(crops) - 1)
++        tallest = max((len(crop) for crop in crops), default=0)
++        if packed_width > w:
++            errors.append(f"transformed crops require width {packed_width}, exceeding grid width {w}")
++        if 1 + tallest > h:
++            errors.append(f"transformed crops require {1 + tallest} rows, exceeding grid height {h}")
++        body_count = sum(value != 0 for row in grid[1:] for value in row)
++        output_count = sum(value != 0 for row in rule_mirror(grid) for value in row)
++        if body_count != output_count:
++            errors.append(f"authority packing would lose cells ({body_count} input body cells vs {output_count} output cells)")
++    return errors
++
++
++def strict_canonical_like(grid) -> list[str]:
++    return self_check(grid)
++
++
++def observe_overrides(grid) -> dict[str, int]:
++    errors = self_check(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    return {
++        "grid_h": len(grid),
++        "grid_w": len(grid[0]),
++        "n_objs": len(_body_components(grid)),
++    }
++
++
++def _slot_lefts(width: int, count: int) -> list[int]:
++    """Evenly spread two-column objects with at least one blank column."""
++    if count == 1:
++        return [(width - 2) // 2]
++    span = width - 2
++    lefts = [(index * span) // (count - 1) for index in range(count)]
++    if any(b - a < 3 for a, b in zip(lefts, lefts[1:])):
++        raise ValueError(f"width {width} cannot isolate {count} two-column objects")
++    return lefts
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], None)
+-    if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 10, 12)
+-        w = ctx.draw_int("grid_w", 12, 15)
+-        n_objs = ctx.draw_int("n_objs", 2, 2)
+-    elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 13, 16)
+-        w = ctx.draw_int("grid_w", 18, 22)
+-        n_objs = ctx.draw_int("n_objs", 3, 4)
+-    else:
+-        h = ctx.draw_int("grid_h", 11, 14)
+-        w = ctx.draw_int("grid_w", 14, 18)
+-        n_objs = ctx.draw_int("n_objs", 2, 3)
+-    rng = ctx.draw_rng("layout")
+-
+-    for outer in range(40):
+-        g = full_grid(h, w, 0)
+-        zone_w = w // n_objs
+-        cmd_cols = []
+-        for i in range(n_objs):
+-            cstart = i * zone_w
+-            cend = (i + 1) * zone_w - 1 if i < n_objs - 1 else w - 1
+-            cmd_cols.append(rng.randint(cstart, min(cend, w - 1)))
+-        codes = [rng.randint(1, 4) for _ in range(n_objs)]
+-        for cc, code in zip(cmd_cols, codes):
+-            g[0][cc] = code
+-
+-        colors = rng.sample([2, 3, 4, 5, 6, 7, 8, 9], n_objs)
+-        ok = True
+-        for i in range(n_objs):
+-            cstart = i * zone_w
+-            cend = (i + 1) * zone_w - 1 if i < n_objs - 1 else w - 1
+-            placed = False
+-            for _ in range(60):
+-                shape = rng.choice(_SHAPES)
+-                sh = max(r for r, _ in shape) + 1
+-                sw = max(c for _, c in shape) + 1
+-                r0 = rng.randint(2, h - sh)
+-                c0 = rng.randint(cstart, max(cstart, cend - sw + 1))
+-                if c0 + sw - 1 > cend: continue
+-                if not _free(g, r0, c0, r0 + sh - 1, c0 + sw - 1): continue
+-                for dr, dc in shape:
+-                    g[r0 + dr][c0 + dc] = colors[i]
+-                placed = True
+-                break
+-            if not placed:
+-                ok = False
+-                break
+-        if ok:
+-            return g
+-    raise ValueError("could not realize zone-commands layout in 40 attempts")
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    h, w = 12, 16
+-    g = full_grid(h, w, 0)
+-    if name == "no_commands":
+-        # Row 0 empty — rule has no transforms.
+-        for dr, dc in [(0, 0), (0, 1), (1, 0)]:
+-            g[3 + dr][3 + dc] = 4
+-        for dr, dc in [(0, 0), (1, 0), (1, 1)]:
+-            g[3 + dr][11 + dc] = 5
+-        return g
+-    if name == "no_objects":
+-        # Commands but no objects.
+-        g[0][3] = 1; g[0][11] = 2
+-        return g
+-    if name == "identity_commands":
+-        # All command codes = 1 (identity) — output unchanged.
+-        g[0][3] = 1; g[0][11] = 1
+-        for dr, dc in [(0, 0), (0, 1), (1, 0)]:
+-            g[3 + dr][3 + dc] = 4
+-        for dr, dc in [(0, 0), (1, 0), (1, 1)]:
+-            g[3 + dr][11 + dc] = 5
+-        return g
+-    return g
++    _validate_difficulty(difficulty)
++    _validate_overrides(overrides)
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++    h = _draw_axis(ctx, overrides, "grid_h", difficulty)
++    w = _draw_axis(ctx, overrides, "grid_w", difficulty)
++    n_objs = _draw_axis(ctx, overrides, "n_objs", difficulty)
++
++    rng = ctx.draw_rng("command_transform_layout")
++    lefts = _slot_lefts(w, n_objs)
++    command_cols = [left + 1 for left in lefts]
++    # Distinct codes expose every transform when n=4 and guarantee at most one
++    # 3-column rotated crop, which is what makes the full axis product fit.
++    codes = rng.sample((1, 2, 3, 4), n_objs)
++    colors = rng.sample((2, 3, 4, 5, 6, 7, 8, 9), n_objs)
++
++    shapes = list(_SHAPE_BANK[:n_objs])
++    rng.shuffle(shapes)
++    rows = [rng.randint(2, h - 3) for _ in range(n_objs)]
++
++    grid = full_grid(h, w, 0)
++    for column, code in zip(command_cols, codes):
++        grid[0][column] = code
++    for left, top, color, shape in zip(lefts, rows, colors, shapes):
++        for dr, dc in shape:
++            grid[top + dr][left + dc] = color
++
++    errors = self_check(grid)
++    if errors:
++        # This constructor is algebraically feasible for the complete public
++        # product.  Treat a failure as a code defect, not as a hidden rejection.
++        raise AssertionError("constructed invalid command-transform instance: " + "; ".join(errors))
++    observed = observe_overrides(grid)
++    requested = {name: int(value) for name, value in overrides.items()}
++    for name, value in requested.items():
++        if observed[name] != value:
++            raise AssertionError(f"override {name}={value} realized as {observed[name]}")
++    return grid
+diff --git a/repo/generators/2827181c35c3/notes.md b/repo/generators/2827181c35c3/notes.md
+--- a/repo/generators/2827181c35c3/notes.md
++++ b/repo/generators/2827181c35c3/notes.md
+@@ -1,4 +1,51 @@
+-# Working notes: 2827181c35c3
++# Current notes: 2827181c35c3
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Intended authority
++
++Row 0 contains transform commands at distinct columns.  After row 0 is
++cleared, each same-colour four-connected body component is paired with the
++nearest command by doubled horizontal bbox-centre distance (strict comparison,
++so ties retain the earlier/left command).  Codes are `1=rotate-cw`,
++`2=rotate-180`, `3=flip-lr`, `4=flip-ud`.  Tight transformed crops are sorted by
++nonzero cell count descending and minimum nonzero colour ascending, then packed
++from row 1, column 0 with one blank column between crops.
++
++The selected protected-Racket program is unchanged and has SHA-256
++`5b774bdc9397018cc8f934fc02d3c5b72ca17c2b2b1869710b86523a8ccd3737`.
++
++## Repair — remove false controls and make the real domain exact
++
++The imported `2.0.1` surface advertised palette, density, position and texture
++axes that did not independently control the returned grid.  More seriously,
++three advertised "degenerate textures" were not lawful controls:
++
++- `no_commands` passed the old `self_check` but the protected Racket rule
++  crashed because `nearest-command` received an empty command list;
++- `identity_commands` claimed code 1 meant identity, but code 1 is clockwise
++  rotation and the output was not the input;
++- `no_objects` bypassed validation and produced an empty packed output.
++
++The pre-repair protected-Racket probe is retained at
++`checks/2827181c35c3/control-defect-before.json`.
++
++Version `3.0.0` exposes only the three real exact axes: `grid_h=10..16`,
++`grid_w=12..22`, and `n_objs=2..4`.  Unknown, false, floating, string and
++out-of-range values fail closed.  Explicit min/max combinations are
++constructive in every difficulty band.  The constructor uses isolated
++width-two source shapes, distinct commands and colours, and a width argument
++showing the complete axis product is lossless: at most one transformed crop is
++three columns wide, so the four-object worst case is `3+2+2+2+3 gaps = 12`.
++
++A pure `rule_mirror()` now spells out the protected authority and
++`observe_overrides()` recovers all advertised controls.  `self_check()` rejects
++missing commands/objects, mismatched command/object counts, unused commands,
++invalid colours, ambiguous repeated object colours, and any transformed pack
++that would clip cells.
++
++Verification: 13 focused tests passed.  The after-audit sampled 256 generated
++instances across four bands with zero self-check, determinism or cell-loss
++failures; eight min/max exact-override cases realized exactly.  Twenty-one
++canonical/generated cases matched protected Racket with zero mismatches.  All
++three former texture names now raise an explicit unknown-override error.
++Generator SHA-256 is
++`44b5caa04bab1418d858b0b3d49425b2015a7dadc32f1012dc3b95ce3084bde2`.
+diff --git a/repo/generators/2827181c35c3/tests/test_generator_2827181c35c3.py b/repo/generators/2827181c35c3/tests/test_generator_2827181c35c3.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2827181c35c3/tests/test_generator_2827181c35c3.py
+@@ -0,0 +1,132 @@
++"""Focused control and authority tests for 2827181c35c3."""
++from __future__ import annotations
++
++from copy import deepcopy
++import importlib.util
++from pathlib import Path
++import random
++
++import pytest
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_pairs, find_root, normalize_grid
++
++
++TASK_ID = "2827181c35c3"
++HOME = Path(__file__).resolve().parents[1]
++SPEC = importlib.util.spec_from_file_location(f"review_{TASK_ID}", HOME / "generator.py")
++assert SPEC and SPEC.loader
++GEN = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(GEN)
++
++
++def _racket(bridge: RacketBridge, source: str, grid: list[list[int]]) -> list[list[int]]:
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return normalize_grid(bridge.eval_text(f"({wrap_rule(source)} {literal})"))
++
++
++def _program() -> str:
++    pairs = canonical_pairs(TASK_ID, root=find_root(__file__))
++    programs = {pair["program_solution"] for pair in pairs if "program_solution" in pair}
++    if programs:
++        assert len(programs) == 1
++        return next(iter(programs))
++    # canonical_pairs intentionally strips metadata in some runtimes; load via Catalog.
++    from arcpuzzles import Catalog
++
++    record = Catalog(find_root(__file__)).get(TASK_ID)
++    programs = {v["program_solution"] for v in record["variants"]}
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def test_public_surface_contains_only_real_exact_axes():
++    assert GEN.VERSION == "3.0.0"
++    assert set(GEN.AXES) == {"grid_h", "grid_w", "n_objs"}
++    assert GEN.INCOMPATIBLE_OVERRIDE_COMBINATIONS == []
++    for kwargs in (
++        {"texture": "no_commands"},
++        {"texture": "identity_commands"},
++        {"palette_kind": "warm"},
++        {"density": "sparse"},
++        {"unknown": 1},
++        {"grid_h": True},
++        {"grid_w": 12.5},
++        {"n_objs": "3"},
++        {"grid_h": 9},
++        {"grid_w": 23},
++        {"n_objs": 1},
++        {"n_objs": 5},
++    ):
++        with pytest.raises((TypeError, ValueError)):
++            GEN.generate(1, 0, **kwargs)
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++@pytest.mark.parametrize(
++    "overrides",
++    [
++        {"grid_h": 10, "grid_w": 12, "n_objs": 2},
++        {"grid_h": 16, "grid_w": 22, "n_objs": 4},
++    ],
++)
++def test_exact_overrides_are_constructive_and_observable(band, overrides):
++    grid = GEN.generate(4242, 7, difficulty=band, **overrides)
++    assert GEN.self_check(grid) == []
++    assert GEN.observe_overrides(grid) == overrides
++
++
++def test_canonical_pairs_and_generated_boundaries_match_protected_racket():
++    source = _program()
++    pairs = canonical_pairs(TASK_ID, root=find_root(__file__))
++    with RacketBridge(timeout=30, startup_timeout=60, max_calls_before_restart=32) as bridge:
++        for pair in pairs:
++            assert GEN.rule_mirror(pair["input"]) == pair["output"]
++            assert _racket(bridge, source, pair["input"]) == pair["output"]
++        cases = [
++            GEN.generate(91, 0, difficulty="easy", grid_h=10, grid_w=12, n_objs=2),
++            GEN.generate(92, 1, difficulty="hard", grid_h=16, grid_w=22, n_objs=4),
++        ]
++        for grid in cases:
++            expected = GEN.rule_mirror(grid)
++            assert _racket(bridge, source, grid) == expected
++            assert sum(v != 0 for row in grid[1:] for v in row) == sum(
++                v != 0 for row in expected for v in row
++            )
++        assert bridge.runtime_identity["protected"] is True
++
++
++def test_generated_domain_never_clips_packed_objects():
++    for band in (None, "easy", "medium", "hard"):
++        for index in range(64):
++            grid = GEN.generate(282700 + index, index, difficulty=band)
++            assert GEN.self_check(grid) == []
++            out = GEN.rule_mirror(grid)
++            assert sum(v != 0 for row in grid[1:] for v in row) == sum(
++                v != 0 for row in out for v in row
++            )
++
++
++def test_self_check_rejects_inputs_that_crash_or_empty_the_authority():
++    no_commands = [[0] * 16 for _ in range(12)]
++    no_commands[3][3] = no_commands[3][4] = no_commands[4][3] = 4
++    assert GEN.self_check(no_commands)
++
++    no_objects = [[0] * 16 for _ in range(12)]
++    no_objects[0][3] = 1
++    no_objects[0][11] = 2
++    assert GEN.self_check(no_objects)
++
++
++def test_generation_is_deterministic_fresh_and_global_rng_pure():
++    random.seed(20261024)
++    state = random.getstate()
++    first = GEN.generate(77, 5, difficulty="medium")
++    assert random.getstate() == state
++    second = GEN.generate(77, 5, difficulty="medium")
++    assert first == second and first is not second
++    assert all(a is not b for a, b in zip(first, second))
++    original = deepcopy(second)
++    first[0][0] = 9
++    assert second == original
+diff --git a/repo/generators/87aae821984d/SUMMARY.md b/repo/generators/87aae821984d/SUMMARY.md
+--- a/repo/generators/87aae821984d/SUMMARY.md
++++ b/repo/generators/87aae821984d/SUMMARY.md
+@@ -1,9 +1,9 @@
+ # 87aae821984d
+ 
+-Version `4.0.0` generates a zero-background grid containing one logical cyan motif and one to five isolated yellow counter cells. The cyan motif may be disconnected and has a tight bbox of 2×2, 2×3, 3×2, or 3×3.
++Version `4.1.0` generates a zero-background grid containing one logical cyan motif and one to five isolated yellow counter cells. The cyan motif may be disconnected and has a tight bbox of 2×2, 2×3, 3×2, or 3×3.
+ 
+ Rule: count yellow cells; right/bottom-align every cyan cell in a fixed 3×3 tile, padding short/narrow motifs on the top/left; repeat the tile horizontally once per yellow cell. Output shape is always `3 × (3N)`.
+ 
+-The four-period teaching schedule covers full-span, top-padded, left-padded, top-and-left-padded, connected, and fragmented motifs. The exact override surface is `grid_h`, `grid_w`, `n_4_cells`, and `shape_kind`; all joint combinations are constructive and observable.
++The four-period teaching schedule covers full-span, top-padded, left-padded, top-and-left-padded, connected, and fragmented motifs.  Its repeat counts are deliberately permuted as 2,4,1,3 so cyan bbox class cannot replace counting yellow cells. The exact override surface is `grid_h`, `grid_w`, `n_4_cells`, and `shape_kind`; all joint combinations are constructive and observable.
+ 
+-Selected Racket authority: `RULE_HASH = 6f52927247b0`. Final generator SHA-256: `15a3c012540738dee4d3d31f9ffe68b8eebfcdfda23836b0cc4c3be0fd9b99b8`.
++Selected Racket authority: `RULE_HASH = 6f52927247b0`. Final generator SHA-256: `5f69c31cb68d526174e8d8a686db33b0472516541b746bc1ac001edb154b2d96`.
+diff --git a/repo/generators/87aae821984d/counterexamples/padding-fragmentation-count.json b/repo/generators/87aae821984d/counterexamples/padding-fragmentation-count.json
+--- a/repo/generators/87aae821984d/counterexamples/padding-fragmentation-count.json
++++ b/repo/generators/87aae821984d/counterexamples/padding-fragmentation-count.json
+@@ -134,6 +134,7 @@
+     "tight_bbox_without_3x3_padding",
+     "fixed_one_repeat",
+     "fixed_three_repeats",
++    "bbox_count_without_yellow",
+     "largest_connected_component_only",
+     "left_align_narrow_motif"
+   ]
+diff --git a/repo/generators/87aae821984d/generator.py b/repo/generators/87aae821984d/generator.py
+--- a/repo/generators/87aae821984d/generator.py
++++ b/repo/generators/87aae821984d/generator.py
+@@ -17,7 +17,7 @@
+ 
+ GENERATOR_ID = "87aae821984d"
+ TASK_ID = GENERATOR_ID
+-VERSION = "4.0.0"
++VERSION = "4.1.0"
+ RULE_HASH = "6f52927247b0"
+ 
+ SUMMARY = (
+@@ -88,9 +88,9 @@
+     index = _profile_index(sample_index)
+     # The first residue pins exact canonical size/palette support in every band.
+     if index == 0:
+-        return 9, 9, 1, "span_3x3", True
++        return 9, 9, 2, "span_3x3", True
+     if index == 1:
+-        return 9, 9, 2, "pad_top", False
++        return 9, 9, 4, "pad_top", False
+ 
+     dims_by_band = {
+         "easy": ((9, 10), (10, 9), (10, 10)),
+@@ -100,11 +100,15 @@
+     }
+     band_dims = dims_by_band.get(difficulty, dims_by_band[None])
+     h, w = band_dims[index - 1]
++    # Counter counts deliberately do not encode the bbox class.  The old
++    # 1,2,3,4 schedule let a bbox-only rival infer the repeat count without
++    # reading any yellow cells.  This permutation keeps the four lesson roles
++    # while making every ordinary profile a direct counterexample to that rule.
+     defaults = (
+-        (1, "span_3x3", True),
+-        (2, "pad_top", False),
+-        (3, "pad_left", True),
+-        (4, "pad_top_left", False),
++        (2, "span_3x3", True),
++        (4, "pad_top", False),
++        (1, "pad_left", True),
++        (3, "pad_top_left", False),
+     )
+     n_4, kind, fragmented = defaults[index]
+     return h, w, n_4, kind, fragmented
+@@ -407,6 +411,18 @@
+     return _fixed_repeat(grid, 3)
+ 
+ 
++def _bbox_count_without_yellow(grid: Grid) -> Grid:
++    """Wrong rule: infer repeats from cyan bbox and ignore yellow cells."""
++    kind = observe_overrides(grid)["shape_kind"]
++    repeats = {
++        "span_3x3": 1,
++        "pad_top": 2,
++        "pad_left": 3,
++        "pad_top_left": 4,
++    }[kind]
++    return _fixed_repeat(grid, repeats)
++
++
+ def _largest_component_only(grid: Grid) -> Grid:
+     components = _components(_cells_of(grid, 8))
+     component = min(components, key=lambda cells: (-len(cells), min(cells)))
+@@ -430,6 +446,7 @@
+     "tight_bbox_without_3x3_padding": _tight_bbox_tile,
+     "fixed_one_repeat": _fixed_one_repeat,
+     "fixed_three_repeats": _fixed_three_repeats,
++    "bbox_count_without_yellow": _bbox_count_without_yellow,
+     "largest_connected_component_only": _largest_component_only,
+     "left_align_narrow_motif": _left_align_narrow_motif,
+ }
+@@ -461,6 +478,20 @@
+     return _valid_and(lambda g: len(_components(_cells_of(g, 8))) > 1, grid)
+ 
+ 
++def _witness_bbox_count_decoupled(grid: Grid) -> bool:
++    def decoupled(g: Grid) -> bool:
++        kind = observe_overrides(g)["shape_kind"]
++        inferred = {
++            "span_3x3": 1,
++            "pad_top": 2,
++            "pad_left": 3,
++            "pad_top_left": 4,
++        }[kind]
++        return len(_cells_of(g, 4)) != inferred
++
++    return _valid_and(decoupled, grid)
++
++
+ def _witness_left_padding(grid: Grid) -> bool:
+     return _valid_and(
+         lambda g: observe_overrides(g)["shape_kind"] in {"pad_left", "pad_top_left"},
+@@ -473,6 +504,7 @@
+     "counter_count_not_one": _witness_not_one,
+     "counter_count_not_three": _witness_not_three,
+     "disconnected_cyan_motif": _witness_fragmented,
++    "bbox_count_decoupled": _witness_bbox_count_decoupled,
+     "left_padded_shape": _witness_left_padding,
+ }
+ WITNESS_RIVALS = {
+@@ -480,6 +512,7 @@
+     "counter_count_not_one": ["fixed_one_repeat"],
+     "counter_count_not_three": ["fixed_three_repeats"],
+     "disconnected_cyan_motif": ["largest_connected_component_only"],
++    "bbox_count_decoupled": ["bbox_count_without_yellow"],
+     "left_padded_shape": ["left_align_narrow_motif"],
+ }
+ 
+diff --git a/repo/generators/87aae821984d/notes.md b/repo/generators/87aae821984d/notes.md
+--- a/repo/generators/87aae821984d/notes.md
++++ b/repo/generators/87aae821984d/notes.md
+@@ -151,3 +151,26 @@
+ 
+ Current source-bound ticket observations: `generators/87aae821984d/evidence/supplementary-current.json`. Results are reviewer-reported; blocked or unknown stays explicit. These observations do not approve a generator or variant, resolve audits, or admit data to training.
+ <!-- arcpuzzles-current-supplementary:end -->
++
++## D12 — Decouple ordinary repeat count from cyan bbox class (review-22c1c41413475c9e)
++
++The version-4.0 ordinary four-profile schedule accidentally encoded the answer
++count in the cyan bounding-box class: `span_3x3→1`, `pad_top→2`,
++`pad_left→3`, `pad_top_left→4`.  A learner could therefore ignore every yellow
++counter cell, infer the repeat count from cyan geometry, fit all ordinary
++lessons, and fail on a query with an independently varied count.
++
++Version `4.1.0` keeps the same four semantic profile roles but permutes the
++ordinary counts to `2,4,1,3`.  The executable rival
++`bbox_count_without_yellow` and witness are now part of the source-bound lesson
++contract, and the retained counterexample names it explicitly.  Every ordinary
++profile in every difficulty band now refutes that rival directly; the first
++four medium observations are `(span_3x3,2)`, `(pad_top,4)`, `(pad_left,1)`,
++`(pad_top_left,3)`.
++
++Verification: 39 focused tests passed.  A protected-Racket parity probe covered
++all seven canonical pairs plus sixteen generated ordinary profiles (23 total),
++with zero mismatches and zero bbox-only-rival survivors.  Generator SHA-256 is
++`5f69c31cb68d526174e8d8a686db33b0472516541b746bc1ac001edb154b2d96`;
++the selected program SHA-256 remains
++`6f52927247b0ab0252cb05eea032196e45340f7993bc06b916942bc319a50af0`.
+diff --git a/repo/generators/87aae821984d/tests/test_generator_87aae821984d.py b/repo/generators/87aae821984d/tests/test_generator_87aae821984d.py
+--- a/repo/generators/87aae821984d/tests/test_generator_87aae821984d.py
++++ b/repo/generators/87aae821984d/tests/test_generator_87aae821984d.py
+@@ -198,3 +198,23 @@
+         (HOME / "counterexamples" / "padding-fragmentation-count.json").read_text()
+     )
+     assert shortcut(record["input"]) != record["expected_output"]
++
++
++def test_default_schedule_decouples_bbox_class_from_yellow_repeat_count():
++    """A bbox-only rival must fail on ordinary draws, not only overrides."""
++    rival_name = "bbox_count_without_yellow"
++    assert rival_name in GEN.LESSON_COMPETITORS
++    expected = [
++        ("span_3x3", 2),
++        ("pad_top", 4),
++        ("pad_left", 1),
++        ("pad_top_left", 3),
++    ]
++    for band in (None, "easy", "medium", "hard"):
++        observed = []
++        for index in range(4):
++            grid = GEN.generate(87002026, index, difficulty=band)
++            axes = GEN.observe_overrides(grid)
++            observed.append((axes["shape_kind"], axes["n_4_cells"]))
++            assert GEN.LESSON_COMPETITORS[rival_name](grid) != GEN.rule_mirror(grid)
++        assert observed == expected
+diff --git a/repo/generators/ff973026bfbe/SUMMARY.md b/repo/generators/ff973026bfbe/SUMMARY.md
+--- a/repo/generators/ff973026bfbe/SUMMARY.md
++++ b/repo/generators/ff973026bfbe/SUMMARY.md
+@@ -4,3 +4,13 @@
+ 
+ Kind: `per_puzzle`. Imported version: `2.1.0`.
+ Approval is derived by the catalog from current code and retained evidence.
++
++## Native parametric sidecar
++
++`workspace/parametric/` preserves the canonical rule as the default
++`column_policy=all_top_markers` and adds
++`column_policy=signal_ranked_marker`: count a neutral signal object and use that
++one-based count to select which top-row red column is painted across the blue
++rows.  It supports 2–6 demonstrations and 1–4 prefix-stable queries, including
++a substantive 30×30 query.  This sidecar is qualified reviewer evidence only;
++it is not production-integrated or admitted to training.
+diff --git a/repo/generators/ff973026bfbe/notes.md b/repo/generators/ff973026bfbe/notes.md
+--- a/repo/generators/ff973026bfbe/notes.md
++++ b/repo/generators/ff973026bfbe/notes.md
+@@ -146,3 +146,45 @@
+ The initial full after-battery process was interrupted by the command-interface
+ duration ceiling after three green stages; the public hash-bound `--resume`
+ path completed the remaining nine stages, yielding a 12/12-green aggregate.
++
++## D10 — Native parametric column-policy family (review-22c1c41413475c9e)
++
++The production generator and selected canonical Racket authority remain
++unchanged.  A native sidecar under `workspace/parametric/` now exposes one
++meaningful episode-fixed parameter:
++
++- `all_top_markers` is the byte-exact canonical default: collect every row
++  containing blue (`1`), collect every top-row red (`2`) column, and paint the
++  full Cartesian product green (`3`).
++- `signal_ranked_marker` first identifies the unique neutral-colour object,
++  counts its cells, treats that count as a one-based rank among the top-row red
++  markers, then paints only the ranked column across the blue-marked rows.
++
++This is a real sequential dependency: **A** measures the signal object;
++**intermediate** is its input-dependent cell count/rank; **B** cannot select the
++output column until that rank is known.  The protected-Racket counterfactual in
++`checks/ff973026bfbe/causal/witness.json` changes the rank from 3 to 4 on the
++same input and changes 12 final cells.
++
++The family uses matched inputs across settings, supports 2–6 demonstrations
++and independently prefix-stable 1–4 queries, and always has four distinct query
++constructions.  Query dimensions are 14×18, 19×23, 24×27 and 30×30; the 30×30
++case has twelve active rows, fourteen candidate columns, a bottom-touching
++signal object, and left/right/top boundary contacts rather than padded empty
++space.
++
++The first two demonstrations use signal ranks 2 and 5, with row counts 4 and 3,
++so they distinguish the two settings and reject the measured shortcut set:
++first/last/middle marker, rank from right, rank+1, blue-row-count rank, fixed
++ranks 2/5, all-red-columns, and left-border-rows-only.  The reusable
++`workspace/parametric/audit_lessons.py` checked 128 seeds, both settings and
++2/3/6 demonstrations: 768 episodes, 5,888 labelled pairs, 768 exact 30×30
++stress pairs, and no harmful survivor among those finite rivals.
++
++Native qualification covered both settings at seeds 0 and 17 with three demos
++and four queries: four jobs, 28 retained labels and 40 protected-Racket
++executions.  Qualification execution SHA-256 is
++`3cf0013029bb89eced69dfd1c6c249622adeaf8b03eceb93dfa6001679682a54`.
++The source inventory remains reviewer-reported and training admission remains
++false.  Exact-byte owner integration, native requalification and fresh
++acceptance are still required.
+diff --git a/repo/generators/ff973026bfbe/tests/test_parametric_signal_rank.py b/repo/generators/ff973026bfbe/tests/test_parametric_signal_rank.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ff973026bfbe/tests/test_parametric_signal_rank.py
+@@ -0,0 +1,204 @@
++"""Focused native-parametric contract tests for ff973026bfbe."""
++from __future__ import annotations
++
++import copy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import (
++    canonical_path,
++    find_root,
++    normalize_grid,
++    public_challenge_bytes,
++    public_challenge_id,
++)
++
++
++TASK_ID = "ff973026bfbe"
++ROOT = find_root(__file__)
++PARAMETRIC = ROOT / "generators" / TASK_ID / "workspace" / "parametric"
++CANONICAL = "all_top_markers"
++ALTERNATE = "signal_ranked_marker"
++CANONICAL_SHA256 = "929315c16ae8e6f66d204f11aaf83890c3456c0faa370fec842cbd67dce04b85"
++
++
++def _load(name: str):
++    path = PARAMETRIC / f"{name}.py"
++    assert path.is_file(), f"missing {path.relative_to(ROOT)}"
++    spec = importlib.util.spec_from_file_location(f"test_{TASK_ID}_{name}", path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _canonical_program() -> str:
++    programs = set()
++    with canonical_path(ROOT).open(encoding="utf-8") as handle:
++        for line in handle:
++            if line.strip():
++                row = json.loads(line)
++                if row.get("task_id") == TASK_ID:
++                    programs.add(row["program_solution"])
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def _inputs(episode: dict) -> list:
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def _racket(bridge: RacketBridge, source: str, grid: list[list[int]]) -> list[list[int]]:
++    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++    return normalize_grid(bridge.eval_text(f"({wrap_rule(source)} {literal})"))
++
++
++def test_adapter_contract_and_exact_canonical_default():
++    adapter = _load("adapter")
++    contract = json.loads((PARAMETRIC / "promotion.json").read_text(encoding="utf-8"))
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": f"generators/{TASK_ID}/workspace/parametric/adapter.py",
++        "parameters": {"column_policy": [CANONICAL, ALTERNATE]},
++        "default": {"column_policy": CANONICAL},
++        "limits": {"demos": [2, 6], "queries": [1, 4]},
++        "resources": [
++            f"generators/{TASK_ID}/workspace/parametric/prototype.py",
++            f"generators/{TASK_ID}/workspace/parametric/canonical.rkt",
++            f"generators/{TASK_ID}/workspace/parametric/audit_lessons.py",
++        ],
++    }
++    canonical = _canonical_program()
++    assert hashlib.sha256(canonical.encode()).hexdigest() == CANONICAL_SHA256
++    assert (PARAMETRIC / "canonical.rkt").read_bytes() == canonical.encode()
++    assert adapter.program({"column_policy": CANONICAL}) == canonical
++    alternate = adapter.program({"column_policy": ALTERNATE})
++    assert alternate != canonical
++    assert "signal-size" in alternate
++    assert "selected-col" in alternate
++    assert "(nth mark-cols (- signal-size 1))" in alternate
++
++
++def test_settings_seed_and_counts_fail_closed():
++    adapter = _load("adapter")
++    for bad in (
++        {},
++        {"column_policy": CANONICAL, "extra": 1},
++        {"column_policy": "all_red_cells"},
++        {"column_policy": 1},
++    ):
++        with pytest.raises(ValueError):
++            adapter.program(bad)
++    for seed in (True, -1, 1.0, "1", 2**63):
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(seed, {"column_policy": CANONICAL}, 3, 4)
++    for demos, queries in ((1, 4), (7, 4), (True, 4), (3, 0), (3, 5), (3, True)):
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(1, {"column_policy": CANONICAL}, demos, queries)
++
++
++def test_inputs_are_matched_distinct_and_every_label_changes_between_settings():
++    adapter = _load("adapter")
++    canonical = adapter.generate(23, {"column_policy": CANONICAL}, 3, 4)
++    alternate = adapter.generate(23, {"column_policy": ALTERNATE}, 3, 4)
++    assert _inputs(canonical) == _inputs(alternate)
++    signatures = [json.dumps(grid, separators=(",", ":")) for grid in _inputs(canonical)]
++    assert len(signatures) == len(set(signatures)) == 7
++    for left, right in zip(
++        canonical["train"] + canonical["test"],
++        alternate["train"] + alternate["test"],
++        strict=True,
++    ):
++        assert left["output"] != right["output"]
++
++
++def test_demo_and_query_counts_are_independent_prefixes():
++    adapter = _load("adapter")
++    setting = {"column_policy": ALTERNATE}
++    minimum = adapter.generate(41, setting, 2, 1)
++    full_queries = adapter.generate(41, setting, 2, 4)
++    full_demos = adapter.generate(41, setting, 6, 4)
++    assert minimum["train"] == full_queries["train"] == full_demos["train"][:2]
++    assert minimum["test"] == full_queries["test"][:1]
++    assert full_queries["test"] == full_demos["test"]
++    assert len(full_demos["train"]) == 6
++    assert len(full_demos["test"]) == 4
++
++
++def test_two_demonstrations_identify_each_setting_and_refute_shortcuts():
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    for selected in (CANONICAL, ALTERNATE):
++        episode = adapter.generate(57, {"column_policy": selected}, 2, 4)
++        audit = prototype.audit_episode(episode, selected)
++        assert audit["surviving_declared_rules"] == [selected]
++        assert audit["query_disagreements_against_other_setting"] == 4
++        assert audit["harmful_shortcut_survivors"] == []
++        ranks = [prototype.analyze_input(pair["input"])["signal_size"] for pair in episode["train"]]
++        assert ranks == [2, 5]
++        row_counts = [prototype.analyze_input(pair["input"])["active_row_count"] for pair in episode["train"]]
++        assert all(rank != count for rank, count in zip(ranks, row_counts, strict=True))
++
++
++def test_four_queries_cover_spread_boundaries_and_exact_30x30_stress():
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    episode = adapter.generate(73, {"column_policy": ALTERNATE}, 3, 4)
++    dims = [(len(pair["input"]), len(pair["input"][0])) for pair in episode["test"]]
++    assert dims == [(14, 18), (19, 23), (24, 27), (30, 30)]
++    metrics = [prototype.input_metrics(pair["input"]) for pair in episode["test"]]
++    assert [row["signal_size"] for row in metrics] == [3, 6, 4, 5]
++    assert all(row["top_marker_count"] >= row["signal_size"] + 2 for row in metrics)
++    stress = metrics[-1]
++    assert stress["height"] == stress["width"] == 30
++    assert stress["active_row_count"] == 12
++    assert stress["top_marker_count"] == 14
++    assert stress["occupied_cells"] >= 35
++    assert stress["canonical_painted_cells"] >= 160
++    assert stress["boundary_sides"] == ["bottom", "left", "right", "top"]
++
++
++def test_public_turn_masks_answers_program_setting_and_future_queries():
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    episode = adapter.generate(89, {"column_policy": ALTERNATE}, 3, 4)
++    public = prototype.public_turn(episode, 0)
++    raw = public_challenge_bytes(public)
++    parsed = json.loads(raw)
++    assert len(parsed["test"]) == 1
++    assert all(set(pair) == {"input"} for pair in parsed["test"])
++    assert b"column_policy" not in raw
++    assert b"program_solution" not in raw
++    assert ALTERNATE.encode() not in raw
++    assert public_challenge_id(public) == hashlib.sha256(raw).hexdigest()
++
++    mutated = copy.deepcopy(episode)
++    mutated["test"][0]["output"][0][0] = (mutated["test"][0]["output"][0][0] + 1) % 10
++    assert public_challenge_id(prototype.public_turn(mutated, 0)) == public_challenge_id(public)
++
++
++def test_python_claims_match_both_exact_racket_programs_on_boundary_and_stress_cases():
++    adapter = _load("adapter")
++    with RacketBridge(timeout=30, startup_timeout=60, max_calls_before_restart=32) as bridge:
++        for selected in (CANONICAL, ALTERNATE):
++            episode = adapter.generate(101, {"column_policy": selected}, 2, 4)
++            source = adapter.program({"column_policy": selected})
++            for pair in episode["train"] + episode["test"]:
++                assert _racket(bridge, source, pair["input"]) == pair["output"]
++        assert bridge.runtime_identity["protected"] is True
++
++
++def test_causal_witness_wrong_rank_changes_the_selected_column():
++    prototype = _load("prototype")
++    witness = prototype.causal_witness(101)
++    assert witness["signal_size"] == 3
++    assert witness["wrong_signal_size"] == 4
++    assert witness["selected_col"] != witness["wrong_selected_col"]
++    assert witness["output"] != witness["counterfactual_output"]
++    assert witness["differing_cells"] >= 2
+diff --git a/repo/generators/ff973026bfbe/workspace/parametric/adapter.py b/repo/generators/ff973026bfbe/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ff973026bfbe/workspace/parametric/adapter.py
+@@ -0,0 +1,45 @@
++"""Exact-path native adapter for the ff973026bfbe column-policy family."""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++from typing import Any
++
++
++_PROTOTYPE_PATH = Path(__file__).with_name("prototype.py")
++_MODULE_NAME = "_ff973026bfbe_parametric_" + hashlib.sha256(
++    str(_PROTOTYPE_PATH).encode() + _PROTOTYPE_PATH.read_bytes()
++).hexdigest()
++
++
++def _load_prototype():
++    module = sys.modules.get(_MODULE_NAME)
++    if module is not None:
++        return module
++    spec = importlib.util.spec_from_file_location(_MODULE_NAME, _PROTOTYPE_PATH)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load adjacent prototype from {_PROTOTYPE_PATH}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[_MODULE_NAME] = module
++    try:
++        spec.loader.exec_module(module)
++    except BaseException:
++        sys.modules.pop(_MODULE_NAME, None)
++        raise
++    return module
++
++
++_PROTOTYPE = _load_prototype()
++
++
++def program(settings: Any) -> str:
++    selected = _PROTOTYPE.validate_settings(settings)
++    return _PROTOTYPE.program_for(selected)
++
++
++def generate(seed: int, settings: Any, demos: int, queries: int) -> dict[str, Any]:
++    selected = _PROTOTYPE.validate_settings(settings)
++    return deepcopy(_PROTOTYPE.build_claimed_episode(seed, selected, demos, queries))
+diff --git a/repo/generators/ff973026bfbe/workspace/parametric/audit_lessons.py b/repo/generators/ff973026bfbe/workspace/parametric/audit_lessons.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ff973026bfbe/workspace/parametric/audit_lessons.py
+@@ -0,0 +1,87 @@
++#!/usr/bin/env python3
++"""Bounded learnability/count/spread audit for the ff973026bfbe family."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++
++HERE = Path(__file__).resolve().parent
++
++
++def _load(name: str):
++    path = HERE / f"{name}.py"
++    key = f"_ff973026bfbe_audit_{name}_" + hashlib.sha256(path.read_bytes()).hexdigest()
++    spec = importlib.util.spec_from_file_location(key, path)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load {path}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[key] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--seeds", type=int, default=128)
++    parser.add_argument("--out", type=Path)
++    args = parser.parse_args(argv)
++    if args.seeds < 1:
++        parser.error("--seeds must be positive")
++
++    prototype = _load("prototype")
++    adapter = _load("adapter")
++    failures: list[dict] = []
++    episodes = 0
++    pairs = 0
++    stress_pairs = 0
++    for seed in range(args.seeds):
++        matched: dict[str, list] = {}
++        for selected in prototype.SETTINGS:
++            setting = {"column_policy": selected}
++            for demos in (2, 3, 6):
++                episode = adapter.generate(seed, setting, demos, 4)
++                episodes += 1
++                pairs += len(episode["train"]) + len(episode["test"])
++                audit = prototype.audit_episode(episode, selected)
++                if audit["surviving_declared_rules"] != [selected] or audit["harmful_shortcut_survivors"]:
++                    failures.append({"seed": seed, "setting": selected, "demos": demos, "audit": audit})
++                metrics = prototype.input_metrics(episode["test"][-1]["input"])
++                if metrics["height"] == metrics["width"] == 30 and metrics["boundary_sides"] == ["bottom", "left", "right", "top"]:
++                    stress_pairs += 1
++                else:
++                    failures.append({"seed": seed, "setting": selected, "demos": demos, "stress": metrics})
++                if demos == 3:
++                    matched[selected] = [pair["input"] for pair in episode["train"] + episode["test"]]
++            minimum = adapter.generate(seed, setting, 2, 1)
++            full = adapter.generate(seed, setting, 6, 4)
++            if minimum["train"] != full["train"][:2] or minimum["test"] != full["test"][:1]:
++                failures.append({"seed": seed, "setting": selected, "prefix": False})
++        if matched[prototype.CANONICAL] != matched[prototype.ALTERNATE]:
++            failures.append({"seed": seed, "matched_inputs": False})
++
++    report = {
++        "schema": "ff973026bfbe-parametric-audit-v1",
++        "seeds": args.seeds,
++        "episodes": episodes,
++        "labeled_pairs": pairs,
++        "stress_30x30_pairs": stress_pairs,
++        "declared_shortcuts": sorted(prototype.SHORTCUTS),
++        "failure_count": len(failures),
++        "failures": failures[:32],
++        "status": "passed" if not failures else "failed",
++    }
++    body = json.dumps(report, indent=2, sort_keys=True) + "\n"
++    if args.out:
++        args.out.parent.mkdir(parents=True, exist_ok=True)
++        args.out.write_text(body, encoding="utf-8")
++    print(body, end="")
++    return 0 if not failures else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/ff973026bfbe/workspace/parametric/canonical.rkt b/repo/generators/ff973026bfbe/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ff973026bfbe/workspace/parametric/canonical.rkt
+@@ -0,0 +1,6 @@
++(rule!
++  (let* ((mark-rows (map fst (find-color g 1)))
++         (mark-cols (map snd (filter (lambda (p) (= (fst p) 0)) (find-color g 2)))))
++    (reduce (lambda (out r)
++      (reduce (lambda (acc c) (set-cell acc r c 3)) out mark-cols))
++      g mark-rows)))
+\ No newline at end of file
+diff --git a/repo/generators/ff973026bfbe/workspace/parametric/evidence/current/audit-summary.json b/repo/generators/ff973026bfbe/workspace/parametric/evidence/current/audit-summary.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ff973026bfbe/workspace/parametric/evidence/current/audit-summary.json
+@@ -0,0 +1,22 @@
++{
++  "declared_shortcuts": [
++    "all_red_columns",
++    "blue_row_count_rank",
++    "first_top_marker",
++    "fixed_rank_2",
++    "fixed_rank_5",
++    "last_top_marker",
++    "left_border_rows_only",
++    "middle_top_marker",
++    "signal_rank_from_right",
++    "signal_rank_plus_one"
++  ],
++  "episodes": 768,
++  "failure_count": 0,
++  "failures": [],
++  "labeled_pairs": 5888,
++  "schema": "ff973026bfbe-parametric-audit-v1",
++  "seeds": 128,
++  "status": "passed",
++  "stress_30x30_pairs": 768
++}
+diff --git a/repo/generators/ff973026bfbe/workspace/parametric/evidence/current/public-export-check.json b/repo/generators/ff973026bfbe/workspace/parametric/evidence/current/public-export-check.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ff973026bfbe/workspace/parametric/evidence/current/public-export-check.json
+@@ -0,0 +1,60 @@
++{
++  "demonstrations": null,
++  "files": [
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_review_194340/WORK/checks/ff973026bfbe/public/498c6a199559e1177e6da3ea85a7f817a39979ea850b4392ae8256709dd17278.json",
++      "queries": 1,
++      "sha256": "498c6a199559e1177e6da3ea85a7f817a39979ea850b4392ae8256709dd17278"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_review_194340/WORK/checks/ff973026bfbe/public/6261ae0db4f6cbc69eabf974816eae4365ad8239fa2edbbad17f5b3166953fd2.json",
++      "queries": 1,
++      "sha256": "6261ae0db4f6cbc69eabf974816eae4365ad8239fa2edbbad17f5b3166953fd2"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_review_194340/WORK/checks/ff973026bfbe/public/8463db2734c478d29d35b892c81440b79a4b4f4179950f0ed10c3122f95739fd.json",
++      "queries": 1,
++      "sha256": "8463db2734c478d29d35b892c81440b79a4b4f4179950f0ed10c3122f95739fd"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_review_194340/WORK/checks/ff973026bfbe/public/9658ad9199b886240ba7e3cc8679a5d500dfcda40657f8e35dce60aa06f111d9.json",
++      "queries": 1,
++      "sha256": "9658ad9199b886240ba7e3cc8679a5d500dfcda40657f8e35dce60aa06f111d9"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_review_194340/WORK/checks/ff973026bfbe/public/bb3912554b97c1e3c38f40f6933db71986f550b96aa5c9e60de9a1686b5e4399.json",
++      "queries": 1,
++      "sha256": "bb3912554b97c1e3c38f40f6933db71986f550b96aa5c9e60de9a1686b5e4399"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_review_194340/WORK/checks/ff973026bfbe/public/be5d0fcf53b48650527eb5d649ec3e5726f14c108143d6fbef1d8a109e3b38d0.json",
++      "queries": 1,
++      "sha256": "be5d0fcf53b48650527eb5d649ec3e5726f14c108143d6fbef1d8a109e3b38d0"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_review_194340/WORK/checks/ff973026bfbe/public/dd157159bbf6dfdbe70bee40ba1354ef09309bbda9d917ae2d9326c1a5202577.json",
++      "queries": 1,
++      "sha256": "dd157159bbf6dfdbe70bee40ba1354ef09309bbda9d917ae2d9326c1a5202577"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_review_194340/WORK/checks/ff973026bfbe/public/f50ecabefe1d9843491e901f18ee64a034699be217bd1844011cb6cefdeca12b.json",
++      "queries": 1,
++      "sha256": "f50ecabefe1d9843491e901f18ee64a034699be217bd1844011cb6cefdeca12b"
++    }
++  ],
++  "files_checked": 8,
++  "findings": [],
++  "limits": "Saved-file structure/identity only. Does not execute a writer, test private-metadata invariance, verify labels, establish identifiability or approve variants.",
++  "queries": 1,
++  "reference_labels_checked": false,
++  "schema": "arcpuzzles-public-export-check-v1",
++  "status": "passed"
++}
+diff --git a/repo/generators/ff973026bfbe/workspace/parametric/evidence/current/task-tests.log b/repo/generators/ff973026bfbe/workspace/parametric/evidence/current/task-tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ff973026bfbe/workspace/parametric/evidence/current/task-tests.log
+@@ -0,0 +1,2 @@
++.................................                                        [100%]
++33 passed in 3.00s
+diff --git a/repo/generators/ff973026bfbe/workspace/parametric/evidence/manifest.json b/repo/generators/ff973026bfbe/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ff973026bfbe/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,87 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "929315c16ae8e6f66d204f11aaf83890c3456c0faa370fec842cbd67dce04b85",
++  "canonical_rule_hash": "0f7e32eb6ec7",
++  "default": {
++    "column_policy": "all_top_markers"
++  },
++  "evidence_root": "generators/ff973026bfbe/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 19580,
++      "path": "generators/ff973026bfbe/generator.py",
++      "sha256": "0148254f12ff4bfc72a1e9968ed38bff74039f965e3f345777a66cf66647bcea"
++    },
++    {
++      "bytes": 8650,
++      "path": "generators/ff973026bfbe/tests/test_parametric_signal_rank.py",
++      "sha256": "70a160b1ed1597a78876f066bbc485b45159d08d38c55b46c6214ac4c36e7704"
++    },
++    {
++      "bytes": 1396,
++      "path": "generators/ff973026bfbe/workspace/parametric/adapter.py",
++      "sha256": "198b695e9c28cff647a4da5cbf6a4bc46abdb58bff2d2eb0c124474a66b7ba50"
++    },
++    {
++      "bytes": 3471,
++      "path": "generators/ff973026bfbe/workspace/parametric/audit_lessons.py",
++      "sha256": "d5cea933a43cf48891a05291d4114bcc4de849fce55643065f50eceea74cb30f"
++    },
++    {
++      "bytes": 256,
++      "path": "generators/ff973026bfbe/workspace/parametric/canonical.rkt",
++      "sha256": "929315c16ae8e6f66d204f11aaf83890c3456c0faa370fec842cbd67dce04b85"
++    },
++    {
++      "bytes": 481,
++      "path": "generators/ff973026bfbe/workspace/parametric/evidence/current/audit-summary.json",
++      "sha256": "cf80c3abb501e8b932c34de72fe3067edf30f3ebea176550cf4816222f43cbaf"
++    },
++    {
++      "bytes": 2704,
++      "path": "generators/ff973026bfbe/workspace/parametric/evidence/current/public-export-check.json",
++      "sha256": "80e8fc00047044304154d3bbdebf72c1609ec06e019bb5eacae48184fce49ef3"
++    },
++    {
++      "bytes": 99,
++      "path": "generators/ff973026bfbe/workspace/parametric/evidence/current/task-tests.log",
++      "sha256": "20e4d3b3f993cf15421ef86d07e4d0ffcf3cde085af83a273e0ca76b80985ca1"
++    },
++    {
++      "bytes": 607,
++      "path": "generators/ff973026bfbe/workspace/parametric/promotion.json",
++      "sha256": "d8e98c0b12fce65ca84709390d8bd2c7729d55c4244b66a4d9cf941e1e7fa309"
++    },
++    {
++      "bytes": 20413,
++      "path": "generators/ff973026bfbe/workspace/parametric/prototype.py",
++      "sha256": "993f931feb9b339a404f330c214a98ff5625e7bf37df81529477d00dbc8d000a"
++    }
++  ],
++  "generator_sha256": "0148254f12ff4bfc72a1e9968ed38bff74039f965e3f345777a66cf66647bcea",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "column_policy": [
++      "all_top_markers",
++      "signal_ranked_marker"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "33 task tests passed; 128-seed/768-episode learnability audit passed with 0 harmful shortcut survivors; 8 saved one-query public projections passed the public export checker; protected-Racket parity was exercised for both settings including 30x30.",
++  "rule_task_id": "ff973026bfbe",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "ff973026bfbe",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/ff973026bfbe/workspace/parametric/promotion.json b/repo/generators/ff973026bfbe/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ff973026bfbe/workspace/parametric/promotion.json
+@@ -0,0 +1,28 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/ff973026bfbe/workspace/parametric/adapter.py",
++  "parameters": {
++    "column_policy": [
++      "all_top_markers",
++      "signal_ranked_marker"
++    ]
++  },
++  "default": {
++    "column_policy": "all_top_markers"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "resources": [
++    "generators/ff973026bfbe/workspace/parametric/prototype.py",
++    "generators/ff973026bfbe/workspace/parametric/canonical.rkt",
++    "generators/ff973026bfbe/workspace/parametric/audit_lessons.py"
++  ]
++}
+diff --git a/repo/generators/ff973026bfbe/workspace/parametric/prototype.py b/repo/generators/ff973026bfbe/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/ff973026bfbe/workspace/parametric/prototype.py
+@@ -0,0 +1,536 @@
++"""Matched-input parametric family for ff973026bfbe.
++
++The canonical setting paints every blue-marked row × top-row red-marker column.
++The alternate first measures the neutral signal object's cell count, then uses
++that one-based rank to choose one top-row red marker before painting its column.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++from collections import namedtuple
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any, Callable
++
++
++TASK_ID = "ff973026bfbe"
++CANONICAL = "all_top_markers"
++ALTERNATE = "signal_ranked_marker"
++SETTINGS = (CANONICAL, ALTERNATE)
++MAX_SEED = 2**63 - 1
++
++_CANONICAL_PATH = Path(__file__).with_name("canonical.rkt")
++
++ALTERNATE_PROGRAM = """(rule!
++  (let* ((mark-rows (map fst (find-color g 1)))
++         (mark-cols (map snd (filter (lambda (p) (= (fst p) 0)) (find-color g 2))))
++         (signal-color
++           (find (lambda (c) (and (not (= c 1)) (not (= c 2))))
++                 (grid-colors g 0)))
++         (signal-size (count-color g signal-color))
++         (selected-col (nth mark-cols (- signal-size 1))))
++    (reduce (lambda (out r) (set-cell out r selected-col 3))
++            g mark-rows)))"""
++
++
++SceneSpec = namedtuple(
++    "SceneSpec",
++    "height width signal_size active_rows top_markers red_decoys stress",
++    defaults=(False,),
++)
++
++
++DEMO_SPECS = (
++    SceneSpec(9, 12, 2, 4, 6, 1),
++    SceneSpec(10, 14, 5, 3, 7, 2),
++    SceneSpec(12, 16, 3, 5, 7, 1),
++    SceneSpec(14, 18, 6, 4, 8, 3),
++    SceneSpec(16, 20, 4, 6, 8, 2),
++    SceneSpec(18, 22, 2, 7, 9, 2),
++)
++QUERY_SPECS = (
++    SceneSpec(14, 18, 3, 6, 8, 2),
++    SceneSpec(19, 23, 6, 8, 10, 3),
++    SceneSpec(24, 27, 4, 10, 12, 4),
++    SceneSpec(30, 30, 5, 12, 14, 5, True),
++)
++
++_BASE_SHAPES: dict[int, tuple[tuple[int, int], ...]] = {
++    2: ((0, 0), (0, 1)),
++    3: ((0, 0), (1, 0), (1, 1)),
++    4: ((0, 0), (0, 1), (1, 0), (1, 1)),
++    5: ((0, 1), (1, 0), (1, 1), (1, 2), (2, 1)),
++    6: ((0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)),
++}
++
++
++def validate_settings(settings: Any) -> str:
++    if not isinstance(settings, dict) or set(settings) != {"column_policy"}:
++        raise ValueError("settings must contain exactly column_policy")
++    selected = settings["column_policy"]
++    if not isinstance(selected, str) or selected not in SETTINGS:
++        raise ValueError(f"column_policy must be one of {SETTINGS}")
++    return selected
++
++
++def _strict_int(name: str, value: Any, low: int, high: int) -> int:
++    if isinstance(value, bool) or not isinstance(value, int):
++        raise TypeError(f"{name} must be an integer")
++    if not low <= value <= high:
++        raise ValueError(f"{name} must be in [{low}, {high}]")
++    return value
++
++
++def program_for(selected: str) -> str:
++    if selected == CANONICAL:
++        return _CANONICAL_PATH.read_bytes().decode("utf-8")
++    if selected == ALTERNATE:
++        return ALTERNATE_PROGRAM
++    raise ValueError(f"unknown setting: {selected!r}")
++
++
++def _derived_rng(seed: int, role: str, index: int) -> random.Random:
++    payload = f"{TASK_ID}:parametric-v1:{seed}:{role}:{index}".encode()
++    digest = hashlib.sha256(payload).digest()
++    return random.Random(int.from_bytes(digest[:16], "big"))
++
++
++def _normalize(cells: list[tuple[int, int]]) -> list[tuple[int, int]]:
++    min_r = min(r for r, _ in cells)
++    min_c = min(c for _, c in cells)
++    return sorted((r - min_r, c - min_c) for r, c in cells)
++
++
++def _transform_shape(size: int, code: int) -> list[tuple[int, int]]:
++    cells = list(_BASE_SHAPES[size])
++    if code >= 4:
++        cells = [(r, -c) for r, c in cells]
++    for _ in range(code % 4):
++        cells = [(c, -r) for r, c in cells]
++    return _normalize(cells)
++
++
++def _signal_cells(spec: SceneSpec, rng: random.Random) -> list[tuple[int, int]]:
++    shape = _transform_shape(spec.signal_size, rng.randrange(8))
++    shape_h = max(r for r, _ in shape) + 1
++    shape_w = max(c for _, c in shape) + 1
++    if spec.stress:
++        anchor_r = spec.height - shape_h
++        anchor_c = (spec.width - shape_w) // 2
++    else:
++        row_low = max(2, spec.height // 2)
++        row_high = spec.height - shape_h
++        if row_low > row_high:
++            row_low = 1
++        anchor_r = rng.randint(row_low, row_high)
++        col_low = 1
++        col_high = max(col_low, spec.width - shape_w - 1)
++        anchor_c = rng.randint(col_low, col_high)
++    return [(anchor_r + r, anchor_c + c) for r, c in shape]
++
++
++def _build_scene(seed: int, role: str, index: int, spec: SceneSpec) -> list[list[int]]:
++    rng = _derived_rng(seed, role, index)
++    grid = [[0 for _ in range(spec.width)] for _ in range(spec.height)]
++    signal_color = 4 + rng.randrange(6)
++    signal_cells = _signal_cells(spec, rng)
++    signal_rows = {r for r, _ in signal_cells}
++    for r, c in signal_cells:
++        grid[r][c] = signal_color
++
++    row_candidates = [r for r in range(1, spec.height) if r not in signal_rows]
++    if len(row_candidates) < spec.active_rows:
++        raise ValueError("scene does not have enough rows outside the signal")
++    rng.shuffle(row_candidates)
++    active_rows = sorted(row_candidates[: spec.active_rows])
++
++    # Keep active columns interior so blue boundary markers remain visible and
++    # the 30x30 query can deliberately cover left/right with row markers.
++    col_candidates = list(range(1, spec.width - 1))
++    if len(col_candidates) < spec.top_markers:
++        raise ValueError("scene does not have enough interior top columns")
++    rng.shuffle(col_candidates)
++    active_cols = sorted(col_candidates[: spec.top_markers])
++    for col in active_cols:
++        grid[0][col] = 2
++
++    free_marker_cols = [c for c in range(1, spec.width - 1) if c not in active_cols]
++    for position, row in enumerate(active_rows):
++        if position == 0:
++            col = 0
++        elif spec.stress and position == 1:
++            col = spec.width - 1
++        else:
++            col = rng.choice(free_marker_cols)
++        grid[row][col] = 1
++
++    inactive_rows = [
++        r
++        for r in range(1, spec.height)
++        if r not in signal_rows and r not in set(active_rows)
++    ]
++    decoy_cols = [c for c in range(spec.width) if c not in set(active_cols)]
++    rng.shuffle(inactive_rows)
++    rng.shuffle(decoy_cols)
++    if len(inactive_rows) < spec.red_decoys or len(decoy_cols) < spec.red_decoys:
++        raise ValueError("scene does not have enough red-decoy positions")
++    for row, col in zip(inactive_rows[: spec.red_decoys], decoy_cols[: spec.red_decoys], strict=True):
++        if grid[row][col] != 0:
++            alternatives = [c for c in decoy_cols if grid[row][c] == 0]
++            if not alternatives:
++                raise ValueError("no collision-free red-decoy column")
++            col = alternatives[0]
++        grid[row][col] = 2
++
++    analysis = analyze_input(grid)
++    if analysis["errors"]:
++        raise ValueError("constructed invalid scene: " + "; ".join(analysis["errors"]))
++    expected = {
++        "height": spec.height,
++        "width": spec.width,
++        "signal_size": spec.signal_size,
++        "active_row_count": spec.active_rows,
++        "top_marker_count": spec.top_markers,
++        "red_decoy_count": spec.red_decoys,
++    }
++    for key, value in expected.items():
++        if analysis[key] != value:
++            raise ValueError(f"constructed {key}={analysis[key]!r}, expected {value!r}")
++    return grid
++
++
++def _four_connected(cells: list[tuple[int, int]]) -> bool:
++    if not cells:
++        return False
++    remaining = set(cells)
++    stack = [next(iter(remaining))]
++    seen: set[tuple[int, int]] = set()
++    while stack:
++        cell = stack.pop()
++        if cell in seen:
++            continue
++        seen.add(cell)
++        r, c = cell
++        for neighbor in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
++            if neighbor in remaining and neighbor not in seen:
++                stack.append(neighbor)
++    return len(seen) == len(remaining)
++
++
++def analyze_input(grid: Any) -> dict[str, Any]:
++    errors: list[str] = []
++    if not isinstance(grid, list) or not grid or not all(isinstance(row, list) for row in grid):
++        return {"errors": ["grid must be a non-empty list of rows"]}
++    width = len(grid[0])
++    if width == 0 or any(len(row) != width for row in grid):
++        return {"errors": ["grid must be non-empty and rectangular"]}
++    height = len(grid)
++    if height > 30 or width > 30:
++        errors.append("grid dimensions must not exceed 30")
++    bad_cells = [
++        (r, c, value)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 9
++    ]
++    if bad_cells:
++        errors.append(f"cells must be integer colors 0..9: {bad_cells[:3]}")
++        return {"errors": errors, "height": height, "width": width}
++
++    colors = {value for row in grid for value in row}
++    signal_colors = sorted(colors - {0, 1, 2})
++    if len(signal_colors) != 1 or signal_colors[0] == 3:
++        errors.append(f"expected exactly one signal color from 4..9, found {signal_colors}")
++        signal_color = None
++    else:
++        signal_color = signal_colors[0]
++
++    blue_cells = [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == 1]
++    if any(r == 0 for r, _ in blue_cells):
++        errors.append("blue row markers must not occur in row 0")
++    blue_by_row: dict[int, list[int]] = {}
++    for r, c in blue_cells:
++        blue_by_row.setdefault(r, []).append(c)
++    if len(blue_cells) != len(blue_by_row) or len(blue_by_row) < 2:
++        errors.append("expected exactly one blue marker in each of at least two active rows")
++    active_rows = sorted(blue_by_row)
++
++    top_cols = [c for c, value in enumerate(grid[0]) if value == 2]
++    if len(top_cols) < 4:
++        errors.append("expected at least four top-row red markers")
++    if any(value not in (0, 2) for value in grid[0]):
++        errors.append("row 0 may contain only background and red markers")
++
++    red_decoys = [
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == 2 and r > 0
++    ]
++    if not red_decoys:
++        errors.append("expected at least one off-top red decoy")
++    if any(c in set(top_cols) for _, c in red_decoys):
++        errors.append("off-top red decoys must use columns absent from the top row")
++    if any(r in set(active_rows) for r, _ in red_decoys):
++        errors.append("off-top red decoys must lie on inactive rows")
++
++    signal_cells = (
++        [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == signal_color]
++        if signal_color is not None
++        else []
++    )
++    signal_size = len(signal_cells)
++    if signal_size not in _BASE_SHAPES:
++        errors.append(f"signal size must be one of {sorted(_BASE_SHAPES)}, found {signal_size}")
++    if signal_cells and not _four_connected(signal_cells):
++        errors.append("signal cells must form one four-connected object")
++    if any(r == 0 or r in set(active_rows) for r, _ in signal_cells):
++        errors.append("signal object must lie on inactive non-top rows")
++    if top_cols and signal_size and len(top_cols) < signal_size + 2:
++        errors.append("top-row marker count must exceed signal rank by at least two")
++
++    nonzero = [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value != 0]
++    boundary_sides: set[str] = set()
++    for r, c in nonzero:
++        if r == 0:
++            boundary_sides.add("top")
++        if r == height - 1:
++            boundary_sides.add("bottom")
++        if c == 0:
++            boundary_sides.add("left")
++        if c == width - 1:
++            boundary_sides.add("right")
++
++    return {
++        "errors": errors,
++        "height": height,
++        "width": width,
++        "signal_color": signal_color,
++        "signal_size": signal_size,
++        "signal_cells": signal_cells,
++        "active_rows": active_rows,
++        "active_row_count": len(active_rows),
++        "top_cols": top_cols,
++        "top_marker_count": len(top_cols),
++        "red_decoys": red_decoys,
++        "red_decoy_count": len(red_decoys),
++        "occupied_cells": len(nonzero),
++        "canonical_painted_cells": len(active_rows) * len(top_cols),
++        "boundary_sides": sorted(boundary_sides),
++    }
++
++
++def _paint(grid: list[list[int]], rows: list[int], cols: list[int]) -> list[list[int]]:
++    output = deepcopy(grid)
++    for row in rows:
++        for col in cols:
++            output[row][col] = 3
++    return output
++
++
++def solve(grid: list[list[int]], selected: str) -> list[list[int]]:
++    if selected not in SETTINGS:
++        raise ValueError(f"unknown setting: {selected!r}")
++    analysis = analyze_input(grid)
++    if analysis["errors"]:
++        raise ValueError("invalid family input: " + "; ".join(analysis["errors"]))
++    rows = analysis["active_rows"]
++    cols = analysis["top_cols"]
++    if selected == CANONICAL:
++        return _paint(grid, rows, cols)
++    selected_col = cols[analysis["signal_size"] - 1]
++    return _paint(grid, rows, [selected_col])
++
++
++def _solve_first(grid: list[list[int]]) -> list[list[int]]:
++    a = analyze_input(grid)
++    return _paint(grid, a["active_rows"], [a["top_cols"][0]])
++
++
++def _solve_last(grid: list[list[int]]) -> list[list[int]]:
++    a = analyze_input(grid)
++    return _paint(grid, a["active_rows"], [a["top_cols"][-1]])
++
++
++def _solve_middle(grid: list[list[int]]) -> list[list[int]]:
++    a = analyze_input(grid)
++    return _paint(grid, a["active_rows"], [a["top_cols"][(len(a["top_cols"]) - 1) // 2]])
++
++
++def _solve_rank_from_right(grid: list[list[int]]) -> list[list[int]]:
++    a = analyze_input(grid)
++    return _paint(grid, a["active_rows"], [a["top_cols"][-a["signal_size"]]])
++
++
++def _solve_rank_plus_one(grid: list[list[int]]) -> list[list[int]]:
++    a = analyze_input(grid)
++    return _paint(grid, a["active_rows"], [a["top_cols"][a["signal_size"]]])
++
++
++def _solve_row_count_rank(grid: list[list[int]]) -> list[list[int]]:
++    a = analyze_input(grid)
++    index = min(len(a["active_rows"]), len(a["top_cols"])) - 1
++    return _paint(grid, a["active_rows"], [a["top_cols"][index]])
++
++
++def _solve_fixed(grid: list[list[int]], rank: int) -> list[list[int]]:
++    a = analyze_input(grid)
++    index = min(rank, len(a["top_cols"])) - 1
++    return _paint(grid, a["active_rows"], [a["top_cols"][index]])
++
++
++def _solve_all_red_columns(grid: list[list[int]]) -> list[list[int]]:
++    a = analyze_input(grid)
++    cols = sorted({c for row in grid for c, value in enumerate(row) if value == 2})
++    return _paint(grid, a["active_rows"], cols)
++
++
++def _solve_left_border_rows(grid: list[list[int]]) -> list[list[int]]:
++    a = analyze_input(grid)
++    rows = [r for r in range(1, len(grid)) if grid[r][0] == 1]
++    return _paint(grid, rows, a["top_cols"])
++
++
++DECLARED_RULES: dict[str, Callable[[list[list[int]]], list[list[int]]]] = {
++    CANONICAL: lambda grid: solve(grid, CANONICAL),
++    ALTERNATE: lambda grid: solve(grid, ALTERNATE),
++}
++SHORTCUTS: dict[str, Callable[[list[list[int]]], list[list[int]]]] = {
++    "first_top_marker": _solve_first,
++    "last_top_marker": _solve_last,
++    "middle_top_marker": _solve_middle,
++    "signal_rank_from_right": _solve_rank_from_right,
++    "signal_rank_plus_one": _solve_rank_plus_one,
++    "blue_row_count_rank": _solve_row_count_rank,
++    "fixed_rank_2": lambda grid: _solve_fixed(grid, 2),
++    "fixed_rank_5": lambda grid: _solve_fixed(grid, 5),
++    "all_red_columns": _solve_all_red_columns,
++    "left_border_rows_only": _solve_left_border_rows,
++}
++
++
++def audit_episode(episode: dict[str, Any], selected: str) -> dict[str, Any]:
++    if selected not in SETTINGS:
++        raise ValueError(f"unknown setting: {selected!r}")
++    train = episode["train"]
++    test = episode["test"]
++    surviving_rules = [
++        name
++        for name, rule in DECLARED_RULES.items()
++        if all(rule(pair["input"]) == pair["output"] for pair in train)
++    ]
++    other = ALTERNATE if selected == CANONICAL else CANONICAL
++    query_disagreements = sum(
++        solve(pair["input"], other) != pair["output"] for pair in test
++    )
++    shortcut_survivors: list[str] = []
++    harmful: list[dict[str, Any]] = []
++    for name, rule in SHORTCUTS.items():
++        if all(rule(pair["input"]) == pair["output"] for pair in train):
++            shortcut_survivors.append(name)
++            differing = [
++                index
++                for index, pair in enumerate(test)
++                if rule(pair["input"]) != pair["output"]
++            ]
++            if differing:
++                harmful.append({"name": name, "query_indices": differing})
++    return {
++        "selected": selected,
++        "surviving_declared_rules": surviving_rules,
++        "query_disagreements_against_other_setting": query_disagreements,
++        "shortcut_survivors": shortcut_survivors,
++        "harmful_shortcut_survivors": harmful,
++    }
++
++
++def input_metrics(grid: list[list[int]]) -> dict[str, Any]:
++    analysis = analyze_input(grid)
++    if analysis["errors"]:
++        raise ValueError("invalid family input: " + "; ".join(analysis["errors"]))
++    return {key: deepcopy(value) for key, value in analysis.items() if key not in {"errors", "signal_cells", "active_rows", "top_cols", "red_decoys"}}
++
++
++def public_turn(episode: dict[str, Any], query_index: int) -> dict[str, Any]:
++    _strict_int("query_index", query_index, 0, len(episode["test"]) - 1)
++    return {
++        "train": deepcopy(episode["train"]),
++        "test": [{"input": deepcopy(episode["test"][query_index]["input"])}],
++    }
++
++
++def build_claimed_episode(seed: int, selected: str, demos: int, queries: int) -> dict[str, Any]:
++    _strict_int("seed", seed, 0, MAX_SEED)
++    _strict_int("demos", demos, 2, 6)
++    _strict_int("queries", queries, 1, 4)
++    if selected not in SETTINGS:
++        raise ValueError(f"unknown setting: {selected!r}")
++    train = []
++    test = []
++    for index, spec in enumerate(DEMO_SPECS[:demos]):
++        grid = _build_scene(seed, "demo", index, spec)
++        train.append({"input": grid, "output": solve(grid, selected)})
++    for index, spec in enumerate(QUERY_SPECS[:queries]):
++        grid = _build_scene(seed, "query", index, spec)
++        test.append({"input": grid, "output": solve(grid, selected)})
++    signatures = [
++        json.dumps(pair["input"], separators=(",", ":"))
++        for pair in train + test
++    ]
++    if len(signatures) != len(set(signatures)):
++        raise ValueError("episode inputs must be distinct")
++    episode = {
++        "train": train,
++        "test": test,
++        "program_solution": program_for(selected),
++    }
++    audit = audit_episode(episode, selected)
++    if audit["surviving_declared_rules"] != [selected]:
++        raise ValueError(f"demonstrations do not identify setting: {audit}")
++    if audit["harmful_shortcut_survivors"]:
++        raise ValueError(f"harmful shortcut survives demonstrations: {audit}")
++    return deepcopy(episode)
++
++
++def forced_rank_program(rank: int) -> str:
++    _strict_int("rank", rank, 1, 16)
++    return f"""(rule!
++  (let* ((mark-rows (map fst (find-color g 1)))
++         (mark-cols (map snd (filter (lambda (p) (= (fst p) 0)) (find-color g 2))))
++         (selected-col (nth mark-cols {rank - 1})))
++    (reduce (lambda (out r) (set-cell out r selected-col 3))
++            g mark-rows)))"""
++
++
++def causal_witness(seed: int) -> dict[str, Any]:
++    _strict_int("seed", seed, 0, MAX_SEED)
++    grid = _build_scene(seed, "query", 0, QUERY_SPECS[0])
++    analysis = analyze_input(grid)
++    wrong_signal_size = analysis["signal_size"] + 1
++    output = solve(grid, ALTERNATE)
++    counterfactual_output = _paint(
++        grid,
++        analysis["active_rows"],
++        [analysis["top_cols"][wrong_signal_size - 1]],
++    )
++    differing = sum(
++        left != right
++        for row_left, row_right in zip(output, counterfactual_output, strict=True)
++        for left, right in zip(row_left, row_right, strict=True)
++    )
++    return {
++        "input": deepcopy(grid),
++        "settings": {"column_policy": ALTERNATE},
++        "signal_size": analysis["signal_size"],
++        "wrong_signal_size": wrong_signal_size,
++        "selected_col": analysis["top_cols"][analysis["signal_size"] - 1],
++        "wrong_selected_col": analysis["top_cols"][wrong_signal_size - 1],
++        "program": ALTERNATE_PROGRAM,
++        "counterfactual_program": forced_rank_program(wrong_signal_size),
++        "output": output,
++        "counterfactual_output": counterfactual_output,
++        "differing_cells": differing,
++        "ablation": "wrong_intermediate",
++    }

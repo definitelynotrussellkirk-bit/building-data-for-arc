@@ -1,0 +1,1124 @@
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/notes.md /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/notes.md
+--- /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/notes.md	2020-01-01 00:00:00.000000000 +0000
++++ /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/notes.md	2026-10-23 16:23:35.252226394 +0000
+@@ -131,3 +131,12 @@
+ **Rationale.** This separates independent solving evidence from repair knowledge and binds the final teaching check to the exact repaired source.
+ 
+ **Limit.** The final solve is not blind: earlier exposure is correctly `yes`. It is evidence that the visible lesson teaches the threshold, not an independent discovery of the rule.
++
++## 2026-10-23 task-local parametric prototype
++
++- Kept approved generator v3.0, canonical examples, and selected Racket authority unchanged.
++- Added a separate `workspace/parametric/` prototype with one episode-level parameter: `min_panel_count ∈ {2, 3}`. The default `2` materializes byte-for-byte canonical Racket; `3` changes only the pinned threshold literal.
++- Each retained setting has one fixed value for the whole lesson, three demonstrations, four distinct queries, and an exact matching Racket program. Every pair contains count-2 and count-3 panels, so demonstrations alone distinguish the two declared settings before query answers are considered.
++- Public challenge IDs bind only canonical visible bytes (demonstration inputs/outputs and query inputs); seed, setting, program, and query labels remain private.
++- Focused task tests pass 74/74. The repository’s shared parametric worker also completed four 3-demo/4-query jobs across both settings with 40 protected-Racket evaluations and a unique demonstration survivor each time. The bounded adversarial pass covered 32 seeds and 288 pairs, 1/8 and 8/1 demo/query boundaries, Racket/Python parity, numeric-type rejection, malformed grids, public/private projection, and overwrite refusal with no remaining finding.
++- Status remains **proposed task-local prototype**, not production approval or training admission. The next useful action is a maintainer review of `promotion.json` and `adapter.py`; promote only if the shared parametric runtime wants this two-setting interface.
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/tests/test_parametric_panel_threshold.py /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/tests/test_parametric_panel_threshold.py
+--- /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/tests/test_parametric_panel_threshold.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/tests/test_parametric_panel_threshold.py	2026-10-23 16:11:31.565725372 +0000
+@@ -0,0 +1,356 @@
++"""Prototype-only tests for an episode-level panel-count threshold."""
++from __future__ import annotations
++
++from copy import deepcopy
++import importlib.util
++import json
++import re
++import sys
++from pathlib import Path
++
++import pytest
++from arc_repl.racket_bridge import RacketBridge
++from reviewer_support import find_root, load_selected_generator
++
++TASK_ID = "a9c4475d7cda"
++ROOT = find_root(__file__)
++HOME = Path(__file__).resolve().parents[1]
++PARAMETRIC = HOME / "workspace" / "parametric"
++PROTOTYPE = PARAMETRIC / "prototype.py"
++ADAPTER = PARAMETRIC / "adapter.py"
++PROMOTION = PARAMETRIC / "promotion.json"
++
++
++def load_prototype():
++    assert PROTOTYPE.is_file(), f"missing prototype: {PROTOTYPE}"
++    spec = importlib.util.spec_from_file_location(
++        "parametric_panel_threshold_prototype",
++        PROTOTYPE,
++    )
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_default_program_is_exact_canonical_and_alternative_changes_only_threshold():
++    prototype = load_prototype()
++    canonical = prototype.canonical_program(ROOT)
++
++    assert prototype.ALLOWED_MIN_PANEL_COUNTS == (2, 3)
++    assert prototype.DEFAULT_MIN_PANEL_COUNT == 2
++    assert prototype.render_program(canonical, 2) == canonical
++
++    alternative = prototype.render_program(canonical, 3)
++    assert alternative != canonical
++    assert canonical.count(prototype.CANONICAL_THRESHOLD_FORM) == 1
++    assert alternative.count(prototype.ALTERNATE_THRESHOLD_FORM) == 1
++    assert alternative.replace(
++        prototype.ALTERNATE_THRESHOLD_FORM,
++        prototype.CANONICAL_THRESHOLD_FORM,
++        1,
++    ) == canonical
++
++
++def test_episode_setting_selection_is_deterministic_and_covers_both_values():
++    prototype = load_prototype()
++    assert prototype.select_min_panel_count(0) == 2
++    assert prototype.select_min_panel_count(1) == 3
++    assert prototype.select_min_panel_count(2) == 2
++    assert prototype.select_min_panel_count(3) == 3
++
++
++@pytest.mark.parametrize("value", [True, False, 2.0, "2", 1, 4, None])
++def test_invalid_threshold_values_are_rejected(value):
++    prototype = load_prototype()
++    canonical = prototype.canonical_program(ROOT)
++    with pytest.raises((TypeError, ValueError)):
++        prototype.render_program(canonical, value)
++
++
++@pytest.mark.parametrize("seed", [True, False, 1.0, "1", -1])
++def test_invalid_episode_seeds_are_rejected(seed):
++    prototype = load_prototype()
++    with pytest.raises((TypeError, ValueError)):
++        prototype.select_min_panel_count(seed)
++
++
++
++def _panel_counts(grid):
++    height = len(grid)
++    width = len(grid[0])
++    separator_rows = [
++        row for row in range(height) if all(value == 8 for value in grid[row])
++    ]
++    separator_cols = [
++        col
++        for col in range(width)
++        if all(grid[row][col] == 8 for row in range(height))
++    ]
++    assert len(separator_rows) == len(separator_cols) == 2
++    row_bands = (
++        (0, separator_rows[0]),
++        (separator_rows[0] + 1, separator_rows[1]),
++        (separator_rows[1] + 1, height),
++    )
++    col_bands = (
++        (0, separator_cols[0]),
++        (separator_cols[0] + 1, separator_cols[1]),
++        (separator_cols[1] + 1, width),
++    )
++    return [
++        [
++            sum(
++                grid[row][col] == 6
++                for row in range(row_start, row_end)
++                for col in range(col_start, col_end)
++            )
++            for col_start, col_end in col_bands
++        ]
++        for row_start, row_end in row_bands
++    ]
++
++
++def _expected_output(grid, threshold):
++    return [[int(count >= threshold) for count in row] for row in _panel_counts(grid)]
++
++
++def test_claimed_episode_has_independent_counts_distinct_lawful_pairs_and_fixed_setting():
++    prototype = load_prototype()
++    generator, _path, _digest = load_selected_generator(TASK_ID, root=ROOT)
++    episode = prototype.build_claimed_episode(
++        24,
++        min_panel_count=2,
++        demos=3,
++        queries=4,
++        root=ROOT,
++    )
++
++    assert episode["parameters"] == {"min_panel_count": 2}
++    assert episode["setting_selected_once"] is True
++    assert len(episode["train"]) == 3
++    assert len(episode["test"]) == 4
++    assert episode["rival"]["status"] == "distinguished"
++    assert episode["rival"]["demo_differences"] == [0, 1, 2]
++    assert episode["rival"]["query_differences"] == [0, 1, 2, 3]
++
++    all_pairs = episode["train"] + episode["test"]
++    serialized_inputs = {
++        json.dumps(pair["input"], sort_keys=True, separators=(",", ":"))
++        for pair in all_pairs
++    }
++    assert len(serialized_inputs) == 7
++    for pair in all_pairs:
++        assert generator.self_check(pair["input"]) == []
++        flat_counts = {count for row in _panel_counts(pair["input"]) for count in row}
++        assert {2, 3} <= flat_counts
++        assert pair["output"] == _expected_output(pair["input"], 2)
++
++
++def test_auto_setting_is_fixed_for_all_pairs_and_both_settings_are_supported():
++    prototype = load_prototype()
++    episodes = [prototype.build_claimed_episode(seed, root=ROOT) for seed in (40, 41)]
++    assert {row["parameters"]["min_panel_count"] for row in episodes} == {2, 3}
++    for episode in episodes:
++        threshold = episode["parameters"]["min_panel_count"]
++        assert all(
++            pair["output"] == _expected_output(pair["input"], threshold)
++            for pair in episode["train"] + episode["test"]
++        )
++
++
++@pytest.mark.parametrize(
++    ("field", "value"),
++    [
++        ("demos", 0),
++        ("demos", 9),
++        ("demos", True),
++        ("queries", 0),
++        ("queries", 9),
++        ("queries", 1.5),
++    ],
++)
++def test_demo_and_query_count_boundaries_are_enforced(field, value):
++    prototype = load_prototype()
++    kwargs = {"demos": 3, "queries": 4, field: value}
++    with pytest.raises((TypeError, ValueError)):
++        prototype.build_claimed_episode(5, root=ROOT, **kwargs)
++
++
++def test_public_bytes_and_id_ignore_private_fields_and_query_answers_but_bind_visible_data():
++    prototype = load_prototype()
++    episode = prototype.build_claimed_episode(24, min_panel_count=2, root=ROOT)
++    original_bytes = prototype.public_bytes(episode)
++    original_id = prototype.public_id(episode)
++
++    private_mutation = deepcopy(episode)
++    private_mutation["seed"] = 999999
++    private_mutation["parameters"]["min_panel_count"] = 3
++    private_mutation["program_solution"] = "private program changed"
++    private_mutation["test"][0]["output"] = [[9, 9, 9], [9, 9, 9], [9, 9, 9]]
++    assert prototype.public_bytes(private_mutation) == original_bytes
++    assert prototype.public_id(private_mutation) == original_id
++
++    visible_mutation = deepcopy(episode)
++    visible_mutation["train"][0]["output"][0][0] ^= 1
++    assert prototype.public_bytes(visible_mutation) != original_bytes
++    assert prototype.public_id(visible_mutation) != original_id
++
++    public = prototype.public_challenge(episode)
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert all(set(pair) == {"input"} for pair in public["test"])
++    public_text = original_bytes.decode("utf-8")
++    assert "min_panel_count" not in public_text
++    assert "rule!" not in public_text
++    assert str(episode["seed"]) not in public_text
++
++
++
++@pytest.fixture(scope="module")
++def bridge():
++    with RacketBridge(timeout=30, max_calls_before_restart=128) as runtime:
++        yield runtime
++
++
++def _canonical_pairs():
++    rows = []
++    with (ROOT / "shared" / "data" / "canonical" / "puzzles.jsonl").open() as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                rows.extend(row["train"])
++                test = row.get("test", [])
++                rows.extend(test if isinstance(test, list) else [test])
++    return rows
++
++
++def test_racket_execution_replays_canonical_and_matches_both_thresholds_on_seven_pairs(bridge):
++    prototype = load_prototype()
++    canonical = prototype.canonical_program(ROOT)
++    programs = {
++        threshold: prototype.render_program(canonical, threshold)
++        for threshold in prototype.ALLOWED_MIN_PANEL_COUNTS
++    }
++    for pair in _canonical_pairs():
++        assert prototype.execute(bridge, programs[2], pair["input"]) == pair["output"]
++
++    for threshold in prototype.ALLOWED_MIN_PANEL_COUNTS:
++        episode = prototype.build_claimed_episode(
++            60 + threshold,
++            min_panel_count=threshold,
++            demos=3,
++            queries=4,
++            root=ROOT,
++        )
++        for pair in episode["train"] + episode["test"]:
++            assert prototype.execute(bridge, programs[threshold], pair["input"]) == pair["output"]
++            rival = 3 if threshold == 2 else 2
++            assert prototype.execute(bridge, programs[rival], pair["input"]) != pair["output"]
++
++
++def test_materializer_retains_two_racket_backed_four_query_episodes_and_visible_ids(tmp_path):
++    prototype = load_prototype()
++    out = tmp_path / "gallery"
++    report = prototype.materialize(out, seed=2600, demos=3, queries=4, root=ROOT)
++
++    assert report["status"] == "proposed_prototype"
++    assert report["default_program_exact_canonical"] is True
++    assert report["canonical_pairs_all_match"] is True
++    assert report["complete_episodes"] == 2
++    assert report["pairs_per_episode"] == {"train": 3, "test": 4}
++    assert report["all_labels_and_rivals_executed_in_racket"] is True
++    assert report["all_queries_identified_from_demonstrations"] is True
++    assert set(report["episode_parameters"]) == {"2", "3"}
++
++    public_files = sorted((out / "public").glob("challenge-*.json"))
++    private_files = sorted((out / "private").glob("episode-threshold-*.json"))
++    assert len(public_files) == len(private_files) == 2
++    default_program_path = out / "private" / "program-threshold-2.rkt"
++    alternative_program_path = out / "private" / "program-threshold-3.rkt"
++    assert default_program_path.is_file()
++    assert alternative_program_path.is_file()
++    assert default_program_path.read_text(encoding="utf-8") == prototype.canonical_program(ROOT)
++    assert alternative_program_path.read_text(encoding="utf-8") == prototype.render_program(
++        prototype.canonical_program(ROOT),
++        3,
++    )
++    assert (out / "private" / "setting-difference-witness.json").is_file()
++    assert (out / "manifest.json").is_file()
++
++    for path in public_files:
++        assert re.fullmatch(r"challenge-[0-9a-f]{64}\.json", path.name)
++        public = json.loads(path.read_text())
++        assert len(public["train"]) == 3
++        assert len(public["test"]) == 4
++        assert all(set(pair) == {"input", "output"} for pair in public["train"])
++        assert all(set(pair) == {"input"} for pair in public["test"])
++        text = path.read_text()
++        assert "min_panel_count" not in text
++        assert "rule!" not in text
++
++    for path in private_files:
++        episode = json.loads(path.read_text())
++        assert len(episode["test"]) == 4
++        assert len(episode["label_checks"]) == 7
++        assert all(
++            row["consistent_settings"] == [episode["parameters"]["min_panel_count"]]
++            and row["query_answer_used_for_demo_fit"] is False
++            for row in episode["query_identification"]
++        )
++
++
++def _load_adapter(monkeypatch):
++    assert ADAPTER.is_file(), f"missing adapter: {ADAPTER}"
++    monkeypatch.syspath_prepend(str(PARAMETRIC))
++    sys.modules.pop("prototype", None)
++    spec = importlib.util.spec_from_file_location("panel_threshold_adapter", ADAPTER)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_promotion_adapter_reuses_prototype_and_declares_bounded_interface(monkeypatch):
++    adapter = _load_adapter(monkeypatch)
++    prototype = load_prototype()
++    canonical = prototype.canonical_program(ROOT)
++
++    assert adapter.program({"min_panel_count": 2}) == canonical
++    assert adapter.program({"min_panel_count": 3}) == prototype.render_program(canonical, 3)
++    generated = adapter.generate(
++        77,
++        {"min_panel_count": 3},
++        demos=2,
++        queries=4,
++    )
++    assert set(generated) == {"train", "test", "program_solution"}
++    assert len(generated["train"]) == 2
++    assert len(generated["test"]) == 4
++    assert all(
++        pair["output"] == _expected_output(pair["input"], 3)
++        for pair in generated["train"] + generated["test"]
++    )
++
++    promotion = json.loads(PROMOTION.read_text())
++    assert promotion == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": "generators/a9c4475d7cda/workspace/parametric/adapter.py",
++        "parameters": {"min_panel_count": [2, 3]},
++        "default": {"min_panel_count": 2},
++        "limits": {"demos": [1, 8], "queries": [1, 8]},
++    }
++
++
++@pytest.mark.parametrize(
++    "settings",
++    [
++        {},
++        {"min_panel_count": 2, "extra": 1},
++        {"min_panel_count": True},
++        {"min_panel_count": 4},
++    ],
++)
++def test_promotion_adapter_rejects_missing_unknown_or_invalid_settings(monkeypatch, settings):
++    adapter = _load_adapter(monkeypatch)
++    with pytest.raises((TypeError, ValueError)):
++        adapter.program(settings)
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/workspace/parametric/README.md /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/workspace/parametric/README.md
+--- /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/workspace/parametric/README.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/workspace/parametric/README.md	2026-10-23 16:10:08.636709706 +0000
+@@ -0,0 +1,34 @@
++# Parametric panel-count threshold — proposed prototype
++
++This task-local extension varies one episode-level rule parameter while leaving
++the approved production generator and canonical authority unchanged.
++
++| Parameter | Allowed value | Rule | Original/default |
++| --- | --- | --- | --- |
++| `min_panel_count` | `2` | output 1 when a panel has at least two color-6 cells | yes |
++| `min_panel_count` | `3` | output 1 when a panel has at least three color-6 cells | no |
++
++The setting is fixed across an episode. Inputs come from the selected generator's
++existing lawful 0/6/8 divider-grid grammar; every pair contains both count-2 and
++count-3 panels, so demonstrations distinguish the declared settings. The retained
++evidence uses three demonstrations and four distinct queries per setting. Exact
++Racket programs produce all retained labels and rival predictions; the adapter's
++Python labels are claims rechecked by the qualification worker.
++
++Run from the outer extracted packet directory:
++
++```sh
++python3 review.py run python3 \
++  generators/a9c4475d7cda/workspace/parametric/prototype.py \
++  --seed 2600 --demos 3 --queries 4 \
++  --out ../checks/parametric/panel-threshold-gallery
++
++python3 review.py run python3 -m pytest -q \
++  generators/a9c4475d7cda/tests/test_parametric_panel_threshold.py
++```
++
++Public challenge names are SHA-256 IDs of exact visible bytes. Public files contain
++only demonstration inputs/outputs and query inputs; settings, seeds, Racket source,
++and query answers remain private. `adapter.py` and `promotion.json` make the
++prototype ready for separate qualification, but do not approve it or admit data to
++training.
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/workspace/parametric/adapter.py /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/workspace/parametric/adapter.py
+--- /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/workspace/parametric/adapter.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/workspace/parametric/adapter.py	2026-10-23 16:10:08.631336813 +0000
+@@ -0,0 +1,35 @@
++"""Promotion adapter for the proposed a9c4475d7cda panel threshold."""
++from __future__ import annotations
++
++from typing import Any
++
++import prototype
++
++
++def _threshold(settings: Any) -> int:
++    if type(settings) is not dict:
++        raise TypeError("settings must be a dictionary")
++    if set(settings) != {"min_panel_count"}:
++        raise ValueError("settings must contain exactly min_panel_count")
++    return prototype._validate_min_panel_count(settings["min_panel_count"])
++
++
++def program(settings: Any) -> str:
++    threshold = _threshold(settings)
++    canonical = prototype.canonical_program()
++    return prototype.render_program(canonical, threshold)
++
++
++def generate(seed: Any, settings: Any, demos: Any, queries: Any) -> dict[str, Any]:
++    threshold = _threshold(settings)
++    episode = prototype.build_claimed_episode(
++        seed,
++        min_panel_count=threshold,
++        demos=demos,
++        queries=queries,
++    )
++    return {
++        "train": episode["train"],
++        "test": episode["test"],
++        "program_solution": episode["program_solution"],
++    }
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/workspace/parametric/promotion.json /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/workspace/parametric/promotion.json
+--- /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/workspace/parametric/promotion.json	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/workspace/parametric/promotion.json	2026-10-23 16:10:08.635860216 +0000
+@@ -0,0 +1,7 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/a9c4475d7cda/workspace/parametric/adapter.py",
++  "parameters": {"min_panel_count": [2, 3]},
++  "default": {"min_panel_count": 2},
++  "limits": {"demos": [1, 8], "queries": [1, 8]}
++}
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/workspace/parametric/prototype.py /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/workspace/parametric/prototype.py
+--- /mnt/data/arcpuzzles-review-160312-baseline/WORK/repo/generators/a9c4475d7cda/workspace/parametric/prototype.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/arcpuzzles-review-160312-work/WORK/repo/generators/a9c4475d7cda/workspace/parametric/prototype.py	2026-10-23 16:11:53.194084139 +0000
+@@ -0,0 +1,656 @@
++#!/usr/bin/env python3
++"""Proposed episode-level panel-count threshold for task a9c4475d7cda.
++
++The selected production generator and canonical authority remain unchanged.
++This task-local prototype chooses one minimum panel count for an entire
++lesson and materializes the corresponding exact Racket program.
++"""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++from typing import Any
++
++from arc_repl.racket_bridge import RacketBridge
++from reviewer_support import (
++    canonical_pairs,
++    canonical_path,
++    find_root,
++    load_selected_generator,
++    public_challenge_bytes,
++    public_challenge_id,
++)
++
++TASK_ID = "a9c4475d7cda"
++PROTOTYPE_VERSION = "1.0.0"
++STATUS = "proposed task-local prototype; not production-approved"
++ROOT = find_root(__file__)
++
++ALLOWED_MIN_PANEL_COUNTS = (2, 3)
++DEFAULT_MIN_PANEL_COUNT = 2
++CANONICAL_THRESHOLD_FORM = (
++    "                                 2)\n"
++    "                             1\n"
++    "                             0"
++)
++ALTERNATE_THRESHOLD_FORM = (
++    "                                 3)\n"
++    "                             1\n"
++    "                             0"
++)
++
++
++def _validate_seed(seed: Any) -> int:
++    if type(seed) is not int:
++        raise TypeError("seed must be an exact integer (bool is not accepted)")
++    if seed < 0:
++        raise ValueError("seed must be nonnegative")
++    return seed
++
++
++def _validate_min_panel_count(value: Any) -> int:
++    if type(value) is not int:
++        raise TypeError("min_panel_count must be an exact integer (bool is not accepted)")
++    if value not in ALLOWED_MIN_PANEL_COUNTS:
++        raise ValueError(
++            f"min_panel_count must be one of {ALLOWED_MIN_PANEL_COUNTS}"
++        )
++    return value
++
++
++def canonical_program(root: str | Path = ROOT) -> str:
++    """Return the unique selected canonical Racket program."""
++    programs: set[str] = set()
++    rows = 0
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        for line in handle:
++            if not line.strip():
++                continue
++            row = json.loads(line)
++            if row.get("task_id") != TASK_ID:
++                continue
++            rows += 1
++            program = row.get("program_solution")
++            if not isinstance(program, str) or not program:
++                raise ValueError("canonical row has no Racket program")
++            programs.add(program)
++    if rows == 0:
++        raise ValueError(f"no canonical row for {TASK_ID}")
++    if len(programs) != 1:
++        raise ValueError(f"canonical variants disagree for {TASK_ID}")
++    return programs.pop()
++
++
++def render_program(canonical: str, min_panel_count: Any = DEFAULT_MIN_PANEL_COUNT) -> str:
++    """Instantiate the exact Racket rule for one bounded threshold setting."""
++    threshold = _validate_min_panel_count(min_panel_count)
++    if canonical.count(CANONICAL_THRESHOLD_FORM) != 1:
++        raise ValueError("canonical panel-count threshold anchor changed; review required")
++    if threshold == DEFAULT_MIN_PANEL_COUNT:
++        return canonical
++    return canonical.replace(
++        CANONICAL_THRESHOLD_FORM,
++        ALTERNATE_THRESHOLD_FORM,
++        1,
++    )
++
++
++def select_min_panel_count(seed: Any) -> int:
++    """Choose one hidden setting deterministically once per episode."""
++    selected_seed = _validate_seed(seed)
++    return ALLOWED_MIN_PANEL_COUNTS[selected_seed % len(ALLOWED_MIN_PANEL_COUNTS)]
++
++
++
++def _validate_pair_count(name: str, value: Any) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be an exact integer (bool is not accepted)")
++    if not 1 <= value <= 8:
++        raise ValueError(f"{name} must be in [1, 8]")
++    return value
++
++
++def panel_counts(grid: Any) -> list[list[int]]:
++    """Return the nine color-6 counts for a lawful divider grid."""
++    if not isinstance(grid, list) or not grid or not isinstance(grid[0], list) or not grid[0]:
++        raise ValueError("grid must be a nonempty rectangular list")
++    width = len(grid[0])
++    if any(
++        not isinstance(row, list)
++        or len(row) != width
++        or any(type(value) is not int for value in row)
++        for row in grid
++    ):
++        raise ValueError("grid must be rectangular with exact integer cells")
++    height = len(grid)
++    separator_rows = [
++        row for row in range(height) if all(value == 8 for value in grid[row])
++    ]
++    separator_cols = [
++        col
++        for col in range(width)
++        if all(grid[row][col] == 8 for row in range(height))
++    ]
++    if len(separator_rows) != 2 or len(separator_cols) != 2:
++        raise ValueError("expected exactly two full divider rows and columns")
++    row_bands = (
++        (0, separator_rows[0]),
++        (separator_rows[0] + 1, separator_rows[1]),
++        (separator_rows[1] + 1, height),
++    )
++    col_bands = (
++        (0, separator_cols[0]),
++        (separator_cols[0] + 1, separator_cols[1]),
++        (separator_cols[1] + 1, width),
++    )
++    return [
++        [
++            sum(
++                grid[row][col] == 6
++                for row in range(row_start, row_end)
++                for col in range(col_start, col_end)
++            )
++            for col_start, col_end in col_bands
++        ]
++        for row_start, row_end in row_bands
++    ]
++
++
++def apply_python(grid: Any, min_panel_count: Any) -> list[list[int]]:
++    """Independent Python claim used by the task-local promotion adapter."""
++    threshold = _validate_min_panel_count(min_panel_count)
++    return [
++        [int(count >= threshold) for count in row]
++        for row in panel_counts(grid)
++    ]
++
++
++def _grid_key(grid: list[list[int]]) -> str:
++    return json.dumps(grid, sort_keys=True, separators=(",", ":"))
++
++
++def generate_inputs(
++    seed: Any,
++    *,
++    demos: Any = 3,
++    queries: Any = 4,
++    root: str | Path = ROOT,
++) -> list[list[list[int]]]:
++    """Generate distinct lawful inputs, each separating thresholds 2 and 3."""
++    episode_seed = _validate_seed(seed)
++    n_demos = _validate_pair_count("demos", demos)
++    n_queries = _validate_pair_count("queries", queries)
++    generator, _source, _digest = load_selected_generator(TASK_ID, root=root)
++    profiles = tuple(generator.COUNT_PROFILES)
++    difficulties = (None, "easy", "medium", "hard")
++    total = n_demos + n_queries
++    grids: list[list[list[int]]] = []
++    seen: set[str] = set()
++
++    for pair_index in range(total):
++        accepted = None
++        for attempt in range(64):
++            height = 9 + ((episode_seed + pair_index * 3 + attempt) % 9)
++            width = 9 + ((episode_seed * 2 + pair_index * 5 + attempt) % 9)
++            profile = profiles[pair_index % len(profiles)]
++            draw_seed = episode_seed * 1_000_003 + pair_index * 1_009 + attempt
++            sample_index = episode_seed * 1_013 + pair_index * 17 + attempt
++            grid = generator.generate(
++                draw_seed,
++                sample_index,
++                difficulty=difficulties[pair_index % len(difficulties)],
++                grid_h=height,
++                grid_w=width,
++                count_profile=profile,
++            )
++            counts = {value for row in panel_counts(grid) for value in row}
++            key = _grid_key(grid)
++            if generator.self_check(grid) == [] and {2, 3} <= counts and key not in seen:
++                accepted = grid
++                seen.add(key)
++                break
++        if accepted is None:
++            raise ValueError(f"could not sample distinct distinguishing pair {pair_index}")
++        grids.append(accepted)
++    return grids
++
++
++def build_claimed_episode(
++    seed: Any,
++    *,
++    min_panel_count: Any | None = None,
++    demos: Any = 3,
++    queries: Any = 4,
++    root: str | Path = ROOT,
++) -> dict[str, Any]:
++    """Build a private episode whose labels are Python claims for qualification."""
++    episode_seed = _validate_seed(seed)
++    n_demos = _validate_pair_count("demos", demos)
++    n_queries = _validate_pair_count("queries", queries)
++    threshold = (
++        select_min_panel_count(episode_seed)
++        if min_panel_count is None
++        else _validate_min_panel_count(min_panel_count)
++    )
++    rival = next(value for value in ALLOWED_MIN_PANEL_COUNTS if value != threshold)
++    canonical = canonical_program(root)
++    program = render_program(canonical, threshold)
++    inputs = generate_inputs(
++        episode_seed,
++        demos=n_demos,
++        queries=n_queries,
++        root=root,
++    )
++
++    selected_outputs = [apply_python(grid, threshold) for grid in inputs]
++    rival_outputs = [apply_python(grid, rival) for grid in inputs]
++    differences = [selected != other for selected, other in zip(selected_outputs, rival_outputs)]
++    pairs = [
++        {"input": deepcopy(grid), "output": deepcopy(output)}
++        for grid, output in zip(inputs, selected_outputs)
++    ]
++    demo_differences = [index for index, differs in enumerate(differences[:n_demos]) if differs]
++    query_differences = [
++        index for index, differs in enumerate(differences[n_demos:]) if differs
++    ]
++    if demo_differences != list(range(n_demos)) or query_differences != list(range(n_queries)):
++        raise ValueError("sampled episode did not distinguish the declared threshold rival")
++
++    return {
++        "schema": "a9c4475d7cda-panel-threshold-episode-v1",
++        "status": STATUS,
++        "task_id": TASK_ID,
++        "seed": episode_seed,
++        "parameters": {"min_panel_count": threshold},
++        "setting_selected_once": True,
++        "program_solution": program,
++        "program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++        "train": pairs[:n_demos],
++        "test": pairs[n_demos:],
++        "rival": {
++            "min_panel_count": rival,
++            "status": "distinguished",
++            "demo_differences": demo_differences,
++            "query_differences": query_differences,
++        },
++    }
++
++
++def public_challenge(episode: dict[str, Any]) -> dict[str, Any]:
++    """Project a private episode to visible demonstrations and query inputs."""
++    return {
++        "train": [
++            {"input": deepcopy(pair["input"]), "output": deepcopy(pair["output"])}
++            for pair in episode["train"]
++        ],
++        "test": [{"input": deepcopy(pair["input"])} for pair in episode["test"]],
++    }
++
++
++def public_bytes(episode: dict[str, Any]) -> bytes:
++    return public_challenge_bytes(public_challenge(episode))
++
++
++def public_id(episode: dict[str, Any]) -> str:
++    return public_challenge_id(public_challenge(episode))
++
++
++
++def _racket_callable(program: str) -> str:
++    stripped = program.strip()
++    if not stripped.startswith("(rule!") or not stripped.endswith(")"):
++        raise ValueError("prototype program must be one `(rule! EXPR)` form")
++    expression = stripped[len("(rule!") : -1].strip()
++    if not expression.startswith("(lambda"):
++        raise ValueError("prototype rule expression must be a lambda")
++    return expression
++
++
++def execute(
++    bridge: RacketBridge,
++    program: str,
++    grid: list[list[int]],
++) -> list[list[int]]:
++    """Execute exact instantiated Racket bytes against one input grid."""
++    bridge.define_grid("g", grid)
++    output = bridge.eval_text(f"({_racket_callable(program)} g)")
++    if (
++        type(output) is not list
++        or len(output) != 3
++        or any(
++            type(row) is not list
++            or len(row) != 3
++            or any(type(value) is not int or value not in (0, 1) for value in row)
++            for row in output
++        )
++    ):
++        raise ValueError("Racket program did not return a 3x3 binary grid")
++    return output
++
++
++def _sha256_bytes(payload: bytes) -> str:
++    return hashlib.sha256(payload).hexdigest()
++
++
++def _normalized_rule_hash(program: str) -> str:
++    return _sha256_bytes(" ".join(program.split()).encode())[:12]
++
++
++def _write_json(path: Path, value: Any) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(
++        json.dumps(value, indent=2, sort_keys=True) + "\n",
++        encoding="utf-8",
++    )
++
++
++def _artifact_record(path: Path, root: Path) -> dict[str, Any]:
++    body = path.read_bytes()
++    return {
++        "path": path.relative_to(root).as_posix(),
++        "bytes": len(body),
++        "sha256": _sha256_bytes(body),
++    }
++
++
++def materialize(
++    out: str | Path,
++    *,
++    seed: Any = 2600,
++    demos: Any = 3,
++    queries: Any = 4,
++    root: str | Path = ROOT,
++) -> dict[str, Any]:
++    """Retain two complete Racket-backed episodes and public projections."""
++    episode_seed = _validate_seed(seed)
++    n_demos = _validate_pair_count("demos", demos)
++    n_queries = _validate_pair_count("queries", queries)
++    destination = Path(out)
++    if destination.exists() and any(destination.iterdir()):
++        raise ValueError(f"refusing nonempty output directory: {destination}")
++    destination.mkdir(parents=True, exist_ok=True)
++    public_dir = destination / "public"
++    private_dir = destination / "private"
++    public_dir.mkdir()
++    private_dir.mkdir()
++
++    resolved_root = Path(root).resolve()
++    canonical = canonical_program(resolved_root)
++    programs = {
++        threshold: render_program(canonical, threshold)
++        for threshold in ALLOWED_MIN_PANEL_COUNTS
++    }
++    if programs[DEFAULT_MIN_PANEL_COUNT] != canonical:
++        raise ValueError("default program no longer equals canonical authority")
++    if len({_normalized_rule_hash(program) for program in programs.values()}) != len(programs):
++        raise ValueError("declared settings materialize identical Racket programs")
++
++    generator, generator_path, generator_sha256 = load_selected_generator(
++        TASK_ID,
++        root=resolved_root,
++    )
++    canonical_checks: list[dict[str, Any]] = []
++    episodes: list[dict[str, Any]] = []
++
++    with RacketBridge(timeout=30, max_calls_before_restart=128) as bridge:
++        runtime_identity = bridge.runtime_identity
++        for pair in canonical_pairs(TASK_ID, root=resolved_root, labeled_only=True):
++            actual = execute(bridge, canonical, pair["input"])
++            canonical_checks.append(
++                {
++                    "variant": pair["variant"],
++                    "split": pair["split"],
++                    "pair_index": pair["pair_index"],
++                    "matches": actual == pair["output"],
++                }
++            )
++        if not canonical_checks or not all(row["matches"] for row in canonical_checks):
++            raise ValueError("canonical default failed canonical replay")
++
++        for threshold in ALLOWED_MIN_PANEL_COUNTS:
++            episode = build_claimed_episode(
++                episode_seed,
++                min_panel_count=threshold,
++                demos=n_demos,
++                queries=n_queries,
++                root=resolved_root,
++            )
++            checks: list[dict[str, Any]] = []
++            candidate_outputs: dict[tuple[str, int], dict[int, list[list[int]]]] = {}
++            for split in ("train", "test"):
++                for index, pair in enumerate(episode[split]):
++                    outputs = {
++                        candidate: execute(bridge, program, pair["input"])
++                        for candidate, program in programs.items()
++                    }
++                    for candidate, actual in outputs.items():
++                        expected = apply_python(pair["input"], candidate)
++                        if actual != expected:
++                            raise ValueError(
++                                f"Racket/Python mismatch for threshold {candidate} "
++                                f"at {split}[{index}]"
++                            )
++                    if outputs[threshold] != pair["output"]:
++                        raise ValueError(
++                            f"selected Racket label mismatch at {split}[{index}]"
++                        )
++                    pair["output"] = deepcopy(outputs[threshold])
++                    candidate_outputs[(split, index)] = outputs
++                    checks.append(
++                        {
++                            "split": split,
++                            "pair_index": index,
++                            "selected_threshold": threshold,
++                            "outputs": {str(key): value for key, value in outputs.items()},
++                            "settings_distinct": outputs[2] != outputs[3],
++                        }
++                    )
++
++            consistent_settings = [
++                candidate
++                for candidate in ALLOWED_MIN_PANEL_COUNTS
++                if all(
++                    candidate_outputs[("train", index)][candidate]
++                    == episode["train"][index]["output"]
++                    for index in range(n_demos)
++                )
++            ]
++            if consistent_settings != [threshold]:
++                raise ValueError(
++                    f"demonstrations do not identify threshold {threshold}: "
++                    f"{consistent_settings}"
++                )
++            query_identification = [
++                {
++                    "query_index": index,
++                    "consistent_settings": list(consistent_settings),
++                    "query_answer_used_for_demo_fit": False,
++                    "candidate_predictions": {
++                        str(candidate): candidate_outputs[("test", index)][candidate]
++                        for candidate in ALLOWED_MIN_PANEL_COUNTS
++                    },
++                    "selected_prediction_matches_label": (
++                        candidate_outputs[("test", index)][threshold]
++                        == episode["test"][index]["output"]
++                    ),
++                }
++                for index in range(n_queries)
++            ]
++            episode["label_checks"] = checks
++            episode["query_identification"] = query_identification
++            episode["racket_runtime"] = runtime_identity
++            episode["generator_sha256"] = generator_sha256
++            episode["generator_path"] = generator_path.relative_to(resolved_root).as_posix()
++            episode["program_normalized_hash"] = _normalized_rule_hash(
++                episode["program_solution"]
++            )
++            episodes.append(episode)
++
++    public_ids: set[str] = set()
++    for threshold, program in programs.items():
++        (private_dir / f"program-threshold-{threshold}.rkt").write_text(
++            program,
++            encoding="utf-8",
++        )
++
++    for episode in episodes:
++        threshold = episode["parameters"]["min_panel_count"]
++        visible_id = public_id(episode)
++        if visible_id in public_ids:
++            raise ValueError("duplicate visible payload across retained settings")
++        public_ids.add(visible_id)
++        (public_dir / f"challenge-{visible_id}.json").write_bytes(public_bytes(episode))
++        _write_json(private_dir / f"episode-threshold-{threshold}.json", episode)
++
++    witness_input = deepcopy(episodes[0]["train"][0]["input"])
++    witness = {
++        "input": witness_input,
++        "outputs": {
++            str(threshold): apply_python(witness_input, threshold)
++            for threshold in ALLOWED_MIN_PANEL_COUNTS
++        },
++        "differing_cells": [
++            [row, col]
++            for row in range(3)
++            for col in range(3)
++            if apply_python(witness_input, 2)[row][col]
++            != apply_python(witness_input, 3)[row][col]
++        ],
++    }
++    _write_json(private_dir / "setting-difference-witness.json", witness)
++
++    source_paths = {
++        "prototype.py": Path(__file__).resolve(),
++        "adapter.py": Path(__file__).resolve().with_name("adapter.py"),
++        "promotion.json": Path(__file__).resolve().with_name("promotion.json"),
++    }
++    report = {
++        "schema": "a9c4475d7cda-parametric-panel-threshold-report-v1",
++        "status": "proposed_prototype",
++        "scope": STATUS,
++        "task_id": TASK_ID,
++        "parameter": {
++            "name": "min_panel_count",
++            "allowed_values": list(ALLOWED_MIN_PANEL_COUNTS),
++            "default": DEFAULT_MIN_PANEL_COUNT,
++            "meaning": "output 1 for a panel iff it contains at least this many color-6 cells",
++            "chosen_once_per_episode": True,
++        },
++        "episode_parameters": {
++            str(episode["parameters"]["min_panel_count"]): {
++                "seed": episode["seed"],
++                "public_id": public_id(episode),
++                "program_sha256": episode["program_sha256"],
++                "program_normalized_hash": episode["program_normalized_hash"],
++            }
++            for episode in episodes
++        },
++        "reasoning_invariants": [
++            "locate the two full divider rows and columns",
++            "count color-6 cells independently in each of the nine panels",
++            "emit a 3x3 binary mask using one fixed minimum count",
++        ],
++        "input_constraints": [
++            "selected generator's lawful 0/6/8 divider-grid grammar",
++            "every retained pair contains both count-2 and count-3 panels",
++            "all demonstration and query inputs are distinct within an episode",
++        ],
++        "default_program_exact_canonical": programs[2] == canonical,
++        "canonical_program_sha256": _sha256_bytes(canonical.encode()),
++        "canonical_normalized_rule_hash": _normalized_rule_hash(canonical),
++        "program_hashes": {
++            str(threshold): {
++                "sha256": _sha256_bytes(program.encode()),
++                "normalized": _normalized_rule_hash(program),
++            }
++            for threshold, program in programs.items()
++        },
++        "generator_sha256": generator_sha256,
++        "canonical_pairs_checked": len(canonical_checks),
++        "canonical_pairs_all_match": all(row["matches"] for row in canonical_checks),
++        "canonical_checks": canonical_checks,
++        "complete_episodes": len(episodes),
++        "pairs_per_episode": {"train": n_demos, "test": n_queries},
++        "all_labels_and_rivals_executed_in_racket": True,
++        "all_demonstrations_refute_other_declared_setting": all(
++            episode["rival"]["demo_differences"] == list(range(n_demos))
++            for episode in episodes
++        ),
++        "all_queries_distinguish_other_declared_setting": all(
++            episode["rival"]["query_differences"] == list(range(n_queries))
++            for episode in episodes
++        ),
++        "all_queries_identified_from_demonstrations": all(
++            all(
++                row["consistent_settings"]
++                == [episode["parameters"]["min_panel_count"]]
++                and row["query_answer_used_for_demo_fit"] is False
++                and row["selected_prediction_matches_label"] is True
++                for row in episode["query_identification"]
++            )
++            for episode in episodes
++        ),
++        "witness_differing_cell_count": len(witness["differing_cells"]),
++        "runtime_identity": episodes[0]["racket_runtime"],
++        "source_sha256": {
++            name: _sha256_bytes(path.read_bytes())
++            for name, path in source_paths.items()
++            if path.is_file()
++        },
++        "limitations": [
++            "Only thresholds 2 (canonical) and 3 (proposed) are instantiated.",
++            "The alternative changes the decision boundary but preserves the original panel-count reasoning and palette.",
++            f"Evidence covers two settings at one retained seed with {n_demos} demonstrations and {n_queries} queries each.",
++            "Only the declared opposite threshold is checked as a rival; finite evidence does not prove unique induction against every possible rule.",
++            "This task-local prototype is not production-approved and does not admit data to training.",
++        ],
++    }
++    _write_json(destination / "report.json", report)
++
++    artifact_paths = sorted(
++        path
++        for path in destination.rglob("*")
++        if path.is_file() and path.name != "manifest.json"
++    )
++    manifest = {
++        "schema": "a9c4475d7cda-parametric-materialization-v1",
++        "task_id": TASK_ID,
++        "seed": episode_seed,
++        "files": [_artifact_record(path, destination) for path in artifact_paths],
++    }
++    _write_json(destination / "manifest.json", manifest)
++    return report
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--seed", type=int, default=2600)
++    parser.add_argument("--demos", type=int, default=3)
++    parser.add_argument("--queries", type=int, default=4)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    report = materialize(
++        args.out,
++        seed=args.seed,
++        demos=args.demos,
++        queries=args.queries,
++    )
++    print(
++        json.dumps(
++            {
++                "status": report["status"],
++                "task_id": report["task_id"],
++                "complete_episodes": report["complete_episodes"],
++                "pairs_per_episode": report["pairs_per_episode"],
++                "out": str(args.out),
++            },
++            sort_keys=True,
++        )
++    )
++
++
++if __name__ == "__main__":
++    main()

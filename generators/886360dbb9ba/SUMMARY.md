@@ -1,0 +1,6 @@
+# 886360dbb9ba
+
+Fixed-size 16×17 grid filled with BG color drawn distinct from line_color, rect_color (3-color palette via draw_distinct_colors). (a) ONE FULL-SPAN LINE in ORIENTATION ∈ {vertical (col w//2=8 painted line_color across all rows) / horizontal (row h//2=8 painted across all cols)}; (b) ONE SOLID RECTANGLE of size rh × rw (rh, rw ∈ 2-4) placed in the OPPOSITE side of the line from where the mirror will land — for vertical line: r0 ∈ 2-9, c0 ∈ 1-3 (left of line); for horizontal: r0 ∈ 1-3 (above line), c0 ∈ 3-10 — painted in rect_color. Rule (MIRROR THE SOLID RECTANGLE ACROSS THE FULL-SPAN LINE; FILL THE GAP BETWEEN THE ORIGINAL AND THE MIRRORED COPY WITH THE LINE COLOR; ORIGINAL RECT, MIRRORED RECT, AND LINE ALL PRESERVED): IDENTIFY the line (color and axis). For EACH solid rectangle: REFLECT it across the line to get its mirrored position. PAINT the mirror cells in rect_color. FILL the GAP between the original rect and the mirror's nearest edge with LINE_COLOR (connecting them). Net: each rectangle is duplicated on the other side of the line; a line-colored bridge connects the pair through the original line.
+
+Kind: `per_puzzle`. Imported version: `2.4.0`.
+Approval is derived by the catalog from current code and retained evidence.

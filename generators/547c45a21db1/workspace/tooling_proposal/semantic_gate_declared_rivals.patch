@@ -1,0 +1,283 @@
+--- a/shared/tools/generator_semantic_gate.py
++++ b/shared/tools/generator_semantic_gate.py
+@@ -1477,7 +1477,7 @@
+ 
+ def score_lessons(
+     task_id: str,
+-    hook: Callable,
++    hook: Callable | None,
+     *,
+     count: int,
+     n_demos: int,
+@@ -1487,7 +1487,11 @@
+     competitors: dict[str, Callable] | None = None,
+     oracle_factory: Callable[[], _RuleOracle] | None = None,
+ ) -> tuple[dict[str, Any], list[str], list[str]]:
+-    """Materialize lessons per band and run `lesson_identifiable` over each. LOUD.
++    """Materialize lessons and score an optional hook plus declared rivals. LOUD.
++
++    Without a hook, only a rival that fits every demo and changes the query
++    establishes ambiguity. This is finite declared-rival evidence, not a claim
++    that all possible rules have been distinguished.
+ 
+     Returns (stats, problems, warnings). v1 returned an aggregate count and a
+     bare `#index(seed=…)` — not enough to reproduce a failure and not enough to
+@@ -1506,6 +1510,12 @@
+                         pass_difficulty=pass_difficulty, legacy=legacy)
+     stats: dict[str, Any] = {
+         "requested": count, "n_demos": n_demos, "n_queries": 1,
++        "hook_declared": hook is not None,
++        "assessment_basis": (
++            "declared_rivals" if hook is None else
++            "lesson_identifiable_and_declared_rivals" if competitors else
++            "lesson_identifiable"
++        ),
+         "bands": list(band_keys),
+         "legacy_sample": legacy,
+         "requested_per_band": dict(Counter(band for band, *_ in plan)),
+@@ -1551,7 +1561,15 @@
+                     if len(stats["competitor_error_examples"]) < MAX_EXAMPLES:
+                         stats["competitor_error_examples"].append(message)
+ 
+-        reasons, error = _call_reasons_hook(hook, lesson["demos"], lesson["query"])
++        if hook is None:
++            reasons = [
++                f"declared rival {name!r} fits every demo but changes the query"
++                for name in scored.get("query_discriminates", [])
++            ]
++            error = None
++        else:
++            reasons, error = _call_reasons_hook(
++                hook, lesson["demos"], lesson["query"])
+         if error is not None:
+             stats["hook_errors"] += 1
+             band_row["hook_errors"] += 1
+@@ -1601,7 +1619,7 @@
+ 
+     if not lessons:
+         problems.append(
+-            f"{task_id}: lesson_identifiable declared but ZERO of {count} "
++            f"{task_id}: lesson scoring requested but ZERO of {count} "
+             "lessons materialized — nothing was measured"
+         )
+     if stats["hook_errors"]:
+@@ -1768,7 +1786,7 @@
+             oracle_slot[0] = _RuleOracle(task_id)
+         return oracle_slot[0]
+ 
+-    if not any(result["hooks_declared"].values()):
++    if not any(result["hooks_declared"].values()) and not (competitors or shortcuts):
+         # Lawful: the legacy corpus is FLAGGED, never churned. A bulk sweep over
+         # 3,937 generators must not turn red for a contract most of them predate.
+         #
+@@ -2090,8 +2108,8 @@
+             "can exist and none is required — WFB-2001 exclusion"
+         )
+ 
+-    # --- hook 3: lesson identifiability ------------------------------------
+-    if lesson_hook is not None:
++    # Declared rivals are executable lesson evidence even without hook 3.
++    if lesson_hook is not None or competitors or shortcuts:
+         # 5. EXAMPLES_NEEDED is the module's own statement of how many demos a
+         # lesson needs; auditing 3 demos while the shard ships EXAMPLES_NEEDED
+         # would judge a lesson shape the trainer never sees.
+@@ -2152,6 +2170,11 @@
+         )
+         stats["auto_scored_canonical_shortcuts"] = auto_scored_shortcuts
+         stats["n_demos_source"] = n_demos_source
++        if lesson_hook is None:
++            notes.append(
++                f"{task_id}: lesson_identifiable absent; lessons checked against "
++                "declared rivals only, without a universal identifiability claim"
++            )
+         result["lessons"] = stats
+         errors.extend(problems)
+         warnings.extend(lesson_warnings)
+@@ -2172,7 +2195,7 @@
+                 "the generator's default difficulty — per-band lesson "
+                 "identifiability was NOT measured"
+             )
+-        if stats["unidentifiable"] and not competitors:
++        if stats["unidentifiable"] and not merged_competitors:
+             notes.append(
+                 f"{task_id}: {stats['unidentifiable']} unidentifiable lessons "
+                 "could not NAME a surviving competitor — declare "
+@@ -2235,9 +2258,11 @@
+             band: f"{row['identifiable']}/{row['materialized']}"
+             for band, row in (lessons.get("per_band") or {}).items()
+         }
++        verdict = ("identifiable" if lessons.get("hook_declared", True) else
++                   "without detected declared-rival ambiguity")
+         parts.append(
+             f"lessons={lessons['identifiable']}/{lessons['materialized']} "
+-            f"identifiable (requested {lessons['requested']}, per band "
++            f"{verdict} (requested {lessons['requested']}, per band "
+             f"{per_band})"
+         )
+     census = audit.get("census")
+--- a/shared/tests/test_generator_semantic_gate.py
++++ b/shared/tests/test_generator_semantic_gate.py
+@@ -13,6 +13,8 @@
+ import json
+ import sys
+ import types
++
++import pytest
+ from pathlib import Path
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+@@ -1439,6 +1441,7 @@
+             "keep_seed_positions": lambda g: [[9 if v else 0 for v in g[0]]],
+         },
+     ), canonical=None)
++    monkeypatch.setattr(gsg, "materialize_lessons", _fake_lessons(1))
+     audit = gsg.audit_task(TASK, per_band=2)
+     assert audit["canonical_ambiguity"]["ambiguous_declared"] == [
+         "keep_seed_positions"]
+@@ -1460,6 +1463,7 @@
+         CANONICAL_SHORTCUTS={"keep_seed_positions": shortcut},
+     ), canonical=None)
+     monkeypatch.setattr(gsg, "_RuleOracle", _fake_oracle(_double))
++    monkeypatch.setattr(gsg, "materialize_lessons", _fake_lessons(1))
+     audit = gsg.audit_task(TASK, per_band=30)
+     ambiguity = audit["canonical_ambiguity"]
+     assert ambiguity["ambiguous_declared"] == ["keep_seed_positions"]
+@@ -1657,3 +1661,138 @@
+         rival_claims={}, witness_rivals={},
+     )
+     assert {f["source"] for f in stats["unsatisfied"]} == {"declared"}
++
++
++# Declared-rival lesson assessment without an author lesson hook.
++def _declared_only_double(grid):
++    return [[value * 2 for value in row] for row in grid]
++
++
++def _declared_only_add_one(grid):
++    return [[value + 1 if value else 0 for value in row] for row in grid]
++
++
++def _declared_only_lesson():
++    inputs = [
++        [[1, 0], [0, 0]], [[0, 1], [0, 0]],
++        [[0, 0], [1, 0]], [[0, 0], [0, 1]],
++    ]
++    query = [[2, 0], [0, 0]]
++    return {
++        "index": 0, "band": "easy", "seed": 17, "sample_index": 22,
++        "replay": "band=easy seed=17 sample_index=22",
++        "demos": [{"input": grid, "output": _declared_only_double(grid)} for grid in inputs],
++        "query": {"input": query, "output": _declared_only_double(query)},
++    }
++
++
++def _declared_only_fixture(monkeypatch, tmp_path, **attrs):
++    lesson = _declared_only_lesson()
++    first = lesson["demos"][0]
++    _canonical_file(monkeypatch, tmp_path, [(first["input"], first["output"])])
++    _install(monkeypatch, _gen_module(EXAMPLES_NEEDED=4, **attrs))
++    calls = []
++
++    def materialize(*args, **kwargs):
++        calls.append(kwargs)
++        return [lesson], []
++
++    monkeypatch.setattr(gsg, "materialize_lessons", materialize)
++    return calls
++
++
++@pytest.mark.parametrize("declaration", ["LESSON_COMPETITORS", "CANONICAL_SHORTCUTS"])
++@pytest.mark.parametrize("strict_hook", [False, True])
++def test_declared_query_changing_rival_is_scored_without_lesson_hook(
++        monkeypatch, tmp_path, declaration, strict_hook):
++    attrs = {declaration: {"adds_one": _declared_only_add_one}}
++    if strict_hook:
++        attrs["strict_canonical_like"] = lambda grid: []
++    calls = _declared_only_fixture(monkeypatch, tmp_path, **attrs)
++    audit = gsg.audit_task(TASK, per_band=2, lessons=1, require_contract=True)
++
++    assert audit["lessons"] is not None, "declared rivals were never lesson-scored"
++    assert audit["status"] == "FAIL"
++    assert not audit["hooks_declared"]["lesson_identifiable"]
++    stats = audit["lessons"]
++    assert stats["assessment_basis"] == "declared_rivals"
++    assert stats["hook_declared"] is False
++    assert stats["hook_errors"] == 0
++    assert stats["unidentifiable"] == 1
++    assert stats["per_band"]["easy"]["unidentifiable"] == 1
++    example = stats["unidentifiable_examples"][0]
++    assert example["survivors"] == ["adds_one"]
++    assert example["replay"] == "band=easy seed=17 sample_index=22"
++    assert calls[0]["n_demos"] == 4
++    assert not any("could not NAME" in note for note in audit["notes"])
++    if declaration == "CANONICAL_SHORTCUTS":
++        assert stats["auto_scored_canonical_shortcuts"] == ["adds_one"]
++        assert audit["canonical_ambiguity"]["ambiguous_declared"] == ["adds_one"]
++
++
++def test_hookless_answer_equivalent_and_demo_refuted_rivals_are_not_ambiguity(
++        monkeypatch, tmp_path):
++    _declared_only_fixture(monkeypatch, tmp_path, LESSON_COMPETITORS={
++        "doubles": _declared_only_double, "always_zero": lambda grid: [[0]],
++    })
++    audit = gsg.audit_task(TASK, per_band=2, lessons=1, require_contract=True)
++    assert audit["status"] == "PASS"
++    stats = audit["lessons"]
++    assert stats["identifiable"] == 1
++    assert stats["unidentifiable"] == 0
++    assert stats["competitor_survived_all_counts"] == {"doubles": 1}
++    assert stats["competitor_survivor_counts"] == {"doubles": 1}
++    assert stats["survivors_on_identifiable_lessons"] == []
++    assert "without detected declared-rival ambiguity" in gsg._summary_line(audit)
++    assert any("lesson_identifiable absent" in note for note in audit["notes"])
++
++
++def test_hookless_competitor_error_is_counted_without_a_hook_error(monkeypatch, tmp_path):
++    def broken(grid):
++        raise ValueError("fixture rival failure")
++
++    _declared_only_fixture(monkeypatch, tmp_path, LESSON_COMPETITORS={"broken": broken})
++    audit = gsg.audit_task(TASK, per_band=2, lessons=1)
++    assert audit["status"] == "WARN"
++    assert audit["lessons"]["competitor_errors"] == 1
++    assert audit["lessons"]["hook_errors"] == 0
++    assert any("fixture rival failure" in warning for warning in audit["warnings"])
++    assert gsg.main([TASK, "--per-band", "2", "--lessons", "1", "--strict"]) == 1
++
++
++def test_hookless_materialization_failure_is_not_a_pass(monkeypatch, tmp_path):
++    _declared_only_fixture(monkeypatch, tmp_path, LESSON_COMPETITORS={"doubles": _declared_only_double})
++    monkeypatch.setattr(gsg, "materialize_lessons", lambda *a, **kw: ([], ["fixture rejection"]))
++    audit = gsg.audit_task(TASK, per_band=2, lessons=1)
++    assert audit["status"] == "FAIL"
++    assert audit["lessons"]["materialized"] == 0
++    assert any("ZERO of 1 lessons materialized" in error for error in audit["errors"])
++    assert not any("lesson_identifiable declared" in error for error in audit["errors"])
++
++
++@pytest.mark.parametrize("attrs", [
++    {}, {"LESSON_COMPETITORS": {}}, {"CANONICAL_SHORTCUTS": {}},
++    {"SEMANTIC_RIVALS": {"doubles": _declared_only_double}},
++])
++def test_no_lesson_contract_preserves_legacy_advisory(monkeypatch, attrs):
++    _install(monkeypatch, _gen_module(**attrs))
++
++    def unexpected_materialization(*args, **kwargs):
++        pytest.fail("a module with no lesson contract was materialized")
++
++    monkeypatch.setattr(gsg, "materialize_lessons", unexpected_materialization)
++    audit = gsg.audit_task(TASK, per_band=2, lessons=1)
++    assert audit["status"] == "NO_CONTRACT"
++    assert audit["errors"] == []
++    assert audit["lessons"] is None
++    required = gsg.audit_task(TASK, per_band=2, lessons=1, require_contract=True)
++    assert required["status"] == "FAIL"
++
++
++@pytest.mark.parametrize("declaration", ["LESSON_COMPETITORS", "CANONICAL_SHORTCUTS"])
++def test_malformed_lesson_declaration_remains_a_failure(monkeypatch, declaration):
++    _install(monkeypatch, _gen_module(**{declaration: {"not_callable": None}}))
++    audit = gsg.audit_task(TASK, per_band=2, lessons=1)
++    assert audit["status"] == "FAIL"
++    assert audit["lessons"] is None
++    assert any(declaration in error for error in audit["errors"])

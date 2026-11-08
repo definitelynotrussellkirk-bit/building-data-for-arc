@@ -1,0 +1,9 @@
+# Bounded adversarial witness
+
+Status: **completed**. The planned shortcut commits to the first locally fitting piece at the earliest uncovered cell, uses the canonical type/offset order, and never backtracks. On a dead end it returns the input, matching the canonical rule's no-solution fallback.
+
+The first generated input (sample index 0; full hexadecimal ticket seed converted to an integer; default difficulty and no overrides) passes `self_check`, has one connected mask and exactly one legal exact cover. The greedy shortcut makes four placements and gets stuck. Protected Racket labels the input, producing 17 cells different from the rival. `witness.json` retains the exact input, authority output, rival output, greedy trace, first wrong placement, lawfulness checks, source/rule identity, seed, and protected runtime identity. This is a wrong-rule separator, not a peer safety finding. No lesson-acceptance or training-admission behavior was tested.
+
+The first command failed during a reviewer-authored preflight, before generation or Racket: it incorrectly compared raw program SHA-256 with the catalog's whitespace-normalized short rule hash. `preflight-probe.py`, `preflight-execution.json`, and `preflight-stdout.txt`/`preflight-stderr.txt` retain that exact failure. The correction uses `Catalog(ROOT).describe(TASK)['rule_hash']`, records the raw program SHA separately, and changes neither the rival nor the sample plan. The single actual semantic probe then exited 0 and stopped at its first sample. Both command durations together were about 4.81 seconds.
+
+`probe.py` is the runnable successful probe, `execution.json` records its exact command/cwd/exit/environment, and `canonical.rkt` contains the exact raw program bytes. No second semantic probe, peer battery, or census was run. Total authoring time was not measured, so `elapsed_minutes` remains null.

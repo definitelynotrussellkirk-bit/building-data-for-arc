@@ -1,0 +1,6 @@
+# 588ee22f3c4f
+
+0-bg grid (h ∈ 7-9, w ∈ 9-11) with: (a) TWO COLOR-5 GUIDE CELLS placed at FIXED positions per AXIS ∈ {0=same-row at (0, 2) and (0, 7) (defines vertical mirror axis), 1=same-col at (1, 0) and (5, 0) (defines horizontal mirror axis)}; (b) SMALL MOTIF on ONE SIDE of the guides: for axis=0 (same-row), motif at rows 2-4, cols 1-3 with cells [(2,1)=1, (2,2)=2, (3,1)=1, (3,3)=2, (4,1)=2, (4,2)=2, (4,3)=2]; for axis=1 (same-col), motif at rows 2-3, cols 1-3 with cells [(2,1)=2, (2,3)=3, (3,2)=4]. The mirror partner side is INITIALLY EMPTY. Rule (FIND THE 2 COLOR-5 GUIDES; IF THEY ARE ON THE SAME ROW, APPLY VERTICAL (LR) MIRROR TO ALL NON-5 CELLS USING THE GUIDES' MIDPOINT AS AXIS; IF SAME COL, APPLY HORIZONTAL (UD) MIRROR USING GUIDES' MIDPOINT): IDENTIFY the 2 color-5 guides. DETERMINE axis alignment. For EACH non-5 cell at (r, c): COMPUTE its mirror position across the inferred axis. IF mirror cell is currently 0: PAINT it with the source cell's color. Guides preserved. Net: motif completes its mirror reflection across the 5-guide line. Flagged hardcoded-low (uniq_in=18): fixed positions × 2 axes × few sizes bounds inputs.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

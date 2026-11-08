@@ -1,0 +1,7 @@
+(rule! (lambda (g)
+  (let* ((color (find-first (lambda (c) (!= c 0)) (grid-colors g)))
+         (mapped (casev color (hash 3 1 5 4 8 2) color))
+         (intermediate (cellmap g (r c v) (if (!= v 0) 0 mapped)))
+         (regions (objects intermediate 0))
+         (largest (pick-max regions obj-size)))
+    (recolor-cells intermediate (obj-boundary-cells largest) color))))

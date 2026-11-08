@@ -1,0 +1,1 @@
+Translate two 8-connected yellow/orange pieces until their complete orange patterns mate at unit cardinal distance, cover each other with yellow, and avoid yellow overlap. Remove ports and crop. The alternative fills 4-connected enclosed blue pockets only after assembly.

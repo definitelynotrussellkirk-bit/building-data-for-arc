@@ -1,0 +1,10 @@
+(rule!
+  (let ((dummy 0))
+    (define (cell< a b) (or (< (first a) (first b)) (and (= (first a) (first b)) (< (second a) (second b)))))
+    (for/fold ([out g]) ([obj (filter (lambda (o) (and (= (obj-color o) 5) (= (obj-size o) 3))) (objects-8 g 0))])
+      (let* ((cells (sort (obj-cells obj) cell<))
+             (norm (sort (normalize-cells cells) cell<)))
+        (if (or (equal? norm (list (list 0 0) (list 1 1) (list 2 2)))
+                (equal? norm (list (list 0 2) (list 1 1) (list 2 0))))
+            (paint-cells out (list (second cells)) 4)
+            out)))))

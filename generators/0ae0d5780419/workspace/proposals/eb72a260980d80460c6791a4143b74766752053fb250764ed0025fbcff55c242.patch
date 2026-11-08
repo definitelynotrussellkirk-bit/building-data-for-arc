@@ -1,0 +1,2371 @@
+diff --git a/repo/generators/0ae0d5780419/notes.md b/repo/generators/0ae0d5780419/notes.md
+--- a/repo/generators/0ae0d5780419/notes.md
++++ b/repo/generators/0ae0d5780419/notes.md
+@@ -2,3 +2,13 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 — parametric admission review `review-35ba5091ff5939b8`
++
++- Built an episode-fixed `match_policy` family: `first_exact` (the exact canonical program), `last_exact`, and `first_shape`.
++- Kept the source task's real dependency: crop A/B, infer an input-dependent transform code, then apply that code to cropped C.
++- The first demonstration has multiple exact matches and separates first from last; the second has only a recolored shape match and separates exact-color from shape matching. Additional examples cover unique exact matches, no-match identity fallback, padding/cropping, and large priority cases.
++- Supports 2–6 demonstrations and 1–4 prefix-stable queries. The largest query is 30x29; width 30 is impossible for three equal-width panels plus two divider columns because total width is `3*n + 2`.
++- Finite self-audit checked seven rival families for all three policies on seeds 0 and 17. No rival fit both teaching demonstrations while changing a query; this is not a universal uniqueness proof.
++- Protected causal witness: a `last_exact` query has exact-match list `[2, 6]`; replacing the inferred code 6 with code 2 while leaving C and the application step unchanged changes 6 output cells.
++- Native qualification passed all three settings on seeds 0 and 17. Reviewer status is ready; exact-source owner acceptance and training admission remain pending.
+diff --git a/repo/generators/0ae0d5780419/tests/test_parameters.py b/repo/generators/0ae0d5780419/tests/test_parameters.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/tests/test_parameters.py
+@@ -0,0 +1,225 @@
++"""Focused tests for the native transform-matching parametric family."""
++from __future__ import annotations
++
++from collections import Counter
++import copy
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from reviewer_support import find_root
++
++TASK_ID = "0ae0d5780419"
++ROOT = find_root(__file__)
++HOME = ROOT / "generators" / TASK_ID / "workspace" / "parametric"
++POLICIES = ("first_exact", "last_exact", "first_shape")
++
++
++def _load(name: str, path: Path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++PROTOTYPE = _load("panel_match_parametric_prototype_tests", HOME / "prototype.py")
++ADAPTER = _load("panel_match_parametric_adapter_tests", HOME / "adapter.py")
++
++
++def _canonical_program() -> str:
++    rows = [
++        json.loads(line)
++        for line in (ROOT / "shared" / "data" / "canonical" / "puzzles.jsonl")
++        .read_text()
++        .splitlines()
++    ]
++    programs = {
++        row["program_solution"]
++        for row in rows
++        if row.get("task_id") == TASK_ID and row.get("program_solution")
++    }
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def _pairs(episode):
++    return episode["train"] + episode["test"]
++
++
++def _inputs(episode):
++    return [pair["input"] for pair in _pairs(episode)]
++
++
++def _survivors(demos):
++    return [
++        policy
++        for policy in POLICIES
++        if all(
++            PROTOTYPE.apply_policy(pair["input"], policy) == pair["output"]
++            for pair in demos
++        )
++    ]
++
++
++def test_promotion_contract_and_exact_canonical_default():
++    contract = json.loads((HOME / "promotion.json").read_text())
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": f"generators/{TASK_ID}/workspace/parametric/adapter.py",
++        "parameters": {"match_policy": list(POLICIES)},
++        "default": {"match_policy": "first_exact"},
++        "limits": {"demos": [2, 6], "queries": [1, 4]},
++        "resources": [
++            f"generators/{TASK_ID}/workspace/parametric/rules/canonical.rkt",
++            f"generators/{TASK_ID}/workspace/parametric/rules/last_exact.rkt",
++            f"generators/{TASK_ID}/workspace/parametric/rules/first_shape.rkt",
++        ],
++    }
++    canonical = _canonical_program()
++    assert ADAPTER.program({"match_policy": "first_exact"}) == canonical
++    assert PROTOTYPE.rule_text("first_exact") == canonical
++    assert tuple(PROTOTYPE.MATCH_POLICIES) == POLICIES
++
++
++@pytest.mark.parametrize("seed", [0, 17, 91])
++def test_inputs_are_matched_across_settings_and_first_two_demos_separate_them(seed):
++    episodes = {
++        policy: ADAPTER.generate(seed, {"match_policy": policy}, demos=2, queries=4)
++        for policy in POLICIES
++    }
++    baseline_inputs = _inputs(episodes["first_exact"])
++    assert len({json.dumps(grid) for grid in baseline_inputs}) == 6
++    for policy, episode in episodes.items():
++        assert _inputs(episode) == baseline_inputs
++        assert episode["program_solution"] == ADAPTER.program({"match_policy": policy})
++        assert all(
++            pair["output"] == PROTOTYPE.apply_policy(pair["input"], policy)
++            for pair in _pairs(episode)
++        )
++
++    first = {policy: episodes[policy]["train"][0]["output"] for policy in POLICIES}
++    second = {policy: episodes[policy]["train"][1]["output"] for policy in POLICIES}
++    assert first["first_exact"] == first["first_shape"] != first["last_exact"]
++    assert second["first_exact"] == second["last_exact"] != second["first_shape"]
++
++
++@pytest.mark.parametrize("seed", [0, 17, 91])
++@pytest.mark.parametrize("demos", [2, 3, 4, 5, 6])
++@pytest.mark.parametrize("policy", POLICIES)
++def test_two_to_six_demonstrations_identify_the_setting(seed, demos, policy):
++    episode = ADAPTER.generate(seed, {"match_policy": policy}, demos=demos, queries=4)
++    assert len(episode["train"]) == demos
++    assert len(episode["test"]) == 4
++    assert _survivors(episode["train"]) == [policy]
++    assert len({json.dumps(grid) for grid in _inputs(episode)}) == demos + 4
++
++
++@pytest.mark.parametrize("policy", POLICIES)
++def test_one_query_is_the_same_first_turn_as_four_queries(policy):
++    settings = {"match_policy": policy}
++    one = ADAPTER.generate(431, settings, demos=3, queries=1)
++    four = ADAPTER.generate(431, settings, demos=3, queries=4)
++    assert one["train"] == four["train"]
++    assert one["test"] == four["test"][:1]
++    assert PROTOTYPE.public_projection(one) == {
++        "train": one["train"],
++        "test": [{"input": one["test"][0]["input"]}],
++    }
++
++
++def test_four_query_curriculum_reaches_lawful_maximum_and_has_substantive_content():
++    episode = ADAPTER.generate(
++        20261024, {"match_policy": "last_exact"}, demos=3, queries=4
++    )
++    shapes = [(len(p["input"]), len(p["input"][0])) for p in episode["test"]]
++    assert shapes == [(8, 17), (14, 23), (24, 29), (30, 29)]
++
++    large = episode["test"][-1]["input"]
++    counts = Counter(value for row in large for value in row)
++    assert counts[5] == 60
++    assert sum(value != 0 for row in large for value in row) >= 260
++    facts = PROTOTYPE.analyse(large)
++    assert facts["panel_h"] == 30 and facts["panel_n"] == 9
++    assert facts["exact_matches"] == (1, 3)
++    assert facts["bboxes"][0][0] <= 1 and facts["bboxes"][0][2] >= 28
++    assert facts["bboxes"][2][0] <= 1 and facts["bboxes"][2][2] >= 28
++
++
++@pytest.mark.parametrize("seed", [0, 17, 91])
++@pytest.mark.parametrize("policy", POLICIES)
++def test_bounded_self_audit_refutes_each_declared_plausible_rival(seed, policy):
++    episode = ADAPTER.generate(seed, {"match_policy": policy}, demos=2, queries=4)
++    rivals = PROTOTYPE.audit_rivals(policy)
++    assert set(rivals) == {
++        "other_finite_policy_1",
++        "other_finite_policy_2",
++        "last_shape_match",
++        "rotate_cw_on_no_exact_match",
++        "transform_padded_c_without_crop",
++        "always_identity",
++        "always_rotate_cw",
++    }
++    for name, rival in rivals.items():
++        assert any(rival(pair["input"]) != pair["output"] for pair in episode["train"]), (
++            seed,
++            policy,
++            name,
++            "demo",
++        )
++        assert any(rival(pair["input"]) != pair["output"] for pair in episode["test"]), (
++            seed,
++            policy,
++            name,
++            "query",
++        )
++
++
++@pytest.mark.parametrize(
++    "settings",
++    [
++        {},
++        {"match_policy": "unknown"},
++        {"match_policy": True},
++        {"match_policy": "first_exact", "extra": 1},
++    ],
++)
++def test_invalid_settings_reject(settings):
++    with pytest.raises(ValueError):
++        ADAPTER.program(settings)
++    with pytest.raises(ValueError):
++        ADAPTER.generate(0, settings, demos=3, queries=4)
++
++
++@pytest.mark.parametrize(
++    "seed,demos,queries",
++    [
++        (True, 3, 4),
++        (-1, 3, 4),
++        (0, True, 4),
++        (0, 1, 4),
++        (0, 7, 4),
++        (0, 3, True),
++        (0, 3, 0),
++        (0, 3, 5),
++    ],
++)
++def test_invalid_count_and_seed_controls_reject(seed, demos, queries):
++    with pytest.raises(ValueError):
++        ADAPTER.generate(seed, {"match_policy": "first_exact"}, demos=demos, queries=queries)
++
++
++def test_public_identifier_depends_only_on_visible_projection():
++    episode = PROTOTYPE.generate_episode(77, match_policy="first_shape", demos=3, queries=4)
++    public = PROTOTYPE.public_projection(episode)
++    identifier = PROTOTYPE.public_challenge_id(episode)
++    altered = copy.deepcopy(episode)
++    altered["private_note"] = "changed"
++    altered["settings"] = {"match_policy": "last_exact"}
++    for pair in altered["test"]:
++        pair["output"] = [[9]]
++    assert PROTOTYPE.public_projection(altered) == public
++    assert PROTOTYPE.public_challenge_id(altered) == identifier
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/README.md b/repo/generators/0ae0d5780419/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/README.md
+@@ -0,0 +1,17 @@
++# 0ae0d5780419 transform-matching family
++
++This proposed native family keeps the source task's three-panel analogy. The
++private episode setting `match_policy` changes how transformed A is matched to B:
++
++- `first_exact`: exact canonical Racket bytes; choose the first exact colored match.
++- `last_exact`: choose the last exact colored match in the same six-code order.
++- `first_shape`: ignore colors while matching shapes, then apply the first match.
++
++All settings crop A, B, and C first. The inferred transform code is an
++input-dependent intermediate that must be computed before C can be transformed.
++Inputs are matched across settings and support 2–6 demonstrations plus 1–4
++queries. The first two demonstrations respectively expose transform-priority
++ambiguity and a recolored shape-only relation, so they identify all three
++settings. Four queries cover 8×17, 14×23, 24×29, and substantive 30×29 inputs.
++Exact 30-column width is impossible under three equal-width panels plus two
++one-column separators (`width = 3n + 2`); 30×29 is the lawful maximum stress.
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/adapter.py b/repo/generators/0ae0d5780419/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/adapter.py
+@@ -0,0 +1,44 @@
++"""Native promotion adapter for the transform-matching family."""
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++from typing import Any
++
++_HERE = Path(__file__).resolve().parent
++_SPEC = importlib.util.spec_from_file_location(
++    "panel_match_parametric_prototype_adapter_target", _HERE / "prototype.py"
++)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError("cannot load sibling transform-matching prototype")
++_PROTOTYPE = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(_PROTOTYPE)
++
++
++def _settings(settings: Any) -> dict[str, str]:
++    if type(settings) is not dict or set(settings) != {"match_policy"}:
++        raise ValueError("settings must contain exactly match_policy")
++    policy = settings["match_policy"]
++    if type(policy) is not str or policy not in _PROTOTYPE.MATCH_POLICIES:
++        raise ValueError(f"match_policy must be one of {_PROTOTYPE.MATCH_POLICIES}")
++    return {"match_policy": policy}
++
++
++def program(settings: dict[str, Any]) -> str:
++    checked = _settings(settings)
++    return _PROTOTYPE.rule_text(checked["match_policy"])
++
++
++def generate(
++    seed: int,
++    settings: dict[str, Any],
++    demos: int = 3,
++    queries: int = 4,
++) -> dict[str, Any]:
++    checked = _settings(settings)
++    return _PROTOTYPE.generate_episode(
++        seed,
++        match_policy=checked["match_policy"],
++        demos=demos,
++        queries=queries,
++    )
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/evidence/current/authoring_probe.json b/repo/generators/0ae0d5780419/workspace/parametric/evidence/current/authoring_probe.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/evidence/current/authoring_probe.json
+@@ -0,0 +1,269 @@
++{
++  "checks": [
++    {
++      "counts": {
++        "demos": 2,
++        "queries": 4
++      },
++      "label_count": 6,
++      "seed": 0,
++      "settings": {
++        "match_policy": "first_exact"
++      },
++      "survivors": [
++        {
++          "match_policy": "first_exact"
++        }
++      ]
++    },
++    {
++      "counts": {
++        "demos": 2,
++        "queries": 4
++      },
++      "label_count": 6,
++      "seed": 17,
++      "settings": {
++        "match_policy": "first_exact"
++      },
++      "survivors": [
++        {
++          "match_policy": "first_exact"
++        }
++      ]
++    },
++    {
++      "counts": {
++        "demos": 2,
++        "queries": 4
++      },
++      "label_count": 6,
++      "seed": 0,
++      "settings": {
++        "match_policy": "last_exact"
++      },
++      "survivors": [
++        {
++          "match_policy": "last_exact"
++        }
++      ]
++    },
++    {
++      "counts": {
++        "demos": 2,
++        "queries": 4
++      },
++      "label_count": 6,
++      "seed": 17,
++      "settings": {
++        "match_policy": "last_exact"
++      },
++      "survivors": [
++        {
++          "match_policy": "last_exact"
++        }
++      ]
++    },
++    {
++      "counts": {
++        "demos": 2,
++        "queries": 4
++      },
++      "label_count": 6,
++      "seed": 0,
++      "settings": {
++        "match_policy": "first_shape"
++      },
++      "survivors": [
++        {
++          "match_policy": "first_shape"
++        }
++      ]
++    },
++    {
++      "counts": {
++        "demos": 2,
++        "queries": 4
++      },
++      "label_count": 6,
++      "seed": 17,
++      "settings": {
++        "match_policy": "first_shape"
++      },
++      "survivors": [
++        {
++          "match_policy": "first_shape"
++        }
++      ]
++    }
++  ],
++  "episode_output_sha256": [
++    {
++      "seed": 0,
++      "settings": {
++        "match_policy": "first_exact"
++      },
++      "test": [
++        "c7b4d39e7ecd0a3fa9a5a67689a614b6f9ef5db37717b52cf925bdcf7ee62ef5",
++        "b3e3aee27a4901add20e3115d682ea3ff5ff126eb7b3268876eca6856c9bb823",
++        "b94eaef95812d6fe19195dd6b303ca6c66546e99e3ed8a0321ab3a13b6e8ad99",
++        "8667d85e6d95d62ec753a839eb83c99f34b23221773dbbc95058786cfe04f500"
++      ],
++      "train": [
++        "781c64a73aacc7b05df793c357530b99978d83f81ae61801ed19cd98c4016fd7",
++        "badfeca73d6d3005916e9b84f62b2477210e4b65f52e581a5762afbf4dba83c6"
++      ]
++    },
++    {
++      "seed": 17,
++      "settings": {
++        "match_policy": "first_exact"
++      },
++      "test": [
++        "d0081e0c4ba56880e2397121c27dc094e679576afd5b0b06fb4048109ef7735d",
++        "0cdbdb7914d5a7e8e18de5620ffef5e81951dbabe00aad492a7e8dce4acfa871",
++        "1c4101666e06f163e019c86c58a48a2f19a9473d044fd53525f2cd9e73668c25",
++        "81a9330e401743b1acd5efdc147e4552c92ba2554016b28557ffad443930c435"
++      ],
++      "train": [
++        "6136b3fcaae0041cd5be745f047ff96ea50a2eccc580ed7e96c11bf1aa43cf3d",
++        "6144d528c89c11beb22addabc48f3227ea93cf239ea1ede90b1cbfe8456b4c98"
++      ]
++    },
++    {
++      "seed": 0,
++      "settings": {
++        "match_policy": "last_exact"
++      },
++      "test": [
++        "95afa8b98ff53ace15dfc9fd3b9e53d12f12f483346ba57530365adbdcbec037",
++        "b3e3aee27a4901add20e3115d682ea3ff5ff126eb7b3268876eca6856c9bb823",
++        "b94eaef95812d6fe19195dd6b303ca6c66546e99e3ed8a0321ab3a13b6e8ad99",
++        "63494ed6b248c520973fede4ace638d1566eaec3657b03428673959ecfd66a6e"
++      ],
++      "train": [
++        "22ed84091bfeee071219a1e1da22ceb13c540ce23ad5d419f9be57c137178271",
++        "badfeca73d6d3005916e9b84f62b2477210e4b65f52e581a5762afbf4dba83c6"
++      ]
++    },
++    {
++      "seed": 17,
++      "settings": {
++        "match_policy": "last_exact"
++      },
++      "test": [
++        "9f7a8fade04c89905d0003e50f92f84f7768651ecfb73bfb8669a2e466098558",
++        "0cdbdb7914d5a7e8e18de5620ffef5e81951dbabe00aad492a7e8dce4acfa871",
++        "1c4101666e06f163e019c86c58a48a2f19a9473d044fd53525f2cd9e73668c25",
++        "57a3c233474aad3838ead5864d3149aedf24fbacfe81525edf382407d382ceb6"
++      ],
++      "train": [
++        "83420dc4f00fa88ee61cb363ab681aaa44195b5a8c8451ba5f0b7ce182c84bd6",
++        "6144d528c89c11beb22addabc48f3227ea93cf239ea1ede90b1cbfe8456b4c98"
++      ]
++    },
++    {
++      "seed": 0,
++      "settings": {
++        "match_policy": "first_shape"
++      },
++      "test": [
++        "c7b4d39e7ecd0a3fa9a5a67689a614b6f9ef5db37717b52cf925bdcf7ee62ef5",
++        "d49a6d0914e3685f9ac5e593e1a7ba752d7f392928718dfaee946700bf53e293",
++        "01a8d5a81546c16f1a0a2757b8823f55cfcd395d8ac8794d2df786bbff137861",
++        "8667d85e6d95d62ec753a839eb83c99f34b23221773dbbc95058786cfe04f500"
++      ],
++      "train": [
++        "781c64a73aacc7b05df793c357530b99978d83f81ae61801ed19cd98c4016fd7",
++        "3dfa9762bcfec27b042d23caa06b068233390d1b9db8d207582b03ab17ba53fc"
++      ]
++    },
++    {
++      "seed": 17,
++      "settings": {
++        "match_policy": "first_shape"
++      },
++      "test": [
++        "d0081e0c4ba56880e2397121c27dc094e679576afd5b0b06fb4048109ef7735d",
++        "afe08a7c2090e7b5a3e4d2603440c897f0bcf9ca2fb1dc09af981a5cd7f33538",
++        "8063cc2cfc939734f9de51d19b9806878b61ce3d989752822e476c26b4381bc8",
++        "81a9330e401743b1acd5efdc147e4552c92ba2554016b28557ffad443930c435"
++      ],
++      "train": [
++        "6136b3fcaae0041cd5be745f047ff96ea50a2eccc580ed7e96c11bf1aa43cf3d",
++        "09b16df3cc6f387b79c6d3ddcb460e50423deef54334508bdec4aa8e523e35f6"
++      ]
++    }
++  ],
++  "full_execution_sha256": "9514c31ffe085acc34f44f7f5467a9c3d44e4e5777dc01c36a9caf2f27a89911",
++  "jobs": [
++    {
++      "demos": 2,
++      "queries": 4,
++      "seed": 0,
++      "settings": {
++        "match_policy": "first_exact"
++      }
++    },
++    {
++      "demos": 2,
++      "queries": 4,
++      "seed": 17,
++      "settings": {
++        "match_policy": "first_exact"
++      }
++    },
++    {
++      "demos": 2,
++      "queries": 4,
++      "seed": 0,
++      "settings": {
++        "match_policy": "last_exact"
++      }
++    },
++    {
++      "demos": 2,
++      "queries": 4,
++      "seed": 17,
++      "settings": {
++        "match_policy": "last_exact"
++      }
++    },
++    {
++      "demos": 2,
++      "queries": 4,
++      "seed": 0,
++      "settings": {
++        "match_policy": "first_shape"
++      }
++    },
++    {
++      "demos": 2,
++      "queries": 4,
++      "seed": 17,
++      "settings": {
++        "match_policy": "first_shape"
++      }
++    }
++  ],
++  "limits": "Three declared settings, seeds 0 and 17, two demonstrations and four queries; finite evidence only.",
++  "program_sha256": [
++    "19062054b254b8bb8ec532b210e6545bad7ec3815477f83015a92acb24563591",
++    "5c4786ad2b57e2abfae0867391bb7b30f0ac1205d84278ab1dce4e3fe88231d4",
++    "825358a261d659d3323ff96f97277fc769986aba4a486817a0c4ff9e37950cb7"
++  ],
++  "racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "racket_evaluations": 60,
++  "schema": "panel-transform-match-policy-authoring-probe-v1",
++  "status": "passed",
++  "task_id": "0ae0d5780419"
++}
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/evidence/current/public_export_check.json b/repo/generators/0ae0d5780419/workspace/parametric/evidence/current/public_export_check.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/evidence/current/public_export_check.json
+@@ -0,0 +1,30 @@
++{
++  "demonstrations": 3,
++  "files": [
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_random_ticket_112413_round3/WORK/checks/0ae0d5780419/public/challenge-774f7156db4981356453441f311fd482a63bf34bb4bd62ca7a87817fddd63064.json",
++      "queries": 4,
++      "sha256": "774f7156db4981356453441f311fd482a63bf34bb4bd62ca7a87817fddd63064"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_random_ticket_112413_round3/WORK/checks/0ae0d5780419/public/challenge-f495b0cb948ff78165666dea73c1d01b3b264b84da490a8b4406378f941b3568.json",
++      "queries": 4,
++      "sha256": "f495b0cb948ff78165666dea73c1d01b3b264b84da490a8b4406378f941b3568"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_random_ticket_112413_round3/WORK/checks/0ae0d5780419/public/challenge-f76eaf3529e1e2671cdda31580e5df54e18dec49ce5f8474e270aa48b01d382f.json",
++      "queries": 4,
++      "sha256": "f76eaf3529e1e2671cdda31580e5df54e18dec49ce5f8474e270aa48b01d382f"
++    }
++  ],
++  "files_checked": 3,
++  "findings": [],
++  "limits": "Saved-file structure/identity only. Does not execute a writer, test private-metadata invariance, verify labels, establish identifiability or approve variants.",
++  "queries": 4,
++  "reference_labels_checked": false,
++  "schema": "arcpuzzles-public-export-check-v1",
++  "status": "passed"
++}
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/evidence/current/self_audit.json b/repo/generators/0ae0d5780419/workspace/parametric/evidence/current/self_audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/evidence/current/self_audit.json
+@@ -0,0 +1,838 @@
++{
++  "concrete_racket_labeled_witness": {
++    "demo_index": 1,
++    "different_cells": 14,
++    "input": [
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        6,
++        0,
++        6,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        2,
++        1,
++        1,
++        0,
++        5,
++        0,
++        0,
++        0,
++        6,
++        0,
++        0,
++        8,
++        5,
++        0,
++        9,
++        0,
++        0,
++        9,
++        3,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        1,
++        1,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        8,
++        6,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        9,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        2,
++        2,
++        0,
++        0,
++        5,
++        0,
++        0,
++        0,
++        6,
++        6,
++        0,
++        0,
++        5,
++        0,
++        3,
++        0,
++        3,
++        7,
++        3,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        1,
++        0,
++        0,
++        2,
++        5,
++        0,
++        0,
++        0,
++        6,
++        6,
++        8,
++        0,
++        5,
++        0,
++        9,
++        3,
++        0,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        1,
++        0,
++        1,
++        5,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        0,
++        5,
++        0,
++        0,
++        3,
++        0,
++        0,
++        7,
++        0
++      ]
++    ],
++    "rival_output": [
++      [
++        9,
++        0,
++        0,
++        9,
++        3
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        9
++      ],
++      [
++        3,
++        0,
++        3,
++        7,
++        3
++      ],
++      [
++        9,
++        3,
++        0,
++        0,
++        0
++      ],
++      [
++        0,
++        3,
++        0,
++        0,
++        7
++      ]
++    ],
++    "rival_program_sha256": "825358a261d659d3323ff96f97277fc769986aba4a486817a0c4ff9e37950cb7",
++    "rival_setting": {
++      "match_policy": "first_exact"
++    },
++    "seed": 0,
++    "selected_output": [
++      [
++        0,
++        3,
++        0,
++        0,
++        7
++      ],
++      [
++        9,
++        3,
++        0,
++        0,
++        0
++      ],
++      [
++        3,
++        0,
++        3,
++        7,
++        3
++      ],
++      [
++        0,
++        0,
++        0,
++        0,
++        9
++      ],
++      [
++        9,
++        0,
++        0,
++        9,
++        3
++      ]
++    ],
++    "selected_program_sha256": "5c4786ad2b57e2abfae0867391bb7b30f0ac1205d84278ab1dce4e3fe88231d4",
++    "selected_setting": {
++      "match_policy": "first_shape"
++    },
++    "worker_execution_sha256": "9514c31ffe085acc34f44f7f5467a9c3d44e4e5777dc01c36a9caf2f27a89911"
++  },
++  "coverage": [
++    {
++      "match_policy": "first_exact",
++      "rivals": [
++        {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "query_mismatch_indices": [
++            0,
++            3
++          ],
++          "rival": "other_finite_policy_1",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            1,
++            2
++          ],
++          "rival": "other_finite_policy_2",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "last_shape_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            2
++          ],
++          "rival": "rotate_cw_on_no_exact_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "transform_padded_c_without_crop",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "query_mismatch_indices": [
++            0,
++            1
++          ],
++          "rival": "always_identity",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            1,
++            2,
++            3
++          ],
++          "rival": "always_rotate_cw",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 0
++    },
++    {
++      "match_policy": "first_shape",
++      "rivals": [
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            1,
++            2
++          ],
++          "rival": "other_finite_policy_1",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "other_finite_policy_2",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            3
++          ],
++          "rival": "last_shape_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            1,
++            2
++          ],
++          "rival": "rotate_cw_on_no_exact_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "transform_padded_c_without_crop",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            2
++          ],
++          "rival": "always_identity",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            1,
++            2,
++            3
++          ],
++          "rival": "always_rotate_cw",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 0
++    },
++    {
++      "match_policy": "last_exact",
++      "rivals": [
++        {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "query_mismatch_indices": [
++            0,
++            3
++          ],
++          "rival": "other_finite_policy_1",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "other_finite_policy_2",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            1,
++            2
++          ],
++          "rival": "last_shape_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            2,
++            3
++          ],
++          "rival": "rotate_cw_on_no_exact_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "transform_padded_c_without_crop",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            3
++          ],
++          "rival": "always_identity",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "always_rotate_cw",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 0
++    },
++    {
++      "match_policy": "first_exact",
++      "rivals": [
++        {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "query_mismatch_indices": [
++            0,
++            3
++          ],
++          "rival": "other_finite_policy_1",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            1,
++            2
++          ],
++          "rival": "other_finite_policy_2",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "last_shape_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            2
++          ],
++          "rival": "rotate_cw_on_no_exact_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "transform_padded_c_without_crop",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "query_mismatch_indices": [
++            0,
++            1
++          ],
++          "rival": "always_identity",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "always_rotate_cw",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 17
++    },
++    {
++      "match_policy": "first_shape",
++      "rivals": [
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            1,
++            2
++          ],
++          "rival": "other_finite_policy_1",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "other_finite_policy_2",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            3
++          ],
++          "rival": "last_shape_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            1,
++            2
++          ],
++          "rival": "rotate_cw_on_no_exact_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "transform_padded_c_without_crop",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            2
++          ],
++          "rival": "always_identity",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "always_rotate_cw",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 17
++    },
++    {
++      "match_policy": "last_exact",
++      "rivals": [
++        {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "query_mismatch_indices": [
++            0,
++            3
++          ],
++          "rival": "other_finite_policy_1",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "other_finite_policy_2",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            1
++          ],
++          "query_mismatch_indices": [
++            1,
++            2
++          ],
++          "rival": "last_shape_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            2,
++            3
++          ],
++          "rival": "rotate_cw_on_no_exact_match",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "transform_padded_c_without_crop",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            3
++          ],
++          "rival": "always_identity",
++          "survives_all_demos": false
++        },
++        {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "query_mismatch_indices": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "rival": "always_rotate_cw",
++          "survives_all_demos": false
++        }
++      ],
++      "seed": 17
++    }
++  ],
++  "finite_rivals": [
++    "the two other declared settings",
++    "last shape match",
++    "rotate clockwise when no exact match",
++    "transform padded C without cropping",
++    "always identity",
++    "always rotate clockwise"
++  ],
++  "limits": "Three settings, seeds 0 and 17, two visible demonstrations and four queries, and the declared finite rival set only; not a universal uniqueness proof.",
++  "schema": "panel-transform-match-policy-self-audit-v1",
++  "status": "passed",
++  "surviving_demo_fit_query_changers": [],
++  "task_id": "0ae0d5780419"
++}
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/evidence/manifest.json b/repo/generators/0ae0d5780419/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,93 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "825358a261d659d3323ff96f97277fc769986aba4a486817a0c4ff9e37950cb7",
++  "canonical_rule_hash": "2374cac44014",
++  "default": {
++    "match_policy": "first_exact"
++  },
++  "evidence_root": "generators/0ae0d5780419/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 24002,
++      "path": "generators/0ae0d5780419/generator.py",
++      "sha256": "fa57b0e1c5cf232e6528e4e122a1d5acdb0c621b44f5bfb9096c364362832a04"
++    },
++    {
++      "bytes": 7881,
++      "path": "generators/0ae0d5780419/tests/test_parameters.py",
++      "sha256": "441ac96b249d8ffbc888aba0ebc2a2b2288a7fd896fe9b01785699222a26a092"
++    },
++    {
++      "bytes": 1422,
++      "path": "generators/0ae0d5780419/workspace/parametric/adapter.py",
++      "sha256": "764a2aea3ee566d85b51791f563398475c248bb49009d7b1b5b25626ce060beb"
++    },
++    {
++      "bytes": 7326,
++      "path": "generators/0ae0d5780419/workspace/parametric/evidence/current/authoring_probe.json",
++      "sha256": "659bb36aa22af3c4f35a25c23b7769fac493adcd80efa84c6220a7740ea686a4"
++    },
++    {
++      "bytes": 1323,
++      "path": "generators/0ae0d5780419/workspace/parametric/evidence/current/public_export_check.json",
++      "sha256": "68e3ded9fd590307f5d6acf6baca13010ec13149fad6cb689c7b272741a35e25"
++    },
++    {
++      "bytes": 15575,
++      "path": "generators/0ae0d5780419/workspace/parametric/evidence/current/self_audit.json",
++      "sha256": "e50880dd6534a5db842c7062bf51cf11eb09c17c02bd83502803d7f26f37c9b8"
++    },
++    {
++      "bytes": 627,
++      "path": "generators/0ae0d5780419/workspace/parametric/promotion.json",
++      "sha256": "1982594b17269cbe69d00c56b4eab99567e971a4aecfbe17df7b9354c57db907"
++    },
++    {
++      "bytes": 20944,
++      "path": "generators/0ae0d5780419/workspace/parametric/prototype.py",
++      "sha256": "da18ae6ca30e8e94929b1027c2ecf599ac27195ecd526a18b0f7fd9e48e88779"
++    },
++    {
++      "bytes": 1733,
++      "path": "generators/0ae0d5780419/workspace/parametric/rules/canonical.rkt",
++      "sha256": "825358a261d659d3323ff96f97277fc769986aba4a486817a0c4ff9e37950cb7"
++    },
++    {
++      "bytes": 1639,
++      "path": "generators/0ae0d5780419/workspace/parametric/rules/first_shape.rkt",
++      "sha256": "5c4786ad2b57e2abfae0867391bb7b30f0ac1205d84278ab1dce4e3fe88231d4"
++    },
++    {
++      "bytes": 1509,
++      "path": "generators/0ae0d5780419/workspace/parametric/rules/last_exact.rkt",
++      "sha256": "19062054b254b8bb8ec532b210e6545bad7ec3815477f83015a92acb24563591"
++    }
++  ],
++  "generator_sha256": "fa57b0e1c5cf232e6528e4e122a1d5acdb0c621b44f5bfb9096c364362832a04",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "match_policy": [
++      "first_exact",
++      "last_exact",
++      "first_shape"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "81 focused task tests; protected-Racket authoring replay for three settings on seeds 0 and 17 with two demos and four queries (60 labels); finite seven-rival self-audit; three public-only export projections checked.",
++  "rule_task_id": "0ae0d5780419",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "0ae0d5780419",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/promotion.json b/repo/generators/0ae0d5780419/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/promotion.json
+@@ -0,0 +1,29 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/0ae0d5780419/workspace/parametric/adapter.py",
++  "parameters": {
++    "match_policy": [
++      "first_exact",
++      "last_exact",
++      "first_shape"
++    ]
++  },
++  "default": {
++    "match_policy": "first_exact"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "resources": [
++    "generators/0ae0d5780419/workspace/parametric/rules/canonical.rkt",
++    "generators/0ae0d5780419/workspace/parametric/rules/last_exact.rkt",
++    "generators/0ae0d5780419/workspace/parametric/rules/first_shape.rkt"
++  ]
++}
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/prototype.py b/repo/generators/0ae0d5780419/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/prototype.py
+@@ -0,0 +1,609 @@
++"""Parametric transform-matching family for 0ae0d5780419.
++
++Every setting first crops the three divider-delimited panels. Step A compares
++transformed A against B and produces an input-dependent transform code. Step B
++applies that code to cropped C. The episode-fixed parameter changes only the
++matching policy: first exact colored match (canonical), last exact colored
++match, or first shape-only match.
++"""
++from __future__ import annotations
++
++import copy
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Callable
++
++TASK_ID = "0ae0d5780419"
++MATCH_POLICIES = ("first_exact", "last_exact", "first_shape")
++DEFAULT_POLICY = "first_exact"
++MIN_DEMOS = 2
++MAX_DEMOS = 6
++MIN_QUERIES = 1
++MAX_QUERIES = 4
++
++_HERE = Path(__file__).resolve().parent
++_RULES = {
++    "first_exact": _HERE / "rules" / "canonical.rkt",
++    "last_exact": _HERE / "rules" / "last_exact.rkt",
++    "first_shape": _HERE / "rules" / "first_shape.rkt",
++}
++_COLORS = (1, 2, 3, 4, 6, 7, 8, 9)
++_TRANSFORMS = (1, 2, 3, 4, 5, 6)
++_PRIORITY_TEMPLATES = (
++    (2, [[1, 0, 0], [1, 0, 0], [1, 1, 1]]),
++    (5, [[0, 1], [1, 1], [1, 0]]),
++)
++_DEMO_SPECS = (
++    ("priority", 5, 5),
++    ("shape_recolored", 7, 7),
++    ("color_sensitive_exact", 9, 6),
++    ("no_match", 12, 7),
++    ("exact_unique", 18, 8),
++    ("priority", 24, 9),
++)
++_QUERY_SPECS = (
++    ("priority", 8, 5),
++    ("color_sensitive_exact", 14, 7),
++    ("shape_recolored", 24, 9),
++    ("large_priority", 30, 9),
++)
++
++
++def _integer(name: str, value: int, low: int, high: int) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be a literal integer in [{low}, {high}]")
++    return value
++
++
++def _policy(value: str) -> str:
++    if type(value) is not str or value not in MATCH_POLICIES:
++        raise ValueError(f"match_policy must be one of {MATCH_POLICIES}")
++    return value
++
++
++def rule_text(match_policy: str) -> str:
++    return _RULES[_policy(match_policy)].read_text()
++
++
++def _tf(grid: list[list[int]], code: int) -> list[list[int]]:
++    if code == 2:
++        return [list(row) for row in zip(*grid[::-1])]
++    if code == 3:
++        return [row[::-1] for row in grid[::-1]]
++    if code == 4:
++        return [list(row) for row in zip(*grid)]
++    if code == 5:
++        return [row[::-1] for row in grid]
++    if code == 6:
++        return [row[:] for row in grid[::-1]]
++    return [row[:] for row in grid]
++
++
++def _grid_key(grid: list[list[int]]) -> tuple[tuple[int, ...], ...]:
++    return tuple(tuple(row) for row in grid)
++
++
++def _mask(grid: list[list[int]]) -> list[list[int]]:
++    return [[1 if value != 0 else 0 for value in row] for row in grid]
++
++
++def _crop(grid: list[list[int]]) -> list[list[int]] | None:
++    cells = [
++        (row, col)
++        for row, values in enumerate(grid)
++        for col, value in enumerate(values)
++        if value != 0
++    ]
++    if not cells:
++        return None
++    top = min(row for row, _ in cells)
++    bottom = max(row for row, _ in cells)
++    left = min(col for _, col in cells)
++    right = max(col for _, col in cells)
++    return [values[left : right + 1] for values in grid[top : bottom + 1]]
++
++
++def _bbox(grid: list[list[int]]) -> tuple[int, int, int, int] | None:
++    cells = [
++        (row, col)
++        for row, values in enumerate(grid)
++        for col, value in enumerate(values)
++        if value != 0
++    ]
++    if not cells:
++        return None
++    return (
++        min(row for row, _ in cells),
++        min(col for _, col in cells),
++        max(row for row, _ in cells),
++        max(col for _, col in cells),
++    )
++
++
++def _split_panels(grid: list[list[int]]) -> tuple[list[int], list[list[list[int]]]]:
++    height = len(grid)
++    width = len(grid[0])
++    dividers = [
++        col
++        for col in range(width)
++        if all(grid[row][col] == 5 for row in range(height))
++    ]
++    panels: list[list[list[int]]] = []
++    start = 0
++    for stop in dividers + [width]:
++        if stop > start:
++            panels.append([row[start:stop] for row in grid])
++        start = stop + 1
++    return dividers, panels
++
++
++def analyse(grid: list[list[int]]) -> dict:
++    if type(grid) is not list or not grid or type(grid[0]) is not list or not grid[0]:
++        raise ValueError("grid must be non-empty")
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width for row in grid):
++        raise ValueError("grid must be rectangular")
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        raise ValueError("grid cells must be literal ARC integers")
++    dividers, panels = _split_panels(grid)
++    if len(dividers) != 2 or len(panels) != 3:
++        raise ValueError("expected exactly three panels and two full-height color-5 dividers")
++    panel_widths = [len(panel[0]) for panel in panels]
++    if len(set(panel_widths)) != 1:
++        raise ValueError("panels must have equal width")
++    divider_set = set(dividers)
++    if any(
++        grid[row][col] == 5 and col not in divider_set
++        for row in range(len(grid))
++        for col in range(width)
++    ):
++        raise ValueError("color 5 is reserved for dividers")
++    crops = [_crop(panel) for panel in panels]
++    if any(crop is None for crop in crops):
++        raise ValueError("all panels must contain content")
++    a, b, c = crops
++    exact_matches = tuple(code for code in _TRANSFORMS if _tf(a, code) == b)
++    shape_matches = tuple(code for code in _TRANSFORMS if _tf(_mask(a), code) == _mask(b))
++    return {
++        "panel_h": len(grid),
++        "panel_n": panel_widths[0],
++        "dividers": tuple(dividers),
++        "panels": panels,
++        "crops": crops,
++        "bboxes": tuple(_bbox(panel) for panel in panels),
++        "exact_matches": exact_matches,
++        "shape_matches": shape_matches,
++        "c_crop": c,
++    }
++
++
++def _selected_code(facts: dict, policy: str) -> int:
++    if policy == "first_shape":
++        matches = facts["shape_matches"]
++        return matches[0] if matches else 1
++    matches = facts["exact_matches"]
++    if not matches:
++        return 1
++    return matches[0] if policy == "first_exact" else matches[-1]
++
++
++def apply_policy(grid: list[list[int]], match_policy: str) -> list[list[int]]:
++    policy = _policy(match_policy)
++    facts = analyse(grid)
++    return _tf(facts["c_crop"], _selected_code(facts, policy))
++
++
++def _rng(seed: int, split: str, index: int) -> random.Random:
++    payload = f"{TASK_ID}:panel-match-v1:{seed}:{split}:{index}".encode()
++    return random.Random(int.from_bytes(hashlib.sha256(payload).digest()[:16], "big"))
++
++
++def _pattern(
++    rng: random.Random,
++    height: int,
++    width: int,
++    *,
++    density: float,
++    colors: tuple[int, ...] | list[int],
++    require_mask_unique: bool = False,
++    require_color_unique: bool = True,
++) -> list[list[int]]:
++    colors = tuple(colors)
++    if not colors or any(color in (0, 5) for color in colors):
++        raise ValueError("pattern colors must be nonzero and exclude divider color 5")
++    total = height * width
++    count = max(len(colors), 4, min(total, int(round(total * density))))
++    forced = {(0, 0), (height - 1, width - 1)}
++    if width > 2:
++        forced.add((0, width - 2))
++    if height > 2:
++        forced.add((height - 2, 0))
++    count = max(count, len(forced))
++    positions = [(row, col) for row in range(height) for col in range(width)]
++    for _ in range(2048):
++        chosen = set(forced)
++        remaining = [position for position in positions if position not in chosen]
++        chosen.update(rng.sample(remaining, count - len(chosen)))
++        grid = [[0] * width for _ in range(height)]
++        ordered = sorted(chosen)
++        rng.shuffle(ordered)
++        for index, (row, col) in enumerate(ordered):
++            grid[row][col] = colors[index % len(colors)] if index < len(colors) else rng.choice(colors)
++        colored_views = {_grid_key(_tf(grid, code)) for code in _TRANSFORMS}
++        mask_views = {_grid_key(_tf(_mask(grid), code)) for code in _TRANSFORMS}
++        if require_color_unique and len(colored_views) != 6:
++            continue
++        if require_mask_unique and len(mask_views) != 6:
++            continue
++        return grid
++    raise RuntimeError("could not construct a sufficiently asymmetric pattern")
++
++
++def _full_colored_pattern(rng: random.Random, side: int, colors: tuple[int, ...]) -> list[list[int]]:
++    for _ in range(2048):
++        grid = [[rng.choice(colors) for _ in range(side)] for _ in range(side)]
++        for index, color in enumerate(colors):
++            grid[index // side][index % side] = color
++        if len({_grid_key(_tf(grid, code)) for code in _TRANSFORMS}) == 6:
++            return grid
++    raise RuntimeError("could not construct asymmetric full colored pattern")
++
++
++def _recolor_mask(mask: list[list[int]], rng: random.Random, colors: tuple[int, ...]) -> list[list[int]]:
++    cells = [(row, col) for row, values in enumerate(mask) for col, value in enumerate(values) if value]
++    out = [[0] * len(mask[0]) for _ in mask]
++    shuffled = cells[:]
++    rng.shuffle(shuffled)
++    for index, (row, col) in enumerate(shuffled):
++        out[row][col] = colors[index % len(colors)] if index < len(colors) else rng.choice(colors)
++    return out
++
++
++def _embed(
++    crop: list[list[int]], panel_h: int, panel_n: int, rng: random.Random, *, edge: bool = False
++) -> list[list[int]]:
++    crop_h, crop_w = len(crop), len(crop[0])
++    if crop_h > panel_h or crop_w > panel_n:
++        raise ValueError(f"crop {crop_h}x{crop_w} does not fit panel {panel_h}x{panel_n}")
++    panel = [[0] * panel_n for _ in range(panel_h)]
++    if edge:
++        top = min(1, panel_h - crop_h)
++        left = min(1, panel_n - crop_w)
++    else:
++        top_options = list(range(panel_h - crop_h + 1))
++        left_options = list(range(panel_n - crop_w + 1))
++        if len(top_options) > 1:
++            top_options = [value for value in top_options if value != 0] or top_options
++        if len(left_options) > 1:
++            left_options = [value for value in left_options if value != 0] or left_options
++        top = rng.choice(top_options)
++        left = rng.choice(left_options)
++    for row in range(crop_h):
++        for col in range(crop_w):
++            panel[top + row][left + col] = crop[row][col]
++    return panel
++
++
++def _assemble(
++    panel_h: int,
++    panel_n: int,
++    a_crop: list[list[int]],
++    b_crop: list[list[int]],
++    c_crop: list[list[int]],
++    rng: random.Random,
++    *,
++    edge: bool = False,
++) -> list[list[int]]:
++    panels = [
++        _embed(a_crop, panel_h, panel_n, rng, edge=edge),
++        _embed(b_crop, panel_h, panel_n, rng, edge=edge),
++        _embed(c_crop, panel_h, panel_n, rng, edge=edge),
++    ]
++    d1, d2 = panel_n, 2 * panel_n + 1
++    width = 3 * panel_n + 2
++    grid = [[0] * width for _ in range(panel_h)]
++    for row in range(panel_h):
++        grid[row][d1] = 5
++        grid[row][d2] = 5
++    for panel, offset in zip(panels, (0, d1 + 1, d2 + 1)):
++        for row in range(panel_h):
++            for col in range(panel_n):
++                if panel[row][col] != 0:
++                    grid[row][offset + col] = panel[row][col]
++    return grid
++
++
++def _priority_scene(rng: random.Random, panel_h: int, panel_n: int, variant: int):
++    code, template = _PRIORITY_TEMPLATES[variant % len(_PRIORITY_TEMPLATES)]
++    color = rng.choice(_COLORS)
++    a = [[color if value else 0 for value in row] for row in template]
++    b = _tf(a, code)
++    c = _pattern(
++        rng,
++        min(panel_h - 1, 5),
++        min(panel_n - 1, 4),
++        density=0.55,
++        colors=(rng.choice([value for value in _COLORS if value != color]),),
++        require_mask_unique=True,
++    )
++    grid = _assemble(panel_h, panel_n, a, b, c, rng)
++    facts = analyse(grid)
++    if len(facts["exact_matches"]) < 2 or facts["exact_matches"][0] != code:
++        raise RuntimeError("priority scene failed to preserve its first match")
++    if _tf(c, facts["exact_matches"][0]) == _tf(c, facts["exact_matches"][-1]):
++        raise RuntimeError("priority scene does not distinguish first and last matches")
++    return grid
++
++
++def _shape_recolored_scene(rng: random.Random, panel_h: int, panel_n: int, code: int):
++    height = min(panel_h - 2, 6)
++    width = min(panel_n - 2, 5)
++    if height == width:
++        width = max(3, width - 1)
++    a = _pattern(
++        rng,
++        height,
++        width,
++        density=0.55,
++        colors=(1, 2),
++        require_mask_unique=True,
++    )
++    transformed_mask = _tf(_mask(a), code)
++    b = _recolor_mask(transformed_mask, rng, (6, 8))
++    c = _pattern(
++        rng,
++        min(panel_h - 2, 7),
++        min(panel_n - 2, 6),
++        density=0.50,
++        colors=(3, 7, 9),
++        require_mask_unique=True,
++    )
++    grid = _assemble(panel_h, panel_n, a, b, c, rng)
++    facts = analyse(grid)
++    if facts["exact_matches"] or facts["shape_matches"] != (code,):
++        raise RuntimeError("shape-recolored scene did not isolate its shape match")
++    return grid
++
++
++def _color_sensitive_exact_scene(rng: random.Random, panel_h: int, panel_n: int, code: int):
++    side = min(5, panel_h - 2, panel_n - 2)
++    a = _full_colored_pattern(rng, side, (1, 3, 7))
++    b = _tf(a, code)
++    c = _pattern(
++        rng,
++        min(panel_h - 2, 7),
++        min(panel_n - 2, 6),
++        density=0.58,
++        colors=(2, 4, 8),
++        require_mask_unique=True,
++    )
++    grid = _assemble(panel_h, panel_n, a, b, c, rng)
++    facts = analyse(grid)
++    if facts["exact_matches"] != (code,) or facts["shape_matches"][0] != 1:
++        raise RuntimeError("color-sensitive scene did not separate shape and exact matching")
++    return grid
++
++
++def _no_match_scene(rng: random.Random, panel_h: int, panel_n: int):
++    height = min(panel_h - 2, 6)
++    width = min(panel_n - 2, 5)
++    a = _pattern(
++        rng,
++        height,
++        width,
++        density=0.48,
++        colors=(4,),
++        require_mask_unique=True,
++    )
++    transformed_masks = {_grid_key(_tf(_mask(a), code)) for code in _TRANSFORMS}
++    for _ in range(2048):
++        b = _pattern(
++            rng,
++            height,
++            width,
++            density=0.67,
++            colors=(4,),
++            require_mask_unique=True,
++        )
++        if _grid_key(_mask(b)) not in transformed_masks:
++            break
++    else:
++        raise RuntimeError("could not construct a no-match B crop")
++    c = _pattern(
++        rng,
++        min(panel_h - 2, 7),
++        min(panel_n - 2, 6),
++        density=0.55,
++        colors=(2, 6),
++        require_mask_unique=True,
++    )
++    grid = _assemble(panel_h, panel_n, a, b, c, rng)
++    facts = analyse(grid)
++    if facts["exact_matches"] or facts["shape_matches"]:
++        raise RuntimeError("no-match scene unexpectedly has a transform match")
++    return grid
++
++
++def _exact_unique_scene(rng: random.Random, panel_h: int, panel_n: int, code: int):
++    height = min(panel_h - 2, 7)
++    width = min(panel_n - 2, 6)
++    a = _pattern(
++        rng,
++        height,
++        width,
++        density=0.52,
++        colors=(1, 4, 8),
++        require_mask_unique=True,
++    )
++    b = _tf(a, code)
++    c = _pattern(
++        rng,
++        min(panel_h - 2, 8),
++        min(panel_n - 2, 7),
++        density=0.54,
++        colors=(2, 6, 9),
++        require_mask_unique=True,
++    )
++    grid = _assemble(panel_h, panel_n, a, b, c, rng)
++    facts = analyse(grid)
++    if facts["exact_matches"] != (code,) or facts["shape_matches"] != (code,):
++        raise RuntimeError("unique scene did not isolate a common transform")
++    return grid
++
++
++def _large_priority_scene(rng: random.Random, panel_h: int, panel_n: int):
++    height = panel_h - 2
++    width = panel_n
++    for _ in range(1024):
++        a = [[0] * width for _ in range(height)]
++        for row in range((height + 1) // 2):
++            for col in range(width):
++                rr, cc = height - 1 - row, width - 1 - col
++                if rng.random() < 0.48 or (row, col) in {(0, 0), (0, width - 1)}:
++                    color = rng.choice(_COLORS)
++                    a[row][col] = color
++                    a[rr][cc] = color
++        if _crop(a) is None:
++            continue
++        if tuple(code for code in _TRANSFORMS if _tf(a, code) == a) == (1, 3):
++            break
++    else:
++        raise RuntimeError("could not construct large 180-degree priority crop")
++    b = copy.deepcopy(a)
++    c = _pattern(
++        rng,
++        height,
++        width,
++        density=0.52,
++        colors=(1, 2, 3, 4, 6, 7, 8, 9),
++        require_mask_unique=True,
++    )
++    grid = _assemble(panel_h, panel_n, a, b, c, rng, edge=True)
++    facts = analyse(grid)
++    if facts["exact_matches"] != (1, 3):
++        raise RuntimeError("large priority scene exact-match set drifted")
++    if _tf(c, 1) == _tf(c, 3):
++        raise RuntimeError("large priority C crop is 180-degree symmetric")
++    return grid
++
++
++def _make_input(seed: int, split: str, index: int) -> list[list[int]]:
++    specs = _DEMO_SPECS if split == "train" else _QUERY_SPECS
++    profile, panel_h, panel_n = specs[index]
++    rng = _rng(seed, split, index)
++    variant = (seed + index) % 2
++    if profile == "priority":
++        return _priority_scene(rng, panel_h, panel_n, variant)
++    if profile == "shape_recolored":
++        code = (4, 6)[variant]
++        return _shape_recolored_scene(rng, panel_h, panel_n, code)
++    if profile == "color_sensitive_exact":
++        code = (3, 4)[variant]
++        return _color_sensitive_exact_scene(rng, panel_h, panel_n, code)
++    if profile == "no_match":
++        return _no_match_scene(rng, panel_h, panel_n)
++    if profile == "exact_unique":
++        code = (2, 5)[variant]
++        return _exact_unique_scene(rng, panel_h, panel_n, code)
++    if profile == "large_priority":
++        return _large_priority_scene(rng, panel_h, panel_n)
++    raise ValueError(profile)
++
++
++def _fixed_transform(code: int) -> Callable[[list[list[int]]], list[list[int]]]:
++    return lambda grid: _tf(analyse(grid)["c_crop"], code)
++
++
++def audit_rivals(match_policy: str) -> dict[str, Callable[[list[list[int]]], list[list[int]]]]:
++    policy = _policy(match_policy)
++    others = [candidate for candidate in MATCH_POLICIES if candidate != policy]
++
++    def last_shape_match(grid):
++        facts = analyse(grid)
++        matches = facts["shape_matches"]
++        return _tf(facts["c_crop"], matches[-1] if matches else 1)
++
++    def rotate_cw_on_no_exact_match(grid):
++        facts = analyse(grid)
++        matches = facts["exact_matches"]
++        code = matches[0] if matches else 2
++        return _tf(facts["c_crop"], code)
++
++    def transform_padded_c_without_crop(grid):
++        facts = analyse(grid)
++        return _tf(facts["panels"][2], _selected_code(facts, policy))
++
++    return {
++        "other_finite_policy_1": lambda grid: apply_policy(grid, others[0]),
++        "other_finite_policy_2": lambda grid: apply_policy(grid, others[1]),
++        "last_shape_match": last_shape_match,
++        "rotate_cw_on_no_exact_match": rotate_cw_on_no_exact_match,
++        "transform_padded_c_without_crop": transform_padded_c_without_crop,
++        "always_identity": _fixed_transform(1),
++        "always_rotate_cw": _fixed_transform(2),
++    }
++
++
++def public_projection(episode: dict) -> dict:
++    return {
++        "train": [
++            {"input": copy.deepcopy(pair["input"]), "output": copy.deepcopy(pair["output"])}
++            for pair in episode["train"]
++        ],
++        "test": [{"input": copy.deepcopy(pair["input"])} for pair in episode["test"]],
++    }
++
++
++def public_challenge_bytes(episode: dict) -> bytes:
++    return json.dumps(
++        public_projection(episode),
++        sort_keys=True,
++        separators=(",", ":"),
++        ensure_ascii=False,
++        allow_nan=False,
++    ).encode() + b"\n"
++
++
++def public_challenge_id(episode: dict) -> str:
++    return hashlib.sha256(public_challenge_bytes(episode)).hexdigest()
++
++
++def generate_episode(
++    seed: int,
++    *,
++    match_policy: str = DEFAULT_POLICY,
++    demos: int = 3,
++    queries: int = 4,
++) -> dict:
++    _integer("seed", seed, 0, 2**63 - 1)
++    policy = _policy(match_policy)
++    _integer("demos", demos, MIN_DEMOS, MAX_DEMOS)
++    _integer("queries", queries, MIN_QUERIES, MAX_QUERIES)
++    train_inputs = [_make_input(seed, "train", index) for index in range(demos)]
++    test_inputs = [_make_input(seed, "test", index) for index in range(queries)]
++    train = [
++        {"input": copy.deepcopy(grid), "output": apply_policy(grid, policy)}
++        for grid in train_inputs
++    ]
++    test = [
++        {"input": copy.deepcopy(grid), "output": apply_policy(grid, policy)}
++        for grid in test_inputs
++    ]
++    episode = {
++        "schema": "panel-transform-match-policy-parametric-v1",
++        "status": "proposed",
++        "approved": False,
++        "training_admitted": False,
++        "task_id": TASK_ID,
++        "seed": seed,
++        "settings": {"match_policy": policy},
++        "demo_count": demos,
++        "query_count": queries,
++        "train": train,
++        "test": test,
++        "program_solution": rule_text(policy),
++    }
++    episode["public_challenge_id"] = public_challenge_id(episode)
++    return episode
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/rules/canonical.rkt b/repo/generators/0ae0d5780419/workspace/parametric/rules/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/rules/canonical.rkt
+@@ -0,0 +1,38 @@
++(rule!
++  (let ((dummy 0))
++    ;; Full-height 5-columns delimit A, B, and C; panel padding is irrelevant.
++    (define (split-panels grid)
++      (let ((seps (filter (lambda (c) (all? (lambda (r) (= (at grid r c) 5))
++                                                   (range 0 (rows grid))))
++                          (range 0 (cols grid)))))
++        (let loop ([remaining (append seps (list (cols grid)))]
++                   [start 0]
++                   [panels (list)])
++          (if (empty? remaining)
++              (reverse panels)
++              (let ((stop (first remaining)))
++                (loop (rest remaining)
++                      (+ stop 1)
++                      (if (> stop start)
++                          (cons (subgrid grid 0 start
++                                         (- (rows grid) 1) (- stop 1))
++                                panels)
++                          panels)))))))
++    ;; Code order is semantic: the first exact colored A->B match wins.
++    (define (transform-code grid code)
++      (cond [(= code 1) grid]
++            [(= code 2) (rotate-cw grid)]
++            [(= code 3) (rotate-180 grid)]
++            [(= code 4) (transpose grid)]
++            [(= code 5) (flip-lr grid)]
++            [else (flip-ud grid)]))
++    (let* ((panels (split-panels g))
++           (a (crop-to-content (first panels)))
++           (b (crop-to-content (second panels)))
++           (c (crop-to-content (third panels)))
++           (code (let ((hit (find-first
++                              (lambda (t) (equal? (transform-code a t) b))
++                              (list 1 2 3 4 5 6))))
++                   ;; No exact match is an intentional identity fallback.
++                   (if hit hit 1))))
++      (transform-code c code))))
+\ No newline at end of file
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/rules/first_shape.rkt b/repo/generators/0ae0d5780419/workspace/parametric/rules/first_shape.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/rules/first_shape.rkt
+@@ -0,0 +1,38 @@
++(rule!
++  (let ((dummy 0))
++    (define (split-panels grid)
++      (let ((seps (filter (lambda (c) (all? (lambda (r) (= (at grid r c) 5))
++                                                   (range 0 (rows grid))))
++                          (range 0 (cols grid)))))
++        (let loop ([remaining (append seps (list (cols grid)))]
++                   [start 0]
++                   [panels (list)])
++          (if (empty? remaining)
++              (reverse panels)
++              (let ((stop (first remaining)))
++                (loop (rest remaining)
++                      (+ stop 1)
++                      (if (> stop start)
++                          (cons (subgrid grid 0 start
++                                         (- (rows grid) 1) (- stop 1))
++                                panels)
++                          panels)))))))
++    (define (transform-code grid code)
++      (cond [(= code 1) grid]
++            [(= code 2) (rotate-cw grid)]
++            [(= code 3) (rotate-180 grid)]
++            [(= code 4) (transpose grid)]
++            [(= code 5) (flip-lr grid)]
++            [else (flip-ud grid)]))
++    (define (shape grid)
++      (map-grid grid (lambda (r c v) (if (= v 0) 0 1))))
++    (let* ((panels (split-panels g))
++           (a (crop-to-content (first panels)))
++           (b (crop-to-content (second panels)))
++           (c (crop-to-content (third panels)))
++           (code (let ((hit (find-first
++                              (lambda (t)
++                                (equal? (shape (transform-code a t)) (shape b)))
++                              (list 1 2 3 4 5 6))))
++                   (if hit hit 1))))
++      (transform-code c code))))
+diff --git a/repo/generators/0ae0d5780419/workspace/parametric/rules/last_exact.rkt b/repo/generators/0ae0d5780419/workspace/parametric/rules/last_exact.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0ae0d5780419/workspace/parametric/rules/last_exact.rkt
+@@ -0,0 +1,35 @@
++(rule!
++  (let ((dummy 0))
++    (define (split-panels grid)
++      (let ((seps (filter (lambda (c) (all? (lambda (r) (= (at grid r c) 5))
++                                                   (range 0 (rows grid))))
++                          (range 0 (cols grid)))))
++        (let loop ([remaining (append seps (list (cols grid)))]
++                   [start 0]
++                   [panels (list)])
++          (if (empty? remaining)
++              (reverse panels)
++              (let ((stop (first remaining)))
++                (loop (rest remaining)
++                      (+ stop 1)
++                      (if (> stop start)
++                          (cons (subgrid grid 0 start
++                                         (- (rows grid) 1) (- stop 1))
++                                panels)
++                          panels)))))))
++    (define (transform-code grid code)
++      (cond [(= code 1) grid]
++            [(= code 2) (rotate-cw grid)]
++            [(= code 3) (rotate-180 grid)]
++            [(= code 4) (transpose grid)]
++            [(= code 5) (flip-lr grid)]
++            [else (flip-ud grid)]))
++    (let* ((panels (split-panels g))
++           (a (crop-to-content (first panels)))
++           (b (crop-to-content (second panels)))
++           (c (crop-to-content (third panels)))
++           (code (let ((hit (find-first
++                              (lambda (t) (equal? (transform-code a t) b))
++                              (list 6 5 4 3 2 1))))
++                   (if hit hit 1))))
++      (transform-code c code))))
+diff --git a/repo/generators/182d3949bec6/notes.md b/repo/generators/182d3949bec6/notes.md
+--- a/repo/generators/182d3949bec6/notes.md
++++ b/repo/generators/182d3949bec6/notes.md
+@@ -2,3 +2,10 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 — bounded learnability finding `review-35ba5091ff5939b8`
++
++Source SHA-256 `451b0df15af690f1fb6c77f59cb5b2cba3df4e8f437e3d0a515c18237d9ae11a`.
++At seed 16, all three visible demonstrations carry transform command 3. The plausible shortcut “ignore the transform command and always apply transform 3” therefore fits every demonstration. The first query carries command 2; changing only that command to 3 changes 6 protected-Racket output cells. Evidence: `checks/182d3949bec6/fixed_transform_shortcut.json`.
++
++Next repair: schedule at least two distinguishable transform commands in every supported demonstration window and reject fixed-transform rivals during lesson assembly.
+diff --git a/repo/generators/1873c29afdbc/notes.md b/repo/generators/1873c29afdbc/notes.md
+--- a/repo/generators/1873c29afdbc/notes.md
++++ b/repo/generators/1873c29afdbc/notes.md
+@@ -2,3 +2,10 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 — bounded learnability finding `review-35ba5091ff5939b8`
++
++Source SHA-256 `79f576faef2c39a80ead6d3be92cecb875decba17da77a0eed4ba756f5dfdea8`.
++At seed 1, the first three accepted samples contain no orange component touching two borders. The plausible rule “recolor every orange component touching at least one border” therefore matches all three protected-Racket demonstration labels. The first query contains a two-border component and the shortcut changes 4 cells. Evidence: `checks/1873c29afdbc/border_shortcut.json`.
++
++Next repair: construct or schedule at least one two-border negative example inside every supported demonstration window, and gate the any-border rival before emitting a lesson.

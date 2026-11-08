@@ -1,0 +1,2 @@
+# F1: Biggest avoidable friction: portable resource boundaries differ between native and ordinary execution
+Add a generator-only and native-folder-only smoke check before the full preflight, and make staged test fixtures use the snapshot-local runtime import context. The included checks/final/portability_probe.py and per-task standalone builders catch these two recurring failures without changing shared runtime policy.

@@ -1,0 +1,2129 @@
+diff --git a/repo/generators/c9db537b5068/notes.md b/repo/generators/c9db537b5068/notes.md
+--- a/repo/generators/c9db537b5068/notes.md
++++ b/repo/generators/c9db537b5068/notes.md
+@@ -2,3 +2,32 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 bounded learnability finding
++
++A produced-domain three-demo lesson is ambiguous against the executable rival
++`canonical_bbox_dimensions_only`: fill the rectangle only when its dimensions
++are one of the four canonical bbox sizes, otherwise return the input unchanged.
++For seed 0/default difficulty, demos at indices 4, 5, 6 have bbox dimensions
++5x5, 4x5 and 4x6, so the rival matches all three protected-Racket labels. The
++next generated query at index 7 is a lawful 4x4 bbox; canonical Racket fills it
++but the rival leaves it unchanged. This is distinct from the retained
++border-margin advisory because all four inputs satisfy the current generator
++domain.
++
++Reusable reproducer: `workspace/learnability_probe.py`; source-bound evidence:
++`checks/c9db537b5068/learnability.json`. A focused regression fixes the exact
++window in `tests/test_learnability_probe.py`. Suggested repair is to construct or
++schedule the visible three demos so at least one lawful noncanonical bbox size
++appears before a noncanonical query. No generator source change was applied in
++this optional review; the owner should choose and verify any integration.
++
++## 2026-10-24 staged-test scope limit
++
++The retained root-level canonical-data test still uses a fixed
++`Path(__file__).parents[3]` lookup and fails in the staged runtime at
++`/tmp/data/canonical/puzzles.jsonl`. That root test is outside this packet's
++allowed edit paths, so it was restored byte-for-byte instead of bypassing scope.
++The new learnability regression lives in the permitted `tests/` tree and passes.
++A fresh staged receipt records 6 passing tests plus this one pre-existing path
++failure; the generator itself was not implicated.
+diff --git a/repo/generators/c9db537b5068/tests/test_learnability_probe.py b/repo/generators/c9db537b5068/tests/test_learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c9db537b5068/tests/test_learnability_probe.py
+@@ -0,0 +1,36 @@
++"""Bounded produced-domain learnability probe for c9db537b5068."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++
++HOME = Path(__file__).resolve().parents[1]
++PROBE = HOME / "workspace/learnability_probe.py"
++
++
++def _load(path: Path):
++    assert path.is_file(), f"missing diagnostic: {path}"
++    name = "_c9_probe_" + hashlib.sha256(str(path).encode()).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_probe_finds_exact_canonical_dimension_shortcut_in_produced_window():
++    probe = _load(PROBE)
++    witness = probe.find_witness(
++        seeds=range(1), starts=range(8), difficulties=(None,), demos=3
++    )
++    assert witness is not None
++    assert witness["seed"] == 0
++    assert witness["difficulty"] is None
++    assert witness["demo_indices"] == [4, 5, 6]
++    assert witness["query_index"] == 7
++    assert witness["rival"] == "canonical_bbox_dimensions_only"
++    assert witness["demo_bbox_dimensions"] == [[5, 5], [4, 5], [4, 6]]
++    assert witness["query_bbox_dimensions"] == [4, 4]
++    assert all(witness["rival_demo_matches"])
++    assert witness["rival_query_matches"] is False
+diff --git a/repo/generators/c9db537b5068/workspace/learnability_probe.py b/repo/generators/c9db537b5068/workspace/learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c9db537b5068/workspace/learnability_probe.py
+@@ -0,0 +1,241 @@
++"""Find and Racket-bind a produced-domain teaching shortcut for c9db537b5068."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++TASK = "c9db537b5068"
++HOME = Path(__file__).resolve().parents[1]
++ROOT = Path(__file__).resolve().parents[3]
++
++
++def _load_generator():
++    path = HOME / "generator.py"
++    name = "_c9db537b5068_probe_generator_" + hashlib.sha256(str(path).encode()).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load generator from {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++GENERATOR = _load_generator()
++
++
++def _digest(value) -> str:
++    if not isinstance(value, (bytes, bytearray)):
++        value = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
++    return hashlib.sha256(value).hexdigest()
++
++
++def fill_rectangle(grid):
++    """Independent intended mirror used only to locate candidate lessons."""
++    facts, errors = GENERATOR._analyze(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    output = [list(row) for row in grid]
++    top, left, bottom, right = facts["bbox"]
++    for row in range(top, bottom + 1):
++        for col in range(left, right + 1):
++            output[row][col] = facts["color"]
++    return output
++
++
++def canonical_bbox_dimensions_only(grid):
++    """Plausible shortcut: fill only the four bbox sizes seen canonically."""
++    facts, errors = GENERATOR._analyze(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    if (facts["bbox_h"], facts["bbox_w"]) not in GENERATOR.CANONICAL_BBOXES:
++        return [list(row) for row in grid]
++    return fill_rectangle(grid)
++
++
++RIVALS = {"canonical_bbox_dimensions_only": canonical_bbox_dimensions_only}
++
++
++def find_witness(*, seeds, starts, difficulties=(None, "easy", "medium", "hard"), demos=3):
++    """Return the first consecutive produced lesson fitting a declared rival."""
++    if type(demos) is not int or demos < 1:
++        raise ValueError("demos must be a positive exact integer")
++    for difficulty in difficulties:
++        for seed in seeds:
++            if type(seed) is not int:
++                raise ValueError("seeds must contain exact integers")
++            for start in starts:
++                if type(start) is not int or start < 0:
++                    raise ValueError("starts must contain nonnegative exact integers")
++                grids = [
++                    GENERATOR.generate(seed, start + offset, difficulty=difficulty)
++                    for offset in range(demos + 1)
++                ]
++                intended = [fill_rectangle(grid) for grid in grids]
++                facts = [GENERATOR._analyze(grid)[0] for grid in grids]
++                for name, rival in RIVALS.items():
++                    rival_outputs = [rival(grid) for grid in grids]
++                    demo_matches = [
++                        rival_outputs[index] == intended[index]
++                        for index in range(demos)
++                    ]
++                    query_matches = rival_outputs[demos] == intended[demos]
++                    if all(demo_matches) and not query_matches:
++                        return {
++                            "task_id": TASK,
++                            "seed": seed,
++                            "difficulty": difficulty,
++                            "demo_indices": list(range(start, start + demos)),
++                            "query_index": start + demos,
++                            "rival": name,
++                            "demo_bbox_dimensions": [
++                                [item["bbox_h"], item["bbox_w"]]
++                                for item in facts[:demos]
++                            ],
++                            "query_bbox_dimensions": [
++                                facts[demos]["bbox_h"], facts[demos]["bbox_w"]
++                            ],
++                            "rival_demo_matches": demo_matches,
++                            "rival_query_matches": query_matches,
++                        }
++    return None
++
++
++def _canonical_program() -> str:
++    programs = set()
++    path = ROOT / "shared/data/canonical/puzzles.jsonl"
++    with path.open() as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK:
++                programs.add(row["program_solution"])
++    if len(programs) != 1:
++        raise ValueError(f"expected one canonical program for {TASK}, found {len(programs)}")
++    return programs.pop()
++
++
++def _execute(bridge, source, grid):
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    literal = "'(" + " ".join(
++        "(" + " ".join(map(str, row)) + ")" for row in grid
++    ) + ")"
++    result = bridge.eval_text(f"({wrap_rule(source)} {literal})")
++    if not isinstance(result, list) or not result or any(not isinstance(row, list) for row in result):
++        raise ValueError("Racket did not return a nonempty grid")
++    return result
++
++
++def materialize(witness, bridge):
++    """Rebuild the selected window and bind intended labels to canonical Racket."""
++    if witness is None:
++        raise ValueError("cannot materialize a missing witness")
++    indices = [*witness["demo_indices"], witness["query_index"]]
++    grids = [
++        GENERATOR.generate(witness["seed"], index, difficulty=witness["difficulty"])
++        for index in indices
++    ]
++    source = _canonical_program()
++    intended = [_execute(bridge, source, grid) for grid in grids]
++    mirror = [fill_rectangle(grid) for grid in grids]
++    if intended != mirror:
++        raise ValueError("independent rectangle mirror differs from canonical Racket")
++    rival = RIVALS[witness["rival"]]
++    rival_outputs = [rival(grid) for grid in grids]
++    demos = len(witness["demo_indices"])
++    if not all(rival_outputs[index] == intended[index] for index in range(demos)):
++        raise ValueError("rival no longer fits every visible demonstration")
++    if rival_outputs[demos] == intended[demos]:
++        raise ValueError("rival no longer differs on the held-out query")
++    return {
++        "schema": "arcpuzzles-peer-learnability-probe-v1",
++        "status": "finding",
++        **witness,
++        "canonical_program_sha256": _digest(source.encode()),
++        "generator_sha256": _digest((HOME / "generator.py").read_bytes()),
++        "probe_sha256": _digest(Path(__file__).read_bytes()),
++        "racket": {
++            key: bridge.runtime_identity[key]
++            for key in ("backend", "protected", "binary_sha256", "prelude_sha256", "bridge_sha256")
++            if key in bridge.runtime_identity
++        },
++        "pairs": [
++            {
++                "role": "demo" if index < demos else "query",
++                "sample_index": indices[index],
++                "input": grids[index],
++                "intended_output": intended[index],
++                "rival_output": rival_outputs[index],
++                "matches": intended[index] == rival_outputs[index],
++            }
++            for index in range(len(grids))
++        ],
++        "finding": (
++            "Three consecutive produced demonstrations use only canonical bbox dimensions, "
++            "so the executable rule 'fill only those dimensions' fits every visible label; "
++            "the next produced 4x4 query requires the general bbox rule and separates them."
++        ),
++        "suggested_repair": (
++            "Construct or schedule the three demonstrations so at least one uses a lawful "
++            "noncanonical bbox dimension before a noncanonical query is revealed."
++        ),
++        "limits": (
++            "First witness in the requested finite seed/start/difficulty bounds; this does not "
++            "measure the frequency of ambiguous lessons or prove other rivals absent."
++        ),
++    }
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--max-seeds", type=int, default=32)
++    parser.add_argument("--max-starts", type=int, default=64)
++    parser.add_argument("--demos", type=int, default=3)
++    args = parser.parse_args(argv)
++    if args.out.exists():
++        raise FileExistsError(args.out)
++    witness = find_witness(
++        seeds=range(args.max_seeds),
++        starts=range(args.max_starts),
++        demos=args.demos,
++    )
++    if witness is None:
++        result = {
++            "schema": "arcpuzzles-peer-learnability-probe-v1",
++            "status": "no_witness_within_bounds",
++            "task_id": TASK,
++            "bounds": {
++                "max_seeds": args.max_seeds,
++                "max_starts": args.max_starts,
++                "demos": args.demos,
++            },
++            "rivals": sorted(RIVALS),
++        }
++    else:
++        from arc_repl.racket_bridge import RacketBridge
++        with RacketBridge() as bridge:
++            result = materialize(witness, bridge)
++        result["bounds"] = {
++            "max_seeds": args.max_seeds,
++            "max_starts": args.max_starts,
++            "demos": args.demos,
++        }
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({
++        "status": result["status"],
++        "task_id": TASK,
++        "rival": result.get("rival"),
++        "seed": result.get("seed"),
++        "demo_indices": result.get("demo_indices"),
++        "query_index": result.get("query_index"),
++        "out": str(args.out),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/cf5ccd73cfe5/notes.md b/repo/generators/cf5ccd73cfe5/notes.md
+--- a/repo/generators/cf5ccd73cfe5/notes.md
++++ b/repo/generators/cf5ccd73cfe5/notes.md
+@@ -201,3 +201,30 @@
+ replayed the exact patch on all 84,780 original files, verified 12 changed paths,
+ and passed 66/66 focused tests in the fresh extraction's own environment.
+ Actual receipts and commands are recorded in RESULTS.json.
++
++## 2026-10-24 native promotion completion (supersedes prototype-only status above)
++
++The retained orientation prototype is now exposed through the native adapter
++contract at `workspace/parametric/adapter.py` and `promotion.json`. The adapter
++supports 2–6 demonstrations and 1–4 queries for identity, horizontal reflection,
++vertical reflection, and 180-degree rotation. Identity preserves the canonical
++program bytes exactly. Query one remains an ordinary generated case; additional
++queries are fixed, substantive 30x30/29x30/30x29 stress cases. Public projection
++contains only visible demonstrations and input-only queries.
++
++A source-bound self-audit rejected all declared shortcuts for every setting and
++completed 128 protected-Racket evaluations. Native qualification is `qualified`
++for four settings across eight jobs, with evidence at
++`checks/cf5ccd73cfe5/qualification/{qualification,execution}.json`. The causal
++witness at `checks/cf5ccd73cfe5/causal/{witness,replay}.json` replays a 30x30
++`flip_lr` case and changes only the recovered marker-width intermediate; the
++protected intended and counterfactual outputs differ, demonstrating that the
++expansion step depends on the earlier recovered dimensions.
++
++The final source inventory is
++`workspace/parametric/evidence/manifest.json`; it explicitly replaces the old
++proposal manifest. Direct task tests passed 72/72. The higher-level checkpoint
++wrapper was interrupted after partial progress on two attempts despite that
++direct complete pass. This is reviewer-reported readiness only: owner acceptance,
++fresh acceptance replay, production integration, and training admission remain
++pending.
+diff --git a/repo/generators/cf5ccd73cfe5/tests/test_parametric_adapter.py b/repo/generators/cf5ccd73cfe5/tests/test_parametric_adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/cf5ccd73cfe5/tests/test_parametric_adapter.py
+@@ -0,0 +1,145 @@
++"""Native promotion adapter contract for the orientation family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++HOME = Path(__file__).resolve().parents[1]
++PARAMETRIC = HOME / "workspace/parametric"
++
++
++def _load(path: Path, stem: str):
++    assert path.is_file(), f"missing native parametric source: {path.name}"
++    name = f"_{stem}_{hashlib.sha256(str(path).encode()).hexdigest()}"
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_native_adapter_maps_exact_settings_to_existing_racket_programs():
++    prototype = _load(PARAMETRIC / "orientation.py", "orientation")
++    adapter = _load(PARAMETRIC / "adapter.py", "adapter")
++
++    for setting in prototype.SETTINGS:
++        assert adapter.program({"orientation": setting}) == prototype.program(setting)
++
++    for invalid in ({}, {"orientation": "rot90"}, {"orientation": "identity", "extra": 1}):
++        with pytest.raises(ValueError):
++            adapter.program(invalid)
++
++@pytest.fixture(scope="module")
++def bridge():
++    from arc_repl.racket_bridge import RacketBridge
++
++    with RacketBridge() as live:
++        yield live
++
++
++def test_generate_honors_independent_counts_with_matched_inputs_and_racket_labels(bridge):
++    prototype = _load(PARAMETRIC / "orientation.py", "orientation_generate")
++    adapter = _load(PARAMETRIC / "adapter.py", "adapter_generate")
++    episodes = {
++        setting: adapter.generate(17, {"orientation": setting}, 2, 4)
++        for setting in prototype.SETTINGS
++    }
++
++    baseline_inputs = None
++    for setting, episode in episodes.items():
++        assert len(episode["train"]) == 2
++        assert len(episode["test"]) == 4
++        assert episode["program_solution"] == prototype.program(setting)
++        inputs = [pair["input"] for split in ("train", "test") for pair in episode[split]]
++        assert len({prototype.encoded(grid) for grid in inputs}) == 6
++        if baseline_inputs is None:
++            baseline_inputs = inputs
++        else:
++            assert inputs == baseline_inputs
++        for split in ("train", "test"):
++            for pair in episode[split]:
++                assert prototype.execute(bridge, episode["program_solution"], pair["input"]) == pair["output"]
++
++
++def test_all_declared_count_boundaries_are_independent_and_strict():
++    adapter = _load(PARAMETRIC / "adapter.py", "adapter_counts")
++    settings = {"orientation": "rot180"}
++
++    for demos in range(2, 7):
++        for queries in range(1, 5):
++            episode = adapter.generate(7, settings, demos, queries)
++            assert len(episode["train"]) == demos
++            assert len(episode["test"]) == queries
++
++    for seed, demos, queries in (
++        (True, 2, 1), (0, 1, 1), (0, 7, 1), (0, 2, 0), (0, 2, 5),
++    ):
++        with pytest.raises(ValueError):
++            adapter.generate(seed, settings, demos, queries)
++
++
++def test_four_query_schedule_has_substantive_30x30_boundary_stress_and_stable_prefix():
++    prototype = _load(PARAMETRIC / "orientation.py", "orientation_stress")
++    adapter = _load(PARAMETRIC / "adapter.py", "adapter_stress")
++    settings = {"orientation": "flip_lr"}
++
++    full = adapter.generate(29, settings, 3, 4)
++    single = adapter.generate(29, settings, 3, 1)
++    assert single["train"] == full["train"]
++    assert single["test"] == full["test"][:1]
++
++    queries = full["test"]
++    assert len(queries) == 4
++    assert len({prototype.encoded(pair["input"]) for pair in queries}) == 4
++    large = [pair for pair in queries if (len(pair["input"]), len(pair["input"][0])) == (30, 30)]
++    assert len(large) == 1
++    grid = large[0]["input"]
++    assert any(grid[0]) and any(grid[-1])
++    assert any(row[0] for row in grid) and any(row[-1] for row in grid)
++    assert len(large[0]["output"]) >= 24 and len(large[0]["output"][0]) >= 24
++
++
++def test_two_demo_minimum_refutes_declared_shortcuts_for_every_setting():
++    prototype = _load(PARAMETRIC / "orientation.py", "orientation_shortcuts")
++    adapter = _load(PARAMETRIC / "adapter.py", "adapter_shortcuts")
++    generator = adapter._GENERATOR
++
++    for setting in prototype.SETTINGS:
++        episode = adapter.generate(0, {"orientation": setting}, 2, 4)
++        survivors = [
++            name
++            for name, rival in generator.CANONICAL_SHORTCUTS.items()
++            if all(rival(pair["input"]) == pair["output"] for pair in episode["train"])
++        ]
++        assert survivors == [], (setting, survivors)
++
++
++def test_self_audit_executes_wrong_rules_and_writes_strict_public_projection(tmp_path, bridge):
++    prototype = _load(PARAMETRIC / "orientation.py", "orientation_audit")
++    audit = _load(PARAMETRIC / "audit.py", "audit")
++
++    result = audit.run_audit(tmp_path, seed=0, demos=2, queries=4,
++                             settings=("identity",), bridge=bridge)
++    assert result["status"] == "passed"
++    assert result["settings_checked"] == 1
++    assert result["racket"]["backend"] == "racket"
++    assert result["racket"]["protected"] is True
++    assert result["racket_evaluations"] > 0
++    assert set(result["settings"][0]["extra_rivals"]) == {
++        "red_border", "solid_marker_bbox", "uniform_height_scale"
++    }
++    assert all(not row["survives_demonstrations"]
++               for row in result["settings"][0]["extra_rivals"].values())
++
++    public_files = sorted((tmp_path / "public").glob("*.json"))
++    assert len(public_files) == 1
++    payload = json.loads(public_files[0].read_text())
++    assert set(payload) == {"train", "test"}
++    assert len(payload["train"]) == 2 and len(payload["test"]) == 4
++    assert all(set(pair) == {"input"} for pair in payload["test"])
++    text = public_files[0].read_text()
++    assert all(secret not in text for secret in prototype.SETTINGS)
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/README.md b/repo/generators/cf5ccd73cfe5/workspace/parametric/README.md
+--- a/repo/generators/cf5ccd73cfe5/workspace/parametric/README.md
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/README.md
+@@ -1,84 +1,95 @@
+-# Frame-and-marker orientation — proposed prototype
++# Frame-and-marker orientation — native promotion candidate
+ 
+-This task-local extension adds one rule parameter, `orientation`, with exactly
+-four values: `identity` (canonical/default), `flip_lr`, `flip_ud`, and `rot180`.
+-The marker is reflected within its bounding box before its rows and columns are
+-independently repeated to fill the frame interior. Frame detection, cropping,
+-marker and frame color roles, background, and the independent height/width
+-scales are unchanged. Rectangular markers and unequal scales remain valid.
+-A quarter-turn is deliberately outside the parameter domain: it would exchange
+-marker dimensions and introduce different fit constraints.
++This task-local family keeps the original frame-and-marker reasoning and adds
++one episode-fixed rule parameter, `orientation`:
+ 
+-`program()` returns the exact canonical `program_solution` text for `identity`.
+-The other settings change exactly its one marker-membership lookup, replacing
+-`mr`, `mc`, or both with their bounding-box reflected coordinates. This module
+-fails closed if that lookup is absent/duplicated or the selected canonical rows
+-disagree on exact rule text.
+-It retains only the two canonical rows for task `cf5ccd73cfe5` (original training
+-`6b9890af`); it does not edit any canonical source or production generator.
++- `identity` — exact canonical/default rule bytes;
++- `flip_lr` — reflect marker columns inside its cropped bounding box;
++- `flip_ud` — reflect marker rows inside its cropped bounding box;
++- `rot180` — reflect both marker axes.
+ 
+-## Reproduce
++After reflection, marker rows and columns are still expanded independently to
++fill the detected frame interior. Frame detection, the marker crop, color roles,
++background, and independent height/width scales are unchanged. Quarter-turns
++are intentionally excluded because they exchange marker dimensions and require
++a different fit grammar.
+ 
+-From `WORK/repo`, using the packet's offline Racket wrapper:
++## Native files
++
++`adapter.py` implements the native `program(settings)` and
++`generate(seed, settings, demos, queries)` contract. It loads the retained
++`orientation.py` implementation by exact adjacent path, so another task's
++cached module cannot supply the rule. `promotion.json` declares four settings,
++the exact canonical default, 2–6 demonstrations, 1–4 queries, and three demos
++for native qualification. `audit.py` is a reusable protected-Racket
++learnability/export audit.
++
++The adapter accepts only exact integer seeds in `0..2**63-1`, 2–6
++demonstrations, and 1–4 queries. Settings must contain exactly one declared
++`orientation`. It returns `train`, `test`, and `program_solution`; the native
++qualification worker independently executes every label through protected
++Racket.
++
++## Episode construction
++
++Inputs are matched across settings. Demonstrations are selected constructively
++from lawful production-generator scenes: the minimum two-demo teaching set must
++refute every declared canonical shortcut under every orientation. All retained
++inputs also produce four distinct orientation outputs. Extra demonstrations are
++lawful distinct fillers from the same pool.
++
++Queries use a stable prefix. Query 1 is an ordinary production-generator scene,
++so single-query evaluation is byte-for-byte the first turn of four-query use.
++Queries 2–4 are substantive boundary stresses at 30×30, 29×30, and 30×29. The
++30×30 case contains a 26×26 hollow frame and a 3×3 asymmetric marker, with
++content touching all four canvas boundaries collectively; its output interior
++is 24×24. Every query is novel relative to the demonstrations and every output
++is orientation-distinguishing.
++
++Public projection is strict: demonstrations expose `input` and `output`, while
++queries expose only `input`. Settings, programs, future query inputs, and query
++answers remain private. Public IDs hash only the canonical public bytes.
++
++## Reproduce focused checks
++
++Run from the packet's outer directory:
+ 
+ ```bash
+-python3 ../run_with_racket.py python3 generators/cf5ccd73cfe5/workspace/parametric/orientation.py --seed 17 --out ../checks/parametric/example-s17
++python3 review.py run python3 -m pytest -q \
++  generators/cf5ccd73cfe5/tests/test_parametric_adapter.py
++
++python3 review.py run python3 \
++  generators/cf5ccd73cfe5/workspace/parametric/audit.py \
++  --out ../checks/cf5ccd73cfe5/self-review \
++  --seed 0 --demos 2 --queries 4
++
++python3 WORK/check_public_exports.py \
++  WORK/checks/cf5ccd73cfe5/self-review/public \
++  --demos 2 --queries 4
++
++python3 review.py run python3 -m arcpuzzles parametric qualify cf5ccd73cfe5 \
++  --out ../checks/cf5ccd73cfe5/qualification --summary
+ ```
+ 
+-The destination must be new. The default command builds one 3-demo + 1-query
+-episode for **each** setting. `--orientation auto` builds one episode whose
+-setting is chosen once from the deterministic seed; `--orientation flip_lr`
+-(or any other declared value) explicitly selects a setting. Scene draws and
+-rejection counts cannot resample that episode's hidden rule. Both the included
+-Racket runtime and the shared `RacketBridge` are required; every output used for
+-teaching, query labels, rivals, and rejection decisions is executed in Racket.
+-There is no Python labeling mirror.
++The self-audit executes all four native settings plus three total wrong rules:
++a fixed-red output border, one height scale reused for both lookup axes, and a
++solid marker bounding box. It requires the selected native setting to be the
++only demonstration survivor and retains a minimal Racket-labeled mismatch for
++each extra rival. Its result is finite evidence only, not a proof against all
++possible wrong rules.
+ 
+-Run focused prototype tests from the same directory:
++## Sequential dependency
+ 
+-```bash
+-python3 ../run_with_racket.py python3 -m pytest -q generators/cf5ccd73cfe5/tests/test_parametric_orientation.py
+-```
++Step A detects the hollow frame, aggregates all non-frame marker cells, crops
++the marker, and derives the marker dimensions plus frame-interior dimensions.
++Its input-dependent intermediate is the normalized marker cell set together
++with marker/frame dimensions and independent row/column scale factors. Step B
++reflects normalized marker coordinates according to the episode setting and
++uses those dimensions/scales to paint the expanded pattern inside the frame.
++Step B cannot choose source coordinates or replication factors before Step A.
++The protected-Racket causal witness changes the intermediate marker width and
++shows a different final output on a qualified large query.
+ 
+-If pytest is installed in `WORK/.venv-review`, replace both occurrences of
+-`python3` in that command with `../.venv-review/bin/python`. The wrapper always
+-runs its payload from `WORK/repo`.
+-
+-## Episode identifiability and output boundary
+-
+-Each candidate scene comes from the selected production generator and must pass
+-its structural `self_check`. All four programs execute on that same input.
+-A scene is rejected if any pair of setting outputs coincides. Thus every
+-accepted demonstration individually distinguishes every orientation, and the
+-three-demo episode distinguishes all three rivals before an orientation-sensitive
+-query. A one-dimensional marker, a full rectangle, or any marker symmetric under
+-one of these reflections cannot be used. The default draw budget is 256 inputs;
+-exhaustion raises an explicit exception with the actual rejection details.
+-Rejection sampling changes this prototype's input distribution intentionally.
+-
+-The generated `public/episode-*.json` files contain exactly `train` pairs with
+-`input`/`output` and `test` entries with only `input`. Give only these files to a
+-solver. Their filenames use opaque 20-hex content-and-seed hashes, independent of
+-setting enumeration order; their JSON content has no setting, seed, rule, query
+-answer, or metadata. Only the private authoring receipt maps these IDs to settings.
+-`private/` contains parameter settings, query answers, all rival outputs,
+-accepted source indices, and rejected inputs with equal-setting groups and
+-output hashes. `programs/` contains all four exact Racket programs.
+-
+-`receipt.json` binds these artifacts to prototype, generator, test, bridge,
+-normalizer, prelude, canonical-row and exact program hashes. It records the
+-seed, actual invocation, setting choices, episode counts, failures, limitations,
+-and all artifact hashes. It also records identity execution against all eight
+-canonical pairs, a lawful symmetric-marker rejection witness, and 16 executed
+-query checks (four rotations by four settings). When a query is rotated through
+-an odd number of quarter-turns, the expected comparison swaps LR/UD axes;
+-identity and 180-degree reflection commute with all four rotations. The actual
+-program setting remains fixed in input coordinates.
+-
+-This is a bounded, proposed authoring prototype, separate from canonical repair
+-coverage. It does not add a production parameter API, refresh approval hashes,
+-claim all possible seeds, or grant training admission. Re-run source-bound
+-evidence after any generator or prototype edit. The focused tests cover all
+-four values, exact canonical compatibility, deterministic episode selection,
+-public/private separation, all three rivals, honest symmetry/budget rejection,
+-rectangular unequal-axis behavior, and query rotations.
++This directory prepares reviewer qualification only. It does not claim owner
++acceptance, universal uniqueness, measured training benefit, or training
++admission. Exact integrated bytes still require owner replay and acceptance.
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/adapter.py b/repo/generators/cf5ccd73cfe5/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/adapter.py
+@@ -0,0 +1,175 @@
++"""Native adapter for the frame-and-marker orientation family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++import itertools
++from pathlib import Path
++
++_PATH = Path(__file__).resolve().with_name("orientation.py")
++_SPEC = importlib.util.spec_from_file_location(
++    "_cf5ccd73cfe5_orientation_" + hashlib.sha256(str(_PATH).encode()).hexdigest(),
++    _PATH,
++)
++if _SPEC is None or _SPEC.loader is None:
++    raise RuntimeError(f"cannot load orientation prototype from {_PATH}")
++_PROTOTYPE = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(_PROTOTYPE)
++
++
++def _orientation(settings):
++    if not isinstance(settings, dict) or set(settings) != {"orientation"}:
++        raise ValueError("settings must contain exactly orientation")
++    value = settings["orientation"]
++    if value not in _PROTOTYPE.SETTINGS:
++        raise ValueError(f"unsupported orientation: {value!r}")
++    return value
++
++
++def program(settings):
++    return _PROTOTYPE.program(_orientation(settings))
++
++_GENERATOR = _PROTOTYPE.generator()
++
++
++def _integer(value, low, high, name):
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an integer in {low}..{high}; bool is forbidden")
++    return value
++
++
++def _transform(grid, orientation):
++    facts, errors = _GENERATOR._analyze(grid)
++    if errors:
++        raise ValueError("; ".join(errors))
++    r0, c0, _r1, _c1 = facts["marker_bbox"]
++    cells = {
++        (r - r0, c - c0)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == facts["marker_color"]
++    }
++    if orientation in ("flip_ud", "rot180"):
++        cells = {(facts["marker_h"] - 1 - r, c) for r, c in cells}
++    if orientation in ("flip_lr", "rot180"):
++        cells = {(r, facts["marker_w"] - 1 - c) for r, c in cells}
++    return _GENERATOR._render_pattern(
++        cells,
++        facts["marker_h"],
++        facts["marker_w"],
++        facts["frame_h"] - 2,
++        facts["frame_w"] - 2,
++        facts["frame_color"],
++        facts["marker_color"],
++    )
++
++
++def _all_outputs(grid):
++    return {setting: _transform(grid, setting) for setting in _PROTOTYPE.SETTINGS}
++
++
++def _accepted_generated(seed, count, *, start, forbidden=()):
++    accepted = []
++    seen = set(forbidden)
++    for index in range(start, start + 1024):
++        grid = _GENERATOR.generate(seed, index)
++        key = _PROTOTYPE.encoded(grid)
++        if key in seen:
++            continue
++        outputs = _all_outputs(grid)
++        if len({_PROTOTYPE.encoded(value) for value in outputs.values()}) != len(_PROTOTYPE.SETTINGS):
++            continue
++        seen.add(key)
++        accepted.append((grid, outputs))
++        if len(accepted) == count:
++            return accepted
++    raise RuntimeError("bounded orientation sampler exhausted; no partial episode emitted")
++
++
++def _teaching_generated(seed, demos):
++    pool = _accepted_generated(seed, 24, start=0)
++    rivals = tuple(_GENERATOR.CANONICAL_SHORTCUTS.values())
++
++    def refutes_declared_shortcuts(items):
++        return all(
++            any(rival(grid) != outputs[setting] for grid, outputs in items)
++            for setting in _PROTOTYPE.SETTINGS
++            for rival in rivals
++        )
++
++    chosen = None
++    for size in range(1, min(3, demos) + 1):
++        for indices in itertools.combinations(range(len(pool)), size):
++            items = [pool[index] for index in indices]
++            if refutes_declared_shortcuts(items):
++                chosen = list(indices)
++                break
++        if chosen is not None:
++            break
++    if chosen is None:
++        raise RuntimeError("no bounded demonstration set refutes declared shortcuts")
++    chosen_set = set(chosen)
++    chosen.extend(index for index in range(len(pool)) if index not in chosen_set)
++    return [pool[index] for index in chosen[:demos]]
++
++
++def _large_scene(seed, slot):
++    profiles = (
++        # Exact 30x30: frame reaches left/bottom, marker reaches top/right.
++        (30, 30, 4, 0, 26, 26, 0, 27),
++        # Wide stress: frame reaches top/right, marker reaches bottom/left.
++        (29, 30, 0, 4, 23, 26, 26, 0),
++        # Tall stress: frame reaches left/bottom, marker reaches top/right.
++        (30, 29, 4, 0, 26, 23, 0, 26),
++    )
++    patterns = (
++        ((0, 0), (0, 1), (1, 0), (2, 2)),
++        ((0, 0), (0, 1), (1, 1), (2, 2)),
++        ((0, 0), (0, 1), (1, 2), (2, 0)),
++    )
++    palettes = ((2, 8), (5, 3), (7, 1), (4, 6))
++    if type(slot) is not int or not 0 <= slot < len(profiles):
++        raise ValueError("large-scene slot outside supported range")
++    h, w, fr, fc, fh, fw, mr, mc = profiles[slot]
++    frame_color, marker_color = palettes[(seed + slot) % len(palettes)]
++    grid = [[0] * w for _ in range(h)]
++    for c in range(fc, fc + fw):
++        grid[fr][c] = frame_color
++        grid[fr + fh - 1][c] = frame_color
++    for r in range(fr, fr + fh):
++        grid[r][fc] = frame_color
++        grid[r][fc + fw - 1] = frame_color
++    for dr, dc in patterns[(seed + slot) % len(patterns)]:
++        grid[mr + dr][mc + dc] = marker_color
++    errors = _GENERATOR.self_check(grid)
++    if errors:
++        raise RuntimeError("invalid parametric stress scene: " + "; ".join(errors))
++    outputs = _all_outputs(grid)
++    if len({_PROTOTYPE.encoded(value) for value in outputs.values()}) != len(_PROTOTYPE.SETTINGS):
++        raise RuntimeError("parametric stress scene does not distinguish every orientation")
++    return grid, outputs
++
++
++def generate(seed, settings, demos, queries):
++    orientation = _orientation(settings)
++    _integer(seed, 0, 2**63 - 1, "seed")
++    _integer(demos, 2, 6, "demos")
++    _integer(queries, 1, 4, "queries")
++
++    teaching = _teaching_generated(seed, demos)
++    seen = {_PROTOTYPE.encoded(grid) for grid, _outputs in teaching}
++    ordinary_query = _accepted_generated(seed, 1, start=4096, forbidden=seen)[0]
++    query_pool = [ordinary_query, *(_large_scene(seed, slot) for slot in range(3))]
++    selected = [*teaching, *query_pool[:queries]]
++    if len({_PROTOTYPE.encoded(grid) for grid, _outputs in selected}) != len(selected):
++        raise RuntimeError("demonstration/query input collision; no partial episode emitted")
++
++    pairs = [
++        {"input": grid, "output": outputs[orientation]}
++        for grid, outputs in selected
++    ]
++    return {
++        "train": pairs[:demos],
++        "test": pairs[demos:],
++        "program_solution": program({"orientation": orientation}),
++    }
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/audit.py b/repo/generators/cf5ccd73cfe5/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/audit.py
+@@ -0,0 +1,237 @@
++"""Bounded protected-Racket learnability audit for the orientation adapter."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++
++def _load_adjacent(name: str):
++    path = Path(__file__).resolve().with_name(name)
++    spec = importlib.util.spec_from_file_location(
++        "_cf5ccd73cfe5_audit_" + name.replace(".", "_") + "_" + hashlib.sha256(str(path).encode()).hexdigest(),
++        path,
++    )
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load task-local source from {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++_ADAPTER = _load_adjacent("adapter.py")
++_PROTOTYPE = _ADAPTER._PROTOTYPE
++
++
++def _replace_once(source: str, old: str, new: str, name: str) -> str:
++    if source.count(old) != 1:
++        raise ValueError(f"{name} source anchor changed; explicit review required")
++    return source.replace(old, new)
++
++
++def rival_programs(settings: dict) -> dict[str, str]:
++    orientation = _ADAPTER._orientation(settings)
++    source = _ADAPTER.program({"orientation": orientation})
++    row = "(- marker-h 1 mr)" if orientation in ("flip_ud", "rot180") else "mr"
++    col = "(- marker-w 1 mc)" if orientation in ("flip_lr", "rot180") else "mc"
++    lookup = f"(hash-has-key? marker-set (list {row} {col}))"
++    return {
++        "red_border": _replace_once(
++            source,
++            "(set-cell out\n                                               (- (first cell) fr1)\n                                               (- (second cell) fc1)\n                                               frame-color)",
++            "(set-cell out\n                                               (- (first cell) fr1)\n                                               (- (second cell) fc1)\n                                               2)",
++            "red-border rival",
++        ),
++        "uniform_height_scale": _replace_once(
++            source,
++            "(mc (quotient ic scale-w))",
++            "(mc (quotient ic scale-h))",
++            "uniform-scale rival",
++        ),
++        "solid_marker_bbox": _replace_once(source, lookup, "#t", "solid-bbox rival"),
++    }
++
++
++def _public(episode: dict) -> dict:
++    return {
++        "train": [
++            {"input": pair["input"], "output": pair["output"]}
++            for pair in episode["train"]
++        ],
++        "test": [{"input": pair["input"]} for pair in episode["test"]],
++    }
++
++
++def _digest(value) -> str:
++    if not isinstance(value, (bytes, bytearray)):
++        value = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
++    return hashlib.sha256(value).hexdigest()
++
++
++def _run_with_bridge(out: Path, *, seed: int, demos: int, queries: int,
++                     settings: tuple[str, ...], bridge) -> dict:
++    from reviewer_support import public_challenge_bytes, public_challenge_id
++
++    evaluations = 0
++
++    def execute(program, grid):
++        nonlocal evaluations
++        evaluations += 1
++        return _PROTOTYPE.execute(bridge, program, grid)
++
++    setting_rows = []
++    for orientation in settings:
++        chosen = {"orientation": orientation}
++        episode = _ADAPTER.generate(seed, chosen, demos, queries)
++        setting_programs = {
++            candidate: _ADAPTER.program({"orientation": candidate})
++            for candidate in _PROTOTYPE.SETTINGS
++        }
++
++        for split in ("train", "test"):
++            for pair in episode[split]:
++                actual = execute(episode["program_solution"], pair["input"])
++                if actual != pair["output"]:
++                    raise ValueError(f"adapter label differs from protected Racket for {orientation}")
++
++        native_survivors = []
++        for candidate, program in setting_programs.items():
++            outputs = [execute(program, pair["input"]) for pair in episode["train"]]
++            if all(output == pair["output"] for output, pair in zip(outputs, episode["train"])):
++                native_survivors.append(candidate)
++        if native_survivors != [orientation]:
++            raise ValueError(f"native settings are not demonstration-identifiable: {native_survivors}")
++
++        extra_rows = {}
++        for name, program in rival_programs(chosen).items():
++            demo_outputs = [execute(program, pair["input"]) for pair in episode["train"]]
++            query_outputs = [execute(program, pair["input"]) for pair in episode["test"]]
++            mismatch_indices = [
++                index for index, (actual, pair) in enumerate(zip(demo_outputs, episode["train"]))
++                if actual != pair["output"]
++            ]
++            if not mismatch_indices:
++                raise ValueError(f"plausible wrong rule survives every visible demonstration: {name}")
++            first = mismatch_indices[0]
++            extra_rows[name] = {
++                "program_sha256": _digest(program.encode()),
++                "survives_demonstrations": False,
++                "demo_mismatch_indices": mismatch_indices,
++                "query_differs": [
++                    index for index, (actual, pair) in enumerate(zip(query_outputs, episode["test"]))
++                    if actual != pair["output"]
++                ],
++                "minimal_racket_labeled_case": {
++                    "demo_index": first,
++                    "input": episode["train"][first]["input"],
++                    "intended_output": episode["train"][first]["output"],
++                    "rival_output": demo_outputs[first],
++                },
++            }
++
++        public = _public(episode)
++        public_id = public_challenge_id(public)
++        (out / "public" / f"{public_id}.json").write_bytes(public_challenge_bytes(public))
++        setting_rows.append({
++            "settings": chosen,
++            "program_sha256": _digest(episode["program_solution"].encode()),
++            "native_survivors": native_survivors,
++            "extra_rivals": extra_rows,
++            "public_challenge_id": public_id,
++            "input_shapes": {
++                split: [[len(pair["input"]), len(pair["input"][0])] for pair in episode[split]]
++                for split in ("train", "test")
++            },
++            "query_output_sha256": [_digest(pair["output"]) for pair in episode["test"]],
++        })
++
++    runtime = bridge.runtime_identity
++    result = {
++        "schema": "cf5ccd73cfe5-parametric-self-audit-v1",
++        "status": "passed",
++        "task_id": _PROTOTYPE.TASK,
++        "seed": seed,
++        "demos": demos,
++        "queries": queries,
++        "settings_checked": len(setting_rows),
++        "settings": setting_rows,
++        "racket": {
++            key: runtime[key]
++            for key in ("backend", "protected", "binary_sha256", "prelude_sha256", "bridge_sha256")
++            if key in runtime
++        },
++        "racket_evaluations": evaluations,
++        "limits": (
++            "Finite audit of four declared settings and three executable wrong rules; "
++            "not a proof of universal uniqueness or training benefit."
++        ),
++    }
++    (out / "private" / "audit.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    receipt = {
++        "schema": "cf5ccd73cfe5-parametric-self-audit-receipt-v1",
++        "audit_sha256": _digest((out / "private" / "audit.json").read_bytes()),
++        "public_files": {
++            path.name: _digest(path.read_bytes()) for path in sorted((out / "public").glob("*.json"))
++        },
++        "source_sha256": {
++            path.name: _digest(path.read_bytes())
++            for path in (
++                Path(__file__).resolve(),
++                Path(__file__).resolve().with_name("adapter.py"),
++                Path(__file__).resolve().with_name("orientation.py"),
++            )
++        },
++    }
++    (out / "receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
++    return result
++
++
++def run_audit(out, *, seed=0, demos=2, queries=4, settings=None, bridge=None):
++    if type(seed) is not int or not 0 <= seed <= 2**63 - 1:
++        raise ValueError("seed must be an exact integer in 0..2**63-1")
++    if type(demos) is not int or not 2 <= demos <= 6:
++        raise ValueError("demos must be an exact integer in 2..6")
++    if type(queries) is not int or not 1 <= queries <= 4:
++        raise ValueError("queries must be an exact integer in 1..4")
++    selected = tuple(_PROTOTYPE.SETTINGS if settings is None else settings)
++    if not selected or len(set(selected)) != len(selected) or any(value not in _PROTOTYPE.SETTINGS for value in selected):
++        raise ValueError("settings must be distinct declared orientation values")
++
++    out = Path(out)
++    if out.exists() and any(out.iterdir()):
++        raise FileExistsError(out)
++    out.mkdir(parents=True, exist_ok=True)
++    (out / "public").mkdir()
++    (out / "private").mkdir()
++
++    if bridge is not None:
++        return _run_with_bridge(out, seed=seed, demos=demos, queries=queries,
++                                settings=selected, bridge=bridge)
++    from arc_repl.racket_bridge import RacketBridge
++    with RacketBridge() as live:
++        return _run_with_bridge(out, seed=seed, demos=demos, queries=queries,
++                                settings=selected, bridge=live)
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seed", type=int, default=0)
++    parser.add_argument("--demos", type=int, default=2)
++    parser.add_argument("--queries", type=int, default=4)
++    args = parser.parse_args(argv)
++    result = run_audit(args.out, seed=args.seed, demos=args.demos, queries=args.queries)
++    print(json.dumps({
++        "status": result["status"],
++        "task_id": result["task_id"],
++        "settings_checked": result["settings_checked"],
++        "racket_evaluations": result["racket_evaluations"],
++        "out": str(args.out),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/all-task-tests.txt b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/all-task-tests.txt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/all-task-tests.txt
+@@ -0,0 +1,2 @@
++........................................................................ [100%]
++72 passed in 28.73s
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/focused-tests.txt b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/focused-tests.txt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/focused-tests.txt
+@@ -0,0 +1,2 @@
++......                                                                   [100%]
++6 passed in 11.85s
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/public-check.txt b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/public-check.txt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/public-check.txt
+@@ -0,0 +1,36 @@
++{
++  "demonstrations": 2,
++  "files": [
++    {
++      "demonstrations": 2,
++      "path": "/mnt/data/arc_review_144928/WORK/checks/cf5ccd73cfe5/self-review/public/5a7a17fb4c6a6d7a352c303ceeb22a48e9c0680cbfb11dee2a40033ce900fe05.json",
++      "queries": 4,
++      "sha256": "5a7a17fb4c6a6d7a352c303ceeb22a48e9c0680cbfb11dee2a40033ce900fe05"
++    },
++    {
++      "demonstrations": 2,
++      "path": "/mnt/data/arc_review_144928/WORK/checks/cf5ccd73cfe5/self-review/public/99799ef56778a2c333261b33b38941057abda3d7c1f0faa3a0228f7f9297a1bb.json",
++      "queries": 4,
++      "sha256": "99799ef56778a2c333261b33b38941057abda3d7c1f0faa3a0228f7f9297a1bb"
++    },
++    {
++      "demonstrations": 2,
++      "path": "/mnt/data/arc_review_144928/WORK/checks/cf5ccd73cfe5/self-review/public/b7c7c2f80b104529cbd90799b49f9fb1edd72d929b862fba9a6c3712148f7367.json",
++      "queries": 4,
++      "sha256": "b7c7c2f80b104529cbd90799b49f9fb1edd72d929b862fba9a6c3712148f7367"
++    },
++    {
++      "demonstrations": 2,
++      "path": "/mnt/data/arc_review_144928/WORK/checks/cf5ccd73cfe5/self-review/public/ee1fc70ff616f304cbb7aa2aef5dbcb40e816d2badee76856a93f61cfc80610b.json",
++      "queries": 4,
++      "sha256": "ee1fc70ff616f304cbb7aa2aef5dbcb40e816d2badee76856a93f61cfc80610b"
++    }
++  ],
++  "files_checked": 4,
++  "findings": [],
++  "limits": "Saved-file structure/identity only. Does not execute a writer, test private-metadata invariance, verify labels, establish identifiability or approve variants.",
++  "queries": 4,
++  "reference_labels_checked": false,
++  "schema": "arcpuzzles-public-export-check-v1",
++  "status": "passed"
++}
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/self-audit-receipt.json b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/self-audit-receipt.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/self-audit-receipt.json
+@@ -0,0 +1,15 @@
++{
++  "audit_sha256": "aa254651117c279414e29705d42bf12d1a53b876aed24226e0c6d526d0c8828c",
++  "public_files": {
++    "5a7a17fb4c6a6d7a352c303ceeb22a48e9c0680cbfb11dee2a40033ce900fe05.json": "5a7a17fb4c6a6d7a352c303ceeb22a48e9c0680cbfb11dee2a40033ce900fe05",
++    "99799ef56778a2c333261b33b38941057abda3d7c1f0faa3a0228f7f9297a1bb.json": "99799ef56778a2c333261b33b38941057abda3d7c1f0faa3a0228f7f9297a1bb",
++    "b7c7c2f80b104529cbd90799b49f9fb1edd72d929b862fba9a6c3712148f7367.json": "b7c7c2f80b104529cbd90799b49f9fb1edd72d929b862fba9a6c3712148f7367",
++    "ee1fc70ff616f304cbb7aa2aef5dbcb40e816d2badee76856a93f61cfc80610b.json": "ee1fc70ff616f304cbb7aa2aef5dbcb40e816d2badee76856a93f61cfc80610b"
++  },
++  "schema": "cf5ccd73cfe5-parametric-self-audit-receipt-v1",
++  "source_sha256": {
++    "adapter.py": "bd89fb413976c7c40dc091376f8e7be5047d7dd64aa0dfc3a855fe0e5de89487",
++    "audit.py": "d37f0a54c7a8d18c587b06deaf2d2e5c69f863a2b15e66ec8120eb475262f1c6",
++    "orientation.py": "b6d4fb83f5704ae884a7c92a4b78025727e14c743dc53a19dd50344e2bf9ae0e"
++  }
++}
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/self-audit-summary.json b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/self-audit-summary.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/current/self-audit-summary.json
+@@ -0,0 +1,364 @@
++{
++  "demos": 2,
++  "limits": "Finite audit of four declared settings and three executable wrong rules; not a proof of universal uniqueness or training benefit.",
++  "queries": 4,
++  "racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true
++  },
++  "racket_evaluations": 128,
++  "schema": "cf5ccd73cfe5-parametric-self-audit-v1",
++  "seed": 0,
++  "settings": [
++    {
++      "extra_rivals": {
++        "red_border": {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "program_sha256": "90a65eb180c50af07ec203ee03c99146a5ae390f6546f36338656610c95a6376",
++          "query_differs": [
++            0,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        },
++        "solid_marker_bbox": {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "program_sha256": "32ee3e1bb530f9cff7b5deeba1f472de17c1c9a8460626aaf0f75f07ec6766e7",
++          "query_differs": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        },
++        "uniform_height_scale": {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "program_sha256": "a91c074c2e77492cbd8743db79a83157aa70967ccdba2fd01b212a60d9138d33",
++          "query_differs": [
++            0,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        }
++      },
++      "input_shapes": {
++        "test": [
++          [
++            19,
++            22
++          ],
++          [
++            30,
++            30
++          ],
++          [
++            29,
++            30
++          ],
++          [
++            30,
++            29
++          ]
++        ],
++        "train": [
++          [
++            21,
++            24
++          ],
++          [
++            19,
++            22
++          ]
++        ]
++      },
++      "native_survivors": [
++        "identity"
++      ],
++      "program_sha256": "b75f96d5376acb350774ce656198c702722cd4fc218d78c426718ec6937cb7a2",
++      "public_challenge_id": "ee1fc70ff616f304cbb7aa2aef5dbcb40e816d2badee76856a93f61cfc80610b",
++      "query_output_sha256": [
++        "e1adb92e4b181dc13c0aba2ad87cfa0e11f0c76eaafdd9b78f0ad395a4be74d8",
++        "902660452d3c9e7c4a1520aa98a0d770ff61023834a5d4a7b06b4c2222493895",
++        "7669f24eb19efb4099b036aa951b12a79299f6e93855ebe75694d643b49ddcd0",
++        "b9e6081a05c4297bcc5c40ab66d146ef26e70a183c0964f1074d24b97db0a216"
++      ],
++      "settings": {
++        "orientation": "identity"
++      }
++    },
++    {
++      "extra_rivals": {
++        "red_border": {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "program_sha256": "f6008757cdf921beb6dbf74c6dc899f66fdb407d9453d654d1fce3dfd522c4a8",
++          "query_differs": [
++            0,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        },
++        "solid_marker_bbox": {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "program_sha256": "32ee3e1bb530f9cff7b5deeba1f472de17c1c9a8460626aaf0f75f07ec6766e7",
++          "query_differs": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        },
++        "uniform_height_scale": {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "program_sha256": "9daf9b12bbd7018073b767587f78af1f1e0d018b3e696e9269a02c4e6339f387",
++          "query_differs": [
++            0,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        }
++      },
++      "input_shapes": {
++        "test": [
++          [
++            19,
++            22
++          ],
++          [
++            30,
++            30
++          ],
++          [
++            29,
++            30
++          ],
++          [
++            30,
++            29
++          ]
++        ],
++        "train": [
++          [
++            21,
++            24
++          ],
++          [
++            19,
++            22
++          ]
++        ]
++      },
++      "native_survivors": [
++        "flip_lr"
++      ],
++      "program_sha256": "4c6be2eafebc22d3d7e2068e2ead9e3b4f628e87bdb57d5cb273ced58beaf232",
++      "public_challenge_id": "b7c7c2f80b104529cbd90799b49f9fb1edd72d929b862fba9a6c3712148f7367",
++      "query_output_sha256": [
++        "10b746c2ffe7160dca4e6c382fb3df28e50679e5adc907f9e01d81dc621e171b",
++        "d7d607cde9c7783916867b47a7d8bbc55b807004b08c366ba082f42ec7c64a95",
++        "a53240d41b9c96dff6ed1ea3b615eed2292b620063ff7e4e21dc65ae683b8d00",
++        "1b0611cd16605f023cfeba40bfbde4584124ef8280971de640f4321e9d66c82b"
++      ],
++      "settings": {
++        "orientation": "flip_lr"
++      }
++    },
++    {
++      "extra_rivals": {
++        "red_border": {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "program_sha256": "2353377464878b64c28a8fd3ab02ceb10e52a7a3f0e46d893cfc8a639fadf8ab",
++          "query_differs": [
++            0,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        },
++        "solid_marker_bbox": {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "program_sha256": "32ee3e1bb530f9cff7b5deeba1f472de17c1c9a8460626aaf0f75f07ec6766e7",
++          "query_differs": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        },
++        "uniform_height_scale": {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "program_sha256": "e9723ebbef4bc130ffd1e533971895138406709636c822ab445d4680e3c5ed33",
++          "query_differs": [
++            0,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        }
++      },
++      "input_shapes": {
++        "test": [
++          [
++            19,
++            22
++          ],
++          [
++            30,
++            30
++          ],
++          [
++            29,
++            30
++          ],
++          [
++            30,
++            29
++          ]
++        ],
++        "train": [
++          [
++            21,
++            24
++          ],
++          [
++            19,
++            22
++          ]
++        ]
++      },
++      "native_survivors": [
++        "flip_ud"
++      ],
++      "program_sha256": "0a7edd90c689e12459ad8ecce3bfd25cf0e9cfac35772a15a38c55fca2c846ed",
++      "public_challenge_id": "5a7a17fb4c6a6d7a352c303ceeb22a48e9c0680cbfb11dee2a40033ce900fe05",
++      "query_output_sha256": [
++        "f780e9e635629bcbc045013f879c4bbe761ffec8f05ef8b640bed07dba296629",
++        "5ec864db57d00711dc1ac537a3086377f50412ed273ed8190b5fbf638f517aac",
++        "15db848e9c27303af509bb06573d121d299516ac5fc19ed986208962d6dab45b",
++        "694a84c5853273d119a20b50bf5576461cc8d78aaf764e42e2807e0212a90261"
++      ],
++      "settings": {
++        "orientation": "flip_ud"
++      }
++    },
++    {
++      "extra_rivals": {
++        "red_border": {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "program_sha256": "aeb3a1e9982c4760fed0c0626448584ba0af662b99ec0701b7d57a5710bce0f6",
++          "query_differs": [
++            0,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        },
++        "solid_marker_bbox": {
++          "demo_mismatch_indices": [
++            0,
++            1
++          ],
++          "program_sha256": "32ee3e1bb530f9cff7b5deeba1f472de17c1c9a8460626aaf0f75f07ec6766e7",
++          "query_differs": [
++            0,
++            1,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        },
++        "uniform_height_scale": {
++          "demo_mismatch_indices": [
++            0
++          ],
++          "program_sha256": "e349ba82361084f99c8d36db71b9e0f1ea205545be726a6b5ba910aa8c5bce53",
++          "query_differs": [
++            0,
++            2,
++            3
++          ],
++          "survives_demonstrations": false
++        }
++      },
++      "input_shapes": {
++        "test": [
++          [
++            19,
++            22
++          ],
++          [
++            30,
++            30
++          ],
++          [
++            29,
++            30
++          ],
++          [
++            30,
++            29
++          ]
++        ],
++        "train": [
++          [
++            21,
++            24
++          ],
++          [
++            19,
++            22
++          ]
++        ]
++      },
++      "native_survivors": [
++        "rot180"
++      ],
++      "program_sha256": "d925a07aeaefefd8d75c9e2d1d5f322cedb5f5be6e5abbe040de469143c4cac3",
++      "public_challenge_id": "99799ef56778a2c333261b33b38941057abda3d7c1f0faa3a0228f7f9297a1bb",
++      "query_output_sha256": [
++        "9c78b418736f37f5ab7758735b08291ea66760a275cf9573f3ebef40d683229d",
++        "8577dd7e6310a1c86b999b55de81a67e388d29ab2f67d1d6d2982d504133bbed",
++        "1e5701f2e2c5491962db96f2403f36f8465f9df252785a3415aa370575cd949a",
++        "09ed855de0026acb714841c78e4bbe6245d968c5fc42d8edcd958235061c592d"
++      ],
++      "settings": {
++        "orientation": "rot180"
++      }
++    }
++  ],
++  "settings_checked": 4,
++  "status": "passed",
++  "task_id": "cf5ccd73cfe5"
++}
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/manifest.json b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/manifest.json
+--- a/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/manifest.json
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/evidence/manifest.json
+@@ -1,122 +1,79 @@
+ {
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "b75f96d5376acb350774ce656198c702722cd4fc218d78c426718ec6937cb7a2",
+   "canonical_rule_hash": "50b927c3200b",
++  "default": {
++    "orientation": "identity"
++  },
++  "evidence_root": "generators/cf5ccd73cfe5/workspace/parametric/evidence/current",
+   "files": [
+     {
+-      "bytes": 11066,
+-      "original_member": "checks/parametric/final-s17-release/private/canonical.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/private/canonical.json",
+-      "sha256": "66ad742eb921d04cbe74868b70c980f9ed0f580755c41154b6e6eeb79d334a8d"
++      "bytes": 24053,
++      "path": "generators/cf5ccd73cfe5/generator.py",
++      "sha256": "fa58164d742ccc0bce9e6a20f3c80ae9ee90135e6ca273ed2f964727c85ba21c"
+     },
+     {
+-      "bytes": 62469,
+-      "original_member": "checks/parametric/final-s17-release/private/episode-0084e23d95d84faa6797.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/private/episode-0084e23d95d84faa6797.json",
+-      "sha256": "90d2f50f065d954ea296f2f807b64256a968831f1391c1582a6ae5c0a539bae3"
++      "bytes": 5894,
++      "path": "generators/cf5ccd73cfe5/tests/test_parametric_adapter.py",
++      "sha256": "7da03069df3d63124ccd7f6a2b93a7a4d28910c28484c6492cde155f4fd1058c"
+     },
+     {
+-      "bytes": 62469,
+-      "original_member": "checks/parametric/final-s17-release/private/episode-05b6387bd6465672c658.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/private/episode-05b6387bd6465672c658.json",
+-      "sha256": "0628180106d5c1dde0e29c81c4000ee2e972d4dd953503f0b5f9f18c6b8e9a89"
++      "bytes": 6421,
++      "path": "generators/cf5ccd73cfe5/workspace/parametric/adapter.py",
++      "sha256": "bd89fb413976c7c40dc091376f8e7be5047d7dd64aa0dfc3a855fe0e5de89487"
+     },
+     {
+-      "bytes": 62469,
+-      "original_member": "checks/parametric/final-s17-release/private/episode-128ec78278c2f4f4aa96.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/private/episode-128ec78278c2f4f4aa96.json",
+-      "sha256": "f0b3e499cd5ec1c8d3e337a999b18ab5157cbfe443b18e7261a171436bfb50ab"
++      "bytes": 9983,
++      "path": "generators/cf5ccd73cfe5/workspace/parametric/audit.py",
++      "sha256": "d37f0a54c7a8d18c587b06deaf2d2e5c69f863a2b15e66ec8120eb475262f1c6"
+     },
+     {
+-      "bytes": 62469,
+-      "original_member": "checks/parametric/final-s17-release/private/episode-728782333411e231cdb4.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/private/episode-728782333411e231cdb4.json",
+-      "sha256": "ee2633c40887b5d26c4e91504051427d85faa5d5bffb765c15c6a08abd0b39ec"
++      "bytes": 100,
++      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/current/all-task-tests.txt",
++      "sha256": "ff4245b7007905a99d0bedf6f179206ba6be9cb21e4ed2d25be51b26333b6dfd"
+     },
+     {
+-      "bytes": 100051,
+-      "original_member": "checks/parametric/final-s17-release/private/query-rotations.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/private/query-rotations.json",
+-      "sha256": "331f6dd32c2c48d590f2ce9fc0f1741033acfbd2155e83a1c186a5377d9df063"
++      "bytes": 99,
++      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/current/focused-tests.txt",
++      "sha256": "e359495e4c63018989e0049af38d2797bae58041803aa868aef4b3f0b9096ab0"
+     },
+     {
+-      "bytes": 3814,
+-      "original_member": "checks/parametric/final-s17-release/private/symmetric-rejection.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/private/symmetric-rejection.json",
+-      "sha256": "960c544d1823884467b952786f264cb0ff1ef105c53d9f400a678e2255402fc8"
++      "bytes": 1589,
++      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/current/public-check.txt",
++      "sha256": "8b603f3d689377da3764f98293cb470b208c8900eb992c8fb6d0bb483318f6de"
+     },
+     {
+-      "bytes": 6011,
+-      "original_member": "checks/parametric/final-s17-release/programs/flip_lr.rkt",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/programs/flip_lr.rkt",
+-      "sha256": "4c6be2eafebc22d3d7e2068e2ead9e3b4f628e87bdb57d5cb273ced58beaf232"
++      "bytes": 1039,
++      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/current/self-audit-receipt.json",
++      "sha256": "5f033ba603f443be3cde0659dcc00fb0c2bd3bf62b72ec28c20fe0144b094b11"
+     },
+     {
+-      "bytes": 6011,
+-      "original_member": "checks/parametric/final-s17-release/programs/flip_ud.rkt",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/programs/flip_ud.rkt",
+-      "sha256": "0a7edd90c689e12459ad8ecce3bfd25cf0e9cfac35772a15a38c55fca2c846ed"
++      "bytes": 9251,
++      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/current/self-audit-summary.json",
++      "sha256": "92073ca926804e58c88e7c0f27c22d296a93ef2c4bc31f89233b59b889ca558d"
+     },
+     {
+-      "bytes": 5996,
+-      "original_member": "checks/parametric/final-s17-release/programs/identity.rkt",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/programs/identity.rkt",
+-      "sha256": "b75f96d5376acb350774ce656198c702722cd4fc218d78c426718ec6937cb7a2"
++      "bytes": 13636,
++      "path": "generators/cf5ccd73cfe5/workspace/parametric/orientation.py",
++      "sha256": "b6d4fb83f5704ae884a7c92a4b78025727e14c743dc53a19dd50344e2bf9ae0e"
+     },
+     {
+-      "bytes": 6026,
+-      "original_member": "checks/parametric/final-s17-release/programs/rot180.rkt",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/programs/rot180.rkt",
+-      "sha256": "d925a07aeaefefd8d75c9e2d1d5f322cedb5f5be6e5abbe040de469143c4cac3"
+-    },
+-    {
+-      "bytes": 28227,
+-      "original_member": "checks/parametric/final-s17-release/public/episode-0084e23d95d84faa6797.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/public/episode-0084e23d95d84faa6797.json",
+-      "sha256": "5f33224dda289ebdc57ee947ff17d8379836c723438bb3b8b9629de5c55084d9"
+-    },
+-    {
+-      "bytes": 28227,
+-      "original_member": "checks/parametric/final-s17-release/public/episode-05b6387bd6465672c658.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/public/episode-05b6387bd6465672c658.json",
+-      "sha256": "aa4883669eae56b14ab371111aa2d25781481bfe2c6b3080e097bea7c392fac4"
+-    },
+-    {
+-      "bytes": 28227,
+-      "original_member": "checks/parametric/final-s17-release/public/episode-128ec78278c2f4f4aa96.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/public/episode-128ec78278c2f4f4aa96.json",
+-      "sha256": "85d57f60d4675eb33fdbd90f25b436231ec31853940c7f47779d487db97f5ce7"
+-    },
+-    {
+-      "bytes": 28227,
+-      "original_member": "checks/parametric/final-s17-release/public/episode-728782333411e231cdb4.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/public/episode-728782333411e231cdb4.json",
+-      "sha256": "20a7e7a0d6d9f6cdc6190ac0df8936b36c0ffa62cb0709754edc1ad5e43e4d0d"
+-    },
+-    {
+-      "bytes": 8380,
+-      "original_member": "checks/parametric/final-s17-release/receipt.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-s17-release/receipt.json",
+-      "sha256": "6adf38ccea360dce9f1321149d0889462afa532abae7205f94f11dbb61380101"
+-    },
+-    {
+-      "bytes": 5128,
+-      "original_member": "checks/parametric/final-validation.json",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/evidence/final-validation.json",
+-      "sha256": "7e39d46edd99c19e8b2977540743eaa8c8f8ffc2ef7932562d2f7e44225b8eb0"
+-    },
+-    {
+-      "bytes": 4926,
+-      "original_member": "repo/generators/cf5ccd73cfe5/workspace/parametric/README.md",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/README.md",
+-      "sha256": "40588ce1185c0093b45c70cec99909f42a25350c855e378c8d8471ba5cdda25a"
+-    },
+-    {
+-      "bytes": 13608,
+-      "original_member": "repo/generators/cf5ccd73cfe5/workspace/parametric/orientation.py",
+-      "path": "generators/cf5ccd73cfe5/workspace/parametric/orientation.py",
+-      "sha256": "6cb6d6d5d743d441f8c2609b9d222a8ebeea10bdcbacd2be2a900108c6c90ce1"
++      "bytes": 438,
++      "path": "generators/cf5ccd73cfe5/workspace/parametric/promotion.json",
++      "sha256": "e0bc495a95056b543db311aff7f920132068fb6a2d5e5d0d9147b20f1f7c907e"
+     }
+   ],
+   "generator_sha256": "fa58164d742ccc0bce9e6a20f3c80ae9ee90135e6ca273ed2f964727c85ba21c",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
+   "parameters": {
+     "orientation": [
+       "identity",
+@@ -126,15 +83,12 @@
+     ]
+   },
+   "production_parametric_api": false,
+-  "return_id": "review-e751e78ac601fea6:v0001",
+-  "return_zip_sha256": "bcdec67a7aded13a3afa59127c041713f6d2f9216a3a8dadc4980df409e33f49",
++  "reported_checks": "72 task tests passed directly; 6 focused native adapter tests passed; protected-Racket self-audit checked four settings and three executable wrong rules in 128 evaluations; strict public projection checked four 2-demo/4-query files; higher-level task-tests checkpoint wrapper was separately interrupted after partial progress.",
++  "rule_task_id": "cf5ccd73cfe5",
+   "schema": "arcpuzzles-parametric-prototype-evidence-v1",
+-  "scope": "Final source-bound authoring prototype. Public payloads and private labels/rules are separate; authoring filenames may encode settings and must be hidden or renamed before model-visible evaluation. No production exporter or variant approval.",
+-  "selected_evidence_prefixes": [
+-    "checks/parametric/final-s17-release/",
+-    "checks/parametric/final-validation.json"
+-  ],
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
+   "task_id": "cf5ccd73cfe5",
++  "training_admitted": false,
+   "variant_approved": false,
+   "verification_status": "reviewer_reported"
+ }
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/orientation.py b/repo/generators/cf5ccd73cfe5/workspace/parametric/orientation.py
+--- a/repo/generators/cf5ccd73cfe5/workspace/parametric/orientation.py
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/orientation.py
+@@ -1,4 +1,4 @@
+-"""Proposed, task-local orientation rule variants; never a production rule API."""
++"""Task-local orientation rule source retained behind the native adapter."""
+ from __future__ import annotations
+ 
+ import argparse
+@@ -18,7 +18,7 @@
+ DEFAULT = "identity"
+ LOOKUP = "(hash-has-key? marker-set (list mr mc))"
+ LIMITATIONS = [
+-    "Proposed prototype only; no production parametric API, approval, or training admission.",
++    "Authoring source only; adapter.py supplies the native API, while owner acceptance and training admission remain separate.",
+     "One bounded orientation parameter; no quarter-turn setting because independent scales and rectangular marker dimensions would change roles.",
+     "Rejects any marker with fewer than four distinct orientation outputs; one-dimensional and symmetric shapes cannot teach all settings.",
+     "Three demonstrations and one query per episode; at most 256 attempted inputs by default.",
+diff --git a/repo/generators/cf5ccd73cfe5/workspace/parametric/promotion.json b/repo/generators/cf5ccd73cfe5/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/cf5ccd73cfe5/workspace/parametric/promotion.json
+@@ -0,0 +1,18 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/cf5ccd73cfe5/workspace/parametric/adapter.py",
++  "parameters": {
++    "orientation": ["identity", "flip_lr", "flip_ud", "rot180"]
++  },
++  "default": {
++    "orientation": "identity"
++  },
++  "limits": {
++    "demos": [2, 6],
++    "queries": [1, 4]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/cf5ccd73cfe5/workspace/parametric/orientation.py"
++  ]
++}
+diff --git a/repo/generators/d4f2f542248a/notes.md b/repo/generators/d4f2f542248a/notes.md
+--- a/repo/generators/d4f2f542248a/notes.md
++++ b/repo/generators/d4f2f542248a/notes.md
+@@ -2,3 +2,34 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 bounded learnability finding
++
++A produced-domain three-demo lesson is ambiguous against the executable rival
++`skip_when_disconnected_pockets_exist`: apply the intended unavoidable-shortest-
++path rule only when every open cell is reachable from the start; otherwise
++return the input unchanged. For seed 0/default difficulty, demos at indices
++5, 6, 7 are `dead_end_contrast`, `public_3`, and `many_paths_few_gates`, all
++with zero unreachable open cells, so the rival matches every protected-Racket
++label. The next generated query at index 8 is `disconnected_pockets`; canonical
++Racket still marks four unavoidable shortest-path blanks while the rival leaves
++the grid unchanged.
++
++Reusable reproducer: `workspace/learnability_probe.py`; source-bound evidence:
++`checks/d4f2f542248a/learnability.json`. A focused regression fixes the exact
++window in `tests/test_learnability_probe.py`. Suggested repair is to ensure a
++disconnected-pocket demonstration is visible before such a query without
++increasing the demo count. No generator source change was applied in this
++optional review; the owner should choose and verify any integration.
++
++## 2026-10-24 portable test repair
++
++The optional review also repaired the retained test's fixed `__file__/parents`
++lookup. Canonical and base-authority data now resolve from
++`reviewer_support.find_root()` / `canonical_path()`, so the same test works in
++the repository and staged runtime layouts. The staged runner passed its
++portability preflight and the first 55 tests; 81/82 tests pass in a targeted
++run. The sole remaining census performs 1,760 expensive generations and did not
++finish within a separate 20-minute bound; it produced no assertion failure and
++was not changed. This performance limit is separate from the learnability
++finding and from generator correctness.
+diff --git a/repo/generators/d4f2f542248a/tests/test_generator_d4f2f542248a.py b/repo/generators/d4f2f542248a/tests/test_generator_d4f2f542248a.py
+--- a/repo/generators/d4f2f542248a/tests/test_generator_d4f2f542248a.py
++++ b/repo/generators/d4f2f542248a/tests/test_generator_d4f2f542248a.py
+@@ -4,17 +4,18 @@
+ import hashlib
+ import importlib
+ import json
+-from pathlib import Path
+ import random
+ 
+ import pytest
++from reviewer_support import canonical_path, find_root
+ 
+ 
+ TASK = "d4f2f542248a"
+ MODULE = importlib.import_module(f"puzzle_generators.per_puzzle.{TASK}.generator")
+-ROOT = Path(__file__).resolve().parents[1]
+-CANONICAL = ROOT / "data" / "canonical" / "puzzles.jsonl"
+-BASE_PATH = ROOT / "data" / "base" / "solutions" / "banks" / "0d41ded5f4cd" / "H85__d4f2f542248a.json"
++ROOT = find_root(__file__)
++CANONICAL = canonical_path(ROOT)
++DATA_ROOT = CANONICAL.parents[1]
++BASE_PATH = DATA_ROOT / "base" / "solutions" / "banks" / "0d41ded5f4cd" / "H85__d4f2f542248a.json"
+ 
+ 
+ def canonical_row():
+diff --git a/repo/generators/d4f2f542248a/tests/test_learnability_probe.py b/repo/generators/d4f2f542248a/tests/test_learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d4f2f542248a/tests/test_learnability_probe.py
+@@ -0,0 +1,40 @@
++"""Bounded produced-domain learnability probe for d4f2f542248a."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++
++HOME = Path(__file__).resolve().parents[1]
++PROBE = HOME / "workspace/learnability_probe.py"
++
++
++def _load(path: Path):
++    assert path.is_file(), f"missing diagnostic: {path}"
++    name = "_d4_probe_" + hashlib.sha256(str(path).encode()).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_probe_finds_disconnected_pocket_gate_in_produced_window():
++    probe = _load(PROBE)
++    witness = probe.find_witness(
++        seeds=range(1), starts=range(9), difficulties=(None,), demos=3
++    )
++    assert witness is not None
++    assert witness["seed"] == 0
++    assert witness["difficulty"] is None
++    assert witness["demo_indices"] == [5, 6, 7]
++    assert witness["query_index"] == 8
++    assert witness["rival"] == "skip_when_disconnected_pockets_exist"
++    assert witness["demo_profiles"] == [
++        "dead_end_contrast", "public_3", "many_paths_few_gates"
++    ]
++    assert witness["query_profile"] == "disconnected_pockets"
++    assert witness["demo_unreachable_open"] == [0, 0, 0]
++    assert witness["query_unreachable_open"] > 0
++    assert all(witness["rival_demo_matches"])
++    assert witness["rival_query_matches"] is False
+diff --git a/repo/generators/d4f2f542248a/workspace/learnability_probe.py b/repo/generators/d4f2f542248a/workspace/learnability_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/d4f2f542248a/workspace/learnability_probe.py
+@@ -0,0 +1,234 @@
++"""Find and Racket-bind a produced-domain teaching shortcut for d4f2f542248a."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++TASK = "d4f2f542248a"
++HOME = Path(__file__).resolve().parents[1]
++ROOT = Path(__file__).resolve().parents[3]
++
++
++def _load_generator():
++    path = HOME / "generator.py"
++    name = "_d4f2f542248a_probe_generator_" + hashlib.sha256(str(path).encode()).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load generator from {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++GENERATOR = _load_generator()
++
++
++def _digest(value) -> str:
++    if not isinstance(value, (bytes, bytearray)):
++        value = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
++    return hashlib.sha256(value).hexdigest()
++
++
++def skip_when_disconnected_pockets_exist(grid):
++    """Plausible shortcut: apply the path rule only when all open cells connect."""
++    facts = GENERATOR._path_facts(grid)
++    if not facts.get("connected") or facts["unreachable_open"]:
++        return [list(row) for row in grid]
++    return GENERATOR.rule_mirror(grid)
++
++
++RIVALS = {"skip_when_disconnected_pockets_exist": skip_when_disconnected_pockets_exist}
++
++
++def find_witness(*, seeds, starts, difficulties=(None, "easy", "medium", "hard"), demos=3):
++    """Return the first consecutive produced lesson fitting a declared rival."""
++    if type(demos) is not int or demos < 1:
++        raise ValueError("demos must be a positive exact integer")
++    starts = tuple(starts)
++    for start in starts:
++        if type(start) is not int or start < 0:
++            raise ValueError("starts must contain nonnegative exact integers")
++    for difficulty in difficulties:
++        for seed in seeds:
++            if type(seed) is not int:
++                raise ValueError("seeds must contain exact integers")
++            cache = {}
++            for start in starts:
++                grids = []
++                for index in range(start, start + demos + 1):
++                    if index not in cache:
++                        cache[index] = GENERATOR.generate(seed, index, difficulty=difficulty)
++                    grids.append(cache[index])
++                intended = [GENERATOR.rule_mirror(grid) for grid in grids]
++                analyses = [GENERATOR._analysis(grid) for grid in grids]
++                for name, rival in RIVALS.items():
++                    rival_outputs = [rival(grid) for grid in grids]
++                    demo_matches = [
++                        rival_outputs[index] == intended[index]
++                        for index in range(demos)
++                    ]
++                    query_matches = rival_outputs[demos] == intended[demos]
++                    if all(demo_matches) and not query_matches:
++                        return {
++                            "task_id": TASK,
++                            "seed": seed,
++                            "difficulty": difficulty,
++                            "demo_indices": list(range(start, start + demos)),
++                            "query_index": start + demos,
++                            "rival": name,
++                            "demo_profiles": [
++                                item["scene_profile"] for item in analyses[:demos]
++                            ],
++                            "query_profile": analyses[demos]["scene_profile"],
++                            "demo_unreachable_open": [
++                                item["facts"]["unreachable_open"]
++                                for item in analyses[:demos]
++                            ],
++                            "query_unreachable_open": analyses[demos]["facts"]["unreachable_open"],
++                            "rival_demo_matches": demo_matches,
++                            "rival_query_matches": query_matches,
++                        }
++    return None
++
++
++def _canonical_program() -> str:
++    programs = set()
++    path = ROOT / "shared/data/canonical/puzzles.jsonl"
++    with path.open() as handle:
++        for line in handle:
++            row = json.loads(line)
++            if row.get("task_id") == TASK:
++                programs.add(row["program_solution"])
++    if len(programs) != 1:
++        raise ValueError(f"expected one canonical program for {TASK}, found {len(programs)}")
++    return programs.pop()
++
++
++def _execute(bridge, source, grid):
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    literal = "'(" + " ".join(
++        "(" + " ".join(map(str, row)) + ")" for row in grid
++    ) + ")"
++    result = bridge.eval_text(f"({wrap_rule(source)} {literal})")
++    if not isinstance(result, list) or not result or any(not isinstance(row, list) for row in result):
++        raise ValueError("Racket did not return a nonempty grid")
++    return result
++
++
++def materialize(witness, bridge):
++    """Rebuild the selected window and bind intended labels to canonical Racket."""
++    if witness is None:
++        raise ValueError("cannot materialize a missing witness")
++    indices = [*witness["demo_indices"], witness["query_index"]]
++    grids = [
++        GENERATOR.generate(witness["seed"], index, difficulty=witness["difficulty"])
++        for index in indices
++    ]
++    source = _canonical_program()
++    intended = [_execute(bridge, source, grid) for grid in grids]
++    mirror = [GENERATOR.rule_mirror(grid) for grid in grids]
++    if intended != mirror:
++        raise ValueError("path-count mirror differs from canonical Racket")
++    rival = RIVALS[witness["rival"]]
++    rival_outputs = [rival(grid) for grid in grids]
++    demos = len(witness["demo_indices"])
++    if not all(rival_outputs[index] == intended[index] for index in range(demos)):
++        raise ValueError("rival no longer fits every visible demonstration")
++    if rival_outputs[demos] == intended[demos]:
++        raise ValueError("rival no longer differs on the held-out query")
++    return {
++        "schema": "arcpuzzles-peer-learnability-probe-v1",
++        "status": "finding",
++        **witness,
++        "canonical_program_sha256": _digest(source.encode()),
++        "generator_sha256": _digest((HOME / "generator.py").read_bytes()),
++        "probe_sha256": _digest(Path(__file__).read_bytes()),
++        "racket": {
++            key: bridge.runtime_identity[key]
++            for key in ("backend", "protected", "binary_sha256", "prelude_sha256", "bridge_sha256")
++            if key in bridge.runtime_identity
++        },
++        "pairs": [
++            {
++                "role": "demo" if index < demos else "query",
++                "sample_index": indices[index],
++                "scene_profile": GENERATOR._analysis(grids[index])["scene_profile"],
++                "input": grids[index],
++                "intended_output": intended[index],
++                "rival_output": rival_outputs[index],
++                "matches": intended[index] == rival_outputs[index],
++            }
++            for index in range(len(grids))
++        ],
++        "finding": (
++            "The three consecutive visible demonstrations contain no disconnected open "
++            "pocket, so the executable rule 'return the input unchanged whenever a pocket "
++            "exists' fits every label; the next produced disconnected-pockets query still "
++            "requires marking unavoidable shortest-path cells and separates the rules."
++        ),
++        "suggested_repair": (
++            "Construct or schedule the demonstrations so a disconnected-pockets example "
++            "is visible before a disconnected-pockets query, without increasing the demo count."
++        ),
++        "limits": (
++            "First witness in the requested finite seed/start/difficulty bounds; this does not "
++            "measure ambiguity frequency or prove other rival classes absent."
++        ),
++    }
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--max-seeds", type=int, default=16)
++    parser.add_argument("--max-starts", type=int, default=32)
++    parser.add_argument("--demos", type=int, default=3)
++    args = parser.parse_args(argv)
++    if args.out.exists():
++        raise FileExistsError(args.out)
++    witness = find_witness(
++        seeds=range(args.max_seeds),
++        starts=range(args.max_starts),
++        demos=args.demos,
++    )
++    if witness is None:
++        result = {
++            "schema": "arcpuzzles-peer-learnability-probe-v1",
++            "status": "no_witness_within_bounds",
++            "task_id": TASK,
++            "bounds": {
++                "max_seeds": args.max_seeds,
++                "max_starts": args.max_starts,
++                "demos": args.demos,
++            },
++            "rivals": sorted(RIVALS),
++        }
++    else:
++        from arc_repl.racket_bridge import RacketBridge
++        with RacketBridge() as bridge:
++            result = materialize(witness, bridge)
++        result["bounds"] = {
++            "max_seeds": args.max_seeds,
++            "max_starts": args.max_starts,
++            "demos": args.demos,
++        }
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    print(json.dumps({
++        "status": result["status"],
++        "task_id": TASK,
++        "rival": result.get("rival"),
++        "seed": result.get("seed"),
++        "demo_indices": result.get("demo_indices"),
++        "query_index": result.get("query_index"),
++        "out": str(args.out),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

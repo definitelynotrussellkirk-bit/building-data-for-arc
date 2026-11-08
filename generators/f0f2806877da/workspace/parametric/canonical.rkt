@@ -1,0 +1,52 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((is-gap (lambda (c) (and (zero? (at g 0 c)) (zero? (at g 1 c)))))
+                  (pieces-starts (filter (lambda (c)
+                                           (and
+                                             (not (is-gap c))
+                                             (or (zero? c) (is-gap (- c 1)))))
+                                         (range 0 w)))
+                  (pieces-ends (filter (lambda (c)
+                                         (and
+                                           (not (is-gap c))
+                                           (or (= c (- w 1)) (is-gap (+ c 1)))))
+                                       (range 0 w)))
+                  (pieces (map (lambda (i)
+                                 (list (nth pieces-starts i) (nth pieces-ends i)))
+                               (range 0 (length pieces-starts))))
+                  (piece-type (lambda (p)
+                                (let ((s (first p))
+                                      (e (second p)))
+                                  (if (= s e) 0 (if (zero? (at g 0 s)) 1 2)))))
+                  (types (map piece-type pieces))
+                  (trace (reduce (lambda (state t)
+                                   (let ((cells (first state))
+                                         (row (second state))
+                                         (cur (third state)))
+                                     (cond
+                                       ((zero? t) (list (append cells
+                                                       (list (list row cur)
+                                                             (list (+ row 1) cur)))
+                                               (+ row 2)
+                                               cur))
+                                       ((= t 1) (list (append cells
+                                                       (list (list row (- cur 1))
+                                                             (list row cur)))
+                                               (+ row 1)
+                                               (- cur 1)))
+                                       (else (list (append cells
+                                                           (list (list row cur)
+                                                                 (list row (+ cur 1))))
+                                                   (+ row 1)
+                                                   (+ cur 1))))))
+                                 (list (list) 1 3)
+                                 types))
+                  (all-cells (first trace)))
+             (build-grid 8
+                         7
+                         (r c)
+                         (cond
+                           ((and (zero? r) (= c 3)) 3)
+                           ((member? (list r c) all-cells) 2)
+                           (else 0)))))))

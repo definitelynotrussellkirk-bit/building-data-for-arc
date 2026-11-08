@@ -1,0 +1,48 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g))
+                (block-cells (flatmap (lambda (r)
+                                        (filter (lambda (p)
+                                                  (!= (at g (first p) (snd p)) 0))
+                                                (map (lambda (kc) (list r kc))
+                                                     (range 0 w))))
+                                      (range 0 h)))
+                (ctr-r (/ (+ 0.0
+                             (+ (min-of first block-cells) (max-of first block-cells)))
+                          2.0))
+                (ctr-c (/ (+ 0.0 (+ (min-of snd block-cells) (max-of snd block-cells)))
+                          2.0))
+                (main-color (find (lambda (c) (and (!= c 0) (!= c 2))) (grid-colors g)))
+                (red-cells (filter (lambda (p) (= (at g (first p) (snd p)) 2))
+                                   block-cells))
+                (all-dirs (list (list -1 -1) (list -1 1) (list 1 -1) (list 1 1)))
+                (active-dirs (filter (lambda (dir)
+                                       (any? (lambda (p)
+                                               (and
+                                                 (= (if (< (first p) ctr-r) -1 1)
+                                                    (first dir))
+                                                 (= (if (< (snd p) ctr-c) -1 1)
+                                                    (snd dir))))
+                                             red-cells))
+                                     all-dirs))
+                (g0 (recolor-cells g block-cells main-color))
+                (result (reduce (lambda (acc cell)
+                                  (reduce (lambda (g2 dir)
+                                            (reduce (lambda (g3 k)
+                                                      (let* ((nr (+ (first cell)
+                                                                    (* k (first dir))))
+                                                             (nc (+ (snd cell)
+                                                                    (* k (snd dir)))))
+                                                        (if (in-bounds? nr nc h w)
+                                                            (set-cell g3
+                                                                      nr
+                                                                      nc
+                                                                      main-color)
+                                                            g3)))
+                                                    g2
+                                                    (range 1 (max h w))))
+                                          acc
+                                          active-dirs))
+                                g0
+                                block-cells)))
+           result)))

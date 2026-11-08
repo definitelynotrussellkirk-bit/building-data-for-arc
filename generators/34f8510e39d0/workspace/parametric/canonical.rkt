@@ -1,0 +1,22 @@
+(rule!
+  (reduce (lambda (out obj)
+    (if (not (= (obj-color obj) 3)) out
+      ;; Bounding box (r1 c1 r2 c2) of obj
+      (let* ((bb (obj-bbox obj))
+             ;; Top edge (row r1)
+             (r0 (first bb))
+             ;; Left edge (col c1)
+             (c0 (second bb))
+             ;; Bottom edge (row r2)
+             (r1 (third bb))
+             ;; Right edge (col c2)
+             (c1 (fourth bb)))
+        (reduce (lambda (acc r)
+          (reduce (lambda (acc2 c)
+            (if (and (= (cell-at g r c) 3)
+                     (or (= r r0) (= r r1) (= c c0) (= c c1)))
+              (set-cell acc2 r c 8)
+              acc2))
+            acc (range c0 (+ c1 1))))
+          out (range r0 (+ r1 1))))))
+    g (objects g 0)))

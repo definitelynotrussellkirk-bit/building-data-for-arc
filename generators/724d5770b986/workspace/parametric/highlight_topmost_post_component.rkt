@@ -1,0 +1,26 @@
+(rule! (lambda (g)
+  (let* ((expanded ((lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((ones (for*/list ((r (range 0 h)) (c (range 0 w)) #:when (= (at g r c) 1))
+                          (list r c))))
+             (for/fold ((out g))
+               ((p ones))
+               (let ((pr (first p))
+                     (pc (second p)))
+                 (for*/fold ((gg out))
+                            ((dr (in-list ' (-1 0 1))) (dc (in-list ' (-1 0 1))))
+                            (let ((r (+ pr dr))
+                                  (c (+ pc dc)))
+                              (cond
+                                ((or (< r 0) (>= r h) (< c 0) (>= c w)) gg)
+                                ((zero? (at g r c)) (set-cell gg r c 1))
+                                (else gg))))))))) g))
+         (blue-components
+          (filter (lambda (obj) (= (obj-color obj) 1)) (objects expanded 0)))
+         (topmost
+          (pick-min blue-components
+                    (lambda (obj)
+                      (+ (* 100 (min-of first (obj-cells obj)))
+                         (min-of second (obj-cells obj)))))))
+    (paint-cells expanded (obj-cells topmost) 8))))

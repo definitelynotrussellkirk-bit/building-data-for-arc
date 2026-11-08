@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((obj (in-list (objects g 0)))) (let* ((bb (obj-bbox obj)) (r0 (first bb)) (c0 (second bb)) (r1 (third bb)) (c1 (fourth bb))) (paint-cells out (list (list r0 c0) (list r0 c1) (list r1 c0) (list r1 c1)) (obj-color obj))))))

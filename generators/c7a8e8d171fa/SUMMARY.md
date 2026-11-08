@@ -1,0 +1,6 @@
+# c7a8e8d171fa
+
+WALL-BG (color 5) grid (h~7-16, w~8-18) with: (a) ONE OPEN CORRIDOR of color-0 cells carved through the wall in one of 6 SHAPES (straight_h / straight_v / rect / L / T / rect_with_branch). The corridor may have non-trivial geometry including dead-end branches; (b) TWO ENDPOINT MARKERS — COLOR 2 (start) at one corridor end; COLOR 3 (goal) at the opposite end. Start and goal are 4-connectable through the open corridor (D = shortest-path distance < ∞). Rule (OUTPUT THE UNION OF ALL SHORTEST PATHS FROM START TO GOAL, IN COLOR 8 ON A FRESH BLANK GRID): RUN BFS from the COLOR-2 START over 4-conn non-5 cells to get d_start[r, c]. RUN BFS from the COLOR-3 GOAL similarly to get d_goal[r, c]. Let D = d_start[goal] (the shortest-path distance). For EACH cell (r, c): IF d_start[r, c] + d_goal[r, c] == D, it lies on SOME shortest path → PAINT it COLOR 8 (cyan) in the output. ELSE: output is bg-0. The walls, original start/goal colors, and dead-end branches off the shortest path are DROPPED. Net: the union of all shortest paths from start to goal appears as a cyan blob on a blank grid.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

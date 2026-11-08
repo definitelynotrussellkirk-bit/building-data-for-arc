@@ -1,0 +1,140 @@
+(rule!
+ ;; The grid is a MACRO board: bands of rows/cols that contain a run of
+ ;; exactly 3 equal nonzero cells are macro cells (value = modal color).
+ ;; Full uniform non-0/non-4 lines between bands split the board into
+ ;; PANELS. Inside a panel, an all-yellow(4) gap strip is a mirror mark:
+ ;; swap the macro columns (or rows) on its two sides pairwise. Panels
+ ;; with no mark and exactly one color besides 0/1 replace their 1s with
+ ;; that color. Paint the new macro values back into the bands.
+ (lambda (g)
+   (let ()
+     (define (has-run3? vals)
+       ;; any maximal run of equal nonzero values of length exactly 3?
+       (let loop ((xs vals) (cur 0) (n 0))
+         (cond ((empty? xs) (and (> cur 0) (= n 3)))
+               ((= (first xs) cur) (loop (rest xs) cur (+ n 1)))
+               (else (or (and (> cur 0) (= n 3))
+                         (if (zero? (first xs))
+                             (loop (rest xs) 0 0)
+                             (loop (rest xs) (first xs) 1)))))))
+     (define (intervals flags)  ;; maximal #t runs -> ((start end) ...)
+       (let loop ((i 0) (xs flags) (start #f) (acc (list)))
+         (cond ((empty? xs)
+                (reverse (if start (cons (list start (- i 1)) acc) acc)))
+               ((first xs) (loop (+ i 1) (rest xs) (or start i) acc))
+               (else (loop (+ i 1) (rest xs) #f
+                           (if start
+                               (cons (list start (- i 1)) acc)
+                               acc))))))
+     (define ris
+       (intervals (for/list ((r (range 0 h))) (has-run3? (row g r)))))
+     (define cis
+       (intervals (for/list ((c (range 0 w))) (has-run3? (col g c)))))
+     (define R (length ris))
+     (define C (length cis))
+     (define (band lst k) (list-ref lst k))
+     (define (span iv) (range (first iv) (+ (second iv) 1)))
+     (define macro
+       (build-grid R C (i j)
+                   (let ((vals (for*/list ((r (span (band ris i)))
+                                           (c (span (band cis j)))
+                                           #:when (> (at g r c) 0))
+                                 (at g r c))))
+                     (if (empty? vals) 0 (mode-list vals)))))
+     (define (separator? uniform? head)  ;; full non-0/non-4 line
+       (and uniform? (> head 0) (not (= head 4))))
+     (define (cut-rows k)  ;; a separator row in the gap after band k?
+       (for/or ((r (range (+ (second (band ris k)) 1)
+                          (first (band ris (+ k 1))))))
+         (separator? (row-uniform? g r) (at g r 0))))
+     (define (cut-cols k)
+       (for/or ((c (range (+ (second (band cis k)) 1)
+                          (first (band cis (+ k 1))))))
+         (separator? (col-uniform? g c) (at g 0 c))))
+     (define (groups n cuts)  ;; split 0..n-1 at the cut indices
+       (let loop ((rem cuts) (start 0) (acc (list)))
+         (if (empty? rem)
+             (reverse (cons (list start (- n 1)) acc))
+             (loop (rest rem) (+ (first rem) 1)
+                   (cons (list start (first rem)) acc)))))
+     (define row-groups (groups R (filter cut-rows (range 0 (- R 1)))))
+     (define col-groups (groups C (filter cut-cols (range 0 (- C 1)))))
+     (define (all-4? cells)
+       (and (not (empty? cells))
+            (all? (lambda (p) (= (at g (first p) (second p)) 4)) cells)))
+     (define (v-mark? rg j)  ;; yellow strip in the col gap after band j
+       (let ((cstart (+ (second (band cis j)) 1))
+             (cend (- (first (band cis (+ j 1))) 1)))
+         (and (<= cstart cend)
+              (all-4? (positions-in-rect (first (band ris (first rg)))
+                                         cstart
+                                         (second (band ris (second rg)))
+                                         cend)))))
+     (define (h-mark? cg i)
+       (let ((rstart (+ (second (band ris i)) 1))
+             (rend (- (first (band ris (+ i 1))) 1)))
+         (and (<= rstart rend)
+              (all-4? (positions-in-rect rstart
+                                         (first (band cis (first cg)))
+                                         rend
+                                         (second (band cis (second cg))))))))
+     (define (swap-cols acc rg cg j)  ;; pairwise across the mark (from macro)
+       (let ((lefts (range (first cg) (+ j 1)))
+             (rights (range (+ j 1) (+ (second cg) 1))))
+         (if (not (= (length lefts) (length rights)))
+             acc
+             (for*/fold ((mm acc)) ((i (range (first rg)
+                                              (+ (second rg) 1)))
+                                    (pair (zip-lists lefts (reverse rights))))
+               (let ((a (first pair)) (b (second pair)))
+                 (set-cell (set-cell mm i a (at macro i b))
+                           i b (at macro i a)))))))
+     (define (swap-rows acc rg cg i)
+       (let ((tops (range (first rg) (+ i 1)))
+             (bots (range (+ i 1) (+ (second rg) 1))))
+         (if (not (= (length tops) (length bots)))
+             acc
+             (for*/fold ((mm acc)) ((pair (zip-lists tops (reverse bots)))
+                                    (j (range (first cg)
+                                              (+ (second cg) 1))))
+               (let ((a (first pair)) (b (second pair)))
+                 (set-cell (set-cell mm a j (at macro b j))
+                           b j (at macro a j)))))))
+     (define (fill-panel acc rg cg)  ;; lone non-0/1 color claims the 1s
+       (let ((non1 (remove-duplicates
+                    (for*/list ((i (range (first rg) (+ (second rg) 1)))
+                                (j (range (first cg) (+ (second cg) 1)))
+                                #:when (and (> (at macro i j) 0)
+                                            (not (= (at macro i j) 1))))
+                      (at macro i j)))))
+         (if (= (length non1) 1)
+             (for*/fold ((mm acc)) ((i (range (first rg)
+                                              (+ (second rg) 1)))
+                                    (j (range (first cg)
+                                              (+ (second cg) 1))))
+               (if (= (at macro i j) 1)
+                   (set-cell mm i j (first non1))
+                   mm))
+             acc)))
+     (define new-macro
+       (for*/fold ((acc macro)) ((rg row-groups) (cg col-groups))
+         (let* ((vjs (filter (lambda (j) (v-mark? rg j))
+                             (range (first cg) (second cg))))
+                (his (filter (lambda (i) (h-mark? cg i))
+                             (range (first rg) (second rg))))
+                (swapped (for/fold ((mm (for/fold ((m0 acc)) ((j vjs))
+                                          (swap-cols m0 rg cg j))))
+                                   ((i his))
+                           (swap-rows mm rg cg i))))
+           (if (or (not (empty? vjs)) (not (empty? his)))
+               swapped
+               (fill-panel acc rg cg)))))
+     (define (index-in ints x)
+       (let loop ((idx 0) (xs ints))
+         (cond ((empty? xs) #f)
+               ((and (>= x (first (first xs))) (<= x (second (first xs))))
+                idx)
+               (else (loop (+ idx 1) (rest xs))))))
+     (cellmap g (r c v)
+              (let ((ri (index-in ris r)) (ci (index-in cis c)))
+                (if (and ri ci) (at new-macro ri ci) v))))))

@@ -1,0 +1,6 @@
+# e6cf1120a17d
+
+BG-colored grid (h ∈ 7-28, w ∈ 7-28, by difficulty) painted uniformly with one bg color fixed to 0, containing: (a) ONE SOLID RECTANGLE of size rh × rw (rh ∈ 5..h-3, rw ∈ 5..w-3, both ≥5) at random interior position (rr, rc) with ≥1-cell margin from all grid edges, painted in rect_color (distinct from 0). (b) AT THE RECTANGLE'S FOUR INSIDE-CORNER CELLS — (rr+1, rc+1), (rr+1, rc+rw-2), (rr+rh-2, rc+1), (rr+rh-2, rc+rw-2) — paint 4 DISTINCT non-{0, rect_color} colors drawn from {0..9}. Rule (CLEAR THE FOUR INSIDE CORNERS (SET TO RECT_COLOR) AND PLACE THE 4 CORNER COLORS AT THE FOUR DIAGONALLY-OPPOSITE OUTSIDE CORNERS OF THE RECTANGLE): IDENTIFY the rectangle (solid rect_color region) and its 4 inside-corner cells with their distinct colors c0, c1, c2, c3 (TL, TR, BL, BR of inside). REPAINT the 4 inside corner cells with rect_color (restoring the solid rect). PAINT the 4 OUTSIDE-CORNER cells of the rectangle: (rr-1, rc-1)=c3 (diagonally opposite TL→BR-corner), (rr-1, rc+rw)=c2 (TR→BL), (rr+rh, rc-1)=c1 (BL→TR), (rr+rh, rc+rw)=c0 (BR→TL). Net: inside colors jump to the diagonally-opposite outside corners; the rectangle becomes solid.
+
+Kind: `per_puzzle`. Imported version: `3.1.0`.
+Approval is derived by the catalog from current code and retained evidence.

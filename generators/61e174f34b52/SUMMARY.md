@@ -1,0 +1,6 @@
+# 61e174f34b52
+
+BACKGROUND-colored square grid (side ∈ 13-18) painted uniformly in one bg_color drawn from {1, 3, 4, 8, 9}, with: ONE 11×11 PATCH WINDOW drawn from _PATCHES bank (2 fixed variants of 11×11 multicolor patches each containing a 5-wide ORANGE-7 VERTICAL BAND in the middle and diverse noise around it), pasted at a random interior position (top, left ∈ 1..size-12). The orange band marks the 'damaged' rectangle that needs repair. Rule (INPAINT THE ORANGE-7 DAMAGED BAND USING THE LOCAL TEXTURE TABLE FROM THE SURROUNDING NON-ORANGE CELLS): LOCATE the orange-7 damage band in the 11×11 patch. For EACH orange cell (r, c): LOOK UP its canonical replacement color from a local table derived from the surrounding non-orange texture (e.g., periodic pattern continuation or row/col extrapolation). REPLACE the orange with the inferred color. Surrounding bg and non-damaged patch cells stay. Net: the orange damage band is filled in with values that continue the local texture pattern. Flagged intrinsic-low (uniq_out=2): rule's output converges to canonical inpainted patches × few variants.
+
+Kind: `per_puzzle`. Imported version: `3.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

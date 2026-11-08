@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (grid-from-fn (rows g) (cols g) (lambda (r c) (let* ((vals (filter (lambda (rr) (not (= (at g rr c) 0))) (range (rows g)))) (start (- (rows g) (length vals)))) (if (< r start) 0 (at g (list-ref vals (- r start)) c)))))))

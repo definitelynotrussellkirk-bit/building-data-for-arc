@@ -1,0 +1,23 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((hh (rows g))
+                  (ww (cols g))
+                  (bg (mode g -1))
+                  (result (make-hash)))
+             (for* ((r (range 0 hh)) (c (range 0 ww)))
+                   (hash-set! result (list r c) (at g r c)))
+             (for ((c (range 0 ww)))
+               (when
+                 (and (!= (at g 0 c) bg) (or (< hh 2) (!= (at g 0 c) (at g 1 c))))
+                 (let ((marker (at g 0 c)))
+                   (for ((r (range 1 hh)))
+                     (let ((cell (hash-ref result (list r c) 0)))
+                       (cond
+                         ((= cell marker)
+                          (hash-set! result (list r c) bg))
+                         ((= cell bg)
+                          (hash-set! result (list r c) marker))
+                         (else
+                          (hash-set! result (list r c) cell))))))))
+             (build-grid hh ww (r c) (hash-ref result (list r c) 0))))))

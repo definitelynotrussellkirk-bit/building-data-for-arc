@@ -1,0 +1,1 @@
+(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (let* ((pat (crop-to-content g)) (ph (rows pat)) (pw (cols pat))) (build-grid (* ph ph) (* pw pw) (r c) (let ((br (/ r ph)) (bc (/ c pw)) (pr (mod r ph)) (pc (mod c pw))) (if (!= 0 (at pat br bc)) (if (!= 0 (at pat pr pc)) (at pat br bc) 0) 0)))))))

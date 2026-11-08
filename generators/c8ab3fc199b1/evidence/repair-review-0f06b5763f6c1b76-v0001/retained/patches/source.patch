@@ -1,0 +1,1130 @@
+diff --git a/repo/generators/c8ab3fc199b1/generator.py b/repo/generators/c8ab3fc199b1/generator.py
+--- a/repo/generators/c8ab3fc199b1/generator.py
++++ b/repo/generators/c8ab3fc199b1/generator.py
+@@ -1,112 +1,195 @@
+-"""Generator for arc_puzzle_bank_21_set10_e:medium_j13 — Hstack body crops at row 0 marker positions.
++"""Source-preserving generator for top-marker / bottom-docked crop puzzles.
+ 
+-Rule: row 0 has marker colors at various columns. For each marker, find
+-body object of that color; place its bbox crop at marker's column,
+-bottom-aligned.
+-
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, n_markers,
+-palette_size, position_bias, n_distinct_colors, density, texture.
+-Degenerates: no_markers, marker_without_body, body_without_marker.
++Every top marker has exactly one same-color 4-connected component in the
++remaining rows. The selected Racket rule crops each component to its bbox and
++bottom-aligns that crop at the marker's column. Shapes, source locations,
++marker docks, area, height, colors, and object count are varied independently.
++Unmarked body colors can also appear as distractors.
+ """
+ from __future__ import annotations
+ 
+ from puzzle_generators.base import gen_ctx
+-from puzzle_generators.helpers.grid import full_grid, paint_at
++from puzzle_generators.helpers.grid import full_grid
+ 
+-GENERATOR_ID = "c8ab3fc199b1"
+-VERSION = "1.1.1"
+-TASK_ID = "c8ab3fc199b1"
+-SUMMARY = "Row 0 has 3 marker cells at varied cols + 3 body blobs of matching colors."
+-
++GENERATOR_ID = TASK_ID = 'c8ab3fc199b1'
++VERSION = '1.2.0'
++SUMMARY = 'Variable same-colored blobs docked beneath matching top-row marker cells.'
+ INVARIANTS = [
+-    "row 0 has 3 non-zero markers at distinct cols",
+-    "body has 3 non-touching blobs each of a distinct marker color",
++    'Row zero has 2..4 distinct nonzero marker colors.',
++    'Each marker color occurs in exactly one 4-connected body component.',
++    'Every selected crop fits in its marker column without output overlap.',
++    'Body object shapes, marker columns and color associations vary by draw.',
+ ]
+-
+-PALETTE_KINDS = ("default", "warm", "cool", "varied")
+-DEGENERATE_TEXTURES = ("no_markers", "marker_without_body", "body_without_marker")
+-HELPFUL_TEXTURES = PALETTE_KINDS
+-
++PALETTE_KINDS = ('default', 'warm', 'cool', 'varied')
++DEGENERATE_TEXTURES = ('no_markers', 'marker_without_body', 'body_without_marker')
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 7..9", "valid": "6..14"},
+-    "grid_w":         {"type": "int", "default": "rng 12..14", "valid": "10..16"},
+-    "palette_kind":   {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(PALETTE_KINDS)},
+-    "n_markers":      {"type": "int", "default": "3", "valid": "2..4"},
+-    "palette_size":   {"type": "int", "default": "3", "valid": "2..4"},
+-    "position_bias":  {"type": "str", "default": "row0_markers_with_body_blobs",
+-                       "valid": "row0_markers_with_body_blobs"},
+-    "n_distinct_colors": {"type": "int", "default": "3", "valid": "2..4"},
+-    "density":        {"type": "str", "default": "sparse", "valid": "sparse"},
+-    "texture":        {"type": "str", "default": "alias for palette_kind",
+-                       "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    'grid_h': {'type': 'int', 'default': 'difficulty-dependent 6..14', 'valid': '6..14'},
++    'grid_w': {'type': 'int', 'default': 'difficulty-dependent 10..16', 'valid': '10..16'},
++    'n_markers': {'type': 'int', 'default': 'rng 2..4, centered on 3', 'valid': '2..4'},
++    'n_distinct_colors': {'type': 'int', 'default': 'equals n_markers', 'valid': '2..4'},
++    'palette_size': {'type': 'int', 'default': 'equals n_markers', 'valid': '2..4'},
++    'palette_kind': {'type': 'str', 'default': 'rng palette_kind',
++                     'valid': '|'.join(PALETTE_KINDS)},
++    'position_bias': {'type': 'str', 'default': 'separated_docks_permuted_sources',
++                      'valid': 'separated_docks_permuted_sources'},
++    'density': {'type': 'str', 'default': 'sparse', 'valid': 'sparse|medium'},
++    'texture': {'type': 'str', 'default': 'alias for palette_kind',
++                'valid': '|'.join(PALETTE_KINDS + DEGENERATE_TEXTURES)},
+ }
+ 
+ 
++def _polyomino(height, width, target, rng):
++    cells = {(r, 0) for r in range(height)} | {(0, c) for c in range(width)}
++    while len(cells) < target:
++        rim = {(r + dr, c + dc) for r, c in cells
++               for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1))
++               if 0 <= r + dr < height and 0 <= c + dc < width
++               and (r + dr, c + dc) not in cells}
++        cells.add(rng.choice(sorted(rim)))
++    if rng.randrange(2):
++        cells = {(height - 1 - r, c) for r, c in cells}
++    if rng.randrange(2):
++        cells = {(r, width - 1 - c) for r, c in cells}
++    return sorted(cells)
++
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], None)
+-    if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 7, 8)
+-        w = ctx.draw_int("grid_w", 12, 13)
+-    elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 8, 9)
+-        w = ctx.draw_int("grid_w", 13, 14)
++    ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION,
++                  task_id=TASK_ID, difficulty=difficulty, overrides=overrides)
++    if difficulty == 'easy':
++        h = ctx.draw_int_strict('grid_h', 6, 9)
++        w = ctx.draw_int_strict('grid_w', 10, 13)
++    elif difficulty == 'hard':
++        h = ctx.draw_int_strict('grid_h', 10, 14)
++        w = ctx.draw_int_strict('grid_w', 13, 16)
+     else:
+-        h = ctx.draw_int("grid_h", 7, 9)
+-        w = ctx.draw_int("grid_w", 12, 14)
+-    g = full_grid(h, w, 0)
+-    rng = ctx.draw_rng("layout")
+-    palette = [2, 3, 4, 6, 7, 8]; rng.shuffle(palette)
+-    g[0][1] = palette[0]; g[0][5] = palette[1]; g[0][8] = palette[2]
+-    paint_at(g, 2, 1, [(0, 0), (0, 1), (1, 0)], palette[0])
+-    paint_at(g, 4, 4, [(0, 1), (1, 0), (1, 1), (1, 2)], palette[1])
+-    paint_at(g, 3, 8, [(0, 0), (1, 0), (1, 1)], palette[2])
+-    return g
++        h = ctx.draw_int_strict('grid_h', 6, 14)
++        w = ctx.draw_int_strict('grid_w', 10, 16)
++
++    layout = ctx.draw_rng('layout')
++    declared_count = [overrides[k] for k in
++                      ('n_markers', 'n_distinct_colors', 'palette_size')
++                      if overrides.get(k) is not None]
++    if any(type(v) is not int or not 2 <= v <= 4 for v in declared_count):
++        raise ValueError('Marker/color count overrides must be exact integers 2..4')
++    if len(set(declared_count)) > 1:
++        raise ValueError('n_markers, n_distinct_colors, palette_size must agree')
++    n = declared_count[0] if declared_count else layout.choice([2, 3, 3, 3, 4])
++    # Exact draw bounds make these relational axes reject contradictory overrides.
++    ctx.draw_int_strict('n_markers', n, n)
++    ctx.draw_int_strict('n_distinct_colors', n, n)
++    ctx.draw_int_strict('palette_size', n, n)
++    ctx.draw_choice('position_bias', ('separated_docks_permuted_sources',))
++    density = ctx.draw_choice('density', ('sparse', 'medium'))
++
++    texture_override = overrides.get('texture')
++    if texture_override is not None:
++        if type(texture_override) is not str or texture_override not in (
++                PALETTE_KINDS + DEGENERATE_TEXTURES):
++            raise ValueError('Unrecognized texture override')
++        if texture_override in DEGENERATE_TEXTURES:
++            ctx.draw_choice('texture', (texture_override,))
++            return _draw_from_degenerate(texture_override)
++        if overrides.get('palette_kind') not in (None, texture_override):
++            raise ValueError('texture and palette_kind aliases must agree')
++        palette_kind = ctx.draw_choice('palette_kind', (texture_override,))
++        ctx.draw_choice('texture', (texture_override,))
++    else:
++        palette_kind = ctx.draw_choice('palette_kind', PALETTE_KINDS)
++
++    palette_options = {
++        'default': [2, 3, 4, 6, 7, 8, 9, 5],
++        'warm': [1, 2, 3, 4, 5, 6],
++        'cool': [4, 5, 6, 7, 8, 9],
++        'varied': list(range(1, 10)),
++    }[palette_kind]
++    colors = layout.sample(palette_options, n)
++    grid = full_grid(h, w, 0)
++    starts = [i * w // n for i in range(n)]
++    ends = [(i + 1) * w // n - 1 for i in range(n)]
++    min_section = min(b - a + 1 for a, b in zip(starts, ends))
++    max_w = min(4, min_section)
++    max_h = min(6, h - 2)
++    shapes = []
++    for _ in range(n):
++        sh = layout.randint(2, max_h)
++        sw = layout.randint(1, max_w)
++        area_min = sh + sw - 1
++        frac = layout.uniform(0.45, 0.90) if density == 'sparse' else layout.uniform(0.65, 1.0)
++        area = min(sh * sw, max(area_min, int(sh * sw * frac)))
++        shapes.append((sh, sw, _polyomino(sh, sw, area, layout)))
++    # Source column, dock column, and marker color are independently shuffled.
++    max_crop_width = max(sw for sh, sw, cells in shapes)
++    dock_cols = [layout.randint(a, b - max_crop_width + 1)
++                 for a, b in zip(starts, ends)]
++    for anchor, color in zip(dock_cols, colors):
++        grid[0][anchor] = color
++    strips = list(range(n)); layout.shuffle(strips)
++    order = list(range(n)); layout.shuffle(order)
++    for marker_index, shape_index in enumerate(order):
++        sh, sw, cells = shapes[shape_index]
++        s = strips[marker_index]
++        x = layout.randint(starts[s], ends[s] - sw + 1)
++        y = layout.randint(2, h - sh)
++        for dr, dc in cells:
++            assert grid[y + dr][x + dc] == 0
++            grid[y + dr][x + dc] = colors[marker_index]
++    return grid
+ 
+ 
+-def _draw_from_degenerate(name, rng):
+-    h, w = 8, 13
+-    g = full_grid(h, w, 0)
+-    if name == "no_markers":
+-        # row 0 is empty → no markers, rule has no positions to stamp at
+-        paint_at(g, 2, 1, [(0, 0), (0, 1), (1, 0)], 2)
+-        paint_at(g, 4, 4, [(0, 1), (1, 0), (1, 1), (1, 2)], 3)
+-        return g
+-    if name == "marker_without_body":
+-        # marker color has no body blob → lookup fails for that marker
+-        g[0][1] = 2; g[0][5] = 3; g[0][8] = 7   # 7 has no body
+-        paint_at(g, 2, 1, [(0, 0), (0, 1), (1, 0)], 2)
+-        paint_at(g, 4, 4, [(0, 1), (1, 0), (1, 1), (1, 2)], 3)
+-        return g
+-    if name == "body_without_marker":
+-        # body blob with color not in markers → ignored
+-        g[0][1] = 2; g[0][5] = 3   # only 2 markers
+-        paint_at(g, 2, 1, [(0, 0), (0, 1), (1, 0)], 2)
+-        paint_at(g, 4, 4, [(0, 1), (1, 0), (1, 1), (1, 2)], 3)
+-        paint_at(g, 3, 9, [(0, 0), (1, 0), (1, 1)], 6)  # extra body, no marker
+-        return g
+-    return g
++def _draw_from_degenerate(name):
++    grid = full_grid(8, 13, 0)
++    if name == 'no_markers':
++        grid[2][1] = 2; grid[3][1] = 2
++    elif name == 'marker_without_body':
++        grid[0][1] = 2; grid[0][6] = 5
++        grid[2][1] = 2; grid[3][1] = 2
++    elif name == 'body_without_marker':
++        grid[0][1] = 2; grid[0][6] = 5
++        grid[2][1] = 2; grid[3][1] = 2
++        grid[2][6] = 5; grid[3][6] = 5
++        grid[3][11] = 6; grid[4][11] = 6
++    return grid
+ 
+ 
+-def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Row 0 must have >=2 non-zero marker cells; body (rows 1+) must have matching colors."""
+-    msgs = []
+-    h = len(grid)
+-    w = len(grid[0]) if h else 0
+-    if h < 2:
+-        msgs.append("grid too short (need row 0 and body rows)")
+-        return msgs
+-    markers = {grid[0][c] for c in range(w) if grid[0][c] != 0}
+-    if len(markers) < 2:
+-        msgs.append(f"row 0 has {len(markers)} marker colors (expected >=2)")
+-    # Check body has at least one cell per marker color
+-    body_colors = {grid[r][c] for r in range(1, h) for c in range(w) if grid[r][c] != 0}
+-    missing = markers - body_colors
+-    if missing:
+-        msgs.append(f"body (rows 1+) missing blobs for marker color(s): {sorted(missing)}")
+-    return msgs
++def self_check(grid, *, difficulty=None, meta=None):
++    """Guard the single-component, unique-color, fit and no-collision grammar."""
++    bad = []
++    if (type(grid) is not list or not 2 <= len(grid) <= 30
++            or type(grid[0]) is not list or not 1 <= len(grid[0]) <= 30):
++        return ['invalid grid dimensions']
++    h, w = len(grid), len(grid[0])
++    if any(type(row) is not list or len(row) != w
++           or any(type(v) is not int or not 0 <= v <= 9 for v in row)
++           for row in grid):
++        return ['grid must contain exact ARC integers in rectangular rows']
++    markers = [(c, col) for c, col in enumerate(grid[0]) if col]
++    if not 2 <= len(markers) <= 4 or len({col for _, col in markers}) != len(markers):
++        bad.append('expected 2..4 uniquely-colored top-row markers')
++    crops = []
++    for marker_col, color in markers:
++        cells = {(r, c) for r in range(1, h) for c in range(w) if grid[r][c] == color}
++        if not cells:
++            bad.append(f'body lacks color {color}')
++            continue
++        rem = set(cells); frontier = [next(iter(cells))]
++        while frontier:
++            r, c = frontier.pop()
++            if (r, c) not in rem:
++                continue
++            rem.remove((r, c))
++            frontier.extend((r + dr, c + dc) for dr, dc in
++                            ((-1, 0), (1, 0), (0, -1), (0, 1))
++                            if (r + dr, c + dc) in rem)
++        if rem:
++            bad.append(f'multiple components of color {color}')
++        width = max(c for r, c in cells) - min(c for r, c in cells) + 1
++        if marker_col + width > w:
++            bad.append(f'crop of color {color} extends off right edge')
++        else:
++            crops.append((marker_col, marker_col + width))
++    for i, (start, end) in enumerate(crops):
++        if any(not (end <= a or b <= start) for a, b in crops[i + 1:]):
++            bad.append('docked crops overlap in output')
++            break
++    return bad
+diff --git a/repo/generators/c8ab3fc199b1/notes.md b/repo/generators/c8ab3fc199b1/notes.md
+--- a/repo/generators/c8ab3fc199b1/notes.md
++++ b/repo/generators/c8ab3fc199b1/notes.md
+@@ -1,4 +1,13 @@
+ # Working notes: c8ab3fc199b1
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++**State:** canonical base repaired and native parametric family ready for owner review, not yet approved/admitted. The canonical Racket rule hash remains `4379fff5d025` and the canonical program bytes (`3f09f4c3...`) are unchanged. Base generator `VERSION=1.2.0` now varies positions, colors and object shapes using the actual controls; lawful unmarked objects are distractors and must NOT be treated as malformed canonical inputs.
++
++**Two nearby rule settings:** `matching_color` keeps the canonical marker-to-color docking; `area_queue` first extracts each marker's single four-connected body object and counts **occupied cells**, then assigns crops in descending area to left-to-right marker docks with original dock as tie-break. This deliberately introduces a causal A→intermediate→B dependency beyond an order swap. Adapter, programs, matched-input episode sampler and task-local tests are in `workspace/parametric/`.
++
++**What failed and was changed:** a first 48-seed minimum-2 demonstration trial admitted 96 setting/seed wrong-ranking or marker-position shortcut occurrences. The flaw was lesson structure, not the Racket rule. First two demos now cross occupied-cell ranking, source columns and nonmonotonic marker colors; after repair, a 128-seed-per-setting audit reports **0 rival-fit / query-disagree occurrences** for the finite bank (matched/default, reversed area, height, width, bbox area, source x, marker color, horizontal-row coverage, sparsity, and fixed permutations). The first structural regression test mistakenly rejected valid unmarked distractors; that test, not the generator, was corrected. These observations do NOT establish exhaustive identifiability.
++
++**Evidence:** `workspace/parametric/evidence/manifest.json` (source-bound frozen inventory), `adversarial-128.json`, `focused-checks.json`; `checks/c8ab3fc199b1-tests-final/result.json` (44/44), `checks/c8ab3fc199b1/qualification/` (original labels + protected-Racket preflight), `checks/c8ab3fc199b1/causal/` (3 distinct counterfactual witnesses), and `checks/c8ab3fc199b1/{first-turn,negative-export}.json` (serialized exposure / tamper rejection).
++
++**Boundaries:** Independent demos 2..6, four distinct private queries; large 30×30 body content, including optional distracting components; strict integer-grid/parameter validation. Query order is private and first-turn output remains invariant to changes in future answers or private metadata. Canonical only applies to selected colored body objects; do not tighten around distractors without verifying the Racket reference.
++
++**Next owner action:** inspect the changed generator and native adapter/Racket program, apply the single compact source patch, replay source-bound qualification and causal checks from current owner checkout, approve the base and parametric settings only after the native acceptance gates. No training data has been admitted from this reviewer return. `adversarial_probe.py` is task-local tooling future agents can rerun or expand with new wrong-rule hypotheses.
+diff --git a/repo/generators/c8ab3fc199b1/tests/test_generator_c8ab3fc199b1.py b/repo/generators/c8ab3fc199b1/tests/test_generator_c8ab3fc199b1.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c8ab3fc199b1/tests/test_generator_c8ab3fc199b1.py
+@@ -0,0 +1,165 @@
++"""Focused source, adversarial and protected-label checks for c8ab3fc199b1.
++
++These test only the proposed source; only the owner's native approval can admit it.
++"""
++from __future__ import annotations
++import copy
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++import pytest
++
++_HOME = Path(__file__).resolve().parents[1]
++_PARAM = _HOME / 'workspace' / 'parametric'
++sys.path.insert(0, str(_PARAM))
++sys.path.insert(0, str(_HOME.parents[1] / 'shared' / 'runtime'))
++
++
++def _import(name, path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++base = _import('c8ab_base_under_test', _HOME / 'generator.py')
++param = _import('c8ab_param_under_test', _PARAM / 'prototype.py')
++attack = _import('c8ab_attack_under_test', _PARAM / 'adversarial_probe.py')
++
++
++def _controlled(areas=(11, 7, 9), *, docks=(0, 6, 12)):
++    """Fixed 12x18 / 4x3 bounding boxes, varied occupied-area intermediate."""
++    grid = [[0] * 18 for _ in range(12)]
++    for c, color in zip(docks, (2, 3, 4)):
++        grid[0][c] = color
++    for j, (color, area) in enumerate(zip((2, 3, 4), areas)):
++        cells = {(r, 0) for r in range(4)} | {(0, c) for c in range(3)}
++        for cell in ((1, 1), (1, 2), (2, 1), (2, 2), (3, 1), (3, 2)):
++            if len(cells) < area: cells.add(cell)
++        assert len(cells) == area
++        for r, c in cells:
++            grid[3 + r][1 + j * 6 + c] = color
++    return grid
++
++
++def _eval_racket(prog, grid, bridge):
++    from puzzle_generators.rule_wrap import wrap_rule
++    text = "'(" + ' '.join('(' + ' '.join(map(str, row)) + ')' for row in grid) + ')'
++    return bridge.eval_text(f'({wrap_rule(prog)} {text})')
++
++
++@pytest.mark.parametrize('seed', range(24))
++def test_base_is_diverse_and_legitimate(seed):
++    g = base.generate(seed, 0, difficulty='medium')
++    assert base.self_check(g) == []
++    assert base.generate(seed, 0, difficulty='medium') == g
++    assert 6 <= len(g) <= 14 and 10 <= len(g[0]) <= 16
++    assert 2 <= sum(bool(v) for v in g[0]) <= 4
++
++
++@pytest.mark.parametrize('n', (2, 3, 4))
++def test_base_exact_count_and_size_edges(n):
++    for height,width in ((6, 10), (14, 16)):
++        g = base.generate(307 + n, n, grid_h=height, grid_w=width,
++                          n_markers=n, n_distinct_colors=n, palette_size=n)
++        assert len(g) == height and len(g[0]) == width
++        assert base.self_check(g) == []
++        assert sum(bool(v) for v in g[0]) == n
++
++
++def test_base_invalid_and_bad_overrides():
++    with pytest.raises((ValueError, TypeError)):
++        base.generate(0, 0, n_markers=True)
++    with pytest.raises((ValueError, TypeError)):
++        base.generate(0, 0, palette_size=2, n_markers=3)
++    for name in ('no_markers', 'marker_without_body'):
++        assert base.self_check(base.generate(0,0,texture=name)), name
++    # An unmarked body component is a lawful distractor: the Racket rule
++    # selects only marked colors. Treat it as valid, not a false-positive veto.
++    assert base.self_check(base.generate(0,0,texture='body_without_marker')) == []
++    g = base.generate(9,0)
++    g[0][0] = True
++    assert base.self_check(g)
++
++
++@pytest.mark.parametrize('seed', (0, 17, 23, 83))
++@pytest.mark.parametrize('demos', (2, 3, 6))
++def test_episode_claims_and_matched_inputs(seed,demos):
++    variants = [param.generate(seed, {'dock_mode':mode}, demos, 4)
++                for mode in param.MODES]
++    assert [row['input'] for row in variants[0]['train']] == [
++        row['input'] for row in variants[1]['train']]
++    assert [row['input'] for row in variants[0]['test']] == [
++        row['input'] for row in variants[1]['test']]
++    for mode,episode in zip(param.MODES,variants):
++        assert len(episode['train']) == demos and len(episode['test']) == 4
++        assert episode['program_solution'] == param.program({'dock_mode':mode})
++        unique = [json.dumps(row['input']) for row in episode['train'] + episode['test']]
++        assert len(unique) == len(set(unique))
++        for row in episode['train'] + episode['test']:
++            assert row['output'] == param.transform(row['input'], {'dock_mode':mode})
++    assert any(a['output'] != b['output'] for a,b in
++               zip(variants[0]['train'],variants[1]['train']))
++
++
++def test_crossed_controls_catch_bbox_height_fixed_rank_and_dock_shortcuts():
++    small = _controlled((11,7,9))
++    reverse = _controlled((7,11,9))
++    shifted = _controlled((11,7,9), docks=(1,7,13))
++    a={'dock_mode':'area_queue'}
++    for g in (small,reverse,shifted):
++        recs = param._extract(g)
++        assert [r['height'] for r in recs] == [4,4,4]
++        assert [r['bbox_area'] for r in recs] == [12,12,12]
++    assert [r['area'] for r in param._extract(small)] == [11,7,9]
++    assert [r['area'] for r in param._extract(reverse)] == [7,11,9]
++    assert param.transform(small,a) != param.transform(reverse,a)
++    assert param.transform(small,a) != param.transform(shifted,a)
++    assert param.transform(small,a) != param.transform(small,{'dock_mode':'matching_color'})
++    # Every fitted bbox/height/fixed permutation would miss at least one.
++    for shortcut in ('height','bbox_area','width','matched','reversed'):
++        assert any(attack._ranked(g,shortcut) != param.transform(g,a)
++                   for g in (small,reverse)), shortcut
++
++
++def test_tie_breaker_and_type_rejections():
++    grid = _controlled((9,9,7))
++    records = param._extract(grid)
++    assert records[0]['area'] == records[1]['area'] == 9
++    target = param.transform(grid, {'dock_mode':'area_queue'})
++    # 2 and 3 stay left-to-right in equal-area tie; the smaller 4 stays last.
++    assert target[0][0] == 2 and target[0][6] == 3
++    for invalid in ({}, {'dock_mode':'other'}, {'dock_mode':False},
++                    {'dock_mode':'area_queue','private_answer':1}):
++        with pytest.raises(ValueError): param.program(invalid)
++    with pytest.raises((TypeError,ValueError)): param.generate(True, {'dock_mode':'area_queue'},2,4)
++    with pytest.raises((TypeError,ValueError)): param.generate(1, {'dock_mode':'area_queue'},1,4)
++    with pytest.raises((TypeError,ValueError)): param.generate(1, {'dock_mode':'area_queue'},2,5)
++    malformed=copy.deepcopy(grid);malformed[2][0]=True
++    with pytest.raises(ValueError): param.transform(malformed, {'dock_mode':'area_queue'})
++    malformed=copy.deepcopy(grid);malformed[2].append(0)
++    with pytest.raises(ValueError): param._extract(malformed)
++    malformed=copy.deepcopy(grid);malformed[0][1]=2
++    with pytest.raises(ValueError): param._extract(malformed)
++
++
++def test_minimum_lesson_defeats_finite_rivals():
++    report=attack.audit_seeds(list(range(48)), demos=2)
++    assert all(s['underidentified_rival_seed_pairs']==0 for s in report['settings'].values())
++
++
++def test_protected_racket_parity_on_cross_controls_and_large_queries():
++    from arc_repl.racket_bridge import RacketBridge
++    with_racket = RacketBridge()
++    try:
++        scenes = [_controlled((11,7,9)), _controlled((7,11,9))]
++        episode=param.generate(17,{'dock_mode':'area_queue'},2,4)
++        scenes += [episode['test'][i]['input'] for i in range(4)]
++        for mode in param.MODES:
++            settings={'dock_mode':mode}
++            for scene in scenes:
++                assert _eval_racket(param.program(settings),scene,with_racket) == param.transform(scene, settings)
++    finally:
++        with_racket.close()
+diff --git a/repo/generators/c8ab3fc199b1/workspace/parametric/adapter.py b/repo/generators/c8ab3fc199b1/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c8ab3fc199b1/workspace/parametric/adapter.py
+@@ -0,0 +1,22 @@
++"""Exact local adapter for matched-color versus occupied-area-queue docking."""
++from __future__ import annotations
++import hashlib
++import importlib.util
++from pathlib import Path
++
++_SOURCE = Path(__file__).with_name('prototype.py')
++_SPEC = importlib.util.spec_from_file_location(
++    '_c8ab_docking_' + hashlib.sha256(str(_SOURCE).encode()).hexdigest()[:12],
++    _SOURCE)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(_SOURCE)
++_ENGINE = importlib.util.module_from_spec(_SPEC)
++_SPEC.loader.exec_module(_ENGINE)
++
++
++def program(settings):
++    return _ENGINE.program(settings)
++
++
++def generate(seed, settings, demos, queries):
++    return _ENGINE.generate(seed, settings, demos, queries)
+diff --git a/repo/generators/c8ab3fc199b1/workspace/parametric/adversarial_probe.py b/repo/generators/c8ab3fc199b1/workspace/parametric/adversarial_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c8ab3fc199b1/workspace/parametric/adversarial_probe.py
+@@ -0,0 +1,117 @@
++"""Bounded adversarial checks against plausible feature and location shortcuts.
++
++Run locally with `python .../adversarial_probe.py --out .../evidence/attacks.json`.
++The JSON is private authoring evidence (contains exact labeled counterexamples).
++"""
++from __future__ import annotations
++import argparse
++import json
++from pathlib import Path
++import copy
++from itertools import permutations
++import prototype as p
++
++
++def _ranked(grid, metric):
++    recs = p._extract(grid)
++    if metric == 'matched':
++        ranked = recs
++    elif metric == 'reversed':
++        ranked = list(reversed(recs))
++    elif metric.startswith('fixed:'):
++        order = [int(x) for x in metric[6:]]
++        if len(order) != len(recs):
++            ranked = recs  # A fixed-length shortcut defaults to no reassignment.
++        else:
++            ranked = [recs[i] for i in order]
++    else:
++        def score(rec):
++            if metric == 'height': return rec['height']
++            if metric == 'width': return rec['width']
++            if metric == 'bbox_area': return rec['bbox_area']
++            if metric == 'color': return rec['color']
++            if metric == 'negative_color': return -rec['color']
++            if metric == 'source_col':
++                return -min(c for r, row in enumerate(grid[1:], 1)
++                            for c, v in enumerate(row) if v == rec['color'])
++            if metric == 'horizontal':
++                return sum(1 for row in rec['crop'] if rec['color'] in row)
++            if metric == 'sparsity':
++                return rec['bbox_area'] - rec['area']
++            if metric == 'area_reversed': return -rec['area']
++            raise ValueError(metric)
++        ranked = sorted(recs, key=lambda r: (-score(r), r['marker']))
++    slots = [rec['marker'] for rec in recs]
++    h=max(x['height'] for x in recs); w=len(grid[0]); out=[[0]*w for _ in range(h)]
++    for rec,anchor in zip(ranked, slots):
++        top=h-rec['height']
++        if anchor+rec['width']>w: return None
++        for dy,row in enumerate(rec['crop']):
++            for dx,v in enumerate(row):
++                if v:
++                    if out[top+dy][anchor+dx]: return None
++                    out[top+dy][anchor+dx]=v
++    return out
++
++
++def rivals_for(grid):
++    n=len(p._extract(grid))
++    base=['matched','reversed','height','width','bbox_area','color',
++          'negative_color','source_col','horizontal','sparsity','area_reversed']
++    return base + ['fixed:'+''.join(map(str,order))
++                   for order in permutations(range(n))]
++
++
++def audit_seeds(seeds, *, demos=2):
++    report={'schema':'c8ab-area-queue-adversarial-v1','seed_count':len(seeds),
++            'minimum_demos':demos,'settings':{},'learnability_findings':[],
++            'scores':{},'rival_bank': 'occupied area versus bbox, height, width, source position, marker color, fixed permutations; default matching'}
++    for setting in p.MODES:
++        setting_dict={'dock_mode':setting}
++        bad=0; claims=0; query_scenes=0; disagreements={}
++        for seed in seeds:
++            episode=p.generate(seed,setting_dict,demos,4)
++            pairs=episode['train']+episode['test']
++            query_scenes+=4
++            names=set(rivals_for(pairs[0]['input']))
++            # Filter fixed-permutation rivals to the same marker count;
++            # lessons need demonstrate general ranking for all counts.
++            for name in sorted(names):
++                predictions=[_ranked(row['input'],name) for row in pairs]
++                fits=all(pred == row['output'] for pred,row in zip(predictions[:demos],pairs[:demos]))
++                if not fits: continue
++                if all(pred == row['output'] for pred,row in zip(predictions[demos:],pairs[demos:])):
++                    continue
++                key=f'{setting}:{name}'
++                disagreements[key]=disagreements.get(key,0)+1
++                if bad < 12:
++                    report['learnability_findings'].append({
++                        'setting':setting,'seed':seed,'rival':name,
++                        'demo_count':demos,'first_query_disagreement':
++                            next(i for i,(pred,row) in enumerate(zip(predictions[demos:],pairs[demos:]))
++                                 if pred != row['output'])})
++                bad += 1
++            claims+=1
++        report['settings'][setting]={'episodes':claims,'queries':query_scenes,
++                                    'underidentified_rival_seed_pairs':bad,
++                                    'rival_occurrences':disagreements}
++    return report
++
++
++def run(out):
++    seeds=list(range(128))
++    rep=audit_seeds(seeds)
++    if out:
++        path=Path(out)
++        if path.exists(): raise FileExistsError(out)
++        path.parent.mkdir(parents=True, exist_ok=True)
++        path.write_text(json.dumps(rep,indent=2,sort_keys=True)+'\n')
++    print(json.dumps({'settings':rep['settings'],'findings':rep['learnability_findings'][:12]},indent=2))
++    return 0 if not rep['learnability_findings'] else 1
++
++
++if __name__=='__main__':
++    parser=argparse.ArgumentParser()
++    parser.add_argument('--out')
++    args=parser.parse_args()
++    raise SystemExit(run(args.out))
+diff --git a/repo/generators/c8ab3fc199b1/workspace/parametric/canonical.rkt b/repo/generators/c8ab3fc199b1/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c8ab3fc199b1/workspace/parametric/canonical.rkt
+@@ -0,0 +1,18 @@
++(rule!
++  (let* ((markers (filter (lambda (cell) (and (= (first cell) 0) (not (= (third cell) 0)))) (grid-cells g)))
++         (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1)))
++         (objs (objects body 0)))
++    (define (crop-for color)
++      (let* ((obj (first (filter (lambda (o) (= (obj-color o) color)) objs))))
++        (subgrid body (obj-r1 obj) (obj-c1 obj) (obj-r2 obj) (obj-c2 obj))))
++    (define crops (map (lambda (m) (list (third m) (second m) (crop-for (third m)))) markers))
++    (define out-h (apply max (map (lambda (x) (rows (third x))) crops)))
++    (for/fold ([out (empty-grid out-h (cols g) 0)]) ([item (in-list crops)])
++      (let* ((left (second item))
++             (crop (third item))
++             (top (- out-h (rows crop))))
++        (for*/fold ([acc out])
++                   ([r (in-range (rows crop))]
++                    [c (in-range (cols crop))])
++          (let ((v (at crop r c)))
++            (if (not (= v 0)) (set-cell acc (+ top r) (+ left c) v) acc)))))))
+\ No newline at end of file
+diff --git a/repo/generators/c8ab3fc199b1/workspace/parametric/evidence/adversarial-128.json b/repo/generators/c8ab3fc199b1/workspace/parametric/evidence/adversarial-128.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c8ab3fc199b1/workspace/parametric/evidence/adversarial-128.json
+@@ -0,0 +1,22 @@
++{
++  "learnability_findings": [],
++  "minimum_demos": 2,
++  "rival_bank": "occupied area versus bbox, height, width, source position, marker color, fixed permutations; default matching",
++  "schema": "c8ab-area-queue-adversarial-v1",
++  "scores": {},
++  "seed_count": 128,
++  "settings": {
++    "area_queue": {
++      "episodes": 128,
++      "queries": 512,
++      "rival_occurrences": {},
++      "underidentified_rival_seed_pairs": 0
++    },
++    "matching_color": {
++      "episodes": 128,
++      "queries": 512,
++      "rival_occurrences": {},
++      "underidentified_rival_seed_pairs": 0
++    }
++  }
++}
+diff --git a/repo/generators/c8ab3fc199b1/workspace/parametric/evidence/focused-checks.json b/repo/generators/c8ab3fc199b1/workspace/parametric/evidence/focused-checks.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c8ab3fc199b1/workspace/parametric/evidence/focused-checks.json
+@@ -0,0 +1,19 @@
++{
++  "schema": "c8ab-scoped-execution-receipt-v1",
++  "phase": "after-current-source",
++  "test_command": "python review.py task-tests c8ab3fc199b1 --phase after --timeout 180 --out ../checks/c8ab3fc199b1-tests-final",
++  "test_source": "checks/c8ab3fc199b1-tests-final/result.json",
++  "test_source_sha256": "4d0ff4698965cc3fc6c2e98eb0ea097d28389a19399766526104bc4e8731c90e",
++  "test_counts": {
++    "tests": 44,
++    "failed": 0,
++    "errors": 0,
++    "skipped": 0,
++    "passed": 44
++  },
++  "test_status": "executed",
++  "exit_code": 0,
++  "runtime_receipt_input_sha256": "29791c7a5f0a8a5b21b1e17c8a9a6083fa6087ed3e6bf4cd06b6649bca059c57",
++  "scope": "Base structural edges, bad overrides, parametric 2/3/6-demo claim and query invariants, crossed controls, strict numeric types, finite-rival teaching and protected Racket on selected scenes.",
++  "limits": "This test suite does not approve the generator or establish unrestricted uniqueness."
++}
+diff --git a/repo/generators/c8ab3fc199b1/workspace/parametric/evidence/manifest.json b/repo/generators/c8ab3fc199b1/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c8ab3fc199b1/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,82 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "3f09f4c3c061bd716331a325aed08719cc635a989f3cf4ab90f769a328124d3a",
++  "canonical_rule_hash": "4379fff5d025",
++  "default": {
++    "dock_mode": "matching_color"
++  },
++  "evidence_root": "generators/c8ab3fc199b1/workspace/parametric/evidence",
++  "files": [
++    {
++      "bytes": 9140,
++      "path": "generators/c8ab3fc199b1/generator.py",
++      "sha256": "3d2b62ad875b02de7093d11d6e27e12509436d449192ecb0ccd15c98231c3c5d"
++    },
++    {
++      "bytes": 7400,
++      "path": "generators/c8ab3fc199b1/tests/test_generator_c8ab3fc199b1.py",
++      "sha256": "3e39f8ca46d055b1910452fec41943e4fd2ef9f537b1f73e892edeab16cc635d"
++    },
++    {
++      "bytes": 695,
++      "path": "generators/c8ab3fc199b1/workspace/parametric/adapter.py",
++      "sha256": "46b67c4efcc18c988cbb4a2cdc6e8377a853e871fd1190f3ac572a3bcb815519"
++    },
++    {
++      "bytes": 5120,
++      "path": "generators/c8ab3fc199b1/workspace/parametric/adversarial_probe.py",
++      "sha256": "f5356ac2bfee50bfd44e2e51c99e74a4c236ea35af3c46587432b108a1fb53dd"
++    },
++    {
++      "bytes": 990,
++      "path": "generators/c8ab3fc199b1/workspace/parametric/canonical.rkt",
++      "sha256": "3f09f4c3c061bd716331a325aed08719cc635a989f3cf4ab90f769a328124d3a"
++    },
++    {
++      "bytes": 586,
++      "path": "generators/c8ab3fc199b1/workspace/parametric/evidence/adversarial-128.json",
++      "sha256": "4217b9e587a032518f2c6860177644293d301daac95a5ee8a3091e7a4c8c5911"
++    },
++    {
++      "bytes": 937,
++      "path": "generators/c8ab3fc199b1/workspace/parametric/evidence/focused-checks.json",
++      "sha256": "aaa4f12ae716bed1dea40e88c2938050608a6fdaab6c5489fd4396fbee843d43"
++    },
++    {
++      "bytes": 464,
++      "path": "generators/c8ab3fc199b1/workspace/parametric/promotion.json",
++      "sha256": "9870c7c63bca4bf13cfaa813e66a0034f7bcf09ea2bb1c795f53ff506c66f789"
++    },
++    {
++      "bytes": 14457,
++      "path": "generators/c8ab3fc199b1/workspace/parametric/prototype.py",
++      "sha256": "f37519890e38a1ab397a61af8ae8c5e295ab0fdc8897373f8bfcfaafeaa36577"
++    }
++  ],
++  "generator_sha256": "3d2b62ad875b02de7093d11d6e27e12509436d449192ecb0ccd15c98231c3c5d",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      4,
++      4
++    ]
++  },
++  "parameters": {
++    "dock_mode": [
++      "matching_color",
++      "area_queue"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "Final task-tests: 44/44 passed in protected Racket-capable staged runtime; 128 seeds x 2 settings finite-rival demo-only probe: zero found; prior failed test was a false positive on legal unmarked-body distractors and test was fixed.",
++  "rule_task_id": "c8ab3fc199b1",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "c8ab3fc199b1",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/c8ab3fc199b1/workspace/parametric/promotion.json b/repo/generators/c8ab3fc199b1/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c8ab3fc199b1/workspace/parametric/promotion.json
+@@ -0,0 +1,12 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/c8ab3fc199b1/workspace/parametric/adapter.py",
++  "parameters": {"dock_mode": ["matching_color", "area_queue"]},
++  "default": {"dock_mode": "matching_color"},
++  "limits": {"demos": [2, 6], "queries": [4, 4]},
++  "qualification_demos": 3,
++  "resources": [
++    "generators/c8ab3fc199b1/workspace/parametric/prototype.py",
++    "generators/c8ab3fc199b1/workspace/parametric/canonical.rkt"
++  ]
++}
+diff --git a/repo/generators/c8ab3fc199b1/workspace/parametric/prototype.py b/repo/generators/c8ab3fc199b1/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/c8ab3fc199b1/workspace/parametric/prototype.py
+@@ -0,0 +1,316 @@
++"""Source-bound authoring prototype for c8ab3fc199b1.
++
++Canonical docking: each colored top marker selects its same-colored body object;
++its tight 4-connected crop is bottom-aligned with left edge at that marker.
++
++Area-queue docking: A identifies those objects *and counts their occupied cells*;
++B sends the largest object to the leftmost marker dock, next to next, etc,
++with original marker-column as the deterministic tie-break. It then crops and
++bottom-aligns them as above. This genuinely reassigns source objects to docks.
++
++All episode settings are private. Generated labels are deterministic Python
++claims; independent protected Racket execution is the admission authority.
++"""
++from __future__ import annotations
++
++from hashlib import sha256
++import json
++from pathlib import Path
++import random
++
++TASK_ID = 'c8ab3fc199b1'
++MODES = ('matching_color', 'area_queue')
++PARAMETERS = {'dock_mode': list(MODES)}
++DEFAULT = {'dock_mode': 'matching_color'}
++CANONICAL_PATH = Path(__file__).with_name('canonical.rkt')
++CANONICAL = CANONICAL_PATH.read_bytes().decode('utf8')
++AREA_QUEUE = '''(rule!
++  (let* ((markers (filter (lambda (cell) (and (= (first cell) 0)
++                                            (not (= (third cell) 0))))
++                          (grid-cells g)))
++         (body (subgrid g 1 0 (- (rows g) 1) (- (cols g) 1)))
++         (objs (objects body 0)))
++    (define (extract m)
++      (let* ((color (third m))
++             (obj (first (filter (lambda (o) (= (obj-color o) color)) objs))))
++        (list color (second m) (obj-size obj)
++              (subgrid body (obj-r1 obj) (obj-c1 obj)
++                            (obj-r2 obj) (obj-c2 obj)))))
++    (define extracted (map extract markers))
++    (define sorted-objects
++      (sort extracted
++            (lambda (a b)
++              (or (> (third a) (third b))
++                  (and (= (third a) (third b))
++                       (< (second a) (second b)))))))
++    (define docks (sort (map second extracted) <))
++    (define placed
++      (map (lambda (item col) (list (first item) col (fourth item)))
++           sorted-objects docks))
++    (define out-h (apply max (map (lambda (x) (rows (third x))) placed)))
++    (for/fold ([out (empty-grid out-h (cols g) 0)]) ([item (in-list placed)])
++      (let* ((left (second item))
++             (crop (third item))
++             (top (- out-h (rows crop))))
++        (for*/fold ([acc out])
++                   ([r (in-range (rows crop))]
++                    [c (in-range (cols crop))])
++          (let ((v (at crop r c)))
++            (if (not (= v 0))
++                (set-cell acc (+ top r) (+ left c) v)
++                acc)))))))'''
++
++
++def _settings(settings: object) -> str:
++    if type(settings) is not dict or set(settings) != {'dock_mode'}:
++        raise ValueError('Exactly one dock_mode must be supplied')
++    mode = settings['dock_mode']
++    if type(mode) is not str or mode not in MODES:
++        raise ValueError('Unrecognized dock_mode')
++    return mode
++
++
++def program(settings: object) -> str:
++    return CANONICAL if _settings(settings) == MODES[0] else AREA_QUEUE
++
++
++def _exact_integer(x, name, low, high):
++    if type(x) is not int or not low <= x <= high:
++        raise ValueError(f'{name} must be an exact integer in {low}..{high}')
++    return x
++
++
++def _grid(g):
++    if (type(g) is not list or not 1 <= len(g) <= 30
++            or type(g[0]) is not list or not 1 <= len(g[0]) <= 30):
++        raise ValueError('Invalid grid dimensions')
++    w = len(g[0])
++    if any(type(row) is not list or len(row) != w or
++           any(type(v) is not int or not 0 <= v <= 9 for v in row) for row in g):
++        raise ValueError('Nonrectangular / noninteger / out-of-palette grid')
++    return g
++
++
++def _rng(seed: int, domain: str, index: int) -> random.Random:
++    key = json.dumps([TASK_ID, 'area-queue-v2', seed, domain, index],
++                     separators=(',', ':')).encode()
++    return random.Random(int.from_bytes(sha256(key).digest(), 'big'))
++
++
++def _connected_shape(height: int, width: int, occupied: int,
++                     rng: random.Random) -> list[tuple[int, int]]:
++    """Vary 4-connected footprints, with exact bbox, occupancy and orientation.
++
++    The L scaffold spans all sides. Growing from randomly chosen neighboring
++    cells creates many distinct holes / arms while preserving connectivity.
++    """
++    assert 1 <= width <= 8 and 2 <= height <= 12
++    assert height + width - 1 <= occupied <= height * width
++    cells = {(r, 0) for r in range(height)} | {(0, c) for c in range(width)}
++    while len(cells) < occupied:
++        frontier = {(r + dr, c + dc) for r, c in cells
++                    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1))
++                    if 0 <= r + dr < height and 0 <= c + dc < width
++                    and (r + dr, c + dc) not in cells}
++        cells.add(rng.choice(sorted(frontier)))
++    if rng.randrange(2):
++        cells = {(height - 1 - r, c) for r, c in cells}
++    if rng.randrange(2):
++        cells = {(r, width - 1 - c) for r, c in cells}
++    return sorted(cells)
++
++
++def _descriptor(kind, max_h, max_w, rng, profile):
++    """Cross actual area against bbox area, height and width.
++
++    Profiles randomize the dimensions and role mapping; the rank cannot be
++    inferred from the marker column, height, fixed shape, or body position.
++    """
++    if kind == 'compact':
++        h = min(max_h, 3 + (max_h >= 8) + (profile % 3 == 2))
++        w = min(max_w, 4 + (max_w >= 6))
++        target = max(h + w - 1, h * w - 1 - (profile % 2))
++    elif kind == 'sparse_tall':
++        h = min(max_h, 5 + (max_h >= 7) + (max_h >= 9) * 2)
++        w = min(max_w, 3 + (max_w >= 5))
++        target = min(h * w, h + w - 1 + profile % 3)
++    elif kind == 'medium':
++        h = min(max_h, 4 + (max_h >= 7))
++        w = min(max_w, 3 + (max_w >= 5))
++        target = min(h * w, max(h + w - 1, (h * w * (65 + 5 * (profile % 3))) // 100))
++    else:
++        h = min(max_h, 3 + (profile % 3) + (max_h >= 9) * 2)
++        w = min(max_w, 3 + (max_w >= 5))
++        target = max(h + w - 1, min(h * w, (h * w * (55 + 10 * (profile % 3))) // 100))
++    # Gentle jitter in dimensions via the independently seeded layout RNG.
++    # The contrasts above survive because the compact object stays dense while
++    # the tall one remains sparse (the counterexamples test actual scores).
++    if profile >= 3 and rng.randrange(5) == 0:
++        h = max(2, h - 1)
++        target = max(h + w - 1, min(h * w, target))
++    return h, w, target
++
++
++def _scene(seed: int, domain: str, index: int):
++    rng = _rng(seed, domain, index)
++    if domain == 'query':
++        sizes = [(10, 14), (16, 20), (24, 28), (30, 30)]
++        # Vary source order across seeds; privacy exporter independently shuffles.
++        rng_order = _rng(seed, 'query-size-schedule', 0)
++        rng_order.shuffle(sizes)
++        h, w = sizes[index]
++        n = 4 if h >= 24 else (3 if h >= 16 else 2 + (index % 2))
++    else:
++        sizes = [(10, 15), (11, 16), (12, 18), (14, 20), (16, 22), (18, 24)]
++        h, w = sizes[index]
++        n = 3 if index < 3 else (2 + index % 3)
++    if n < 2 or n > 4:
++        raise AssertionError('invalid marker count')
++    max_w = min(6, min((i + 1) * w // n - i * w // n for i in range(n)) - 1)
++    max_h = min(10, h - 3)
++    if max_w < 2 or max_h < 3:
++        raise RuntimeError('Invalid profile geometry')
++    types = ['compact', 'sparse_tall', 'medium', 'variable'][:n]
++    # Occasionally switch the compact/mid roles to vary occupied-area rankings.
++    if index > 0 and index % 2 == 1:
++        types[0], types[-1] = types[-1], types[0]
++    descriptors = [_descriptor(k, max_h, max_w, rng, index) for k in types]
++    footprints = [_connected_shape(hh, ww, count, rng) for hh, ww, count in descriptors]
++    scores = [len(cells) for cells in footprints]
++    # Never teach the area-queue variant with only an identity permutation:
++    # set the marker-color to footprint association to include an inversion.
++    # Teach an input-dependent assignment rather than a memorized swap:
++    # the first two demonstrations have deliberately different area orders.
++    ranked_shapes = sorted(range(n), key=lambda i: (-scores[i], i))
++    if domain == 'demo' and index == 0:
++        order = list(reversed(ranked_shapes))
++    elif domain == 'demo' and index == 1:
++        order = [ranked_shapes[0], *reversed(ranked_shapes[1:])]
++    else:
++        order = list(range(n)); rng.shuffle(order)
++        if [scores[i] for i in order] == sorted(scores, reverse=True):
++            order[0], order[-1] = order[-1], order[0]
++    palette = rng.sample(range(1, 10), 9)
++    colors = palette[:n]
++    if domain == 'demo' and index == 0 and n >= 3:
++        # Non-monotone marker colors reject both sort-by-color shortcuts.
++        ordered_colors = sorted(colors)
++        if n == 3:
++            colors = [ordered_colors[-1], ordered_colors[0], ordered_colors[1]]
++        else:
++            colors = [ordered_colors[-2], ordered_colors[0],
++                      ordered_colors[-1], ordered_colors[1]]
++    marker_to_shape = order
++    grid = [[0] * w for _ in range(h)]
++    starts = [i * w // n for i in range(n)]
++    ends = [(i + 1) * w // n - 1 for i in range(n)]
++    dock_w = max(ww for hh, ww, count in descriptors)
++    slots = [rng.randint(start, end - dock_w + 1) for start, end in zip(starts, ends)]
++    for j in range(n):
++        grid[0][slots[j]] = colors[j]
++    # Input geometry independent of the dock order, to defeat copying positions.
++    body_strips = list(range(n))
++    if domain == 'demo' and index == 0:
++        body_strips = body_strips[1:] + body_strips[:1]
++    else:
++        rng.shuffle(body_strips)
++    for marker_index, shape_index in enumerate(marker_to_shape):
++        hh, ww, count = descriptors[shape_index]
++        strip = body_strips[marker_index]
++        x = rng.randint(starts[strip], ends[strip] - ww + 1)
++        y = rng.randint(2, h - hh)
++        for dy, dx in footprints[shape_index]:
++            if grid[y + dy][x + dx]:
++                raise AssertionError('Unexpected source collision')
++            grid[y + dy][x + dx] = colors[marker_index]
++    # Nuisance objects of colors not in row 0; never select or teach them as docks.
++    if h >= 16:
++        for extra_color in palette[n:n + (2 if h >= 24 else 1)]:
++            decoy_h, decoy_w = (3 + rng.randrange(2), 2 + rng.randrange(2))
++            decoy_cells = _connected_shape(decoy_h, decoy_w, decoy_h + decoy_w, rng)
++            for _ in range(100):
++                x = rng.randrange(w - decoy_w + 1)
++                y = rng.randrange(2, h - decoy_h + 1)
++                if all(grid[y + dy][x + dx] == 0 for dy, dx in decoy_cells):
++                    for dy, dx in decoy_cells:
++                        grid[y + dy][x + dx] = extra_color
++                    break
++    return _grid(grid)
++
++
++def _extract(grid):
++    """Python independent oracle for Racket object lookup and bbox cropping."""
++    _grid(grid)
++    markers = [(col, val) for col, val in enumerate(grid[0]) if val]
++    if not 2 <= len(markers) <= 4 or len({c for _, c in markers}) != len(markers):
++        raise ValueError('Scene must have 2..4 unique row-zero colors')
++    h, w = len(grid), len(grid[0])
++    records = []
++    for anchor, color in markers:
++        cells = {(r, col) for r in range(1, h) for col in range(w)
++                 if grid[r][col] == color}
++        if not cells:
++            raise ValueError('Marker color has no body component')
++        remaining = set(cells); stack = [next(iter(cells))]
++        while stack:
++            node = stack.pop()
++            if node not in remaining:
++                continue
++            remaining.remove(node)
++            row, col = node
++            stack.extend((row + dr, col + dc)
++                         for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1))
++                         if (row + dr, col + dc) in remaining)
++        if remaining:
++            raise ValueError('Multiple same-color components')
++        row0 = min(r for r, col in cells); row1 = max(r for r, col in cells)
++        col0 = min(col for r, col in cells); col1 = max(col for r, col in cells)
++        crop = [[grid[r][col] for col in range(col0, col1 + 1)]
++                for r in range(row0, row1 + 1)]
++        records.append({'color': color, 'marker': anchor, 'area': len(cells),
++                        'crop': crop, 'height': len(crop), 'width': len(crop[0]),
++                        'bbox_area': len(crop) * len(crop[0])})
++    return records
++
++
++def transform(grid, settings):
++    """Python mirror, not an authority: every retained pair is Racket verified."""
++    mode = _settings(settings)
++    records = _extract(grid)
++    if mode == 'area_queue':
++        slots = sorted(rec['marker'] for rec in records)
++        # Stable tie rule is the originally leftmost marker, NOT body position.
++        records = sorted(records, key=lambda rec: (-rec['area'], rec['marker']))
++        records = [{**rec, 'marker': dock} for rec, dock in zip(records, slots)]
++    out_h = max(rec['height'] for rec in records)
++    out_w = len(grid[0]); out = [[0] * out_w for _ in range(out_h)]
++    for rec in records:
++        y = out_h - rec['height']; x = rec['marker']
++        if x + rec['width'] > out_w:
++            raise ValueError('Crop extends off the output')
++        for dy, row in enumerate(rec['crop']):
++            for dx, value in enumerate(row):
++                if value:
++                    if out[y + dy][x + dx]:
++                        raise ValueError('Output crops collide')
++                    out[y + dy][x + dx] = value
++    return _grid(out)
++
++
++def generate(seed, settings, demos, queries):
++    _exact_integer(seed, 'seed', 0, 2**63 - 1)
++    _exact_integer(demos, 'demos', 2, 6)
++    _exact_integer(queries, 'queries', 4, 4)
++    mode = _settings(settings)
++    train = [_scene(seed, 'demo', i) for i in range(demos)]
++    test = [_scene(seed, 'query', i) for i in range(queries)]
++    seen = [json.dumps(g, separators=(',', ':')) for g in train + test]
++    if len(seen) != len(set(seen)):
++        raise ValueError('Repeated demonstration/query input')
++    result = {'train': [{'input': g, 'output': transform(g, settings)} for g in train],
++              'test': [{'input': g, 'output': transform(g, settings)} for g in test],
++              'program_solution': program(settings)}
++    competing = {'dock_mode': MODES[1 if mode == MODES[0] else 0]}
++    if all(transform(p['input'], competing) == p['output'] for p in result['train']):
++        raise ValueError('Demonstrations do not distinguish declared settings')
++    return result

@@ -1,0 +1,30 @@
+(rule!
+ (lambda (g)
+  (define (border bb)
+   (filter (lambda (p)
+     (or (= (first p) (first bb)) (= (first p) (third bb))
+         (= (second p) (second bb)) (= (second p) (fourth bb))))
+    (positions-in-rect (first bb) (second bb) (third bb) (fourth bb))))
+  (define (same-cells? a b)
+   (and (= (length a) (length b)) (all? (lambda (p) (member? p b)) a)))
+  (define orange-original
+   (filter (lambda (o) (= (obj-color o) 7)) (objects g 0)))
+  (define repaired
+   (for/fold ([state g]) ([obj orange-original])
+    (let* ([bb (obj-bbox obj)] [cells (obj-cells obj)] [edge (border bb)]
+           [missing (filter (lambda (p) (not (member? p cells))) edge)])
+     (if (and (>= (- (third bb) (first bb)) 2)
+              (>= (- (fourth bb) (second bb)) 2)
+              (all? (lambda (p) (member? p edge)) cells)
+              (= (length missing) 1)
+              (= (at g (first (first missing)) (second (first missing))) 0))
+       (paint-cells state missing 7) state))))
+  (define recognition-grid repaired)
+  (for/fold ([out repaired])
+   ([obj (filter (lambda (o) (= (obj-color o) 7)) (objects recognition-grid 0))])
+   (let* ([bb (obj-bbox obj)]
+          [inside (filter (lambda (p) (= (at recognition-grid (first p) (second p)) 0))
+                    (positions-in-rect (+ (first bb) 1) (+ (second bb) 1)
+                                       (- (third bb) 1) (- (fourth bb) 1)))])
+    (if (same-cells? (obj-cells obj) (border bb))
+      (paint-cells out inside 8) out)))))

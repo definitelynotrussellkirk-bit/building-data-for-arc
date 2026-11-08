@@ -1,0 +1,13 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((sevens (find-color g 7))
+                  (col (second (car sevens)))
+                  (rtop (min-of first sevens)))
+             (cellmap g
+                      (r c v)
+                      (let ((d (- r rtop))
+                            (dist (abs (- c col))))
+                        (if (and (>= d 0) (<= dist d))
+                            (if (zero? (remainder dist 2)) 7 8)
+                            0)))))))

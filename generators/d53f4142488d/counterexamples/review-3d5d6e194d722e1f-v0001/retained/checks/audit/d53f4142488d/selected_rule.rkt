@@ -1,0 +1,22 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (begin
+             (define ind-colors
+               (filter (lambda (v) (!= v 0)) (list (at g 1 0) (at g 3 0) (at g 5 0))))
+             (define rect-bg (at g 7 0))
+             (define result g)
+             (for* ((r (range 7 h)) (c (range 0 w)))
+                   (define v (at g r c))
+                   (when
+                     (and (!= v rect-bg) (not (member v ind-colors)))
+                     (set! result (set-cell result r c rect-bg))))
+             (for ((idx (range 0 (length ind-colors))))
+               (define color (nth ind-colors idx))
+               (define ind-row (+ 1 (* idx 2)))
+               (define mask (cellmap g (r c v) (if (and (>= r 7) (= v color)) 1 0)))
+               (define obj-count (length (objects mask 0)))
+               (set! result (set-cell result ind-row 0 0))
+               (for ((c (range 0 obj-count)))
+                 (set! result (set-cell result ind-row c color))))
+             result))))

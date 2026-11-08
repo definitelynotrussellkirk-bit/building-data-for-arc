@@ -1,0 +1,17 @@
+(rule!
+  (let ((dummy 0))
+    (define (rect-frame? obj)
+      (and (= (obj-color obj) 1)
+           (>= (obj-h obj) 3)
+           (>= (obj-w obj) 3)
+           (= (obj-size obj) (- (* 2 (+ (obj-h obj) (obj-w obj))) 4))))
+    (for/fold ([out g]) ([frame (in-list (filter rect-frame? (objects g 0)))])
+      (for*/fold ([acc out])
+                 ([r (in-range (+ (obj-r1 frame) 1) (obj-r2 frame))]
+                  [c (in-range (+ (obj-c1 frame) 1) (obj-c2 frame))])
+        (if (= (at g r c) 4)
+            (let ((mr (- (+ (obj-r1 frame) (obj-r2 frame)) r)))
+              (if (and (> mr (obj-r1 frame)) (< mr (obj-r2 frame)) (= (at acc mr c) 0))
+                  (set-cell acc mr c 7)
+                  acc))
+            acc)))))

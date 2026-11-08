@@ -1,0 +1,1562 @@
+diff --git a/repo/generators/0bd65c18b34c/generator.py b/repo/generators/0bd65c18b34c/generator.py
+--- a/repo/generators/0bd65c18b34c/generator.py
++++ b/repo/generators/0bd65c18b34c/generator.py
+@@ -17,8 +17,12 @@
+ 
+ GENERATOR_ID = "0bd65c18b34c"
+ TASK_ID = "0bd65c18b34c"
+-VERSION = "3.0.0"
++VERSION = "3.1.0"
+ RULE_HASH = "9cd282956b9a"
++EXAMPLES_NEEDED = 3
++MIN_STRICT_FRAC = 1.0
++SCHEDULE_PROFILES = ("ordinary", "tie_break")
++LESSON_SCHEDULE_PERIOD = 2
+ 
+ SUMMARY = (
+     "On the demonstrated compact or 30x30 scene, move each blue dot only "
+@@ -32,7 +36,7 @@
+     "the complete compact/two-square/four-square public movement profile is preserved",
+     "both moving and unaligned-staying blue dots occur in every scene",
+     "all snap targets are in bounds, outside red squares, and pairwise unique",
+-    "the four-square balanced profile contains the published nearest-square tie lesson",
++    "the four-square balanced profile contains a same-row row-major tie lesson",
+ ]
+ 
+ SCENE_PROFILES = (
+@@ -80,6 +84,25 @@
+         {"left": 1, "stay": 1},
+     ),
+ }
++
++
++def schedule_profile(seed, sample_index, difficulty=None):
++    """Alternate ordinary and tie-breaking lesson slots."""
++    if type(seed) is not int:
++        raise ValueError("seed must be a Python integer (not bool)")
++    if difficulty not in (None, "easy", "medium", "hard"):
++        raise ValueError(
++            "difficulty must be None, 'easy', 'medium', or 'hard'"
++        )
++    if type(sample_index) is not int or sample_index < 0:
++        raise ValueError(
++            "sample_index must be a nonnegative Python integer (not bool)"
++        )
++    return (
++        "tie_break"
++        if sample_index % LESSON_SCHEDULE_PERIOD == 1
++        else "ordinary"
++    )
+ 
+ 
+ def _validate_call(difficulty, overrides):
+@@ -168,20 +191,16 @@
+     return max(row_delta, col_delta)
+ 
+ 
+-def _dot_info(height, width, squares, row, col):
+-    distances = [
+-        _cheby_distance(row, col, square_row, square_col)
+-        for square_row, square_col in squares
+-    ]
+-    if not distances:
+-        return None
+-    minimum = min(distances)
+-    nearest_index = distances.index(minimum)
+-    tied_indices = tuple(
+-        index
+-        for index, distance in enumerate(distances)
+-        if distance == minimum
+-    )
++def _dot_info_for_choice(
++    height,
++    width,
++    squares,
++    row,
++    col,
++    nearest_index,
++    minimum,
++    tied_indices,
++):
+     square_row, square_col = squares[nearest_index]
+     if square_row <= row <= square_row + 1:
+         if col < square_col:
+@@ -217,6 +236,66 @@
+         "in_bounds": in_bounds,
+         "move_length": move_length,
+     }
++
++
++def _dot_info(height, width, squares, row, col):
++    distances = [
++        _cheby_distance(row, col, square_row, square_col)
++        for square_row, square_col in squares
++    ]
++    if not distances:
++        return None
++    minimum = min(distances)
++    tied_indices = tuple(
++        index
++        for index, distance in enumerate(distances)
++        if distance == minimum
++    )
++    return _dot_info_for_choice(
++        height,
++        width,
++        squares,
++        row,
++        col,
++        tied_indices[0],
++        minimum,
++        tied_indices,
++    )
++
++
++def _dot_info_topmost_then_rightmost(
++    height, width, squares, row, col
++):
++    distances = [
++        _cheby_distance(row, col, square_row, square_col)
++        for square_row, square_col in squares
++    ]
++    if not distances:
++        return None
++    minimum = min(distances)
++    tied_indices = tuple(
++        index
++        for index, distance in enumerate(distances)
++        if distance == minimum
++    )
++    nearest_index = min(
++        tied_indices,
++        key=lambda index: (
++            squares[index][0],
++            -squares[index][1],
++            index,
++        ),
++    )
++    return _dot_info_for_choice(
++        height,
++        width,
++        squares,
++        row,
++        col,
++        nearest_index,
++        minimum,
++        tied_indices,
++    )
+ 
+ 
+ def _profile_name(height, width, squares, dot_infos):
+@@ -486,19 +565,19 @@
+             rng.randint(18, 22),
+         )
+         base_row = rng.randint(14, 16)
+-        base_col = rng.randint(7, 9)
+-        delta = rng.randint(6, 8)
++        base_col = rng.randint(7, 11)
+         third = base_row, base_col
+-        fourth = (
+-            base_row + delta,
+-            base_col + delta + 3,
+-        )
++        fourth = base_row, base_col + 7
+         squares = tuple(sorted((first, second, third, fourth)))
+         if squares[2:] != (third, fourth):
+             raise AssertionError("balanced layout changed tie-square order")
+         forced = (
+-            (base_row, base_col + delta + 1, 2, "right"),
+-            (base_row + delta + 1, base_col + 3, 2, "stay"),
++            # The aligned tie moves to different cells under first-vs-rightmost
++            # selection, so this is a behavioral row-major witness.
++            (base_row, base_col + 4, 2, "right"),
++            # Preserve the second published tie without changing the profile
++            # signature: this point is unaligned with either tied square.
++            (base_row + 3, base_col + 4, 2, "stay"),
+         )
+         return 30, 30, squares, forced
+     if profile_name == "compact_two":
+@@ -695,6 +774,107 @@
+     )
+ 
+ 
++def strict_canonical_like(grid):
++    """Use the production curriculum manifold as the strict semantic domain."""
++    return self_check(grid)
++
++
++def _rival_topmost_then_rightmost(grid):
++    """Canonical-fitting rival that chooses the rightmost top-row square on ties."""
++    coerced, errors = _coerce_grid(grid)
++    if coerced is None:
++        raise ValueError(
++            "invalid blue-square input: " + "; ".join(errors)
++        )
++    squares = _squares_of(coerced)
++    if not squares:
++        raise ValueError("invalid blue-square input: no red square")
++    blues = [
++        (row, col)
++        for row, values in enumerate(coerced)
++        for col, value in enumerate(values)
++        if value == 1
++    ]
++    height = len(coerced)
++    width = len(coerced[0])
++    output = [row[:] for row in coerced]
++    for row, col in blues:
++        output[row][col] = 0
++    for row, col in blues:
++        info = _dot_info_topmost_then_rightmost(
++            height, width, squares, row, col
++        )
++        if not info["in_bounds"]:
++            raise ValueError(
++                "invalid blue-square input: target out of bounds"
++            )
++        target_row, target_col = info["target"]
++        output[target_row][target_col] = 1
++    return output
++
++
++def _has_row_major_same_row_tie(grid):
++    """Return whether a same-row tie behaviorally refutes the declared rival."""
++    _coerced, features, errors = _scene_analysis(grid)
++    if errors:
++        return False
++    if _rival_topmost_then_rightmost(grid) == rule_mirror(grid):
++        return False
++    squares = features["squares"]
++    return any(
++        info["tie_count"] == 2
++        and len({squares[index][0] for index in info["tied_indices"]}) == 1
++        and squares[info["nearest_index"]][0]
++        <= row
++        <= squares[info["nearest_index"]][0] + 1
++        for (row, _col), info in zip(
++            features["blues"],
++            features["dot_infos"],
++        )
++    )
++
++
++_RIVAL_NAME = "topmost_then_rightmost"
++_WITNESS_NAME = "row_major_same_row_tie"
++SEMANTIC_RIVALS = {_RIVAL_NAME: _rival_topmost_then_rightmost}
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
++CANONICAL_SHORTCUTS = {_RIVAL_NAME: _rival_topmost_then_rightmost}
++SEMANTIC_WITNESSES = {_WITNESS_NAME: _has_row_major_same_row_tie}
++WITNESS_RIVALS = {_WITNESS_NAME: [_RIVAL_NAME]}
++
++
++def lesson_identifiable(demos, query):
++    """Report when a declared wrong tie rule survives demos but changes query."""
++    demo_list = list(demos)
++    reasons = []
++    for index, pair in enumerate(demo_list):
++        if not isinstance(pair, dict) or "input" not in pair or "output" not in pair:
++            reasons.append(f"demo {index} must be a labeled input/output pair")
++            continue
++        try:
++            expected = rule_mirror(pair["input"])
++        except Exception as exc:
++            reasons.append(f"demo {index} is outside the reviewed domain: {exc}")
++            continue
++        if expected != pair["output"]:
++            reasons.append(f"demo {index} label disagrees with the pinned rule mirror")
++    if not isinstance(query, dict) or "input" not in query or "output" not in query:
++        return reasons + ["query must be a labeled input/output pair"]
++    for name, competitor in LESSON_COMPETITORS.items():
++        survives = all(
++            isinstance(pair, dict)
++            and "input" in pair
++            and "output" in pair
++            and competitor(pair["input"]) == pair["output"]
++            for pair in demo_list
++        )
++        if survives and competitor(query["input"]) != query["output"]:
++            reasons.append(
++                f"competitor {name!r} fits every demo but changes the query"
++            )
++    return reasons
++
++
+ def _profile_options(difficulty):
+     if difficulty == "easy":
+         return (
+@@ -727,9 +907,15 @@
+         difficulty=difficulty,
+         overrides=overrides,
+     )
++    if "scene_profile" in overrides:
++        profile_options = SCENE_PROFILES
++    elif schedule_profile(seed, sample_index, difficulty) == "tie_break":
++        profile_options = ("large_four_balanced",)
++    else:
++        profile_options = _profile_options(difficulty)
+     profile_name = ctx.draw_choice(
+         "scene_profile",
+-        _profile_options(difficulty),
++        profile_options,
+     )
+     grid, features = _draw_scene(
+         profile_name,
+diff --git a/repo/generators/0bd65c18b34c/notes.md b/repo/generators/0bd65c18b34c/notes.md
+--- a/repo/generators/0bd65c18b34c/notes.md
++++ b/repo/generators/0bd65c18b34c/notes.md
+@@ -1,4 +1,27 @@
+ # Working notes: 0bd65c18b34c
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Current decisions
++
++- Preserve the canonical Racket authority, canonical ledger rows, `RULE_HASH = 9cd282956b9a`, and the four-profile public axis.
++- Repair `large_four_balanced` in place rather than inventing a fifth production profile. Its same-row equal-distance blue dot now behaviorally distinguishes row-major-first from the plausible topmost/rightmost rival.
++- Alternate `ordinary` and `tie_break` schedule slots. The earlier period-three proposal was reversed after a held-out sole witness left two rotations ambiguous; period two keeps every three-demo support set distinguishing.
++- Explicit `scene_profile` remains higher priority than the lesson schedule. The new `schedule_profile` rejects non-integer seeds, booleans, negative/non-integer indices, and unknown difficulty values.
++- Keep the two-setting `tie_break` work under `workspace/parametric/` as a proposed task-local prototype. `first` is exact canonical authority; `last` changes one equal-distance comparator. It is not a production approval or training-admission claim.
++- Retain `checks/main-repair/adversarial_probe.py` as a reusable bounded authority/distribution/API probe for future reviewers.
++
++## Source-bound results
++
++- Final generator SHA-256: `f9e74f2b1216ef76ee0ae0bf5189c6c7a8068b234334fb0df9ff559a12a738aa`.
++- Authored tests: 24 passed.
++- Semantic gate: 600/600 strict; 378/600 witness; all three bands; 24 enumerated fixed-seed rotations; no warnings or errors.
++- Compatibility probe: 720 default draws, all four profiles, 120 distinct pairs in every sampled band/start bucket, all explicit profile/band combinations, canonical/independent parity, rejection mutations, determinism, and global-RNG isolation.
++- Parametric evidence SHA-256: `3e1624722f1c4df79c1fb4e7243a7aaaede8b389d38dfc980dada4f6e25a8544`; both settings materialized with three demos and four queries.
++
++## Supplementary tickets
++
++- `ticket-4842252759ec5b4c`: completed one lawful `dfc4967f816f` witness; canonical Python/Racket output `[[8,8,8,0]]` refutes `top_row_only` output `[[8,8,8,8]]`.
++- `ticket-fe81786dfe42fedc`: completed the pinned `defba1ab4f90` replay; source/assets/audit identities match, canonical and mirror checks are 10/10, and both public entry points still accept all 11 malformed scalar probes. This reproduces, but does not clear or broaden, the unresolved audit.
++
++## Remaining issue and next useful action
++
++The frozen issued task test is nonportable because it hard-codes a canonical path from `__file__.parents`. It fails before collection in the staged runtime and is intentionally unchanged. The next useful maintainer action is to update that frozen fixture to use `reviewer_support.find_root`, `canonical_path`, and `canonical_pairs`, then replay `task_tests`; no generator change is indicated by this blocker.
+diff --git a/repo/generators/0bd65c18b34c/tests/test_parametric_tie_break.py b/repo/generators/0bd65c18b34c/tests/test_parametric_tie_break.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0bd65c18b34c/tests/test_parametric_tie_break.py
+@@ -0,0 +1,248 @@
++"""Focused tests for the proposed nearest-square tie-break prototype."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import re
++
++import pytest
++from arc_repl.racket_bridge import RacketBridge
++from reviewer_support import (
++    canonical_path,
++    find_root,
++    load_selected_generator,
++    public_challenge_bytes,
++    public_challenge_id,
++)
++
++
++TASK_ID = "0bd65c18b34c"
++ROOT = find_root(__file__)
++TASK_HOME = ROOT / "generators" / TASK_ID
++PROTOTYPE_PATH = TASK_HOME / "workspace" / "parametric" / "prototype.py"
++
++WITNESS_INPUT = [[0] * 13 for _ in range(10)]
++for top, left in ((3, 1), (3, 8)):
++    for row in (top, top + 1):
++        for col in (left, left + 1):
++            WITNESS_INPUT[row][col] = 2
++WITNESS_INPUT[3][5] = 1
++FIRST_EXPECTED = [row[:] for row in WITNESS_INPUT]
++FIRST_EXPECTED[3][5] = 0
++FIRST_EXPECTED[3][3] = 1
++LAST_EXPECTED = [row[:] for row in WITNESS_INPUT]
++LAST_EXPECTED[3][5] = 0
++LAST_EXPECTED[3][7] = 1
++
++
++def _load_prototype():
++    assert PROTOTYPE_PATH.is_file(), f"missing prototype: {PROTOTYPE_PATH}"
++    spec = importlib.util.spec_from_file_location(
++        "parametric_0bd65c18b34c",
++        PROTOTYPE_PATH,
++    )
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _canonical_program() -> str:
++    matches = []
++    with canonical_path(ROOT).open(encoding="utf-8") as source:
++        for line in source:
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                matches.append(row["program_solution"])
++    assert matches
++    assert len(set(matches)) == 1
++    return matches[0]
++
++
++@pytest.fixture(scope="module")
++def proto():
++    return _load_prototype()
++
++
++@pytest.fixture(scope="module")
++def bridge():
++    runtime = RacketBridge(max_calls_before_restart=128)
++    try:
++        yield runtime
++    finally:
++        runtime.shutdown()
++
++
++def test_declares_bounded_episode_level_parameter(proto):
++    assert proto.PARAMETERS == {
++        "tie_break": {
++            "allowed": ("first", "last"),
++            "default": "first",
++            "selected_once_per_episode": True,
++        }
++    }
++    assert proto.DEFAULT_DEMONSTRATIONS == 3
++    assert proto.DEFAULT_QUERIES == 4
++
++
++def test_first_is_exact_canonical_and_last_changes_only_equal_distance_update(proto):
++    canonical = _canonical_program()
++    first = proto.racket_source("first")
++    last = proto.racket_source("last")
++    assert first == canonical
++    assert last != canonical
++    assert canonical.count("(if (< d (first best))") == 1
++    assert last == canonical.replace(
++        "(if (< d (first best))",
++        "(if (<= d (first best))",
++        1,
++    )
++
++
++@pytest.mark.parametrize("bad", [None, True, 0, "", "FIRST", "rightmost"])
++def test_parameter_is_strictly_bounded(proto, bad):
++    with pytest.raises(ValueError, match="tie_break"):
++        proto.racket_source(bad)
++    with pytest.raises(ValueError, match="tie_break"):
++        proto.apply_python(WITNESS_INPUT, bad)
++    with pytest.raises(ValueError, match="tie_break"):
++        proto.build_episode(0, tie_break=bad)
++
++
++def test_literal_witness_executes_in_python_and_racket(proto, bridge):
++    assert proto.apply_python(WITNESS_INPUT, "first") == FIRST_EXPECTED
++    assert proto.apply_python(WITNESS_INPUT, "last") == LAST_EXPECTED
++    assert proto.apply_racket(
++        WITNESS_INPUT,
++        "first",
++        bridge=bridge,
++    ) == FIRST_EXPECTED
++    assert proto.apply_racket(
++        WITNESS_INPUT,
++        "last",
++        bridge=bridge,
++    ) == LAST_EXPECTED
++
++
++def test_parameter_is_drawn_once_deterministically_and_both_values_are_reachable(proto):
++    assert proto.parameters(91) == proto.parameters(91)
++    assert {
++        proto.parameters(seed)["tie_break"]
++        for seed in range(32)
++    } == {"first", "last"}
++
++
++@pytest.mark.parametrize("setting", ["first", "last"])
++def test_complete_episode_is_racket_labeled_distinct_and_identifiable(
++    proto,
++    bridge,
++    setting,
++):
++    selected, _source, _digest = load_selected_generator(TASK_ID, root=ROOT)
++    episode = proto.build_episode(
++        314159,
++        tie_break=setting,
++        n_train=3,
++        n_test=4,
++        bridge=bridge,
++    )
++    rival = "last" if setting == "first" else "first"
++    assert episode["parameter_draw_count"] == 1
++    assert episode["parameters"] == {"tie_break": setting}
++    assert episode["counts"] == {"demonstrations": 3, "queries": 4}
++    assert len(episode["train"]) == 3
++    assert len(episode["test"]) == 4
++    assert len(episode["sample_indices"]) == 7
++    assert len(set(episode["sample_indices"])) == 7
++
++    pairs = [*episode["train"], *episode["test"]]
++    visible_inputs = {
++        json.dumps(pair["input"], separators=(",", ":"))
++        for pair in pairs
++    }
++    assert len(visible_inputs) == 7
++    for pair in pairs:
++        assert selected.self_check(pair["input"]) == []
++        assert pair["output"] == proto.apply_python(pair["input"], setting)
++        assert pair["output"] == proto.apply_racket(
++            pair["input"],
++            setting,
++            bridge=bridge,
++        )
++        assert pair["output"] != proto.apply_racket(
++            pair["input"],
++            rival,
++            bridge=bridge,
++        )
++    assert proto.parameter_rival_findings(episode, bridge=bridge) == []
++
++
++def test_public_projection_masks_private_semantics_and_query_answers(proto, bridge):
++    episode = proto.build_episode(7, tie_break="last", bridge=bridge)
++    public = proto.public_challenge(episode)
++    assert set(public) == {"train", "test"}
++    assert len(public["train"]) == 3
++    assert len(public["test"]) == 4
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert all(set(pair) == {"input"} for pair in public["test"])
++    encoded = json.dumps(public, sort_keys=True)
++    for forbidden in (
++        "tie_break",
++        "parameters",
++        "program",
++        "sample_indices",
++        "seed",
++        "query_outputs",
++    ):
++        assert forbidden not in encoded
++    assert public_challenge_id(episode) == hashlib.sha256(
++        public_challenge_bytes(episode)
++    ).hexdigest()
++
++
++def test_evidence_writer_materializes_two_opaque_public_challenges(proto, bridge, tmp_path):
++    out = tmp_path / "evidence.json"
++    public_dir = tmp_path / "public"
++    report = proto.build_evidence(
++        out=out,
++        public_dir=public_dir,
++        episode_seeds=proto.covering_episode_seeds(),
++        n_train=3,
++        n_test=4,
++        bridge=bridge,
++    )
++    assert out.is_file()
++    assert report["status"] == "proposed"
++    assert report["checks"]["all_passed"] is True
++    assert {episode["parameters"]["tie_break"] for episode in report["private_episodes"]} == {
++        "first",
++        "last",
++    }
++    assert len(report["public_files"]) == 2
++    for record in report["public_files"]:
++        path = Path(record["path"])
++        assert re.fullmatch(r"[0-9a-f]{64}\.json", path.name)
++        assert path.name == f"{record['public_id']}.json"
++        assert hashlib.sha256(path.read_bytes()).hexdigest() == record["public_id"]
++        public = json.loads(path.read_text(encoding="utf-8"))
++        assert len(public["train"]) == 3
++        assert len(public["test"]) == 4
++        assert all("output" not in pair for pair in public["test"])
++        assert "tie_break" not in path.read_text(encoding="utf-8")
++
++
++def test_demo_and_query_counts_are_independent_and_validated(proto, bridge):
++    episode = proto.build_episode(
++        5,
++        tie_break="first",
++        n_train=2,
++        n_test=4,
++        bridge=bridge,
++    )
++    assert episode["counts"] == {"demonstrations": 2, "queries": 4}
++    with pytest.raises(ValueError, match="n_train"):
++        proto.build_episode(5, n_train=0, n_test=4, bridge=bridge)
++    with pytest.raises(ValueError, match="n_test"):
++        proto.build_episode(5, n_train=3, n_test=0, bridge=bridge)
+diff --git a/repo/generators/0bd65c18b34c/tests/test_tie_break_teaching.py b/repo/generators/0bd65c18b34c/tests/test_tie_break_teaching.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0bd65c18b34c/tests/test_tie_break_teaching.py
+@@ -0,0 +1,133 @@
++"""Focused regressions for the row-major nearest-square tie lesson."""
++from __future__ import annotations
++
++import pytest
++
++from reviewer_support import canonical_pairs, find_root, load_selected_generator
++
++
++TASK_ID = "0bd65c18b34c"
++ROOT = find_root(__file__)
++generator, _source_path, _source_digest = load_selected_generator(
++    TASK_ID,
++    root=ROOT,
++)
++RIVAL = "topmost_then_rightmost"
++WITNESS = "row_major_same_row_tie"
++
++
++def _pair(seed: int, sample_index: int, difficulty: str) -> dict:
++    grid = generator.generate(
++        seed,
++        sample_index,
++        difficulty=difficulty,
++    )
++    return {"input": grid, "output": generator.rule_mirror(grid)}
++
++
++def test_balanced_profile_contains_a_distinguishing_same_row_tie():
++    for seed in range(12):
++        grid = generator.generate(
++            seed,
++            10_000 + seed,
++            difficulty="hard",
++            scene_profile="large_four_balanced",
++        )
++        assert generator.self_check(grid) == []
++        assert generator.SEMANTIC_WITNESSES[WITNESS](grid)
++        canonical = generator.rule_mirror(grid)
++        rival = generator.SEMANTIC_RIVALS[RIVAL](grid)
++        assert rival != canonical
++
++        _coerced, facts, errors = generator._scene_analysis(grid)
++        assert errors == []
++        assert any(
++            info["tie_count"] == 2
++            and len({facts["squares"][index][0]
++                     for index in info["tied_indices"]}) == 1
++            and facts["squares"][info["nearest_index"]][0]
++            <= row
++            <= facts["squares"][info["nearest_index"]][0] + 1
++            for (row, _col), info in zip(
++                facts["blues"],
++                facts["dot_infos"],
++            )
++        )
++
++
++def test_declared_rival_fits_every_labeled_canonical_pair():
++    rival = generator.SEMANTIC_RIVALS[RIVAL]
++    pairs = canonical_pairs(TASK_ID, root=ROOT, labeled_only=True)
++    assert pairs
++    for pair in pairs:
++        assert rival(pair["input"]) == pair["output"]
++
++
++def test_every_three_demo_window_refutes_the_canonical_fitting_rival():
++    assert generator.EXAMPLES_NEEDED == 3
++    assert generator.LESSON_SCHEDULE_PERIOD == 2
++    assert set(generator.SCHEDULE_PROFILES) == {"ordinary", "tie_break"}
++
++    for difficulty in ("easy", "medium", "hard"):
++        for start in range(generator.LESSON_SCHEDULE_PERIOD):
++            demos = [
++                _pair(7331 + start, start + offset, difficulty)
++                for offset in range(generator.EXAMPLES_NEEDED)
++            ]
++            query = _pair(
++                7331 + start,
++                start + generator.EXAMPLES_NEEDED,
++                difficulty,
++            )
++            assert any(
++                generator.SEMANTIC_WITNESSES[WITNESS](pair["input"])
++                for pair in demos
++            )
++            assert any(
++                generator.SEMANTIC_RIVALS[RIVAL](pair["input"])
++                != pair["output"]
++                for pair in demos
++            )
++            assert generator.lesson_identifiable(demos, query) == []
++
++
++def test_every_four_pair_window_remains_identifiable_under_query_rotation():
++    for difficulty in ("easy", "medium", "hard"):
++        for start in range(generator.LESSON_SCHEDULE_PERIOD):
++            pairs = [
++                _pair(9917 + start, start + offset, difficulty)
++                for offset in range(generator.EXAMPLES_NEEDED + 1)
++            ]
++            for query_index, query in enumerate(pairs):
++                demos = [
++                    pair
++                    for index, pair in enumerate(pairs)
++                    if index != query_index
++                ]
++                assert any(
++                    generator.SEMANTIC_WITNESSES[WITNESS](pair["input"])
++                    for pair in demos
++                )
++                assert any(
++                    generator.SEMANTIC_RIVALS[RIVAL](pair["input"])
++                    != pair["output"]
++                    for pair in demos
++                )
++                assert generator.lesson_identifiable(demos, query) == []
++
++
++def test_explicit_profile_override_takes_precedence_over_lesson_schedule():
++    grid = generator.generate(
++        17,
++        1,
++        difficulty="hard",
++        scene_profile="compact_two",
++    )
++    assert generator.schedule_profile(17, 1, "hard") == "tie_break"
++    assert generator.observe_overrides(grid) == {"scene_profile": "compact_two"}
++
++
++@pytest.mark.parametrize("bad_seed", [True, 1.0, "1", None])
++def test_schedule_profile_rejects_noninteger_seed(bad_seed):
++    with pytest.raises(ValueError, match="seed"):
++        generator.schedule_profile(bad_seed, 0, "easy")
+diff --git a/repo/generators/0bd65c18b34c/workspace/parametric/README.md b/repo/generators/0bd65c18b34c/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0bd65c18b34c/workspace/parametric/README.md
+@@ -0,0 +1,32 @@
++# Proposed nearest-square tie-break prototype
++
++This task-local prototype keeps the original object detection, Chebyshev
++nearest-square calculation, alignment test, source clearing, and target painting.
++Only the equal-distance reducer varies:
++
++- `tie_break=first` is the exact canonical/default Racket program and keeps the
++  first square in row-major order.
++- `tie_break=last` is proposed and replaces the single `<` comparison in the
++  nearest-square reduction with `<=`, so the last row-major square wins a tie.
++
++The hidden setting is selected once from the deterministic episode seed and is
++fixed across every pair. Each retained episode uses three demonstrations and
++four distinct queries generated from the lawful `large_four_balanced` profile;
++every pair contains a same-row tie that distinguishes both settings. Labels are
++executed by the matching Racket source. The Python implementation is only a
++parity mirror. Public challenge files contain visible demonstrations and query
++inputs only, and their 64-hex filenames are SHA-256 hashes of those exact visible
++bytes.
++
++From the outer packet directory:
++
++```bash
++python3 review.py run python3 \
++  generators/0bd65c18b34c/workspace/parametric/prototype.py \
++  --out ../checks/parametric/0bd65c18b34c-tie-break/evidence.json \
++  --public-dir generators/0bd65c18b34c/workspace/parametric/examples \
++  --demos 3 --queries 4
++```
++
++This is a **proposed prototype**. It does not change the production parametric
++API, canonical Racket authority, approval state, or training admission.
+diff --git a/repo/generators/0bd65c18b34c/workspace/parametric/examples/0942fd169808f682043773a09614a3fb3f578a9fed17b7073326402706d7da47.json b/repo/generators/0bd65c18b34c/workspace/parametric/examples/0942fd169808f682043773a09614a3fb3f578a9fed17b7073326402706d7da47.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0bd65c18b34c/workspace/parametric/examples/0942fd169808f682043773a09614a3fb3f578a9fed17b7073326402706d7da47.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,1,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,2,2,0,1,0,0,0,0,0,0,0,0,0,0,0,2,2,0,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,2,2,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,1,0,0,0,2,2,0,0,0,0,0,0,0,1,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,1,0,0,0,0,0,0],[0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,1,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,1,0,0,2,2,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,1,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,1,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0],[0,0,0,2,2,0,0,0,0,0,0,0,0,0,1,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[0,1,0,2,2,0,0,0,1,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,1],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],[0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0],[0,1,0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}],"train":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,0,2,2,0,1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,1,0,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,1,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,2,2,1,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,1,2,2,1,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0],[0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,2,2,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,1,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,1,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,1,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,2,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,1,2,2,1,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],[0,1,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,2,2,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,1,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,1,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],[0,0,0,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,1,0,0,0,0,0],[0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,2,2,1,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,1,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}]}
+diff --git a/repo/generators/0bd65c18b34c/workspace/parametric/examples/c3e07ae64880cccdeaab7878b6fd88faa125029ac32b458f188c0892455e1bab.json b/repo/generators/0bd65c18b34c/workspace/parametric/examples/c3e07ae64880cccdeaab7878b6fd88faa125029ac32b458f188c0892455e1bab.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0bd65c18b34c/workspace/parametric/examples/c3e07ae64880cccdeaab7878b6fd88faa125029ac32b458f188c0892455e1bab.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[1,0,0,0,2,2,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,2,2,0,0,0,0,0,1,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0],[0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,2,2,0,0,0,0,1,0,0,0,0,0,0,0,0,2,2,0,0,1,0,0,0,0,0],[0,0,0,0,0,2,2,0,0,0,0,0,0,0,1,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,1,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,1,0,2,2,0,0,0,1,0,0,0,1,0,0,2,2,0,0,1,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,1,0,0,2,2,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0],[0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,1,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0],[0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}],"train":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[1,0,0,0,0,0,0,2,2,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,1,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,1,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,1,2,2,1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,1,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,1,2,2,0,0,0,0,1,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,1,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,2,2,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,2,2,0,0,1,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,1,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,1,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0],[0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,2,1,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,1,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,1,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,1,0,0,2,2,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,2,2,0,0,0,0,0,1],[0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,1,0,2,2,0,0,1,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0],[0,0,0,1,2,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,2,1,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,1,2,2,0,0,0,0,1,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}]}
+diff --git a/repo/generators/0bd65c18b34c/workspace/parametric/prototype.py b/repo/generators/0bd65c18b34c/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0bd65c18b34c/workspace/parametric/prototype.py
+@@ -0,0 +1,677 @@
++"""Proposed episode-level nearest-square tie-break extension.
++
++The production generator and canonical authority remain pinned to
++``tie_break='first'``. The sole alternative, ``tie_break='last'``, keeps every
++other reasoning step unchanged and updates the nearest-square reduction on an
++equal distance. One setting is selected once and held fixed for every pair in
++an episode. Retained labels are executed by the matching Racket program.
++"""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++from typing import Any
++
++from arc_repl.racket_bridge import RacketBridge
++from reviewer_support import (
++    canonical_path,
++    find_root,
++    load_selected_generator,
++    public_challenge_bytes,
++    public_challenge_id,
++)
++
++
++TASK_ID = "0bd65c18b34c"
++PROTOTYPE_VERSION = "1.0.0"
++STATUS = "proposed task-local prototype; not production-approved"
++TIE_BREAKS = ("first", "last")
++DEFAULT_TIE_BREAK = "first"
++DEFAULT_DEMONSTRATIONS = 3
++DEFAULT_QUERIES = 4
++PARAMETERS = {
++    "tie_break": {
++        "allowed": TIE_BREAKS,
++        "default": DEFAULT_TIE_BREAK,
++        "selected_once_per_episode": True,
++    }
++}
++HERE = Path(__file__).resolve()
++ROOT = find_root(HERE)
++RULE_DIR = HERE.parent / "rules"
++_AUTO = object()
++_DIFFICULTIES = ("easy", "medium", "hard")
++_CANONICAL_COMPARATOR = "(if (< d (first best))"
++_ALTERNATIVE_COMPARATOR = "(if (<= d (first best))"
++
++
++def _sha256_bytes(data: bytes) -> str:
++    return hashlib.sha256(data).hexdigest()
++
++
++def _sha256_text(text: str) -> str:
++    return _sha256_bytes(text.encode("utf-8"))
++
++
++def _strict_nonnegative_int(name: str, value: Any) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be a Python int (not bool)")
++    if value < 0:
++        raise ValueError(f"{name} must be nonnegative")
++    return value
++
++
++def _strict_positive_int(name: str, value: Any) -> int:
++    value = _strict_nonnegative_int(name, value)
++    if value == 0:
++        raise ValueError(f"{name} must be positive")
++    return value
++
++
++def _validate_tie_break(tie_break: Any) -> str:
++    if type(tie_break) is not str or tie_break not in TIE_BREAKS:
++        raise ValueError("tie_break must be exactly 'first' or 'last'")
++    return tie_break
++
++
++def _validate_difficulty(difficulty: Any) -> str:
++    if difficulty not in _DIFFICULTIES:
++        raise ValueError(
++            "difficulty must be exactly 'easy', 'medium', or 'hard'"
++        )
++    return str(difficulty)
++
++
++def _validate_grid(grid: Any) -> tuple[int, int]:
++    if not isinstance(grid, (list, tuple)) or not grid:
++        raise ValueError("grid must be a nonempty rectangular sequence")
++    if not isinstance(grid[0], (list, tuple)) or not grid[0]:
++        raise ValueError("grid rows must be nonempty")
++    width = len(grid[0])
++    if any(
++        not isinstance(row, (list, tuple)) or len(row) != width
++        for row in grid
++    ):
++        raise ValueError("grid must be rectangular")
++    if any(
++        type(cell) is not int or not 0 <= cell <= 9
++        for row in grid
++        for cell in row
++    ):
++        raise ValueError("grid cells must be exact integer ARC colors 0..9")
++    return len(grid), width
++
++
++def canonical_program(root: Path | str = ROOT) -> str:
++    """Return the single unique canonical Racket authority for this task."""
++    programs: list[str] = []
++    with canonical_path(root).open(encoding="utf-8") as source:
++        for line in source:
++            if not line.strip():
++                continue
++            row = json.loads(line)
++            if row.get("task_id") == TASK_ID:
++                programs.append(row["program_solution"])
++    if not programs or len(set(programs)) != 1:
++        raise ValueError(
++            f"canonical rows for {TASK_ID} do not share one program authority"
++        )
++    return programs[0]
++
++
++def racket_source(tie_break: Any) -> str:
++    """Read the exact task-local Racket program for one setting."""
++    setting = _validate_tie_break(tie_break)
++    path = RULE_DIR / f"{setting}.rkt"
++    if not path.is_file():
++        raise FileNotFoundError(f"missing prototype Racket source: {path}")
++    program = path.read_text(encoding="utf-8")
++    canonical = canonical_program(ROOT)
++    if setting == "first":
++        if program != canonical:
++            raise ValueError("first.rkt is not byte-for-byte canonical authority")
++    else:
++        expected = canonical.replace(
++            _CANONICAL_COMPARATOR,
++            _ALTERNATIVE_COMPARATOR,
++            1,
++        )
++        if canonical.count(_CANONICAL_COMPARATOR) != 1 or program != expected:
++            raise ValueError("last.rkt is not the reviewed one-comparator variant")
++    return program
++
++
++def parameters(seed: int) -> dict[str, str]:
++    """Choose one hidden setting deterministically for a complete episode."""
++    seed = _strict_nonnegative_int("seed", seed)
++    digest = hashlib.sha256(
++        f"{TASK_ID}:{PROTOTYPE_VERSION}:{seed}:tie_break".encode("utf-8")
++    ).digest()
++    return {"tie_break": TIE_BREAKS[digest[0] % len(TIE_BREAKS)]}
++
++
++def covering_episode_seeds() -> tuple[int, int]:
++    """Return the first small deterministic seed for each declared setting."""
++    found: dict[str, int] = {}
++    for seed in range(4096):
++        setting = parameters(seed)["tie_break"]
++        found.setdefault(setting, seed)
++        if len(found) == len(TIE_BREAKS):
++            return tuple(found[value] for value in TIE_BREAKS)
++    raise RuntimeError("could not find deterministic covering episode seeds")
++
++
++def _squares_of(grid: list[list[int]]) -> list[tuple[int, int]]:
++    height, width = len(grid), len(grid[0])
++    return [
++        (row, col)
++        for row in range(height - 1)
++        for col in range(width - 1)
++        if all(
++            grid[rr][cc] == 2
++            for rr in (row, row + 1)
++            for cc in (col, col + 1)
++        )
++    ]
++
++
++def _distance(row: int, col: int, square: tuple[int, int]) -> int:
++    square_row, square_col = square
++    row_delta = max(0, square_row - row, row - square_row - 1)
++    col_delta = max(0, square_col - col, col - square_col - 1)
++    return max(row_delta, col_delta)
++
++
++def _target(
++    row: int,
++    col: int,
++    square: tuple[int, int],
++) -> tuple[int, int]:
++    square_row, square_col = square
++    if square_row <= row <= square_row + 1:
++        return (
++            (row, square_col - 1)
++            if col < square_col
++            else (row, square_col + 2)
++        )
++    if square_col <= col <= square_col + 1:
++        return (
++            (square_row - 1, col)
++            if row < square_row
++            else (square_row + 2, col)
++        )
++    return row, col
++
++
++def apply_python(grid: Any, tie_break: Any) -> list[list[int]]:
++    """Independent Python parity mirror for the two reviewed settings."""
++    setting = _validate_tie_break(tie_break)
++    height, width = _validate_grid(grid)
++    source = [list(row) for row in grid]
++    squares = _squares_of(source)
++    if not squares:
++        raise ValueError("input must contain at least one exact 2x2 red square")
++    blues = [
++        (row, col)
++        for row in range(height)
++        for col in range(width)
++        if source[row][col] == 1
++    ]
++    output = [row[:] for row in source]
++    for row, col in blues:
++        output[row][col] = 0
++    for row, col in blues:
++        distances = [_distance(row, col, square) for square in squares]
++        minimum = min(distances)
++        tied = [
++            index
++            for index, distance in enumerate(distances)
++            if distance == minimum
++        ]
++        square_index = tied[0] if setting == "first" else tied[-1]
++        target_row, target_col = _target(row, col, squares[square_index])
++        if not (0 <= target_row < height and 0 <= target_col < width):
++            raise ValueError("prototype target is out of bounds")
++        output[target_row][target_col] = 1
++    return output
++
++
++def _execute(
++    bridge: RacketBridge,
++    program: str,
++    grid: Any,
++) -> list[list[int]]:
++    _validate_grid(grid)
++    if not program.startswith("(rule! ") or not program.endswith(")"):
++        raise ValueError("expected a canonical rule! wrapper")
++    bridge.define_grid("g", [list(row) for row in grid])
++    body = program[len("(rule! ") : -1]
++    expression = f"({body} g)" if body.lstrip().startswith("(lambda") else body
++    output = bridge.eval_text(expression)
++    _validate_grid(output)
++    return [[int(value) for value in row] for row in output]
++
++
++def apply_racket(
++    grid: Any,
++    tie_break: Any,
++    *,
++    bridge: RacketBridge | None = None,
++) -> list[list[int]]:
++    """Execute the exact materialized Racket program for one setting."""
++    program = racket_source(tie_break)
++    owns_bridge = bridge is None
++    runtime = bridge if bridge is not None else RacketBridge(
++        max_calls_before_restart=64
++    )
++    try:
++        return _execute(runtime, program, grid)
++    finally:
++        if owns_bridge:
++            runtime.shutdown()
++
++
++def _episode_inputs(
++    seed: int,
++    *,
++    count: int,
++    start_index: int,
++    difficulty: str,
++) -> tuple[list[list[list[int]]], list[int], str]:
++    seed = _strict_nonnegative_int("seed", seed)
++    count = _strict_positive_int("count", count)
++    start_index = _strict_nonnegative_int("start_index", start_index)
++    difficulty = _validate_difficulty(difficulty)
++    selected, _source, source_digest = load_selected_generator(
++        TASK_ID,
++        root=ROOT,
++    )
++    digest = hashlib.sha256(
++        f"{TASK_ID}:{PROTOTYPE_VERSION}:{seed}:inputs".encode("utf-8")
++    ).digest()
++    generator_seed = int.from_bytes(digest[:8], "big") % (2**31)
++    candidate_index = start_index + int.from_bytes(digest[8:12], "big") % 997
++    grids: list[list[list[int]]] = []
++    sample_indices: list[int] = []
++    seen: set[str] = set()
++    for _attempt in range(max(200, count * 40)):
++        grid = selected.generate(
++            generator_seed,
++            candidate_index,
++            difficulty=difficulty,
++            scene_profile="large_four_balanced",
++        )
++        key = json.dumps(grid, separators=(",", ":"))
++        if (
++            key not in seen
++            and selected.self_check(grid) == []
++            and apply_python(grid, "first") != apply_python(grid, "last")
++        ):
++            seen.add(key)
++            grids.append(grid)
++            sample_indices.append(candidate_index)
++            if len(grids) == count:
++                return grids, sample_indices, source_digest
++        candidate_index += 1
++    raise RuntimeError(
++        f"could not materialize {count} distinct tie-breaking inputs"
++    )
++
++
++def build_episode(
++    seed: int,
++    *,
++    tie_break: Any = _AUTO,
++    n_train: int = DEFAULT_DEMONSTRATIONS,
++    n_test: int = DEFAULT_QUERIES,
++    start_index: int = 0,
++    difficulty: str = "medium",
++    bridge: RacketBridge | None = None,
++) -> dict[str, Any]:
++    """Build one complete fixed-setting, Racket-labelled episode."""
++    seed = _strict_nonnegative_int("seed", seed)
++    n_train = _strict_positive_int("n_train", n_train)
++    n_test = _strict_positive_int("n_test", n_test)
++    start_index = _strict_nonnegative_int("start_index", start_index)
++    difficulty = _validate_difficulty(difficulty)
++    chosen = (
++        parameters(seed)["tie_break"]
++        if tie_break is _AUTO
++        else _validate_tie_break(tie_break)
++    )
++    rival = next(value for value in TIE_BREAKS if value != chosen)
++    inputs, sample_indices, generator_digest = _episode_inputs(
++        seed,
++        count=n_train + n_test,
++        start_index=start_index,
++        difficulty=difficulty,
++    )
++    owns_bridge = bridge is None
++    runtime = bridge if bridge is not None else RacketBridge(
++        max_calls_before_restart=128
++    )
++    try:
++        outputs = [
++            apply_racket(grid, chosen, bridge=runtime)
++            for grid in inputs
++        ]
++        rival_outputs = [
++            apply_racket(grid, rival, bridge=runtime)
++            for grid in inputs
++        ]
++    finally:
++        if owns_bridge:
++            runtime.shutdown()
++    for index, (grid, output) in enumerate(zip(inputs, outputs, strict=True)):
++        if apply_python(grid, chosen) != output:
++            raise AssertionError(
++                f"Python/Racket parity failure at episode pair {index}"
++            )
++    pairs = [
++        {"input": deepcopy(grid), "output": deepcopy(output)}
++        for grid, output in zip(inputs, outputs, strict=True)
++    ]
++    differences = [
++        index
++        for index, (output, other) in enumerate(
++            zip(outputs, rival_outputs, strict=True)
++        )
++        if output != other
++    ]
++    episode = {
++        "schema": "arcpuzzles-parametric-episode-v1",
++        "status": "proposed",
++        "task_id": TASK_ID,
++        "prototype_version": PROTOTYPE_VERSION,
++        "seed": seed,
++        "difficulty": difficulty,
++        "parameters": {"tie_break": chosen},
++        "parameter_draw_count": 1,
++        "counts": {
++            "demonstrations": n_train,
++            "queries": n_test,
++        },
++        "sample_indices": sample_indices,
++        "generator_source_sha256": generator_digest,
++        "program": racket_source(chosen),
++        "program_sha256": _sha256_text(racket_source(chosen)),
++        "train": pairs[:n_train],
++        "test": pairs[n_train:],
++        "rival": {
++            "tie_break": rival,
++            "all_pair_differences": differences,
++            "demo_differences": [
++                index for index in differences if index < n_train
++            ],
++            "query_differences": [
++                index - n_train for index in differences if index >= n_train
++            ],
++        },
++    }
++    findings = parameter_rival_findings(
++        episode,
++        bridge=runtime if not owns_bridge else None,
++    )
++    if findings:
++        raise AssertionError("episode is not identifiable: " + "; ".join(findings))
++    return episode
++
++
++def parameter_rival_findings(
++    episode: dict[str, Any],
++    *,
++    bridge: RacketBridge | None = None,
++) -> list[str]:
++    """Check labels and identifiability using demonstrations only."""
++    findings: list[str] = []
++    try:
++        chosen = _validate_tie_break(episode["parameters"]["tie_break"])
++        train = episode["train"]
++        test = episode["test"]
++    except (KeyError, TypeError, ValueError) as exc:
++        return [f"malformed episode: {exc}"]
++    if not isinstance(train, list) or not isinstance(test, list):
++        return ["malformed episode: train and test must be lists"]
++    rival = next(value for value in TIE_BREAKS if value != chosen)
++    owns_bridge = bridge is None
++    runtime = bridge if bridge is not None else RacketBridge(
++        max_calls_before_restart=128
++    )
++    try:
++        rival_fits_all_demos = True
++        for index, pair in enumerate(train):
++            try:
++                chosen_output = apply_racket(
++                    pair["input"], chosen, bridge=runtime
++                )
++                rival_output = apply_racket(
++                    pair["input"], rival, bridge=runtime
++                )
++            except Exception as exc:
++                findings.append(f"demo {index} execution failed: {exc}")
++                continue
++            if chosen_output != pair.get("output"):
++                findings.append(
++                    f"demo {index} label disagrees with chosen Racket rule"
++                )
++            rival_fits_all_demos = (
++                rival_fits_all_demos
++                and rival_output == pair.get("output")
++            )
++        if rival_fits_all_demos:
++            findings.append("alternative tie_break fits every demonstration")
++        for index, pair in enumerate(test):
++            try:
++                chosen_output = apply_racket(
++                    pair["input"], chosen, bridge=runtime
++                )
++                rival_output = apply_racket(
++                    pair["input"], rival, bridge=runtime
++                )
++            except Exception as exc:
++                findings.append(f"query {index} execution failed: {exc}")
++                continue
++            if chosen_output != pair.get("output"):
++                findings.append(
++                    f"query {index} label disagrees with chosen Racket rule"
++                )
++            if rival_output == pair.get("output"):
++                findings.append(
++                    f"query {index} does not distinguish the alternative setting"
++                )
++    finally:
++        if owns_bridge:
++            runtime.shutdown()
++    return findings
++
++
++def public_challenge(episode: dict[str, Any]) -> dict[str, Any]:
++    """Return only visible demonstrations and query inputs."""
++    return {
++        "train": [
++            {
++                "input": deepcopy(pair["input"]),
++                "output": deepcopy(pair["output"]),
++            }
++            for pair in episode["train"]
++        ],
++        "test": [
++            {"input": deepcopy(pair["input"])}
++            for pair in episode["test"]
++        ],
++    }
++
++
++def build_evidence(
++    *,
++    out: Path | str,
++    public_dir: Path | str,
++    episode_seeds: tuple[int, ...] | None = None,
++    n_train: int = DEFAULT_DEMONSTRATIONS,
++    n_test: int = DEFAULT_QUERIES,
++    bridge: RacketBridge | None = None,
++) -> dict[str, Any]:
++    """Write private Racket evidence and opaque visible-content challenges."""
++    n_train = _strict_positive_int("n_train", n_train)
++    n_test = _strict_positive_int("n_test", n_test)
++    seeds = covering_episode_seeds() if episode_seeds is None else tuple(
++        _strict_nonnegative_int("episode seed", seed)
++        for seed in episode_seeds
++    )
++    if len(seeds) != len(TIE_BREAKS):
++        raise ValueError("episode_seeds must contain exactly two entries")
++    owns_bridge = bridge is None
++    runtime = bridge if bridge is not None else RacketBridge(
++        max_calls_before_restart=256
++    )
++    try:
++        episodes = [
++            build_episode(
++                seed,
++                n_train=n_train,
++                n_test=n_test,
++                bridge=runtime,
++            )
++            for seed in seeds
++        ]
++    finally:
++        if owns_bridge:
++            runtime.shutdown()
++    settings = {episode["parameters"]["tie_break"] for episode in episodes}
++    if settings != set(TIE_BREAKS):
++        raise ValueError(
++            f"episode seeds must cover {TIE_BREAKS}, got {sorted(settings)}"
++        )
++    public_dir = Path(public_dir)
++    public_dir.mkdir(parents=True, exist_ok=True)
++    public_records = []
++    seen_ids: set[str] = set()
++    for episode in episodes:
++        public_id = public_challenge_id(episode)
++        if public_id in seen_ids:
++            raise ValueError("duplicate public payload")
++        seen_ids.add(public_id)
++        payload = public_challenge_bytes(episode)
++        path = public_dir / f"{public_id}.json"
++        path.write_bytes(payload)
++        public_records.append(
++            {
++                "public_id": public_id,
++                "path": str(path),
++                "sha256": _sha256_bytes(payload),
++                "bytes": len(payload),
++            }
++        )
++    checks = {
++        "settings_covered": settings == set(TIE_BREAKS),
++        "episodes_identifiable": all(
++            not parameter_rival_findings(episode)
++            for episode in episodes
++        ),
++        "public_ids_match_bytes": all(
++            record["public_id"] == record["sha256"]
++            for record in public_records
++        ),
++        "query_count_four": all(
++            len(episode["test"]) == n_test == 4
++            for episode in episodes
++        ),
++    }
++    checks["all_passed"] = all(checks.values())
++    report = {
++        "schema": "arcpuzzles-parametric-evidence-v1",
++        "status": "proposed",
++        "approval": "none; task-local prototype only",
++        "task_id": TASK_ID,
++        "prototype_version": PROTOTYPE_VERSION,
++        "parameter": {
++            "name": "tie_break",
++            "values": list(TIE_BREAKS),
++            "default": DEFAULT_TIE_BREAK,
++            "selected_once_per_episode": True,
++            "input_constraint": (
++                "episode inputs use the lawful large_four_balanced profile, "
++                "which contains a same-row equal-distance tie"
++            ),
++        },
++        "replay": {
++            "episode_seeds": list(seeds),
++            "n_train": n_train,
++            "n_test": n_test,
++        },
++        "prototype_source_sha256": _sha256_bytes(HERE.read_bytes()),
++        "racket_programs": {
++            setting: {
++                "path": str(RULE_DIR / f"{setting}.rkt"),
++                "sha256": _sha256_text(racket_source(setting)),
++                "text": racket_source(setting),
++            }
++            for setting in TIE_BREAKS
++        },
++        "checks": checks,
++        "private_episodes": episodes,
++        "public_files": sorted(
++            public_records,
++            key=lambda record: record["public_id"],
++        ),
++        "limitations": [
++            "bounded to two tie policies and seven generated inputs per retained episode",
++            "all retained queries deliberately contain a distinguishing equal-distance tie",
++            "prototype status does not alter canonical approval or training admission",
++        ],
++    }
++    out = Path(out)
++    out.parent.mkdir(parents=True, exist_ok=True)
++    out.write_text(
++        json.dumps(report, indent=2, sort_keys=True) + "\n",
++        encoding="utf-8",
++    )
++    return report
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(
++        description="Materialize Racket-labelled tie-break prototype evidence"
++    )
++    parser.add_argument("--out", required=True, type=Path)
++    parser.add_argument("--public-dir", required=True, type=Path)
++    parser.add_argument(
++        "--demos",
++        type=int,
++        default=DEFAULT_DEMONSTRATIONS,
++        help="number of demonstrations per episode",
++    )
++    parser.add_argument(
++        "--queries",
++        type=int,
++        default=DEFAULT_QUERIES,
++        help="number of distinct queries per episode",
++    )
++    args = parser.parse_args(argv)
++    report = build_evidence(
++        out=args.out,
++        public_dir=args.public_dir,
++        n_train=args.demos,
++        n_test=args.queries,
++    )
++    print(
++        json.dumps(
++            {
++                "status": report["status"],
++                "checks": report["checks"],
++                "out": str(args.out),
++                "public_files": [
++                    record["path"] for record in report["public_files"]
++                ],
++            },
++            sort_keys=True,
++        )
++    )
++    return 0 if report["checks"]["all_passed"] else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/0bd65c18b34c/workspace/parametric/rules/first.rkt b/repo/generators/0bd65c18b34c/workspace/parametric/rules/first.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0bd65c18b34c/workspace/parametric/rules/first.rkt
+@@ -0,0 +1,46 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (begin
++             (define all-pos
++               (flatmap (lambda (r) (map (lambda (c) (list r c)) (range 0 (- w 1))))
++                        (range 0 (- h 1))))
++             (define squares
++               (filter (lambda (rc)
++                         (let ((r (first rc))
++                               (c (second rc)))
++                           (and
++                             (= (at g r c) 2)
++                             (= (at g (+ r 1) c) 2)
++                             (= (at g r (+ c 1)) 2)
++                             (= (at g (+ r 1) (+ c 1)) 2))))
++                       all-pos))
++             (define (cheby-dist br bc sr sc)
++               (let ((dr (max 0 (max (- sr br) (- br (+ sr 1)))))
++                     (dc (max 0 (max (- sc bc) (- bc (+ sc 1))))))
++                 (max dr dc)))
++             (define (nearest-sq br bc)
++               (reduce (lambda (best sq)
++                         (let ((d (cheby-dist br bc (first sq) (second sq))))
++                           (if (< d (first best)) (list d sq) best)))
++                       (let ((sq (first squares)))
++                         (list (cheby-dist br bc (first sq) (second sq)) sq))
++                       (cdr squares)))
++             (define (target br bc)
++               (let* ((nb (nearest-sq br bc))
++                      (sq (second nb))
++                      (sr (first sq))
++                      (sc (second sq))
++                      (row-aligned (and (>= br sr) (<= br (+ sr 1))))
++                      (col-aligned (and (>= bc sc) (<= bc (+ sc 1)))))
++                 (cond
++                   (row-aligned (if (< bc sc) (list br (- sc 1)) (list br (+ sc 2))))
++                   (col-aligned (if (< br sr) (list (- sr 1) bc) (list (+ sr 2) bc)))
++                   (else (list br bc)))))
++             (define blues (find-color g 1))
++             (define cleared (recolor-cells g blues 0))
++             (reduce (lambda (gg b)
++                       (let ((t (target (first b) (second b))))
++                         (set-cell gg (first t) (second t) 1)))
++                     cleared
++                     blues)))))
+\ No newline at end of file
+diff --git a/repo/generators/0bd65c18b34c/workspace/parametric/rules/last.rkt b/repo/generators/0bd65c18b34c/workspace/parametric/rules/last.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0bd65c18b34c/workspace/parametric/rules/last.rkt
+@@ -0,0 +1,46 @@
++(rule! (lambda (g)
++         (let* ((h (rows g))
++                (w (cols g)))
++           (begin
++             (define all-pos
++               (flatmap (lambda (r) (map (lambda (c) (list r c)) (range 0 (- w 1))))
++                        (range 0 (- h 1))))
++             (define squares
++               (filter (lambda (rc)
++                         (let ((r (first rc))
++                               (c (second rc)))
++                           (and
++                             (= (at g r c) 2)
++                             (= (at g (+ r 1) c) 2)
++                             (= (at g r (+ c 1)) 2)
++                             (= (at g (+ r 1) (+ c 1)) 2))))
++                       all-pos))
++             (define (cheby-dist br bc sr sc)
++               (let ((dr (max 0 (max (- sr br) (- br (+ sr 1)))))
++                     (dc (max 0 (max (- sc bc) (- bc (+ sc 1))))))
++                 (max dr dc)))
++             (define (nearest-sq br bc)
++               (reduce (lambda (best sq)
++                         (let ((d (cheby-dist br bc (first sq) (second sq))))
++                           (if (<= d (first best)) (list d sq) best)))
++                       (let ((sq (first squares)))
++                         (list (cheby-dist br bc (first sq) (second sq)) sq))
++                       (cdr squares)))
++             (define (target br bc)
++               (let* ((nb (nearest-sq br bc))
++                      (sq (second nb))
++                      (sr (first sq))
++                      (sc (second sq))
++                      (row-aligned (and (>= br sr) (<= br (+ sr 1))))
++                      (col-aligned (and (>= bc sc) (<= bc (+ sc 1)))))
++                 (cond
++                   (row-aligned (if (< bc sc) (list br (- sc 1)) (list br (+ sc 2))))
++                   (col-aligned (if (< br sr) (list (- sr 1) bc) (list (+ sr 2) bc)))
++                   (else (list br bc)))))
++             (define blues (find-color g 1))
++             (define cleared (recolor-cells g blues 0))
++             (reduce (lambda (gg b)
++                       (let ((t (target (first b) (second b))))
++                         (set-cell gg (first t) (second t) 1)))
++                     cleared
++                     blues)))))
+\ No newline at end of file

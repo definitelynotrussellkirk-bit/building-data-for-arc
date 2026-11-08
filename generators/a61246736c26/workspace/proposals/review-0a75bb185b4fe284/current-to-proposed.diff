@@ -1,0 +1,398 @@
+--- current-approved/generator.py
++++ proposed/generator.py
+@@ -8,16 +8,11 @@
+ """
+ from __future__ import annotations
+ 
+-from itertools import permutations, product
+-
+ from puzzle_generators.base import gen_ctx
+ 
+ GENERATOR_ID = "a61246736c26"
+ TASK_ID = GENERATOR_ID
+-VERSION = "5.0.0"
+-EXAMPLES_NEEDED = 5
+-LESSON_SCHEDULE_PERIOD = 3
+-SCHEDULE_PROFILES = ("same_row_counterfactual", "mixed_row_counterfactual", "varied")
++VERSION = "4.1.0"
+ RULE_HASH = "08238424436c"
+ SUMMARY = "Use each column's solid swatch row and fill to recolor its duplicated 1/2/8 pattern tile."
+ INVARIANTS = [
+@@ -36,12 +31,12 @@
+     "middle_repeat",
+     "bottom_repeat",
+     "zero_frame_all",
++    "top_frame_all",
++    "middle_frame_all",
+     "four_columns",
+     "four_columns_reverse",
+     "permuted_frames",
+     "shared_pattern",
+-    "same_row_top",
+-    "recombined_rows",
+ )
+ SCENE_PROFILES = PUBLIC_PROFILES + GENERAL_PROFILES
+ HELPFUL_TEXTURES = ()
+@@ -50,7 +45,7 @@
+     "scene_profile": {
+         "type": "str",
+         "default": "weighted exact-public and swatch-row/pattern curricula",
+-        "valid": "|".join(SCENE_PROFILES),
++        "valid": "public_1|public_2|public_3|row_cycle_012|row_cycle_120|row_cycle_201|top_repeat|middle_repeat|bottom_repeat|zero_frame_all|top_frame_all|middle_frame_all|four_columns|four_columns_reverse|permuted_frames|shared_pattern",
+     }
+ }
+ 
+@@ -68,7 +63,6 @@
+ _PUBLIC_INPUTS = {name: _decode(rows) for name, rows in _PUBLIC_ROWS.items()}
+ _PUBLIC_SIGNATURES = {tuple(map(tuple, grid)): name for name, grid in _PUBLIC_INPUTS.items()}
+ _STANDARD_FRAMES = (5, 9, 0)
+-_FRAME_PERMUTATIONS = tuple(permutations(_STANDARD_FRAMES))
+ _PROFILE_SOLID_ROWS = {
+     "row_cycle_012": (0, 1, 2),
+     "row_cycle_120": (1, 2, 0),
+@@ -77,11 +71,12 @@
+     "middle_repeat": (1, 1, 2),
+     "bottom_repeat": (2, 2, 0),
+     "zero_frame_all": (2, 2, 2),
++    "top_frame_all": (0, 0, 0),
++    "middle_frame_all": (1, 1, 1),
+     "four_columns": (0, 1, 2, 0),
+     "four_columns_reverse": (2, 1, 0, 2),
+     "permuted_frames": (0, 1, 2),
+     "shared_pattern": (0, 1, 2),
+-    "same_row_top": (0, 0, 0),
+ }
+ 
+ 
+@@ -92,7 +87,7 @@
+         return ["rows must be non-empty"]
+     width = len(grid[0])
+     if len(grid) > 30 or width > 30:
+-        return ["ARC grid dimensions must be at most 30 by 30"]
++        return ["ARC grid dimensions must not exceed 30"]
+     if any(not isinstance(row, (list, tuple)) or len(row) != width for row in grid):
+         return ["grid must be rectangular"]
+     if any(
+@@ -224,7 +219,7 @@
+             return "four_columns"
+         if signature == _PROFILE_SOLID_ROWS["four_columns_reverse"]:
+             return "four_columns_reverse"
+-        return "recombined_rows"
++        return None
+     if signature == (0, 1, 2) and len(set(pattern_keys)) == 1:
+         return "shared_pattern"
+     for profile in (
+@@ -235,11 +230,12 @@
+         "middle_repeat",
+         "bottom_repeat",
+         "zero_frame_all",
+-        "same_row_top",
+-        ):
++    "top_frame_all",
++    "middle_frame_all",
++    ):
+         if signature == _PROFILE_SOLID_ROWS[profile]:
+             return profile
+-    return "recombined_rows"
++    return None
+ 
+ 
+ def _analysis(grid):
+@@ -271,6 +267,10 @@
+         errors.append("separator rows do not match the calibrated lattice")
+     if parsed["separator_cols"] != expected_cols:
+         errors.append("separator columns do not match the calibrated lattice")
++    # Geometry is already known to be invalid. Never index tile interiors or
++    # invoke the rule mirror using an inferred size from a broken separator.
++    if errors:
++        return result
+     row_colors = []
+     if len(parsed["row_bands"]) == 3:
+         for first, last in parsed["row_bands"]:
+@@ -322,9 +322,6 @@
+     profile = public or _classify(row_colors, solid_rows, pattern_keys)
+     if profile not in SCENE_PROFILES:
+         errors.append("lattice does not match a declared scene profile")
+-    # Structural validation must finish before the mirror indexes inferred tiles.
+-    # A missing separator can merge bands; executing the mirror then raises an
+-    # IndexError instead of returning the already collected rejection reasons.
+     output = None
+     if not errors:
+         try:
+@@ -389,41 +386,34 @@
+             grid[start_row + row][start_col + col] = value
+ 
+ 
+-def _general(rng, profile, band, *, teaching=None):
+-    column_count = rng.choice((3, 4)) if profile in ("permuted_frames", "recombined_rows") else len(_PROFILE_SOLID_ROWS[profile])
++def _general(rng, profile, band, *, teaching_frame=None, teaching_palette=None):
++    solid_rows = _PROFILE_SOLID_ROWS[profile]
+     row_colors = list(_STANDARD_FRAMES)
+     if profile == "permuted_frames":
+-        if teaching == "same_row":
+-            # Cross same-row solids with nonzero, nonfixed row swatches.
+-            # This distinguishes both the zero-frame and fixed-swatch rivals.
+-            choices = [(frames, row) for frames in _FRAME_PERMUTATIONS
+-                       for row in range(3)
+-                       if frames[row] != 0 and frames[row] != _STANDARD_FRAMES[row]]
+-            frames, selected_row = rng.choice(choices)
+-            row_colors = list(frames)
+-            solid_rows = (selected_row,) * column_count
++        if teaching_frame is not None:
++            # Both palettes move every row role. All solids share a nonzero
++            # frame, so one input refutes the zero-frame and fixed-palette shortcuts.
++            row_colors = list(rng.choice(((9, 0, 5), (0, 5, 9))))
++            selected_row = row_colors.index(teaching_frame)
++            solid_rows = (selected_row,) * 3
++        elif teaching_palette is not None:
++            row_colors = list(teaching_palette)
++            column_count = rng.choice((3, 4))
++            solid_rows = (0,) * column_count
++            while len(set(solid_rows)) == 1:
++                solid_rows = tuple(rng.randrange(3) for _ in range(column_count))
+         else:
+-            row_colors = list(rng.choice([frames for frames in _FRAME_PERMUTATIONS if frames != _STANDARD_FRAMES]))
+-            if teaching == "mixed_row":
+-                # A same-row-only witness leaves a conditional fixed-swatch
+-                # shortcut alive on mixed-row queries. Cross these axes too.
+-                choices = [rows for rows in product(range(3), repeat=column_count)
+-                           if len(set(rows)) > 1 and any(
+-                               row_colors[row] != _STANDARD_FRAMES[row] for row in rows)]
+-                solid_rows = rng.choice(choices)
+-            else:
+-                solid_rows = tuple(rng.randrange(3) for _ in range(column_count))
+-    elif profile == "recombined_rows":
+-        named = set(_PROFILE_SOLID_ROWS.values())
+-        choices = [rows for rows in product(range(3), repeat=column_count) if rows not in named]
+-        solid_rows = rng.choice(choices)
+-    else:
+-        solid_rows = _PROFILE_SOLID_ROWS[profile]
++            while tuple(row_colors) == _STANDARD_FRAMES:
++                rng.shuffle(row_colors)
++            column_count = rng.choice((3, 4))
++            solid_rows = tuple(rng.randrange(3) for _ in range(column_count))
++    column_count = len(solid_rows)
+     if column_count == 4:
+-        # Four size-7 tiles would exceed the 30-cell ARC width bound.
++        # Width = columns * (size + 1) + 1; sizes above 6 exceed ARC's cap.
+         size = rng.choice((5, 6))
+     else:
+-        low, high = {"easy": (4, 5), "medium": (5, 6), "hard": (7, 8)}[band]
++        ranges = {"easy": (4, 5), "medium": (5, 6), "hard": (7, 8)}
++        low, high = ranges[band]
+         size = rng.randint(low, high)
+     fills = rng.sample([3, 4, 6, 7], column_count)
+     patterns = []
+@@ -457,22 +447,29 @@
+     return grid
+ 
+ 
+-def _validate_indices(seed, sample_index):
++def _check_identifiers(seed, sample_index):
+     if type(seed) is not int:
+-        raise ValueError("seed must be a Python integer (not bool)")
++        raise ValueError("seed must be a literal integer")
+     if type(sample_index) is not int or sample_index < 0:
+-        raise ValueError("sample_index must be a nonnegative Python integer (not bool)")
++        raise ValueError("sample_index must be a nonnegative literal integer")
+ 
+ 
+ def schedule_profile(seed, sample_index, difficulty=None):
+-    """Coarse default teaching schedule; explicit scene overrides bypass it."""
+-    _validate_indices(seed, sample_index)
++    """The six-position default lesson curriculum; explicit axes bypass it."""
++    _check_identifiers(seed, sample_index)
+     _band(difficulty)
+-    return SCHEDULE_PROFILES[sample_index % LESSON_SCHEDULE_PERIOD]
++    return ("same_frame_5", "mixed_palette_a", "explore",
++            "same_frame_9", "mixed_palette_b", "explore")[sample_index % 6]
++
++
++EXAMPLES_NEEDED = 5
++LESSON_SCHEDULE_PERIOD = 6
++SCHEDULE_PROFILES = ("same_frame_5", "mixed_palette_a", "same_frame_9",
++                     "mixed_palette_b", "explore")
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    _validate_indices(seed, sample_index)
++    _check_identifiers(seed, sample_index)
+     unknown = set(overrides) - {"scene_profile"}
+     if unknown:
+         raise ValueError(f"unknown override(s): {sorted(unknown)}")
+@@ -482,14 +479,16 @@
+     band = _band(difficulty)
+     ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION, task_id=TASK_ID, difficulty=band, overrides=overrides)
+     if requested is None:
+-        phase = sample_index % LESSON_SCHEDULE_PERIOD
+-        if phase in (0, 1):
+-            # Six consecutive accepted draws ordinarily give two of each
+-            # witness. Production census checks actual rejection/assembly.
+-            teaching = "same_row" if phase == 0 else "mixed_row"
++        position = sample_index % LESSON_SCHEDULE_PERIOD
++        if position in (0, 1, 3, 4):
+             profile = ctx.draw_choice("scene_profile", ("permuted_frames",))
+-            return _general(ctx.draw_rng("layout"), profile, band, teaching=teaching)
+-    profile = ctx.draw_choice("scene_profile", list(PUBLIC_PROFILES) + [name for name in GENERAL_PROFILES for _ in range(4)])
++        if position in (0, 3):
++            return _general(ctx.draw_rng("layout"), profile, band,
++                            teaching_frame=5 if position == 0 else 9)
++        if position in (1, 4):
++            return _general(ctx.draw_rng("layout"), profile, band,
++                            teaching_palette=(9, 0, 5) if position == 1 else (0, 5, 9))
++    profile = requested or ctx.draw_choice("scene_profile", list(PUBLIC_PROFILES) + [name for name in GENERAL_PROFILES for _ in range(4)])
+     if profile in PUBLIC_PROFILES:
+         return [row[:] for row in _PUBLIC_INPUTS[profile]]
+     return _general(ctx.draw_rng("layout"), profile, band)
+@@ -499,73 +498,89 @@
+     return list(_analysis(grid)["errors"])
+ 
+ 
+-def strict_canonical_like(grid):
+-    """The supported lawful lattice domain, including row/swatch recombinations."""
+-    return self_check(grid)
+-
+-
+-def _same_row_nonzero(grid):
++# These mirrors are deliberate rivals, never label authorities. Racket remains
++# the selected rule and the public lesson census supplies independent labels.
++def _frame_rival(grid, *, fixed_palette=False, force_same_row_zero=False):
++    parsed = _source_parse(grid)
++    size = parsed["size"]
++    rows = []
++    for col in range(len(parsed["col_bands"])):
++        rows.append(next(row for row in range(3)
++                         if _solid_color(parsed["cores"][row][col], size) not in (None, 2, 8)))
++    out = rule_mirror(grid)
++    same_row = len(set(rows)) == 1
++    for col, solid_row in enumerate(rows):
++        target = (_STANDARD_FRAMES[solid_row] if fixed_palette
++                  else 0 if force_same_row_zero and same_row
++                  else parsed["row_colors"][solid_row])
++        pattern = next(parsed["cores"][row][col] for row in range(3)
++                       if _is_pattern(parsed["cores"][row][col]))
++        for r in range(size):
++            for c in range(size):
++                if pattern[r][c] == 1:
++                    out[r][col * (size + 1) + c] = target
++    return out
++
++
++def _same_row_zero_frame(grid):
++    return _frame_rival(grid, force_same_row_zero=True)
++
++
++def _fixed_row_palette(grid):
++    return _frame_rival(grid, fixed_palette=True)
++
++
++def _strip_only_when_same_row(grid):
++    info = _analysis(grid)
++    if info["errors"]:
++        raise ValueError("; ".join(info["errors"]))
++    return info["output"] if len(set(info["solid_rows"])) == 1 else _fixed_row_palette(grid)
++
++
++def _has_mixed_reassigned_frame(grid):
++    info = _analysis(grid)
++    return (not info["errors"] and len(set(info["solid_rows"])) > 1
++            and any(info["row_colors"][row] != _STANDARD_FRAMES[row]
++                    for row in info["solid_rows"]))
++
++
++def _has_nonzero_same_row(grid):
+     info = _analysis(grid)
+     return (not info["errors"] and len(set(info["solid_rows"])) == 1
+             and info["row_colors"][info["solid_rows"][0]] != 0)
+ 
+ 
+-def _swatch_lookup_matters(grid):
++def _has_reassigned_frame(grid):
+     info = _analysis(grid)
+-    return (not info["errors"]
+-            and any(info["row_colors"][row] != _STANDARD_FRAMES[row] for row in info["solid_rows"]))
+-
+-
+-def _mixed_row_swatch_lookup_matters(grid):
+-    info = _analysis(grid)
+-    return (not info["errors"] and len(set(info["solid_rows"])) > 1
+-            and any(info["row_colors"][row] != _STANDARD_FRAMES[row] for row in info["solid_rows"]))
+-
+-
+-def _rival_same_row_force_zero(grid):
+-    info = _analysis(grid)
+-    if info["errors"]:
+-        raise ValueError("; ".join(info["errors"]))
+-    if len(set(info["solid_rows"])) != 1:
+-        return info["output"]
+-    frame = info["row_colors"][info["solid_rows"][0]]
+-    return [[0 if value == frame else value for value in row] for row in info["output"]]
+-
+-
+-def _rival_fixed_row_swatches(grid):
+-    parsed = _source_parse(grid)
+-    altered = [list(row) for row in grid]
+-    for row_index, (first, last) in enumerate(parsed["row_bands"]):
+-        for row in range(first, last + 1):
+-            altered[row][parsed["col_bands"][0][0]] = _STANDARD_FRAMES[row_index]
+-    return rule_mirror(altered)
+-
+-
+-def _rival_mixed_rows_fixed_swatches(grid):
+-    info = _analysis(grid)
+-    if info["errors"]:
+-        raise ValueError("; ".join(info["errors"]))
+-    if len(set(info["solid_rows"])) == 1:
+-        return info["output"]
+-    return _rival_fixed_row_swatches(grid)
+-
+-
+-SEMANTIC_WITNESSES = {
+-    "same_row_nonzero": _same_row_nonzero,
+-    "swatch_lookup_matters": _swatch_lookup_matters,
+-    "mixed_row_swatch_lookup_matters": _mixed_row_swatch_lookup_matters,
+-}
+-SEMANTIC_RIVALS = {
+-    "same_row_force_zero": _rival_same_row_force_zero,
+-    "fixed_row_swatches": _rival_fixed_row_swatches,
+-    "mixed_rows_fixed_swatches": _rival_mixed_rows_fixed_swatches,
+-}
+-WITNESS_RIVALS = {
+-    "same_row_nonzero": ["same_row_force_zero"],
+-    "swatch_lookup_matters": ["fixed_row_swatches"],
+-    "mixed_row_swatch_lookup_matters": ["mixed_rows_fixed_swatches"],
+-}
+-# All three shortcuts fit every labeled canonical pair; generated witnesses teach
+-# the missing distinctions. Finite checks cover only these declared rivals.
++    return (not info["errors"] and any(info["row_colors"][row] != _STANDARD_FRAMES[row]
++                                      for row in info["solid_rows"]))
++
++
++def strict_canonical_like(grid):
++    """The validated tile/swatch reasoning manifold, including lawful variants."""
++    return self_check(grid)
++
++
++SEMANTIC_RIVALS = {"same_row_zero_frame": _same_row_zero_frame,
++                   "fixed_row_palette": _fixed_row_palette,
++                   "strip_only_when_same_row": _strip_only_when_same_row}
+ CANONICAL_SHORTCUTS = dict(SEMANTIC_RIVALS)
+ LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
++SEMANTIC_WITNESSES = {"nonzero_same_row": _has_nonzero_same_row,
++                      "reassigned_frame": _has_reassigned_frame,
++                      "mixed_reassigned_frame": _has_mixed_reassigned_frame}
++WITNESS_RIVALS = {"nonzero_same_row": ["same_row_zero_frame"],
++                  "reassigned_frame": ["fixed_row_palette"],
++                  "mixed_reassigned_frame": ["strip_only_when_same_row"]}
++
++
++def lesson_identifiable(demos, query):
++    """Check the declared finite rival family, not universal identifiability."""
++    if not demos:
++        return ["At least one labeled demonstration is required"]
++    reasons = []
++    for name, rival in LESSON_COMPETITORS.items():
++        if (all(rival(pair["input"]) == pair["output"] for pair in demos)
++                and rival(query["input"]) != query["output"]):
++            reasons.append(f"{name} fits every demonstration and changes the query")
++    return reasons

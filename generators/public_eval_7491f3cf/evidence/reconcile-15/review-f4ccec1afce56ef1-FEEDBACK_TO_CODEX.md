@@ -1,0 +1,2 @@
+# F1: Biggest avoidable friction: preflight misses the ordinary worker default
+The public-authoring preflight exercises ordinary generation with `difficulty="medium"`, but the actual worker passes `None` by default; both implementations initially passed preflight yet rejected that call. Add a default/None probe to the shared preflight; this return fixes both local APIs with failed-first regressions without editing the shared runner.

@@ -1,0 +1,1 @@
+Repeated parents arrived as empty homes despite an available prior return; carrying forward task-local prototypes as explicitly unapproved source would avoid reconstruction while retaining fresh preflight and owner reconciliation. The returned auditors now reject mismatched task/program identities and changed preflight evidence, closing a gap left by file-hash-only validation.

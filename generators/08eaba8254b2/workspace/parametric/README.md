@@ -1,0 +1,5 @@
+# Native family contract
+
+Preserve all three accepted Racket programs and the strengthened topology/bounding-box/tie bank. Update the random-component bank with joint two-demo selector teaching, and add the separate XOR-to-pair-recolor program and pair/trimer teaching bank. Episode rules are alternatives, not a composition. The first five demonstrations contain both incoming diagnostic pairs plus the incumbent bounding-box diagnostic. Four demos were concretely ambiguous between largest-component and bounding-box rules at seeds 10 and 12; the actual supported minimum is now five. Queries draw one of all three banks independently of setting and are privately shuffled. Both incoming joint teaching pairs remain intact; matched inputs, count prefixes and one-query visibility are retained.
+
+Current supported demos: 5–6; queries: 1–4, with four for qualification. Below-minimum requests raise ValueError. Qualification and acceptance remain owner actions; previous approval does not bind these edited bytes.

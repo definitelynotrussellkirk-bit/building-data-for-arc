@@ -1,0 +1,2 @@
+# F1: Biggest avoidable friction: combined-check timeout obscures completion
+The combined task command exceeded this execution tool's time bound even when a run printed passing tests, while both complete per-task suites exited cleanly. Document per-target direct test/audit commands with explicit timeout budgets so a transport timeout is not mistaken for a product failure or silently counted as a successful run.

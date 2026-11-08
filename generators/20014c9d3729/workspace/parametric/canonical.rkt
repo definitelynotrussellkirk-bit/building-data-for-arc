@@ -1,0 +1,11 @@
+(rule!
+  (for/fold ([out (empty-grid (rows g) (cols g) 0)]) ([color (in-list (grid-colors g 0))])
+    (let* ((objs (sort (filter (lambda (obj) (= (obj-color obj) color)) (objects g 0))
+                       (lambda (a b)
+                         (if (= (obj-size a) (obj-size b))
+                             (if (= (obj-r1 a) (obj-r1 b))
+                                 (< (obj-c1 a) (obj-c1 b))
+                                 (< (obj-r1 a) (obj-r1 b)))
+                             (> (obj-size a) (obj-size b))))))
+           (best (first objs)))
+      (paint-cells out (obj-cells best) color))))

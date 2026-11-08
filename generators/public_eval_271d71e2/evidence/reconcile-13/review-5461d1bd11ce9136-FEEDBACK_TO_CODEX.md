@@ -1,0 +1,1 @@
+F1: The public-creation source binding expands to more than 150 shared-runtime files, making otherwise compact causal receipts hard to inspect. Preserve the full machine binding, but also emit a task-local compact digest containing only changed task sources, canonical hash, runtime identity hash, and the parent linkage.

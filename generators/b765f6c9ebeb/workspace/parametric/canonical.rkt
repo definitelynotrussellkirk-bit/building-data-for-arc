@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (define (paint grid cells color) (for/fold ((out grid)) ((p (in-list cells))) (if (in-bounds? (first p) (second p) (rows out) (cols out)) (set-cell out (first p) (second p) color) out))) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((obj (in-list (objects g 0)))) (if (> (obj-size obj) 1) (paint out (obj-cells obj) (obj-color obj)) out))))

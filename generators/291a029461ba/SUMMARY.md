@@ -1,0 +1,6 @@
+# 291a029461ba
+
+0-bg grid (h, w sized to fit) with: (a) ONE SOLID FILLED RECTANGLE of size rh × rw (rh ∈ {4..7}, rw ∈ {4..8}) placed at random interior position, painted entirely in BG_COLOR (the rectangle's background, drawn from a kind-keyed palette); (b) 1-5 OUTLIER DOTS placed at random distinct interior cells of the rectangle (NOT at the top-left corner), each painted in DOT_COLOR (distinct from bg_color, palette[1]). The rectangle is the largest near-solid region in the grid. The top-left of the rectangle keeps bg_color. Rule (CROSS-HATCH CROP: THE LARGEST NEAR-SOLID RECTANGLE'S DOTS YIELD ROWS × COLUMNS THAT FORM A CROSS-HATCH OUTPUT): identify the LARGEST near-solid RECTANGLE (the one with most uniformly-colored interior cells). EXTRACT the DOT ROWS (rows in the rectangle containing dot_color cells) and DOT COLS (cols containing them). PRODUCE a CROSS-HATCH OUTPUT: a small grid where row × col intersections from the dot rows/cols are painted dot_color and the rest are bg_color (or vice-versa per demos). Net: the outlier dots are projected into a cross-hatch pattern on a small bg_color × dot_color output.
+
+Kind: `per_puzzle`. Imported version: `3.0.0`.
+Approval is derived by the catalog from current code and retained evidence.

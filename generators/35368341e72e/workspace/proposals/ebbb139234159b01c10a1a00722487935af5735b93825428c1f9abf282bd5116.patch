@@ -1,0 +1,6102 @@
+diff --git a/repo/generators/35368341e72e/notes.md b/repo/generators/35368341e72e/notes.md
+--- a/repo/generators/35368341e72e/notes.md
++++ b/repo/generators/35368341e72e/notes.md
+@@ -188,3 +188,42 @@
+ **Limit.** The Python translation is independent of generator implementation,
+ but the Racket authority remains the final label source; the retained
+ counterexample was therefore also run through `arcpuzzles apply`.
++
++## Parametric admission prototype — review-790aa8341b8feb64
++
++The approved production generator remains byte-for-byte unchanged at SHA-256
++`c9684fe1e2f9b3a74dd8474424b2a3098b328eb07f34f458e18c1aa6b83ca265`.
++The new task-local adapter lives under `workspace/parametric/` and exposes one
++episode-fixed parameter:
++
++- `assembly=query_order`: exact canonical Racket bytes, SHA-256
++  `dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066`;
++- `assembly=fewest_cells_first`: decode every queried key to its 3×3 prototype,
++  count active cells per occurrence, stable-sort by count while preserving ties
++  and repeated keys, then gallery in that order; program SHA-256
++  `99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870`.
++
++Inputs are matched across settings. Episodes accept 2–6 demonstrations and emit
++exactly four sequentially revealed, distinct queries. The fourth query is 30×30,
++contains five key/prototype bands and seven query occurrences, and produces a
++3×27 answer. `public_turn()` exposes only demonstrations plus the current query
++input; settings, answers and future queries remain private.
++
++The authoring audit spans both settings, seeds 0/17/97 and demonstration counts
++2/3/6: 18 jobs and 272 protected-Racket evaluations. Every label matched Racket,
++the selected setting was the sole retained finite-rival survivor, matched inputs
++and public projection held, and the 30×30 nondefault case changed under the
++canonical query-order counterfactual.
++
++Native qualification retained four jobs (two settings × seeds 0/17), four
++queries per job and 40 protected-Racket evaluations with status `qualified`.
++The source-bound causal witness is `checks/35368341e72e/causal/witness.json`:
++step A derives per-occurrence prototype counts `[6,3,5,2,6,4,3]`; step B consumes
++that intermediate to produce `[2,3,3,4,5,6,6]`. Skipping A preserves query order
++and changes the protected-Racket final answer. Reviewer readiness does not grant
++variant approval, owner acceptance or training admission.
++
++Known scope: this is a two-setting hypothesis family, not a claim that every
++possible assembly ordering is identifiable. The owner must integrate exact bytes
++and rerun native qualification plus acceptance on the live source before any
++catalog or training decision.
+diff --git a/repo/generators/35368341e72e/tests/test_parametric_audit.py b/repo/generators/35368341e72e/tests/test_parametric_audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/tests/test_parametric_audit.py
+@@ -0,0 +1,67 @@
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++
++def test_protected_racket_audit_writes_reusable_causal_case(tmp_path):
++    task_dir = Path(__file__).resolve().parents[1]
++    repo_root = task_dir.parents[1]
++    script = task_dir / "workspace" / "parametric" / "audit.py"
++    assert script.is_file(), f"missing {script}"
++    report_path = tmp_path / "authoring.json"
++    case_path = tmp_path / "audited-case.json"
++    env = dict(os.environ)
++    env["PYTHONPATH"] = os.pathsep.join(
++        [str(repo_root / "src"), str(repo_root / "shared" / "runtime")]
++    )
++    completed = subprocess.run(
++        [
++            sys.executable,
++            str(script),
++            "--seed",
++            "5",
++            "--demos",
++            "2",
++            "--out",
++            str(report_path),
++            "--case",
++            str(case_path),
++        ],
++        cwd=repo_root,
++        env=env,
++        text=True,
++        capture_output=True,
++        check=False,
++        timeout=120,
++    )
++    assert completed.returncode == 0, completed.stdout + completed.stderr
++    report = json.loads(report_path.read_text())
++    case = json.loads(case_path.read_text())
++    assert report["schema"] == "35368341e72e-parametric-authoring-v1"
++    assert report["task_id"] == "35368341e72e"
++    assert report["racket"]["backend"] == "racket"
++    assert report["racket"]["protected"] is True
++    assert report["matched_inputs_across_settings"] is True
++    assert len(report["jobs"]) == 2
++    assert {row["assembly"] for row in report["jobs"]} == {
++        "query_order",
++        "fewest_cells_first",
++    }
++    assert all(row["declared_survivors"] == [row["assembly"]] for row in report["jobs"])
++    assert all(row["tested_harmful_survivors"] == [] for row in report["jobs"])
++    assert all(row["all_python_labels_match_racket"] for row in report["jobs"])
++    assert all(row["public_projection"]["query_answers_hidden"] for row in report["jobs"])
++    assert all(row["public_projection"]["future_queries_hidden"] for row in report["jobs"])
++    assert all(row["query_shapes"][-1] == [30, 30] for row in report["jobs"])
++    assert case["schema"] == "35368341e72e-audited-causal-case-v1"
++    assert case["settings"] == {"assembly": "fewest_cells_first"}
++    assert case["program"] != case["counterfactual_program"]
++    assert case["output"] != case["counterfactual_output"]
++    assert case["ablation"] == "skip_a"
++    intermediate = case["intermediate_value"]
++    assert intermediate["active_cell_counts"] != intermediate["sorted_active_cell_counts"]
++    assert intermediate["sorted_active_cell_counts"] == sorted(intermediate["active_cell_counts"])
+diff --git a/repo/generators/35368341e72e/tests/test_parametric_lookup_order.py b/repo/generators/35368341e72e/tests/test_parametric_lookup_order.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/tests/test_parametric_lookup_order.py
+@@ -0,0 +1,209 @@
++"""Native parametric checks for prototype lookup followed by assembly-order inference."""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from reviewer_support import canonical_path, find_root, public_challenge_bytes, public_challenge_id
++
++
++TASK_ID = "35368341e72e"
++TASK_DIR = Path(__file__).resolve().parents[1]
++PARAMETRIC_DIR = TASK_DIR / "workspace" / "parametric"
++QUERY_ORDER = {"assembly": "query_order"}
++FEWEST_FIRST = {"assembly": "fewest_cells_first"}
++
++
++def _load(name: str):
++    path = PARAMETRIC_DIR / f"{name}.py"
++    assert path.is_file(), f"missing {path}"
++    spec = importlib.util.spec_from_file_location(f"test_{TASK_ID}_{name}", path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def _canonical_program() -> str:
++    root = find_root(__file__)
++    programs = set()
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        for line in handle:
++            if line.strip():
++                row = json.loads(line)
++                if row.get("task_id") == TASK_ID:
++                    programs.add(row["program_solution"])
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def _inputs(episode):
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def test_contract_and_exact_canonical_default():
++    adapter = _load("adapter")
++    contract = json.loads((PARAMETRIC_DIR / "promotion.json").read_text())
++    assert contract == {
++        "schema": "arcpuzzles-parametric-adapter-v1",
++        "adapter": f"generators/{TASK_ID}/workspace/parametric/adapter.py",
++        "parameters": {"assembly": ["query_order", "fewest_cells_first"]},
++        "default": QUERY_ORDER,
++        "limits": {"demos": [2, 6], "queries": [4, 4]},
++        "qualification_demos": 3,
++    }
++    canonical = _canonical_program()
++    assert (PARAMETRIC_DIR / "canonical.rkt").read_bytes() == canonical.encode("utf-8")
++    assert adapter.program(QUERY_ORDER) == canonical
++    alternate = adapter.program(FEWEST_FIRST)
++    assert alternate != canonical
++    assert "active-cell-count" in alternate
++
++
++def test_settings_seed_and_count_boundaries_are_strict():
++    adapter = _load("adapter")
++    for settings in (
++        None,
++        {},
++        {"assembly": True},
++        {"assembly": 0},
++        {"assembly": "fewest"},
++        {"assembly": "query_order", "extra": 1},
++    ):
++        with pytest.raises((TypeError, ValueError)):
++            adapter.program(settings)
++    for seed, demos, queries in (
++        (True, 3, 4),
++        (-1, 3, 4),
++        (2**63, 3, 4),
++        (1.0, 3, 4),
++        (0, 1, 4),
++        (0, 7, 4),
++        (0, True, 4),
++        (0, 3, 3),
++        (0, 3, 5),
++        (0, 3, True),
++    ):
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(seed, QUERY_ORDER, demos, queries)
++
++
++def test_inputs_are_setting_independent_distinct_and_outputs_teach_the_setting():
++    adapter = _load("adapter")
++    canonical = adapter.generate(23, QUERY_ORDER, 3, 4)
++    alternate = adapter.generate(23, FEWEST_FIRST, 3, 4)
++    assert _inputs(canonical) == _inputs(alternate)
++    serialized = [json.dumps(grid, separators=(",", ":")) for grid in _inputs(canonical)]
++    assert len(serialized) == len(set(serialized)) == 7
++    assert all(
++        left["output"] != right["output"]
++        for left, right in zip(
++            canonical["train"] + canonical["test"],
++            alternate["train"] + alternate["test"],
++            strict=True,
++        )
++    )
++    assert canonical["program_solution"] == adapter.program(QUERY_ORDER)
++    assert alternate["program_solution"] == adapter.program(FEWEST_FIRST)
++
++
++@pytest.mark.parametrize("demos", [2, 3, 4, 5, 6])
++@pytest.mark.parametrize("settings", [QUERY_ORDER, FEWEST_FIRST])
++def test_every_supported_demo_count_has_four_queries_and_no_tested_harmful_survivor(demos, settings):
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    episode = adapter.generate(71 + demos, settings, demos, 4)
++    assert len(episode["train"]) == demos
++    assert len(episode["test"]) == 4
++    assert prototype.teaching_check(episode, settings)["survivors"] == [settings["assembly"]]
++    assert prototype.teaching_check(episode, settings)["harmful_survivors"] == []
++    for pair in episode["train"] + episode["test"]:
++        assert prototype.validate_input(pair["input"]) == []
++        assert pair["output"] == prototype.mirror(pair["input"], settings)
++        assert 1 <= len(pair["output"]) <= 30
++        assert 1 <= len(pair["output"][0]) <= 30
++
++
++def test_minimum_and_maximum_counts_keep_fixed_query_prefix_and_substantive_thirty_canvas():
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    minimum = adapter.generate(17, FEWEST_FIRST, 2, 4)
++    maximum = adapter.generate(17, FEWEST_FIRST, 6, 4)
++    assert minimum["train"] == maximum["train"][:2]
++    assert minimum["test"] == maximum["test"]
++    assert [(len(p["input"]), len(p["input"][0])) for p in minimum["test"]] == [
++        (9, 17),
++        (14, 23),
++        (22, 28),
++        (30, 30),
++    ]
++    largest = minimum["test"][-1]
++    metrics = prototype.input_metrics(largest["input"])
++    assert metrics["input_shape"] == [30, 30]
++    assert metrics["key_count"] == 5
++    assert metrics["query_length"] == 7
++    assert metrics["prototype_active_cells"] == [2, 3, 4, 5, 6]
++    assert metrics["nonzero_cells"] >= 32
++    assert metrics["content_row_span"] == 30
++    assert metrics["content_col_span"] >= 28
++    assert [len(largest["output"]), len(largest["output"][0])] == [3, 27]
++
++
++def test_active_cell_intermediate_drives_stable_output_order_and_preserves_repeats():
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    pair = adapter.generate(41, FEWEST_FIRST, 2, 4)["test"][-1]
++    info = prototype.intermediate(pair["input"])
++    counts = [row["active_cells"] for row in info["query_occurrences"]]
++    sorted_counts = [row["active_cells"] for row in info["fewest_first_occurrences"]]
++    assert counts != sorted_counts
++    assert sorted_counts == sorted(counts)
++    assert len(info["query_keys"]) > len(set(info["query_keys"]))
++    assert len(info["fewest_first_keys"]) == len(info["query_keys"])
++    assert pair["output"] == prototype.gallery(
++        [row["prototype"] for row in info["fewest_first_occurrences"]]
++    )
++
++
++def test_public_turn_hides_private_state_future_queries_and_answers():
++    adapter = _load("adapter")
++    prototype = _load("prototype")
++    episode = adapter.generate(5, FEWEST_FIRST, 3, 4)
++    public = prototype.public_turn(episode, 0)
++    assert set(public) == {"train", "test"}
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert len(public["test"]) == 1
++    assert set(public["test"][0]) == {"input"}
++    assert public["test"][0]["input"] == episode["test"][0]["input"]
++    assert public_challenge_bytes(public) == public_challenge_bytes(
++        {"train": episode["train"], "test": [episode["test"][0]]}
++    )
++    changed = deepcopy(episode)
++    changed["settings"] = QUERY_ORDER
++    changed["seed"] = -1
++    changed["program_solution"] = "private rule text"
++    changed["test"][0]["output"] = [[0]]
++    changed["test"][1]["input"] = [[9]]
++    assert public_challenge_id(prototype.public_turn(changed, 0)) == public_challenge_id(public)
++    public["train"][0]["input"][0][0] = 9
++    assert prototype.public_turn(episode, 0)["train"][0]["input"][0][0] != 9
++    for index in (-1, True, 4):
++        with pytest.raises((TypeError, ValueError)):
++            prototype.public_turn(episode, index)
++
++
++def test_generation_is_deterministic_and_seed_changes_visible_inputs():
++    adapter = _load("adapter")
++    first = adapter.generate(101, QUERY_ORDER, 4, 4)
++    second = adapter.generate(101, QUERY_ORDER, 4, 4)
++    other = adapter.generate(102, QUERY_ORDER, 4, 4)
++    assert first == second
++    assert _inputs(first) != _inputs(other)
++    assert hashlib.sha256(json.dumps(first, sort_keys=True).encode()).hexdigest() == hashlib.sha256(
++        json.dumps(second, sort_keys=True).encode()
++    ).hexdigest()
+diff --git a/repo/generators/35368341e72e/workspace/parametric/README.md b/repo/generators/35368341e72e/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/workspace/parametric/README.md
+@@ -0,0 +1,12 @@
++# 35368341e72e parametric family
++
++`assembly=query_order` is the exact selected canonical Racket program.
++`assembly=fewest_cells_first` keeps the same dictionary/query grammar, decodes
++all queried prototypes, measures their nonzero-cell counts, stably sorts the
++occurrences by that input-derived count, and galleries them. Repeated keys stay
++repeated.
++
++The input stream is setting-independent. It supports 2–6 demonstrations and
++exactly four distinct private queries; the last query is a substantive 30×30
++case with five spread prototype bands and seven spread query entries. Use
++`public_turn(episode, i)` from `prototype.py` to expose one query input at a time.
+diff --git a/repo/generators/35368341e72e/workspace/parametric/adapter.py b/repo/generators/35368341e72e/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/workspace/parametric/adapter.py
+@@ -0,0 +1,20 @@
++"""Thin native adapter for the 35368341e72e assembly-order family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_NAME = "_lookup_assembly_" + hashlib.sha256(str(_PATH).encode()).hexdigest()
++_SPEC = importlib.util.spec_from_file_location(_NAME, _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(f"cannot load sibling prototype: {_PATH}")
++_PROTOTYPE = importlib.util.module_from_spec(_SPEC)
++sys.modules[_NAME] = _PROTOTYPE
++_SPEC.loader.exec_module(_PROTOTYPE)
++
++program = _PROTOTYPE.program_for
++generate = _PROTOTYPE.generate_episode
+diff --git a/repo/generators/35368341e72e/workspace/parametric/audit.py b/repo/generators/35368341e72e/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/workspace/parametric/audit.py
+@@ -0,0 +1,315 @@
++#!/usr/bin/env python3
++"""Bounded protected-Racket audit and causal-case builder for 35368341e72e."""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import public_challenge_bytes, public_challenge_id
++
++
++HERE = Path(__file__).resolve().parent
++TASK_ID = "35368341e72e"
++ASSEMBLIES = ("query_order", "fewest_cells_first")
++
++
++def _load(name: str):
++    path = HERE / f"{name}.py"
++    module_name = f"_audit_{TASK_ID}_{name}_{hashlib.sha256(str(path).encode()).hexdigest()}"
++    spec = importlib.util.spec_from_file_location(module_name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(f"cannot load {path}")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[module_name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++ADAPTER = _load("adapter")
++PROTOTYPE = _load("prototype")
++
++
++def _raw(value: Any) -> bytes:
++    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
++
++
++def _sha(value: Any) -> str:
++    return hashlib.sha256(_raw(value)).hexdigest()
++
++
++def _sha_file(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def _write_new(path: Path, value: Any) -> None:
++    if path.exists() or path.is_symlink():
++        raise FileExistsError(path)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    temporary = path.with_name(f".{path.name}.tmp")
++    temporary.write_bytes(
++        (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n").encode()
++    )
++    temporary.replace(path)
++
++
++def _literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++class Evaluator:
++    def __init__(self) -> None:
++        self.bridge = RacketBridge()
++        identity = self.bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            self.bridge.close()
++            raise ValueError("audit requires a live protected Racket backend")
++        self.identity = {
++            key: identity[key]
++            for key in (
++                "schema",
++                "backend",
++                "protected",
++                "binary_sha256",
++                "prelude_sha256",
++                "bridge_sha256",
++                "boot_script_sha256",
++                "candidate_symbol_policy_sha256",
++            )
++            if key in identity
++        }
++        self.wrapped: dict[str, str] = {}
++        self.evaluations = 0
++
++    def apply(self, program: str, grid: list[list[int]]) -> list[list[int]]:
++        if program not in self.wrapped:
++            self.wrapped[program] = wrap_rule(program)
++        result = self.bridge.eval_text(f"({self.wrapped[program]} {_literal(grid)})")
++        self.evaluations += 1
++        if (
++            type(result) is not list
++            or not result
++            or type(result[0]) is not list
++            or not result[0]
++            or any(
++                type(row) is not list
++                or len(row) != len(result[0])
++                or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++                for row in result
++            )
++        ):
++            raise ValueError("Racket program returned a non-grid")
++        return result
++
++    def close(self) -> None:
++        self.bridge.close()
++
++
++def _public_projection(episode: dict[str, Any], assembly: str) -> dict[str, Any]:
++    visible = PROTOTYPE.public_turn(episode, 0)
++    payload = public_challenge_bytes(visible)
++    parsed = json.loads(payload)
++    changed = deepcopy(episode)
++    changed["settings"] = {"assembly": "query_order"}
++    changed["seed"] = -1
++    changed["program_solution"] = "private"
++    changed["test"][0]["output"] = [[0]]
++    changed["test"][1]["input"] = [[9]]
++    changed_payload = public_challenge_bytes(PROTOTYPE.public_turn(changed, 0))
++    direct = public_challenge_bytes(
++        {"train": episode["train"], "test": [episode["test"][0]]}
++    )
++    return {
++        "public_id": public_challenge_id(visible),
++        "public_sha256": hashlib.sha256(payload).hexdigest(),
++        "query_answers_hidden": all(set(pair) == {"input"} for pair in parsed["test"]),
++        "future_queries_hidden": len(parsed["test"]) == 1,
++        "private_mutation_stable": changed_payload == payload,
++        "settings_hidden": assembly.encode() not in payload and b"assembly" not in payload,
++        "program_hidden": b"rule!" not in payload and b"program_solution" not in payload,
++        "first_turn_matches_direct_projection": payload == direct,
++    }
++
++
++def _job(evaluator: Evaluator, seed: int, demos: int, assembly: str) -> tuple[dict[str, Any], dict[str, Any]]:
++    settings = {"assembly": assembly}
++    episode = ADAPTER.generate(seed, settings, demos, 4)
++    programs = {name: ADAPTER.program({"assembly": name}) for name in ASSEMBLIES}
++    declared_survivors = []
++    for name, program in programs.items():
++        outputs = [evaluator.apply(program, pair["input"]) for pair in episode["train"]]
++        if all(output == pair["output"] for output, pair in zip(outputs, episode["train"], strict=True)):
++            declared_survivors.append(name)
++    if declared_survivors != [assembly]:
++        raise ValueError(
++            f"demonstrations do not identify {assembly}: survivors={declared_survivors}, seed={seed}, demos={demos}"
++        )
++    selected_program = programs[assembly]
++    actual = [
++        evaluator.apply(selected_program, pair["input"])
++        for pair in episode["train"] + episode["test"]
++    ]
++    claimed = [pair["output"] for pair in episode["train"] + episode["test"]]
++    matches = [left == right for left, right in zip(actual, claimed, strict=True)]
++    if not all(matches):
++        raise ValueError("Python label differs from protected Racket")
++    teaching = PROTOTYPE.teaching_check(episode, settings)
++    if teaching["survivors"] != [assembly] or teaching["harmful_survivors"]:
++        raise ValueError(f"finite teaching audit failed: {teaching}")
++    metrics = [PROTOTYPE.input_metrics(pair["input"]) for pair in episode["train"] + episode["test"]]
++    public = _public_projection(episode, assembly)
++    if not all(
++        public[key]
++        for key in (
++            "query_answers_hidden",
++            "future_queries_hidden",
++            "private_mutation_stable",
++            "settings_hidden",
++            "program_hidden",
++            "first_turn_matches_direct_projection",
++        )
++    ):
++        raise ValueError(f"public projection failed: {public}")
++    row = {
++        "seed": seed,
++        "demos": demos,
++        "queries": 4,
++        "assembly": assembly,
++        "program_sha256": hashlib.sha256(selected_program.encode()).hexdigest(),
++        "declared_survivors": declared_survivors,
++        "tested_survivors": teaching["survivors"],
++        "tested_harmful_survivors": teaching["harmful_survivors"],
++        "tested_rivals": sorted(PROTOTYPE.CANDIDATES),
++        "all_python_labels_match_racket": all(matches),
++        "per_query_racket_match": matches[demos:],
++        "input_sha256": [_sha(pair["input"]) for pair in episode["train"] + episode["test"]],
++        "demo_shapes": [metric["input_shape"] for metric in metrics[:demos]],
++        "query_shapes": [metric["input_shape"] for metric in metrics[demos:]],
++        "largest_query_metrics": metrics[-1],
++        "public_projection": public,
++    }
++    private = {"settings": settings, "episode": episode}
++    return row, private
++
++
++def run(seeds: list[int], demo_counts: list[int]) -> tuple[dict[str, Any], dict[str, Any]]:
++    evaluator = Evaluator()
++    try:
++        rows: list[dict[str, Any]] = []
++        private: list[dict[str, Any]] = []
++        for seed in seeds:
++            for demos in demo_counts:
++                paired = []
++                for assembly in ASSEMBLIES:
++                    row, hidden = _job(evaluator, seed, demos, assembly)
++                    rows.append(row)
++                    private.append(hidden)
++                    paired.append(hidden["episode"])
++                left_inputs = [p["input"] for p in paired[0]["train"] + paired[0]["test"]]
++                right_inputs = [p["input"] for p in paired[1]["train"] + paired[1]["test"]]
++                if left_inputs != right_inputs:
++                    raise ValueError("input sampling depends on private setting")
++        alternate = next(
++            item for item in private if item["settings"] == {"assembly": "fewest_cells_first"}
++        )
++        pair = alternate["episode"]["test"][-1]
++        alt_program = ADAPTER.program({"assembly": "fewest_cells_first"})
++        canonical_program = ADAPTER.program({"assembly": "query_order"})
++        output = evaluator.apply(alt_program, pair["input"])
++        counterfactual = evaluator.apply(canonical_program, pair["input"])
++        if output == counterfactual:
++            raise ValueError("causal counterfactual did not change final output")
++        info = PROTOTYPE.intermediate(pair["input"])
++        counts = [row["active_cells"] for row in info["query_occurrences"]]
++        sorted_counts = [row["active_cells"] for row in info["fewest_first_occurrences"]]
++        case = {
++            "schema": "35368341e72e-audited-causal-case-v1",
++            "task_id": TASK_ID,
++            "settings": {"assembly": "fewest_cells_first"},
++            "program": alt_program,
++            "input": pair["input"],
++            "output": output,
++            "counterfactual_program": canonical_program,
++            "counterfactual_output": counterfactual,
++            "intermediate_value": {
++                "query_keys": info["query_keys"],
++                "active_cell_counts": counts,
++                "fewest_first_keys": info["fewest_first_keys"],
++                "sorted_active_cell_counts": sorted_counts,
++            },
++            "ablation": "skip_a",
++        }
++        report = {
++            "schema": "35368341e72e-parametric-authoring-v1",
++            "task_id": TASK_ID,
++            "settings": [{"assembly": name} for name in ASSEMBLIES],
++            "seeds": seeds,
++            "demo_counts": demo_counts,
++            "queries": 4,
++            "matched_inputs_across_settings": True,
++            "jobs": rows,
++            "racket": evaluator.identity,
++            "racket_evaluations": evaluator.evaluations,
++            "source_files": [
++                {
++                    "path": path.name,
++                    "sha256": _sha_file(path),
++                }
++                for path in sorted(
++                    [
++                        HERE / "adapter.py",
++                        HERE / "prototype.py",
++                        HERE / "promotion.json",
++                        HERE / "canonical.rkt",
++                        HERE / "fewest_cells_first.rkt",
++                    ]
++                )
++            ],
++            "causal_case_sha256": _sha(case),
++            "limits": (
++                "Bounded protected-Racket replay over the listed seeds/demo counts and finite rivals; "
++                "not universal uniqueness, owner acceptance, or training admission."
++            ),
++        }
++        return report, case
++    finally:
++        evaluator.close()
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--seed", action="append", type=int)
++    parser.add_argument("--demos", action="append", type=int)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--case", type=Path, required=True)
++    args = parser.parse_args(argv)
++    seeds = args.seed or [0, 17]
++    demo_counts = args.demos or [2, 3, 6]
++    for seed in seeds:
++        if type(seed) is not int or not 0 <= seed <= 2**63 - 1:
++            raise ValueError("seed outside 0..2^63-1")
++    for demos in demo_counts:
++        if type(demos) is not int or not 2 <= demos <= 6:
++            raise ValueError("demos outside 2..6")
++    report, case = run(seeds, demo_counts)
++    _write_new(args.out, report)
++    _write_new(args.case, case)
++    print(json.dumps({
++        "status": "passed",
++        "jobs": len(report["jobs"]),
++        "racket_evaluations": report["racket_evaluations"],
++        "report": str(args.out),
++        "case": str(args.case),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/35368341e72e/workspace/parametric/canonical.rkt b/repo/generators/35368341e72e/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (e8b-paste grid pat top left) (for*/fold ((out grid)) ((r (in-range (rows pat))) (c (in-range (cols pat)))) (let ((v (at pat r c)) (rr (+ top r)) (cc (+ left c))) (if (and (not (= v 0)) (in-bounds? rr cc (rows out) (cols out))) (set-cell out rr cc v) out)))) (define (s17b-gallery-row objs (gap 1)) (if (empty? objs) (list (list 0)) (let* ((h (apply max (map rows objs))) (w (+ (apply + (map cols objs)) (* gap (- (length objs) 1))))) (let loop ((rest-objs objs) (left 0) (out (empty-grid h w 0))) (if (empty? rest-objs) out (let ((obj (first rest-objs))) (loop (rest rest-objs) (+ left (cols obj) gap) (e8b-paste out obj 0 left)))))))) (define (t13-prototype-groups grid) (map (lambda (c) (list (- c 1) (+ c 1) (at grid 0 c))) (filter (lambda (c) (not (= (at grid 0 c) 0))) (range (cols grid))))) (let* ((groups (t13-prototype-groups g)) (query (filter (lambda (v) (not (= v 0))) (last g))) (parts (map (lambda (key) (let ((grp (first (filter (lambda (entry) (= (third entry) key)) groups)))) (subgrid g 1 (first grp) 3 (second grp)))) query))) (if (empty? query) (list (list 0)) (s17b-gallery-row parts 1)))))
+\ No newline at end of file
+diff --git a/repo/generators/35368341e72e/workspace/parametric/evidence/current/audited-case.json b/repo/generators/35368341e72e/workspace/parametric/evidence/current/audited-case.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/workspace/parametric/evidence/current/audited-case.json
+@@ -0,0 +1,1188 @@
++{
++  "ablation": "skip_a",
++  "counterfactual_output": [
++    [
++      5,
++      2,
++      3,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      2,
++      0,
++      0,
++      0,
++      5,
++      2,
++      3,
++      0,
++      8,
++      5,
++      0,
++      0,
++      0,
++      3,
++      0
++    ],
++    [
++      8,
++      5,
++      2,
++      0,
++      0,
++      8,
++      0,
++      0,
++      2,
++      3,
++      8,
++      0,
++      0,
++      0,
++      0,
++      0,
++      8,
++      5,
++      2,
++      0,
++      2,
++      3,
++      0,
++      0,
++      0,
++      8,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0
++    ]
++  ],
++  "counterfactual_program": "(rule! (let ((dummy 0)) (define (e8b-paste grid pat top left) (for*/fold ((out grid)) ((r (in-range (rows pat))) (c (in-range (cols pat)))) (let ((v (at pat r c)) (rr (+ top r)) (cc (+ left c))) (if (and (not (= v 0)) (in-bounds? rr cc (rows out) (cols out))) (set-cell out rr cc v) out)))) (define (s17b-gallery-row objs (gap 1)) (if (empty? objs) (list (list 0)) (let* ((h (apply max (map rows objs))) (w (+ (apply + (map cols objs)) (* gap (- (length objs) 1))))) (let loop ((rest-objs objs) (left 0) (out (empty-grid h w 0))) (if (empty? rest-objs) out (let ((obj (first rest-objs))) (loop (rest rest-objs) (+ left (cols obj) gap) (e8b-paste out obj 0 left)))))))) (define (t13-prototype-groups grid) (map (lambda (c) (list (- c 1) (+ c 1) (at grid 0 c))) (filter (lambda (c) (not (= (at grid 0 c) 0))) (range (cols grid))))) (let* ((groups (t13-prototype-groups g)) (query (filter (lambda (v) (not (= v 0))) (last g))) (parts (map (lambda (key) (let ((grp (first (filter (lambda (entry) (= (third entry) key)) groups)))) (subgrid g 1 (first grp) 3 (second grp)))) query))) (if (empty? query) (list (list 0)) (s17b-gallery-row parts 1)))))",
++  "input": [
++    [
++      0,
++      4,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      7,
++      0,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      1,
++      0
++    ],
++    [
++      5,
++      2,
++      3,
++      0,
++      0,
++      0,
++      0,
++      2,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      8,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0
++    ],
++    [
++      8,
++      5,
++      2,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0,
++      0,
++      0,
++      2,
++      3,
++      0,
++      0,
++      0,
++      0,
++      0,
++      2,
++      3,
++      8
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ],
++    [
++      4,
++      0,
++      0,
++      0,
++      0,
++      6,
++      0,
++      0,
++      0,
++      0,
++      1,
++      0,
++      0,
++      0,
++      7,
++      0,
++      0,
++      0,
++      0,
++      4,
++      0,
++      0,
++      0,
++      0,
++      9,
++      0,
++      0,
++      0,
++      0,
++      6
++    ]
++  ],
++  "intermediate_value": {
++    "active_cell_counts": [
++      6,
++      3,
++      5,
++      2,
++      6,
++      4,
++      3
++    ],
++    "fewest_first_keys": [
++      7,
++      6,
++      6,
++      9,
++      1,
++      4,
++      4
++    ],
++    "query_keys": [
++      4,
++      6,
++      1,
++      7,
++      4,
++      9,
++      6
++    ],
++    "sorted_active_cell_counts": [
++      2,
++      3,
++      3,
++      4,
++      5,
++      6,
++      6
++    ]
++  },
++  "output": [
++    [
++      2,
++      0,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      0,
++      3,
++      0,
++      0,
++      8,
++      5,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      5,
++      2,
++      3,
++      0,
++      5,
++      2,
++      3
++    ],
++    [
++      0,
++      0,
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      0,
++      8,
++      0,
++      0,
++      2,
++      3,
++      0,
++      0,
++      2,
++      3,
++      8,
++      0,
++      8,
++      5,
++      2,
++      0,
++      8,
++      5,
++      2
++    ],
++    [
++      0,
++      0,
++      3,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      5,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0,
++      0
++    ]
++  ],
++  "program": "(rule! (let ((dummy 0))\n  ;; Decode every queried key, compute each prototype's active-cell-count,\n  ;; stably order occurrences from fewest active cells to most, then gallery.\n  (define (e8b-paste grid pat top left)\n    (for*/fold ((out grid)) ((r (in-range (rows pat))) (c (in-range (cols pat))))\n      (let ((v (at pat r c)) (rr (+ top r)) (cc (+ left c)))\n        (if (and (not (= v 0)) (in-bounds? rr cc (rows out) (cols out)))\n            (set-cell out rr cc v)\n            out))))\n  (define (s17b-gallery-row objs (gap 1))\n    (if (empty? objs)\n        (list (list 0))\n        (let* ((h (apply max (map rows objs)))\n               (w (+ (apply + (map cols objs)) (* gap (- (length objs) 1)))))\n          (let loop ((rest-objs objs) (left 0) (out (empty-grid h w 0)))\n            (if (empty? rest-objs)\n                out\n                (let ((obj (first rest-objs)))\n                  (loop (rest rest-objs)\n                        (+ left (cols obj) gap)\n                        (e8b-paste out obj 0 left))))))))\n  (define (t13-prototype-groups grid)\n    (map (lambda (c) (list (- c 1) (+ c 1) (at grid 0 c)))\n         (filter (lambda (c) (not (= (at grid 0 c) 0)))\n                 (range (cols grid)))))\n  (define (active-cell-count pat)\n    (count-if (lambda (p) (not (= (at pat (first p) (second p)) 0)))\n              (grid-positions pat)))\n  (let* ((groups (t13-prototype-groups g))\n         (query (filter (lambda (v) (not (= v 0))) (last g)))\n         (parts (map (lambda (key)\n                       (let ((grp (first (filter (lambda (entry) (= (third entry) key)) groups))))\n                         (subgrid g 1 (first grp) 3 (second grp))))\n                     query))\n         (ranked (sort parts (lambda (a b) (< (active-cell-count a)\n                                              (active-cell-count b))))))\n    (if (empty? query)\n        (list (list 0))\n        (s17b-gallery-row ranked 1)))))\n",
++  "schema": "35368341e72e-audited-causal-case-v1",
++  "settings": {
++    "assembly": "fewest_cells_first"
++  },
++  "task_id": "35368341e72e"
++}
+diff --git a/repo/generators/35368341e72e/workspace/parametric/evidence/current/authoring.json b/repo/generators/35368341e72e/workspace/parametric/evidence/current/authoring.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/workspace/parametric/evidence/current/authoring.json
+@@ -0,0 +1,1939 @@
++{
++  "causal_case_sha256": "8f5cc20794899a50b7ac19f1fb7ffd7aa77923658defab1c6cbc1013e8a389f8",
++  "demo_counts": [
++    2,
++    3,
++    6
++  ],
++  "jobs": [
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "query_order",
++      "declared_survivors": [
++        "query_order"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ]
++      ],
++      "demos": 2,
++      "input_sha256": [
++        "a91307aef0c35be9a7d3b99730d22ee6378d3ea038eafbbb08c59579a4635f43",
++        "3302c62e33353504dcc1f82beed945be0ec184fa6f79c79a07c4bd8812276a7a",
++        "e297d6457f2bd92bd56d76515f95ed245e3d88dbb8fc95c52e0f64f4c8111812",
++        "28e66361eacb166789ba8e7f270a512d14d105bffaad8fc10338f026b9391df7",
++        "0f4076c32395db5e30790baf8efdad5db20825440753bc85163efc587d7749ed",
++        "f65e863d53eefda0f8e9cea106be11fc19f0e9d948bfd93e47317e03562e515a"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "027b78d9ef8559a90e446aca67872aa5569b3a78d5983a348fd66d92eb644e0c",
++        "public_sha256": "027b78d9ef8559a90e446aca67872aa5569b3a78d5983a348fd66d92eb644e0c",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "query_order"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "fewest_cells_first",
++      "declared_survivors": [
++        "fewest_cells_first"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ]
++      ],
++      "demos": 2,
++      "input_sha256": [
++        "a91307aef0c35be9a7d3b99730d22ee6378d3ea038eafbbb08c59579a4635f43",
++        "3302c62e33353504dcc1f82beed945be0ec184fa6f79c79a07c4bd8812276a7a",
++        "e297d6457f2bd92bd56d76515f95ed245e3d88dbb8fc95c52e0f64f4c8111812",
++        "28e66361eacb166789ba8e7f270a512d14d105bffaad8fc10338f026b9391df7",
++        "0f4076c32395db5e30790baf8efdad5db20825440753bc85163efc587d7749ed",
++        "f65e863d53eefda0f8e9cea106be11fc19f0e9d948bfd93e47317e03562e515a"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "2657552fae743b9a7f81f452e18ada35c5f3dae92c00cc27d3b4bef5a6cb397d",
++        "public_sha256": "2657552fae743b9a7f81f452e18ada35c5f3dae92c00cc27d3b4bef5a6cb397d",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "fewest_cells_first"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "query_order",
++      "declared_survivors": [
++        "query_order"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ]
++      ],
++      "demos": 3,
++      "input_sha256": [
++        "a91307aef0c35be9a7d3b99730d22ee6378d3ea038eafbbb08c59579a4635f43",
++        "3302c62e33353504dcc1f82beed945be0ec184fa6f79c79a07c4bd8812276a7a",
++        "c12e03f3c915e3c63fd7765ecf4cbc796992bb4675fd5da40aff022865112098",
++        "e297d6457f2bd92bd56d76515f95ed245e3d88dbb8fc95c52e0f64f4c8111812",
++        "28e66361eacb166789ba8e7f270a512d14d105bffaad8fc10338f026b9391df7",
++        "0f4076c32395db5e30790baf8efdad5db20825440753bc85163efc587d7749ed",
++        "f65e863d53eefda0f8e9cea106be11fc19f0e9d948bfd93e47317e03562e515a"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "b2bad16d5a37cc1614b9f630afdefb2653fd2225ba73f3e76744b4bc79df5fc9",
++        "public_sha256": "b2bad16d5a37cc1614b9f630afdefb2653fd2225ba73f3e76744b4bc79df5fc9",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "query_order"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "fewest_cells_first",
++      "declared_survivors": [
++        "fewest_cells_first"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ]
++      ],
++      "demos": 3,
++      "input_sha256": [
++        "a91307aef0c35be9a7d3b99730d22ee6378d3ea038eafbbb08c59579a4635f43",
++        "3302c62e33353504dcc1f82beed945be0ec184fa6f79c79a07c4bd8812276a7a",
++        "c12e03f3c915e3c63fd7765ecf4cbc796992bb4675fd5da40aff022865112098",
++        "e297d6457f2bd92bd56d76515f95ed245e3d88dbb8fc95c52e0f64f4c8111812",
++        "28e66361eacb166789ba8e7f270a512d14d105bffaad8fc10338f026b9391df7",
++        "0f4076c32395db5e30790baf8efdad5db20825440753bc85163efc587d7749ed",
++        "f65e863d53eefda0f8e9cea106be11fc19f0e9d948bfd93e47317e03562e515a"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "5c6185268977084e1117718e83658956a0324459765008569ba3acd176247bc5",
++        "public_sha256": "5c6185268977084e1117718e83658956a0324459765008569ba3acd176247bc5",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "fewest_cells_first"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "query_order",
++      "declared_survivors": [
++        "query_order"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ],
++        [
++          12,
++          24
++        ],
++        [
++          16,
++          27
++        ],
++        [
++          20,
++          30
++        ]
++      ],
++      "demos": 6,
++      "input_sha256": [
++        "a91307aef0c35be9a7d3b99730d22ee6378d3ea038eafbbb08c59579a4635f43",
++        "3302c62e33353504dcc1f82beed945be0ec184fa6f79c79a07c4bd8812276a7a",
++        "c12e03f3c915e3c63fd7765ecf4cbc796992bb4675fd5da40aff022865112098",
++        "76cc5c205678808c5f06bd8e5f884cb15736c0fa57f5ddaaa55fc32b30112ebc",
++        "1e291b7aea788d09d7f20464334083893f74a441fa5ee877cd95b67220da9a17",
++        "3e2ae9fac206a652625c65b921001a8e8504051f2797d3ebe5f21ac545ffe06f",
++        "e297d6457f2bd92bd56d76515f95ed245e3d88dbb8fc95c52e0f64f4c8111812",
++        "28e66361eacb166789ba8e7f270a512d14d105bffaad8fc10338f026b9391df7",
++        "0f4076c32395db5e30790baf8efdad5db20825440753bc85163efc587d7749ed",
++        "f65e863d53eefda0f8e9cea106be11fc19f0e9d948bfd93e47317e03562e515a"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "48af6ca4df3df6420aee33afc1e497481c61506650d9a57757be6f5749ae2f55",
++        "public_sha256": "48af6ca4df3df6420aee33afc1e497481c61506650d9a57757be6f5749ae2f55",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "query_order"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "fewest_cells_first",
++      "declared_survivors": [
++        "fewest_cells_first"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ],
++        [
++          12,
++          24
++        ],
++        [
++          16,
++          27
++        ],
++        [
++          20,
++          30
++        ]
++      ],
++      "demos": 6,
++      "input_sha256": [
++        "a91307aef0c35be9a7d3b99730d22ee6378d3ea038eafbbb08c59579a4635f43",
++        "3302c62e33353504dcc1f82beed945be0ec184fa6f79c79a07c4bd8812276a7a",
++        "c12e03f3c915e3c63fd7765ecf4cbc796992bb4675fd5da40aff022865112098",
++        "76cc5c205678808c5f06bd8e5f884cb15736c0fa57f5ddaaa55fc32b30112ebc",
++        "1e291b7aea788d09d7f20464334083893f74a441fa5ee877cd95b67220da9a17",
++        "3e2ae9fac206a652625c65b921001a8e8504051f2797d3ebe5f21ac545ffe06f",
++        "e297d6457f2bd92bd56d76515f95ed245e3d88dbb8fc95c52e0f64f4c8111812",
++        "28e66361eacb166789ba8e7f270a512d14d105bffaad8fc10338f026b9391df7",
++        "0f4076c32395db5e30790baf8efdad5db20825440753bc85163efc587d7749ed",
++        "f65e863d53eefda0f8e9cea106be11fc19f0e9d948bfd93e47317e03562e515a"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "4e146a63d1140ada5ee323e08f5f1744e5af1b8337d1fc0066a282272207493d",
++        "public_sha256": "4e146a63d1140ada5ee323e08f5f1744e5af1b8337d1fc0066a282272207493d",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 0,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "fewest_cells_first"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "query_order",
++      "declared_survivors": [
++        "query_order"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ]
++      ],
++      "demos": 2,
++      "input_sha256": [
++        "dc855652cdbb6f8939f83fda6a686da2abce315472a73d8ff34f679ec3c44dc0",
++        "b3d4077123c6f769cbacbb432cd26f6e0453b06fd97a46ef45e739c44afd8008",
++        "e27d0428c8ca9cd32f961423249a8c33170d4d40b776940d67707c7b420558d3",
++        "ff831f546b0b03337f0ae7b701b9bd6a7ac5646236533e95fe893a74f8bdc395",
++        "471d093faa4a2b4ad3e31679026aec7a2047d7dfb0667d42aca88658f74496eb",
++        "03b9afef9a656022bff958e80e2e2540575de6d6990d870c0c836df4974552a8"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "5c0514d5db6240f669ba33611e4a7017c9c6bdf92f3686dc40551f0464036732",
++        "public_sha256": "5c0514d5db6240f669ba33611e4a7017c9c6bdf92f3686dc40551f0464036732",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "query_order"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "fewest_cells_first",
++      "declared_survivors": [
++        "fewest_cells_first"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ]
++      ],
++      "demos": 2,
++      "input_sha256": [
++        "dc855652cdbb6f8939f83fda6a686da2abce315472a73d8ff34f679ec3c44dc0",
++        "b3d4077123c6f769cbacbb432cd26f6e0453b06fd97a46ef45e739c44afd8008",
++        "e27d0428c8ca9cd32f961423249a8c33170d4d40b776940d67707c7b420558d3",
++        "ff831f546b0b03337f0ae7b701b9bd6a7ac5646236533e95fe893a74f8bdc395",
++        "471d093faa4a2b4ad3e31679026aec7a2047d7dfb0667d42aca88658f74496eb",
++        "03b9afef9a656022bff958e80e2e2540575de6d6990d870c0c836df4974552a8"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "347557463c58ef44564c896088698b57e633d42c22511031240e461f17a8af51",
++        "public_sha256": "347557463c58ef44564c896088698b57e633d42c22511031240e461f17a8af51",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "fewest_cells_first"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "query_order",
++      "declared_survivors": [
++        "query_order"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ]
++      ],
++      "demos": 3,
++      "input_sha256": [
++        "dc855652cdbb6f8939f83fda6a686da2abce315472a73d8ff34f679ec3c44dc0",
++        "b3d4077123c6f769cbacbb432cd26f6e0453b06fd97a46ef45e739c44afd8008",
++        "e018309fc3db4ae52d510f0dfa637b08dba73d1aa39c1776e4a832bd9ab54cdb",
++        "e27d0428c8ca9cd32f961423249a8c33170d4d40b776940d67707c7b420558d3",
++        "ff831f546b0b03337f0ae7b701b9bd6a7ac5646236533e95fe893a74f8bdc395",
++        "471d093faa4a2b4ad3e31679026aec7a2047d7dfb0667d42aca88658f74496eb",
++        "03b9afef9a656022bff958e80e2e2540575de6d6990d870c0c836df4974552a8"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "09dfccf4cb107a7fbdad60b254ab58b070d97d15d9481ece53b557b06686ffc2",
++        "public_sha256": "09dfccf4cb107a7fbdad60b254ab58b070d97d15d9481ece53b557b06686ffc2",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "query_order"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "fewest_cells_first",
++      "declared_survivors": [
++        "fewest_cells_first"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ]
++      ],
++      "demos": 3,
++      "input_sha256": [
++        "dc855652cdbb6f8939f83fda6a686da2abce315472a73d8ff34f679ec3c44dc0",
++        "b3d4077123c6f769cbacbb432cd26f6e0453b06fd97a46ef45e739c44afd8008",
++        "e018309fc3db4ae52d510f0dfa637b08dba73d1aa39c1776e4a832bd9ab54cdb",
++        "e27d0428c8ca9cd32f961423249a8c33170d4d40b776940d67707c7b420558d3",
++        "ff831f546b0b03337f0ae7b701b9bd6a7ac5646236533e95fe893a74f8bdc395",
++        "471d093faa4a2b4ad3e31679026aec7a2047d7dfb0667d42aca88658f74496eb",
++        "03b9afef9a656022bff958e80e2e2540575de6d6990d870c0c836df4974552a8"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "67f6d5f518590bd094acbbb47a7ddf0a6f049cb818de1e358e4b3ca42920c8da",
++        "public_sha256": "67f6d5f518590bd094acbbb47a7ddf0a6f049cb818de1e358e4b3ca42920c8da",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "fewest_cells_first"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "query_order",
++      "declared_survivors": [
++        "query_order"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ],
++        [
++          12,
++          24
++        ],
++        [
++          16,
++          27
++        ],
++        [
++          20,
++          30
++        ]
++      ],
++      "demos": 6,
++      "input_sha256": [
++        "dc855652cdbb6f8939f83fda6a686da2abce315472a73d8ff34f679ec3c44dc0",
++        "b3d4077123c6f769cbacbb432cd26f6e0453b06fd97a46ef45e739c44afd8008",
++        "e018309fc3db4ae52d510f0dfa637b08dba73d1aa39c1776e4a832bd9ab54cdb",
++        "93c40d69d9707bf42b55121ace4cbaa50707420f90647416897563a55b0fc1b4",
++        "1da9724df327d5f56a92a7ce30674a6353f8b866f3124cd5f895a4f459959214",
++        "f9f741ee9979fb70da8705c31d9dc712ec577869f8f47de3fbdb8f190431c432",
++        "e27d0428c8ca9cd32f961423249a8c33170d4d40b776940d67707c7b420558d3",
++        "ff831f546b0b03337f0ae7b701b9bd6a7ac5646236533e95fe893a74f8bdc395",
++        "471d093faa4a2b4ad3e31679026aec7a2047d7dfb0667d42aca88658f74496eb",
++        "03b9afef9a656022bff958e80e2e2540575de6d6990d870c0c836df4974552a8"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "17dc18b6ae9791c8370fe282160837fc215bd66966dacc55c90d02e8bcda3a65",
++        "public_sha256": "17dc18b6ae9791c8370fe282160837fc215bd66966dacc55c90d02e8bcda3a65",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "query_order"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "fewest_cells_first",
++      "declared_survivors": [
++        "fewest_cells_first"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ],
++        [
++          12,
++          24
++        ],
++        [
++          16,
++          27
++        ],
++        [
++          20,
++          30
++        ]
++      ],
++      "demos": 6,
++      "input_sha256": [
++        "dc855652cdbb6f8939f83fda6a686da2abce315472a73d8ff34f679ec3c44dc0",
++        "b3d4077123c6f769cbacbb432cd26f6e0453b06fd97a46ef45e739c44afd8008",
++        "e018309fc3db4ae52d510f0dfa637b08dba73d1aa39c1776e4a832bd9ab54cdb",
++        "93c40d69d9707bf42b55121ace4cbaa50707420f90647416897563a55b0fc1b4",
++        "1da9724df327d5f56a92a7ce30674a6353f8b866f3124cd5f895a4f459959214",
++        "f9f741ee9979fb70da8705c31d9dc712ec577869f8f47de3fbdb8f190431c432",
++        "e27d0428c8ca9cd32f961423249a8c33170d4d40b776940d67707c7b420558d3",
++        "ff831f546b0b03337f0ae7b701b9bd6a7ac5646236533e95fe893a74f8bdc395",
++        "471d093faa4a2b4ad3e31679026aec7a2047d7dfb0667d42aca88658f74496eb",
++        "03b9afef9a656022bff958e80e2e2540575de6d6990d870c0c836df4974552a8"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "a36817d6e5676894ac13b70b0d36f7af8a0c8172b8ad3f9613445c7ef77f7f64",
++        "public_sha256": "a36817d6e5676894ac13b70b0d36f7af8a0c8172b8ad3f9613445c7ef77f7f64",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 17,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "fewest_cells_first"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "query_order",
++      "declared_survivors": [
++        "query_order"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ]
++      ],
++      "demos": 2,
++      "input_sha256": [
++        "94bbacd28bc71ce80ff1506ff224659369cd2c942163f4fb5e9bba1450a1d4fd",
++        "54c45eb44356fe180fedd3c45076f39ff91e301c16836a997c19a06dabd43e0d",
++        "b0b41c91d614e9b9229327d9b59ad5ff4c3338ef63b7fa7865e4acebcc563d1a",
++        "4a6f302f4d96fffe91faaf4764bbd954b5f167e433630c5400d7268815e38f2c",
++        "9b5f5c8eb75dc4ca7221b1d1a8f1313c35898cac8fae445455a2198a2e29e94c",
++        "87598e620613dbf72c3e6a45bcb8930e802f44b110e7c1e9b1333e78255eaba5"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "c8cdfbd69238bd8f39be6b2fe96fec1f236a0065294aeece528d0895d5651db3",
++        "public_sha256": "c8cdfbd69238bd8f39be6b2fe96fec1f236a0065294aeece528d0895d5651db3",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 97,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "query_order"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "fewest_cells_first",
++      "declared_survivors": [
++        "fewest_cells_first"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ]
++      ],
++      "demos": 2,
++      "input_sha256": [
++        "94bbacd28bc71ce80ff1506ff224659369cd2c942163f4fb5e9bba1450a1d4fd",
++        "54c45eb44356fe180fedd3c45076f39ff91e301c16836a997c19a06dabd43e0d",
++        "b0b41c91d614e9b9229327d9b59ad5ff4c3338ef63b7fa7865e4acebcc563d1a",
++        "4a6f302f4d96fffe91faaf4764bbd954b5f167e433630c5400d7268815e38f2c",
++        "9b5f5c8eb75dc4ca7221b1d1a8f1313c35898cac8fae445455a2198a2e29e94c",
++        "87598e620613dbf72c3e6a45bcb8930e802f44b110e7c1e9b1333e78255eaba5"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "5d4103d177c43104a15706bed094eb6281d56596ac86d1bf882349dcd4a7be5f",
++        "public_sha256": "5d4103d177c43104a15706bed094eb6281d56596ac86d1bf882349dcd4a7be5f",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 97,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "fewest_cells_first"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "query_order",
++      "declared_survivors": [
++        "query_order"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ]
++      ],
++      "demos": 3,
++      "input_sha256": [
++        "94bbacd28bc71ce80ff1506ff224659369cd2c942163f4fb5e9bba1450a1d4fd",
++        "54c45eb44356fe180fedd3c45076f39ff91e301c16836a997c19a06dabd43e0d",
++        "6e0e8945d60734ec14c74a4dc39c373decd7cef1eaeb8955527b34f439d330c6",
++        "b0b41c91d614e9b9229327d9b59ad5ff4c3338ef63b7fa7865e4acebcc563d1a",
++        "4a6f302f4d96fffe91faaf4764bbd954b5f167e433630c5400d7268815e38f2c",
++        "9b5f5c8eb75dc4ca7221b1d1a8f1313c35898cac8fae445455a2198a2e29e94c",
++        "87598e620613dbf72c3e6a45bcb8930e802f44b110e7c1e9b1333e78255eaba5"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "772f102c1ec073ffb7aa55c2324026c6baaffe8739a6a5112e5fb49c22e524c4",
++        "public_sha256": "772f102c1ec073ffb7aa55c2324026c6baaffe8739a6a5112e5fb49c22e524c4",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 97,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "query_order"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "fewest_cells_first",
++      "declared_survivors": [
++        "fewest_cells_first"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ]
++      ],
++      "demos": 3,
++      "input_sha256": [
++        "94bbacd28bc71ce80ff1506ff224659369cd2c942163f4fb5e9bba1450a1d4fd",
++        "54c45eb44356fe180fedd3c45076f39ff91e301c16836a997c19a06dabd43e0d",
++        "6e0e8945d60734ec14c74a4dc39c373decd7cef1eaeb8955527b34f439d330c6",
++        "b0b41c91d614e9b9229327d9b59ad5ff4c3338ef63b7fa7865e4acebcc563d1a",
++        "4a6f302f4d96fffe91faaf4764bbd954b5f167e433630c5400d7268815e38f2c",
++        "9b5f5c8eb75dc4ca7221b1d1a8f1313c35898cac8fae445455a2198a2e29e94c",
++        "87598e620613dbf72c3e6a45bcb8930e802f44b110e7c1e9b1333e78255eaba5"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "dbfe6a70f1ba6c604c76d6977fca9e34d558754d9a615e6236c7bb1249e66009",
++        "public_sha256": "dbfe6a70f1ba6c604c76d6977fca9e34d558754d9a615e6236c7bb1249e66009",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 97,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "fewest_cells_first"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "query_order",
++      "declared_survivors": [
++        "query_order"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ],
++        [
++          12,
++          24
++        ],
++        [
++          16,
++          27
++        ],
++        [
++          20,
++          30
++        ]
++      ],
++      "demos": 6,
++      "input_sha256": [
++        "94bbacd28bc71ce80ff1506ff224659369cd2c942163f4fb5e9bba1450a1d4fd",
++        "54c45eb44356fe180fedd3c45076f39ff91e301c16836a997c19a06dabd43e0d",
++        "6e0e8945d60734ec14c74a4dc39c373decd7cef1eaeb8955527b34f439d330c6",
++        "9cd9c6e646fd2744e510659679feb07368982406b0c1ea973dc85af08ac55eec",
++        "91338259d105466ca57872fd445e039816643ad7ef83b2d40ccc9b3515c1e423",
++        "d8b03aa26fcbaf5752dde4d46f13e8e65bb48f1a9ba0b079d19557378c918bcf",
++        "b0b41c91d614e9b9229327d9b59ad5ff4c3338ef63b7fa7865e4acebcc563d1a",
++        "4a6f302f4d96fffe91faaf4764bbd954b5f167e433630c5400d7268815e38f2c",
++        "9b5f5c8eb75dc4ca7221b1d1a8f1313c35898cac8fae445455a2198a2e29e94c",
++        "87598e620613dbf72c3e6a45bcb8930e802f44b110e7c1e9b1333e78255eaba5"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "905ee0e72b284f05ff94833e3cd3bc07bdb803d26d533700b2c3fb64e7392010",
++        "public_sha256": "905ee0e72b284f05ff94833e3cd3bc07bdb803d26d533700b2c3fb64e7392010",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 97,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "query_order"
++      ]
++    },
++    {
++      "all_python_labels_match_racket": true,
++      "assembly": "fewest_cells_first",
++      "declared_survivors": [
++        "fewest_cells_first"
++      ],
++      "demo_shapes": [
++        [
++          6,
++          15
++        ],
++        [
++          8,
++          18
++        ],
++        [
++          10,
++          21
++        ],
++        [
++          12,
++          24
++        ],
++        [
++          16,
++          27
++        ],
++        [
++          20,
++          30
++        ]
++      ],
++      "demos": 6,
++      "input_sha256": [
++        "94bbacd28bc71ce80ff1506ff224659369cd2c942163f4fb5e9bba1450a1d4fd",
++        "54c45eb44356fe180fedd3c45076f39ff91e301c16836a997c19a06dabd43e0d",
++        "6e0e8945d60734ec14c74a4dc39c373decd7cef1eaeb8955527b34f439d330c6",
++        "9cd9c6e646fd2744e510659679feb07368982406b0c1ea973dc85af08ac55eec",
++        "91338259d105466ca57872fd445e039816643ad7ef83b2d40ccc9b3515c1e423",
++        "d8b03aa26fcbaf5752dde4d46f13e8e65bb48f1a9ba0b079d19557378c918bcf",
++        "b0b41c91d614e9b9229327d9b59ad5ff4c3338ef63b7fa7865e4acebcc563d1a",
++        "4a6f302f4d96fffe91faaf4764bbd954b5f167e433630c5400d7268815e38f2c",
++        "9b5f5c8eb75dc4ca7221b1d1a8f1313c35898cac8fae445455a2198a2e29e94c",
++        "87598e620613dbf72c3e6a45bcb8930e802f44b110e7c1e9b1333e78255eaba5"
++      ],
++      "largest_query_metrics": {
++        "content_col_span": 30,
++        "content_row_span": 30,
++        "input_shape": [
++          30,
++          30
++        ],
++        "key_count": 5,
++        "nonzero_cells": 32,
++        "prototype_active_cells": [
++          2,
++          3,
++          4,
++          5,
++          6
++        ],
++        "query_length": 7,
++        "repeated_query": true
++      },
++      "per_query_racket_match": [
++        true,
++        true,
++        true,
++        true
++      ],
++      "program_sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870",
++      "public_projection": {
++        "first_turn_matches_direct_projection": true,
++        "future_queries_hidden": true,
++        "private_mutation_stable": true,
++        "program_hidden": true,
++        "public_id": "033ee3601f5f7412c7270f032e4a67872069ba06c1cc87ee838a250bd154c941",
++        "public_sha256": "033ee3601f5f7412c7270f032e4a67872069ba06c1cc87ee838a250bd154c941",
++        "query_answers_hidden": true,
++        "settings_hidden": true
++      },
++      "queries": 4,
++      "query_shapes": [
++        [
++          9,
++          17
++        ],
++        [
++          14,
++          23
++        ],
++        [
++          22,
++          28
++        ],
++        [
++          30,
++          30
++        ]
++      ],
++      "seed": 97,
++      "tested_harmful_survivors": [],
++      "tested_rivals": [
++        "deduplicate_query",
++        "fewest_cells_first",
++        "key_color_first",
++        "key_column_first",
++        "largest_cells_first",
++        "query_order",
++        "reverse_query",
++        "smallest_bbox_first"
++      ],
++      "tested_survivors": [
++        "fewest_cells_first"
++      ]
++    }
++  ],
++  "limits": "Bounded protected-Racket replay over the listed seeds/demo counts and finite rivals; not universal uniqueness, owner acceptance, or training admission.",
++  "matched_inputs_across_settings": true,
++  "queries": 4,
++  "racket": {
++    "backend": "racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1"
++  },
++  "racket_evaluations": 272,
++  "schema": "35368341e72e-parametric-authoring-v1",
++  "seeds": [
++    0,
++    17,
++    97
++  ],
++  "settings": [
++    {
++      "assembly": "query_order"
++    },
++    {
++      "assembly": "fewest_cells_first"
++    }
++  ],
++  "source_files": [
++    {
++      "path": "adapter.py",
++      "sha256": "890e56719acdab5da45a7294fb87ad7d579d9e7513bb8c825689146c4381608d"
++    },
++    {
++      "path": "canonical.rkt",
++      "sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066"
++    },
++    {
++      "path": "fewest_cells_first.rkt",
++      "sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870"
++    },
++    {
++      "path": "promotion.json",
++      "sha256": "7c2251d7f7d175bce2a93c8f243fd234c4426773cce04de2955d66776a748fce"
++    },
++    {
++      "path": "prototype.py",
++      "sha256": "72bc467e5a6d77583b9903b2030b58fd3f085c6636c2a6b78ab4e1f3530ffce8"
++    }
++  ],
++  "task_id": "35368341e72e"
++}
+diff --git a/repo/generators/35368341e72e/workspace/parametric/evidence/manifest.json b/repo/generators/35368341e72e/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,92 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066",
++  "canonical_rule_hash": "dfe1312c69fd",
++  "default": {
++    "assembly": "query_order"
++  },
++  "evidence_root": "generators/35368341e72e/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 12974,
++      "path": "generators/35368341e72e/generator.py",
++      "sha256": "c9684fe1e2f9b3a74dd8474424b2a3098b328eb07f34f458e18c1aa6b83ca265"
++    },
++    {
++      "bytes": 2685,
++      "path": "generators/35368341e72e/tests/test_parametric_audit.py",
++      "sha256": "d59a2a74cffb2755cd5d9674826532fae08dffd17b5b7f2fabfdacdc9c81e096"
++    },
++    {
++      "bytes": 8194,
++      "path": "generators/35368341e72e/tests/test_parametric_lookup_order.py",
++      "sha256": "1c59d80d58f80af1b02768c53d8c31569c5b64afee69f799689bf11955c5e5b2"
++    },
++    {
++      "bytes": 680,
++      "path": "generators/35368341e72e/workspace/parametric/adapter.py",
++      "sha256": "890e56719acdab5da45a7294fb87ad7d579d9e7513bb8c825689146c4381608d"
++    },
++    {
++      "bytes": 12519,
++      "path": "generators/35368341e72e/workspace/parametric/audit.py",
++      "sha256": "7f7a471ea906e44bba437c881dc33aa1949d96b61c9ec3d7a2946f906dd098b0"
++    },
++    {
++      "bytes": 1143,
++      "path": "generators/35368341e72e/workspace/parametric/canonical.rkt",
++      "sha256": "dfe1312c69fd8633b6a2b5ae2c5bf91276111d2e3ed07c84f6eb48dab8956066"
++    },
++    {
++      "bytes": 13790,
++      "path": "generators/35368341e72e/workspace/parametric/evidence/current/audited-case.json",
++      "sha256": "c29c9073583edaebbe30968a6b28808b5dd0b17d92b7b0f5435cbfd4a10722ba"
++    },
++    {
++      "bytes": 49628,
++      "path": "generators/35368341e72e/workspace/parametric/evidence/current/authoring.json",
++      "sha256": "a825cbd179e7a9ce52764b5516ad8ccfaedbb0d51ca543cca7dd924ffa5395d1"
++    },
++    {
++      "bytes": 1920,
++      "path": "generators/35368341e72e/workspace/parametric/fewest_cells_first.rkt",
++      "sha256": "99a8c138b81cdb1774f3b30ba8e6a1dbf808e8732b45603598807a2c05a75870"
++    },
++    {
++      "bytes": 394,
++      "path": "generators/35368341e72e/workspace/parametric/promotion.json",
++      "sha256": "7c2251d7f7d175bce2a93c8f243fd234c4426773cce04de2955d66776a748fce"
++    },
++    {
++      "bytes": 15047,
++      "path": "generators/35368341e72e/workspace/parametric/prototype.py",
++      "sha256": "72bc467e5a6d77583b9903b2030b58fd3f085c6636c2a6b78ab4e1f3530ffce8"
++    }
++  ],
++  "generator_sha256": "c9684fe1e2f9b3a74dd8474424b2a3098b328eb07f34f458e18c1aa6b83ca265",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      4,
++      4
++    ]
++  },
++  "parameters": {
++    "assembly": [
++      "query_order",
++      "fewest_cells_first"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "69 task tests passed; protected-Racket authoring audit replayed 18 setting/seed/count jobs and 272 evaluations, confirmed exact canonical bytes, matched inputs, four distinct queries, finite-rival teaching, public projection, 30x30 stress, and a differing skip-A causal case.",
++  "rule_task_id": "35368341e72e",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "35368341e72e",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/35368341e72e/workspace/parametric/fewest_cells_first.rkt b/repo/generators/35368341e72e/workspace/parametric/fewest_cells_first.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/workspace/parametric/fewest_cells_first.rkt
+@@ -0,0 +1,39 @@
++(rule! (let ((dummy 0))
++  ;; Decode every queried key, compute each prototype's active-cell-count,
++  ;; stably order occurrences from fewest active cells to most, then gallery.
++  (define (e8b-paste grid pat top left)
++    (for*/fold ((out grid)) ((r (in-range (rows pat))) (c (in-range (cols pat))))
++      (let ((v (at pat r c)) (rr (+ top r)) (cc (+ left c)))
++        (if (and (not (= v 0)) (in-bounds? rr cc (rows out) (cols out)))
++            (set-cell out rr cc v)
++            out))))
++  (define (s17b-gallery-row objs (gap 1))
++    (if (empty? objs)
++        (list (list 0))
++        (let* ((h (apply max (map rows objs)))
++               (w (+ (apply + (map cols objs)) (* gap (- (length objs) 1)))))
++          (let loop ((rest-objs objs) (left 0) (out (empty-grid h w 0)))
++            (if (empty? rest-objs)
++                out
++                (let ((obj (first rest-objs)))
++                  (loop (rest rest-objs)
++                        (+ left (cols obj) gap)
++                        (e8b-paste out obj 0 left))))))))
++  (define (t13-prototype-groups grid)
++    (map (lambda (c) (list (- c 1) (+ c 1) (at grid 0 c)))
++         (filter (lambda (c) (not (= (at grid 0 c) 0)))
++                 (range (cols grid)))))
++  (define (active-cell-count pat)
++    (count-if (lambda (p) (not (= (at pat (first p) (second p)) 0)))
++              (grid-positions pat)))
++  (let* ((groups (t13-prototype-groups g))
++         (query (filter (lambda (v) (not (= v 0))) (last g)))
++         (parts (map (lambda (key)
++                       (let ((grp (first (filter (lambda (entry) (= (third entry) key)) groups))))
++                         (subgrid g 1 (first grp) 3 (second grp))))
++                     query))
++         (ranked (sort parts (lambda (a b) (< (active-cell-count a)
++                                              (active-cell-count b))))))
++    (if (empty? query)
++        (list (list 0))
++        (s17b-gallery-row ranked 1)))))
+diff --git a/repo/generators/35368341e72e/workspace/parametric/promotion.json b/repo/generators/35368341e72e/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/workspace/parametric/promotion.json
+@@ -0,0 +1,24 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/35368341e72e/workspace/parametric/adapter.py",
++  "parameters": {
++    "assembly": [
++      "query_order",
++      "fewest_cells_first"
++    ]
++  },
++  "default": {
++    "assembly": "query_order"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      4,
++      4
++    ]
++  },
++  "qualification_demos": 3
++}
+diff --git a/repo/generators/35368341e72e/workspace/parametric/prototype.py b/repo/generators/35368341e72e/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/35368341e72e/workspace/parametric/prototype.py
+@@ -0,0 +1,375 @@
++"""Constructive lookup-and-assembly family for task 35368341e72e.
++
++The input grammar is shared across settings.  The canonical setting galleries
++queried prototypes in query order.  The alternative first decodes the queried
++prototypes, measures their nonzero cells, then stably galleries occurrences from
++fewest cells to most.  Repeated query keys remain repeated.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any, Callable
++
++
++HERE = Path(__file__).resolve().parent
++TASK_ID = "35368341e72e"
++ASSEMBLIES = ("query_order", "fewest_cells_first")
++PROGRAM_PATHS = {
++    "query_order": HERE / "canonical.rkt",
++    "fewest_cells_first": HERE / "fewest_cells_first.rkt",
++}
++PROGRAMS = {name: path.read_text(encoding="utf-8") for name, path in PROGRAM_PATHS.items()}
++
++DEMO_SPECS = (
++    (6, 15, 3, 4),
++    (8, 18, 3, 5),
++    (10, 21, 4, 5),
++    (12, 24, 4, 6),
++    (16, 27, 5, 6),
++    (20, 30, 5, 7),
++)
++QUERY_SPECS = (
++    (9, 17, 3, 4),
++    (14, 23, 4, 5),
++    (22, 28, 5, 6),
++    (30, 30, 5, 7),
++)
++
++# Counts are 2,3,4,5,6.  Bounding-box areas are 9,3,4,9,6, so
++# "fewest cells" is constructively distinguishable from "smallest box".
++MASKS = (
++    ((0, 0), (2, 2)),
++    ((0, 1), (1, 1), (2, 1)),
++    ((0, 0), (0, 1), (1, 0), (1, 1)),
++    ((0, 1), (1, 0), (1, 1), (1, 2), (2, 1)),
++    ((0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)),
++)
++QUERY_RANK_PATTERNS = {
++    3: (2, 0, 2, 1, 0),
++    4: (3, 1, 0, 3, 2, 1),
++    5: (4, 1, 3, 0, 4, 2, 1),
++}
++
++
++def _setting(settings: Any) -> str:
++    if type(settings) is not dict:
++        raise TypeError("settings must be a dictionary")
++    if set(settings) != {"assembly"}:
++        raise ValueError("settings must contain exactly assembly")
++    value = settings["assembly"]
++    if type(value) is not str:
++        raise TypeError("assembly must be a string")
++    if value not in ASSEMBLIES:
++        raise ValueError(f"assembly must be one of {list(ASSEMBLIES)}")
++    return value
++
++
++def _integer(value: Any, low: int, high: int, name: str) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be an integer (bool is forbidden)")
++    if not low <= value <= high:
++        raise ValueError(f"{name} must be in [{low}, {high}]")
++    return value
++
++
++def program_for(settings: Any) -> str:
++    return PROGRAMS[_setting(settings)]
++
++
++def _seed(*parts: Any) -> int:
++    raw = json.dumps(parts, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
++    return int.from_bytes(hashlib.sha256(raw).digest()[:8], "big")
++
++
++def _spread_positions(count: int, low: int, high: int) -> list[int]:
++    if count == 1:
++        return [(low + high) // 2]
++    result = [round(low + i * (high - low) / (count - 1)) for i in range(count)]
++    if len(set(result)) != count:
++        raise ValueError("cannot spread distinct positions")
++    return result
++
++
++def _bbox_area(cells: tuple[tuple[int, int], ...]) -> int:
++    rows = [r for r, _ in cells]
++    cols = [c for _, c in cells]
++    return (max(rows) - min(rows) + 1) * (max(cols) - min(cols) + 1)
++
++
++def _prototype_lookup(grid: list[list[int]]) -> dict[int, dict[str, Any]]:
++    result: dict[int, dict[str, Any]] = {}
++    for column, key in enumerate(grid[0]):
++        if key == 0:
++            continue
++        prototype = [row[column - 1 : column + 2] for row in grid[1:4]]
++        active = sum(cell != 0 for row in prototype for cell in row)
++        cells = tuple((r, c) for r, row in enumerate(prototype) for c, value in enumerate(row) if value != 0)
++        result[key] = {
++            "key": key,
++            "column": column,
++            "prototype": prototype,
++            "active_cells": active,
++            "bbox_area": _bbox_area(cells),
++        }
++    return result
++
++
++def intermediate(grid: list[list[int]]) -> dict[str, Any]:
++    errors = validate_input(grid)
++    if errors:
++        raise ValueError("invalid input: " + "; ".join(errors[:3]))
++    lookup = _prototype_lookup(grid)
++    query = [value for value in grid[-1] if value != 0]
++    occurrences = []
++    for index, key in enumerate(query):
++        row = deepcopy(lookup[key])
++        row["occurrence_index"] = index
++        occurrences.append(row)
++    ranked = sorted(occurrences, key=lambda row: row["active_cells"])
++    return {
++        "query_keys": query,
++        "query_occurrences": occurrences,
++        "fewest_first_keys": [row["key"] for row in ranked],
++        "fewest_first_occurrences": ranked,
++    }
++
++
++def gallery(parts: list[list[list[int]]]) -> list[list[int]]:
++    if not parts:
++        return [[0]]
++    width = 4 * len(parts) - 1
++    output = [[0 for _ in range(width)] for _ in range(3)]
++    for index, part in enumerate(parts):
++        left = 4 * index
++        for row in range(3):
++            for col in range(3):
++                if part[row][col] != 0:
++                    output[row][left + col] = part[row][col]
++    return output
++
++
++def _ordered_occurrences(grid: list[list[int]], order: str) -> list[dict[str, Any]]:
++    info = intermediate(grid)
++    rows = info["query_occurrences"]
++    if order == "query_order":
++        return rows
++    if order == "fewest_cells_first":
++        return sorted(rows, key=lambda row: row["active_cells"])
++    if order == "largest_cells_first":
++        return sorted(rows, key=lambda row: -row["active_cells"])
++    if order == "smallest_bbox_first":
++        return sorted(rows, key=lambda row: row["bbox_area"])
++    if order == "key_color_first":
++        return sorted(rows, key=lambda row: row["key"])
++    if order == "key_column_first":
++        return sorted(rows, key=lambda row: row["column"])
++    if order == "reverse_query":
++        return list(reversed(rows))
++    if order == "deduplicate_query":
++        seen: set[int] = set()
++        result = []
++        for row in rows:
++            if row["key"] not in seen:
++                seen.add(row["key"])
++                result.append(row)
++        return result
++    raise ValueError(order)
++
++
++CANDIDATES = (
++    "query_order",
++    "fewest_cells_first",
++    "largest_cells_first",
++    "smallest_bbox_first",
++    "key_color_first",
++    "key_column_first",
++    "reverse_query",
++    "deduplicate_query",
++)
++
++
++def candidate_output(grid: list[list[int]], name: str) -> list[list[int]]:
++    return gallery([row["prototype"] for row in _ordered_occurrences(grid, name)])
++
++
++def mirror(grid: list[list[int]], settings: Any) -> list[list[int]]:
++    return candidate_output(grid, _setting(settings))
++
++
++def _grid_errors(grid: Any) -> tuple[list[str], int, int]:
++    if type(grid) is not list or not grid:
++        return ["grid must be a nonempty list"], 0, 0
++    if type(grid[0]) is not list or not grid[0]:
++        return ["rows must be nonempty lists"], 0, 0
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width for row in grid):
++        return ["grid must be rectangular"], len(grid), width
++    if not 5 <= len(grid) <= 30 or not 1 <= width <= 30:
++        return ["grid dimensions must be within 5..30 by 1..30"], len(grid), width
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if type(value) is not int or not 0 <= value <= 9:
++                return [f"cell ({r},{c}) must be an exact integer color 0..9"], len(grid), width
++    return [], len(grid), width
++
++
++def validate_input(grid: Any) -> list[str]:
++    errors, height, width = _grid_errors(grid)
++    if errors:
++        return errors
++    keys = [(column, value) for column, value in enumerate(grid[0]) if value != 0]
++    if not 3 <= len(keys) <= 5:
++        errors.append(f"row 0 needs 3..5 keys, found {len(keys)}")
++        return errors
++    columns = [column for column, _ in keys]
++    values = [value for _, value in keys]
++    if len(set(values)) != len(values):
++        errors.append("key colors must be distinct")
++    if any(column in {0, width - 1} for column in columns):
++        errors.append("each key needs a full 3-column prototype band")
++    if any(right - left < 3 for left, right in zip(columns, columns[1:])):
++        errors.append("prototype bands overlap")
++    legal = {column + delta for column in columns for delta in (-1, 0, 1)}
++    for row in range(1, 4):
++        if any(value != 0 and column not in legal for column, value in enumerate(grid[row])):
++            errors.append("prototype content lies outside a declared key band")
++            break
++    if any(any(value != 0 for value in grid[row]) for row in range(4, height - 1)):
++        errors.append("rows between prototypes and query must be background")
++    query = [value for value in grid[-1] if value != 0]
++    if not 4 <= len(query) <= 7:
++        errors.append(f"query must contain 4..7 entries, found {len(query)}")
++    if set(query) - set(values):
++        errors.append("query contains an undeclared key")
++    if len(query) == len(set(query)):
++        errors.append("query must repeat at least one key")
++    lookup = _prototype_lookup(grid) if not errors else {}
++    counts = [lookup[value]["active_cells"] for value in values] if lookup else []
++    if counts and (any(count == 0 for count in counts) or len(set(counts)) != len(counts)):
++        errors.append("prototype active-cell counts must be nonzero and distinct")
++    return errors
++
++
++def input_metrics(grid: list[list[int]]) -> dict[str, Any]:
++    errors = validate_input(grid)
++    if errors:
++        raise ValueError("invalid input: " + "; ".join(errors[:3]))
++    lookup = _prototype_lookup(grid)
++    query = [value for value in grid[-1] if value != 0]
++    cells = [(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value != 0]
++    return {
++        "input_shape": [len(grid), len(grid[0])],
++        "key_count": len(lookup),
++        "query_length": len(query),
++        "prototype_active_cells": sorted(row["active_cells"] for row in lookup.values()),
++        "nonzero_cells": len(cells),
++        "content_row_span": max(r for r, _ in cells) - min(r for r, _ in cells) + 1,
++        "content_col_span": max(c for _, c in cells) - min(c for _, c in cells) + 1,
++        "repeated_query": len(query) > len(set(query)),
++    }
++
++
++def _build_input(seed: int, role: str, index: int, spec: tuple[int, int, int, int]) -> list[list[int]]:
++    height, width, n_keys, query_length = spec
++    for nonce in range(128):
++        rng = random.Random(_seed(TASK_ID, seed, role, index, nonce))
++        key_columns = _spread_positions(n_keys, 1, width - 2)
++        key_colors = rng.sample(range(1, 10), n_keys)
++        rotation = 1 + ((_seed(seed, role, index, nonce, "rotation") % (n_keys - 1)))
++        masks = [MASKS[(column_index + rotation) % n_keys] for column_index in range(n_keys)]
++        remaining = [color for color in range(1, 10) if color not in key_colors]
++        rng.shuffle(remaining)
++        content_palette = remaining[: max(2, min(4, len(remaining)))]
++        grid = [[0 for _ in range(width)] for _ in range(height)]
++        rows_by_count: dict[int, int] = {}
++        for column_index, (column, key, mask) in enumerate(zip(key_columns, key_colors, masks, strict=True)):
++            grid[0][column] = key
++            rows_by_count[len(mask)] = key
++            for local_index, (r, c) in enumerate(mask):
++                color = content_palette[(local_index + column_index + index) % len(content_palette)]
++                grid[1 + r][column - 1 + c] = color
++        ranked_keys = [rows_by_count[count] for count in sorted(rows_by_count)]
++        pattern = QUERY_RANK_PATTERNS[n_keys]
++        query = [ranked_keys[rank] for rank in pattern[:query_length]]
++        query_columns = _spread_positions(query_length, 0, width - 1)
++        for column, key in zip(query_columns, query, strict=True):
++            grid[-1][column] = key
++        if validate_input(grid):
++            continue
++        outputs = {name: candidate_output(grid, name) for name in CANDIDATES}
++        if all(outputs[name] != outputs["query_order"] for name in CANDIDATES if name != "query_order") and all(
++            outputs[name] != outputs["fewest_cells_first"]
++            for name in CANDIDATES
++            if name != "fewest_cells_first"
++        ):
++            return grid
++    raise RuntimeError(f"failed to construct a distinguishing {role} input {index}")
++
++
++def generate_episode(seed: Any, settings: Any, demos: Any = 3, queries: Any = 4) -> dict[str, Any]:
++    seed = _integer(seed, 0, 2**63 - 1, "seed")
++    demos = _integer(demos, 2, 6, "demos")
++    queries = _integer(queries, 4, 4, "queries")
++    assembly = _setting(settings)
++    demo_inputs = [_build_input(seed, "demo", index, spec) for index, spec in enumerate(DEMO_SPECS[:demos])]
++    query_inputs = [_build_input(seed, "query", index, spec) for index, spec in enumerate(QUERY_SPECS[:queries])]
++    train = [{"input": grid, "output": candidate_output(grid, assembly)} for grid in demo_inputs]
++    test = [{"input": grid, "output": candidate_output(grid, assembly)} for grid in query_inputs]
++    return {"train": train, "test": test, "program_solution": PROGRAMS[assembly]}
++
++
++def teaching_check(episode: dict[str, Any], settings: Any) -> dict[str, Any]:
++    target = _setting(settings)
++    if type(episode) is not dict:
++        raise TypeError("episode must be a dictionary")
++    train = episode.get("train")
++    test = episode.get("test")
++    if type(train) is not list or not train or type(test) is not list or not test:
++        raise ValueError("episode needs demonstrations and queries")
++    for pair in train:
++        if pair.get("output") != candidate_output(pair.get("input"), target):
++            raise ValueError("demonstration label disagrees with selected setting")
++    eliminated: dict[str, list[int]] = {}
++    survivors = []
++    for name in CANDIDATES:
++        witnesses = [
++            index
++            for index, pair in enumerate(train)
++            if candidate_output(pair["input"], name) != pair["output"]
++        ]
++        if witnesses:
++            eliminated[name] = witnesses
++        else:
++            survivors.append(name)
++    harmful = [
++        name
++        for name in survivors
++        if any(candidate_output(pair["input"], name) != candidate_output(pair["input"], target) for pair in test)
++    ]
++    return {
++        "target": target,
++        "survivors": survivors,
++        "harmful_survivors": harmful,
++        "eliminated": eliminated,
++        "rivals_tested": len(CANDIDATES) - 1,
++        "fit_uses": "demonstrations_only",
++    }
++
++
++def public_turn(episode: dict[str, Any], index: Any = 0) -> dict[str, Any]:
++    if type(index) is not int:
++        raise TypeError("query index must be an integer (bool is forbidden)")
++    if type(episode) is not dict or type(episode.get("train")) is not list or type(episode.get("test")) is not list:
++        raise ValueError("episode must contain train and test lists")
++    if not 0 <= index < len(episode["test"]):
++        raise ValueError("query index outside episode")
++    train = [
++        {"input": deepcopy(pair["input"]), "output": deepcopy(pair["output"])}
++        for pair in episode["train"]
++    ]
++    query = {"input": deepcopy(episode["test"][index]["input"])}
++    return {"train": train, "test": [query]}
+diff --git a/repo/generators/3cdfed241796/SUMMARY.md b/repo/generators/3cdfed241796/SUMMARY.md
+--- a/repo/generators/3cdfed241796/SUMMARY.md
++++ b/repo/generators/3cdfed241796/SUMMARY.md
+@@ -1,6 +1,6 @@
+ # 3cdfed241796
+ 
+-0-bg grid (size varies). A color-2 shape and a color-3 shape. Rule: normalize both to their bbox corners and output color 8 where exactly one has a cell (their XOR), on a max-dims grid. The grid size, the two shapes and positions vary freely (was a fixed setup, ~26 distinct).
++One connected red-2 polyomino and one connected green-3 polyomino appear at independent positions on background 0. Normalize each support to its own bounding-box top-left and output cyan-8 on their symmetric difference over the full maximum normalized extent. Do not crop the XOR again: all-zero output edge rows or columns are significant.
+ 
+-Kind: `per_puzzle`. Imported version: `2.1.0`.
+-Approval is derived by the catalog from current code and retained evidence.
++Kind: `per_puzzle`. Reviewed version: `3.0.0`. Canonical rule hash: `9383a670d8c7`.
++This review supplies an unapproved source repair and source-bound evidence; catalog approval and training safety remain owner decisions.
+diff --git a/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/build.py b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/build.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/build.py
+@@ -0,0 +1,70 @@
++#!/usr/bin/env python3
++"""Regenerate the retained normalized-XOR shortcut counterexample."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++HOME = HERE.parents[1]
++
++spec = importlib.util.spec_from_file_location("counterexample_generator", HOME / "generator.py")
++gen = importlib.util.module_from_spec(spec)
++assert spec.loader is not None
++spec.loader.exec_module(gen)
++
++overrides = {"grid_h": 6, "grid_w": 12, "shape_size": 6}
++grid = gen.generate(91, 2, difficulty="medium", **overrides)
++expected = gen.rule_mirror(grid)
++rival = gen.SEMANTIC_RIVALS["crop_xor_again"](grid)
++assert gen.self_check(grid) == []
++assert expected != rival
++
++for name, value in (
++    ("input.json", grid),
++    ("python-oracle.json", expected),
++    ("cropped-xor-rival.json", rival),
++):
++    (HERE / name).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
++
++metadata = {
++    "task_id": gen.TASK_ID,
++    "generator_version": gen.VERSION,
++    "generator_sha256": hashlib.sha256((HOME / "generator.py").read_bytes()).hexdigest(),
++    "rule_hash": gen.RULE_HASH,
++    "seed": 91,
++    "sample_index": 2,
++    "difficulty": "medium",
++    "overrides": overrides,
++    "self_check": [],
++    "witnesses": [
++        name for name, witness in gen.SEMANTIC_WITNESSES.items() if witness(grid)
++    ],
++    "rival": "crop_xor_again",
++    "difference_cells": [],
++    "generation_command": [
++        "env", "PYTHONPATH=shared/runtime", "python3",
++        "generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/build.py",
++    ],
++    "racket_command": [
++        "python3", "review.py", "run", "python3", "-m", "arcpuzzles", "apply",
++        "3cdfed241796", "--input",
++        "generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/input.json",
++        "--out",
++        "generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/racket.json",
++    ],
++}
++# Outputs have different shapes, so retain a coordinate-wise union diff.
++height = max(len(expected), len(rival))
++width = max(max(map(len, expected), default=0), max(map(len, rival), default=0))
++for row in range(height):
++    for col in range(width):
++        a = expected[row][col] if row < len(expected) and col < len(expected[row]) else None
++        b = rival[row][col] if row < len(rival) and col < len(rival[row]) else None
++        if a != b:
++            metadata["difference_cells"].append([row, col, a, b])
++(HERE / "metadata.json").write_text(
++    json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
++)
+diff --git a/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/cropped-xor-rival.json b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/cropped-xor-rival.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/cropped-xor-rival.json
+@@ -0,0 +1,8 @@
++[
++  [
++    8,
++    8,
++    8,
++    8
++  ]
++]
+diff --git a/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/input.json b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/input.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/input.json
+@@ -0,0 +1,86 @@
++[
++  [
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0
++  ],
++  [
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0
++  ],
++  [
++    0,
++    3,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    2,
++    0
++  ],
++  [
++    3,
++    3,
++    3,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    2,
++    2,
++    2
++  ],
++  [
++    0,
++    0,
++    3,
++    3,
++    0,
++    0,
++    0,
++    0,
++    0,
++    2,
++    2,
++    0
++  ],
++  [
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0,
++    0
++  ]
++]
+diff --git a/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/metadata.json b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/metadata.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/metadata.json
+@@ -0,0 +1,115 @@
++{
++  "difference_cells": [
++    [
++      0,
++      0,
++      0,
++      8
++    ],
++    [
++      0,
++      1,
++      0,
++      8
++    ],
++    [
++      0,
++      2,
++      0,
++      8
++    ],
++    [
++      0,
++      3,
++      0,
++      8
++    ],
++    [
++      1,
++      0,
++      0,
++      null
++    ],
++    [
++      1,
++      1,
++      0,
++      null
++    ],
++    [
++      1,
++      2,
++      0,
++      null
++    ],
++    [
++      1,
++      3,
++      0,
++      null
++    ],
++    [
++      2,
++      0,
++      8,
++      null
++    ],
++    [
++      2,
++      1,
++      8,
++      null
++    ],
++    [
++      2,
++      2,
++      8,
++      null
++    ],
++    [
++      2,
++      3,
++      8,
++      null
++    ]
++  ],
++  "difficulty": "medium",
++  "generation_command": [
++    "env",
++    "PYTHONPATH=shared/runtime",
++    "python3",
++    "generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/build.py"
++  ],
++  "generator_sha256": "e33237a9f196db8c218296ed01db9fec5bf41ef2b6d6d05bdf7f4398cac4bae3",
++  "generator_version": "3.0.0",
++  "overrides": {
++    "grid_h": 6,
++    "grid_w": 12,
++    "shape_size": 6
++  },
++  "racket_command": [
++    "python3",
++    "review.py",
++    "run",
++    "python3",
++    "-m",
++    "arcpuzzles",
++    "apply",
++    "3cdfed241796",
++    "--input",
++    "generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/input.json",
++    "--out",
++    "generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/racket.json"
++  ],
++  "rival": "crop_xor_again",
++  "rule_hash": "9383a670d8c7",
++  "sample_index": 2,
++  "seed": 91,
++  "self_check": [],
++  "task_id": "3cdfed241796",
++  "witnesses": [
++    "normalized_overlap",
++    "uncropped_xor_extent",
++    "absolute_positions_irrelevant"
++  ]
++}
+diff --git a/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/python-oracle.json b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/python-oracle.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/python-oracle.json
+@@ -0,0 +1,20 @@
++[
++  [
++    0,
++    0,
++    0,
++    0
++  ],
++  [
++    0,
++    0,
++    0,
++    0
++  ],
++  [
++    8,
++    8,
++    8,
++    8
++  ]
++]
+diff --git a/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/racket.json b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/racket.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/racket.json
+@@ -0,0 +1,142 @@
++{
++ "schema": "arcpuzzles-apply-v1",
++ "task_id": "3cdfed241796",
++ "rule_task_id": "3cdfed241796",
++ "reference": "canonical",
++ "rule_file": "data/canonical/puzzles.jsonl",
++ "executed_rule_hash": "9383a670d8c7",
++ "catalog_rule_hash": "9383a670d8c7",
++ "rule_hash_matches_catalog": true,
++ "rule_text_sha256": "69d4d9322548f3a9924d4eafa724c5212eee95a9a337b958b7c7c7df78b7df8b",
++ "generator_sha256": "e33237a9f196db8c218296ed01db9fec5bf41ef2b6d6d05bdf7f4398cac4bae3",
++ "catalog_approved": false,
++ "approved": false,
++ "train_safety": "unverified",
++ "elapsed_seconds": 3.307,
++ "results": [
++  {
++   "index": 0,
++   "output": [
++    [
++     0,
++     0,
++     0,
++     0
++    ],
++    [
++     0,
++     0,
++     0,
++     0
++    ],
++    [
++     8,
++     8,
++     8,
++     8
++    ]
++   ],
++   "valid_output": true,
++   "error": null,
++   "input": [
++    [
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0
++    ],
++    [
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0
++    ],
++    [
++     0,
++     3,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     2,
++     0
++    ],
++    [
++     3,
++     3,
++     3,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     2,
++     2,
++     2
++    ],
++    [
++     0,
++     0,
++     3,
++     3,
++     0,
++     0,
++     0,
++     0,
++     0,
++     2,
++     2,
++     0
++    ],
++    [
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0,
++     0
++    ]
++   ],
++   "input_sha256": "e00dfa4689a753be0634fcf1686f6328456ab0312e8113501a57149cbe05cd04",
++   "output_sha256": "6bb73793fa925ae44715793902202015e310a4666506099bf2ba9f90035836fc"
++  }
++ ],
++ "note": "Reference output for audit evidence; not a training label or approval.",
++ "command": [
++  "arcpuzzles",
++  "apply",
++  "3cdfed241796",
++  "--input",
++  "generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/input.json",
++  "--out",
++  "generators/3cdfed241796/counterexamples/normalized-xor-shortcuts/racket.json"
++ ],
++ "cwd": "/mnt/data/arcp_review_171249/WORK/repo"
++}
+diff --git a/repo/generators/3cdfed241796/generator.py b/repo/generators/3cdfed241796/generator.py
+--- a/repo/generators/3cdfed241796/generator.py
++++ b/repo/generators/3cdfed241796/generator.py
+@@ -1,206 +1,474 @@
+-"""Generator for arc_puzzle_bank_next21:H9 -- XOR of normalized supports.
+-
+-Rule: normalize the color-2 and color-3 shapes to their own bbox corners;
+-output (max-dims grid) is color 8 where exactly one normalized shape has a
+-cell (their symmetric difference), else 0.
+-
+-This generator draws two distinct polyomino shapes (one color-2, one
+-color-3), separated; their normalized XOR is the output.
+-
+-Combinatorial axes: grid size, the two shapes, and positions.
+-Degenerates: identical_shapes, no_two, full_grid.
++"""Constructive sampler for ARC task 3cdfed241796: normalized shape XOR.
++
++An input contains one connected red (2) polyomino and one connected green (3)
++polyomino on background 0.  Each support is translated independently to its own
++bounding-box top-left.  The output canvas has the maximum of the two normalized
++bounding-box dimensions and contains cyan (8) exactly on their symmetric
++difference.  Output zero margins are significant: the XOR is not cropped again.
++
++Version 3 replaces the imported capped-retry/fallback sampler and dead axes with
++a finite connected-polyomino bank, exact observable controls, an independent
++structural recognizer, and executable shortcut competitors.
+ """
+ from __future__ import annotations
+ 
++from functools import lru_cache
++from typing import Any, Iterable
++
+ from puzzle_generators.base import gen_ctx
+-from puzzle_generators.helpers.grid import full_grid, paint_at
+-
+-GENERATOR_ID = "3cdfed241796"
+-VERSION = "2.1.0"  # diversity: two random shapes -> normalized XOR (was fixed ~26)
+-TASK_ID = "3cdfed241796"
++from puzzle_generators.helpers.grid import full_grid
++
++GENERATOR_ID = TASK_ID = "3cdfed241796"
++VERSION = "3.0.0"
++RULE_HASH = "9383a670d8c7"
+ SUMMARY = (
+-    "0-bg grid (size varies). A color-2 shape and a color-3 shape. Rule: "
+-    "normalize both to their bbox corners and output color 8 where exactly "
+-    "one has a cell (their XOR), on a max-dims grid. The grid size, the two "
+-    "shapes and positions vary freely (was a fixed setup, ~26 distinct)."
++    "One connected red-2 shape and one connected green-3 shape appear at "
++    "independent positions on background 0. Normalize each to its own bbox "
++    "top-left and output cyan-8 on their symmetric difference over the full "
++    "maximum normalized extent, preserving any all-zero edge rows or columns."
+ )
+ 
+ INVARIANTS = [
+-    "one color-2 shape and one color-3 shape, distinct when normalized",
+-    "the output is their normalized symmetric difference in color 8",
+-    "the XOR is non-empty (the shapes differ)",
++    "the canvas is 4..18 rows by 9..24 columns with colors exactly 0,2,3",
++    "there is exactly one 4-connected component of each source color",
++    "both source shapes have the same 4..8 cell count and fit a 4x4 box",
++    "normalized supports overlap, differ in both directions, and have nonempty XOR",
++    "the two absolute source objects occupy disjoint four-column slots",
+ ]
+ 
+-PALETTE_KINDS = ("default", "warm", "cool", "varied")
+-DEGENERATE_TEXTURES = ("identical_shapes", "no_two", "full_grid")
+-HELPFUL_TEXTURES = PALETTE_KINDS
+-
+-_CARD = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+-
++HELPFUL_TEXTURES = ()
++DEGENERATE_TEXTURES = ()
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "varies", "valid": "12..22"},
+-    "grid_w":         {"type": "int", "default": "varies", "valid": "12..24"},
+-    "shape_size":     {"type": "int", "default": "varies", "valid": "3..7"},
+-    "palette_size":   {"type": "int", "default": "2", "valid": "2"},
+-    "position_bias":  {"type": "str", "default": "two_shapes", "valid": "two_shapes"},
+-    "texture":        {"type": "str", "default": "alias for palette_kind",
+-                       "valid": "default|warm|cool|varied|identical_shapes|no_two|full_grid"},
++    "grid_h": {"type": "int", "default": "scheduled 4/5 or difficulty-aware 4..18", "valid": "4..18"},
++    "grid_w": {"type": "int", "default": "scheduled 9 or difficulty-aware 9..24", "valid": "9..24"},
++    "shape_size": {"type": "int", "default": "scheduled 4,5,6,8", "valid": "4..8"},
+ }
+ 
+-
+-def _norm(cells):
+-    mr = min(r for r, c in cells); mc = min(c for r, c in cells)
+-    return [(r - mr, c - mc) for r, c in cells]
+-
+-
+-def _poly(rng, size):
+-    cells = {(0, 0)}
+-    while len(cells) < size:
+-        r, c = rng.choice(list(cells))
+-        dr, dc = rng.choice(_CARD)
+-        cells.add((r + dr, c + dc))
+-    return _norm(cells)
+-
+-
+-def _reserve(occ, top, left, sh, sw, h, w, margin=1):
+-    for r in range(top - margin, top + sh + margin):
+-        for c in range(left - margin, left + sw + margin):
+-            if 0 <= r < h and 0 <= c < w and occ[r][c]:
+-                return False
+-    for r in range(top, top + sh):
+-        for c in range(left, left + sw):
+-            occ[r][c] = True
+-    return True
+-
+-
+-def _place(rng, g, occ, cells, color, h, w):
+-    cells = _norm(cells)
+-    sh = max(r for r, c in cells) + 1; sw = max(c for r, c in cells) + 1
+-    if sh > h or sw > w:
++SCHEDULE_PROFILES = ("canonical_4", "canonical_5", "broad_6", "broad_8")
++EXAMPLES_NEEDED = 4
++MIN_STRICT_FRAC = 1.0
++_CARD = ((-1, 0), (1, 0), (0, -1), (0, 1))
++_SLOT = 4
++
++
++def schedule_profile(seed: int, sample_index: int, difficulty=None) -> str:
++    del seed, difficulty
++    if type(sample_index) is not int:
++        raise TypeError("sample_index must be an integer")
++    return SCHEDULE_PROFILES[sample_index % len(SCHEDULE_PROFILES)]
++
++
++def _normalize(points: Iterable[tuple[int, int]]) -> frozenset[tuple[int, int]]:
++    cells = set(points)
++    if not cells:
++        return frozenset()
++    top = min(r for r, _ in cells)
++    left = min(c for _, c in cells)
++    return frozenset((r - top, c - left) for r, c in cells)
++
++
++def _bbox_shape(points: Iterable[tuple[int, int]]) -> tuple[int, int]:
++    cells = tuple(points)
++    if not cells:
++        return (0, 0)
++    return max(r for r, _ in cells) + 1, max(c for _, c in cells) + 1
++
++
++def _enumerate_polyominoes() -> dict[int, tuple[frozenset[tuple[int, int]], ...]]:
++    """Enumerate fixed connected polyominoes fitting a 4x4 box, deterministically."""
++    by_size: dict[int, tuple[frozenset[tuple[int, int]], ...]] = {
++        1: (frozenset({(0, 0)}),)
++    }
++    for size in range(2, 9):
++        found: set[frozenset[tuple[int, int]]] = set()
++        for shape in by_size[size - 1]:
++            for row, col in shape:
++                for dr, dc in _CARD:
++                    point = (row + dr, col + dc)
++                    if point in shape:
++                        continue
++                    grown = _normalize(set(shape) | {point})
++                    height, width = _bbox_shape(grown)
++                    if height <= _SLOT and width <= _SLOT:
++                        found.add(grown)
++        by_size[size] = tuple(sorted(found, key=lambda item: tuple(sorted(item))))
++    return by_size
++
++
++_SHAPES = _enumerate_polyominoes()
++
++
++def _uncropped_xor(red, green):
++    height = max(_bbox_shape(red)[0], _bbox_shape(green)[0])
++    width = max(_bbox_shape(red)[1], _bbox_shape(green)[1])
++    return red ^ green, height, width
++
++
++def _cropped_extent(cells):
++    if not cells:
++        return (0, 0)
++    normalized = _normalize(cells)
++    return _bbox_shape(normalized)
++
++
++def _valid_pair(red, green) -> bool:
++    if red == green:
+         return False
+-    for _t in range(50):
+-        top = rng.randint(0, h - sh); left = rng.randint(0, w - sw)
+-        if _reserve(occ, top, left, sh, sw, h, w):
+-            paint_at(g, top, left, cells, color)
+-            return True
+-    return False
+-
+-
+-def _axis_int(ctx, rng, label, lo, hi):
+-    if label in ctx.overrides and ctx.overrides.get(label) is not None:
+-        return ctx.draw_int(label, lo, hi)
+-    return rng.randint(lo, hi)
+-
+-
+-def _fallback_grid(h, w):
+-    h = max(h, 8); w = max(w, 10)
+-    g = full_grid(h, w, 0)
+-    paint_at(g, 1, 1, [(0, 0), (1, 0), (1, 1)], 2)
+-    paint_at(g, 1, 6 if w > 9 else 5, [(0, 0), (0, 1), (1, 1)], 3)
+-    return g
++    if not (red & green) or not (red - green) or not (green - red):
++        return False
++    xor, height, width = _uncropped_xor(red, green)
++    # Every generated case preserves at least one significant zero edge.  This
++    # makes post-XOR cropping an executable, always-refuted shortcut rather than
++    # a witness that appears only by chance.
++    return bool(xor) and _cropped_extent(xor) != (height, width)
++
++
++@lru_cache(maxsize=None)
++def _pair_bank(size: int):
++    shapes = _SHAPES[size]
++    pairs = []
++    # Walk deterministic cyclic offsets so the bank draws from many red shapes
++    # instead of exhausting all partners of the first lexicographic shape.
++    for offset in range(1, len(shapes)):
++        for index, red in enumerate(shapes):
++            green = shapes[(index + offset) % len(shapes)]
++            if _valid_pair(red, green):
++                pairs.append((red, green))
++                if len(pairs) >= 2048:
++                    return tuple(pairs)
++    if not pairs:  # an internal domain claim, never a stochastic fallback
++        raise RuntimeError(f"no normalized-XOR witness pairs exist for size {size}")
++    return tuple(pairs)
++
++
++def _validate_call(difficulty, overrides: dict[str, Any]) -> None:
++    if difficulty not in (None, "easy", "medium", "hard"):
++        raise ValueError(f"unknown difficulty: {difficulty!r}")
++    unknown = sorted(set(overrides) - set(AXES))
++    if unknown:
++        raise ValueError(f"unknown override axes: {unknown}")
++    bounds = {"grid_h": (4, 18), "grid_w": (9, 24), "shape_size": (4, 8)}
++    for name, value in overrides.items():
++        if value is None:
++            continue
++        if type(value) is not int:
++            raise TypeError(f"{name} must be an integer, not bool/float/string")
++        lo, hi = bounds[name]
++        if not lo <= value <= hi:
++            raise ValueError(f"{name} must be in [{lo}, {hi}]")
++
++
++def _axis(ctx, label: str, lo: int, hi: int, defaults: Iterable[int]) -> int:
++    # Explicit overrides use the full advertised domain regardless of the
++    # difficulty hint. Defaults may be scheduled or difficulty-weighted.
++    if label in ctx.overrides and ctx.overrides[label] is not None:
++        return ctx.draw_choice(label, tuple(range(lo, hi + 1)))
++    options = tuple(defaults)
++    if not options:
++        raise RuntimeError(f"empty default options for {label}")
++    return ctx.draw_choice(label, options)
++
++
++def _broad_defaults(difficulty):
++    if difficulty == "easy":
++        return range(4, 9), range(9, 15)
++    if difficulty == "hard":
++        return range(10, 19), range(16, 25)
++    if difficulty == "medium":
++        return range(7, 14), range(12, 21)
++    return range(4, 19), range(9, 25)
++
++
++def _resolved_axes(ctx, profile: str, difficulty):
++    if profile == "canonical_4":
++        default_h, default_w, default_size = (4,), (9,), (4,)
++    elif profile == "canonical_5":
++        default_h, default_w, default_size = (5,), (9,), (5,)
++    else:
++        heights, widths = _broad_defaults(difficulty)
++        default_h, default_w = tuple(heights), tuple(widths)
++        default_size = (6,) if profile == "broad_6" else (8,)
++    height = _axis(ctx, "grid_h", 4, 18, default_h)
++    width = _axis(ctx, "grid_w", 9, 24, default_w)
++    size = _axis(ctx, "shape_size", 4, 8, default_size)
++    return height, width, size
++
++
++def _place_in_slot(grid, shape, color: int, *, top_limit: int, left0: int, rng) -> None:
++    shape_h, shape_w = _bbox_shape(shape)
++    top = rng.randint(0, top_limit - shape_h)
++    left = left0 + rng.randint(0, _SLOT - shape_w)
++    for row, col in shape:
++        grid[top + row][left + col] = color
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
+-    rng = ctx.draw_rng("layout")
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], rng)
+-
+-    if difficulty == "easy":
+-        hr, wr, ss = (12, 14), (12, 16), (3, 4)
+-    elif difficulty == "hard":
+-        hr, wr, ss = (16, 22), (18, 24), (5, 7)
+-    else:
+-        hr, wr, ss = (13, 18), (14, 20), (3, 6)
+-
+-    h = _axis_int(ctx, rng, "grid_h", *hr)
+-    w = _axis_int(ctx, rng, "grid_w", *wr)
+-    shape_size = _axis_int(ctx, rng, "shape_size", *ss)
+-
+-    for _attempt in range(40):
+-        s2 = _poly(rng, shape_size)
+-        s3 = _poly(rng, shape_size)
+-        if set(s2) == set(s3):
+-            continue   # need a non-empty XOR
+-        g = full_grid(h, w, 0)
+-        occ = [[False] * w for _ in range(h)]
+-        if not _place(rng, g, occ, s2, 2, h, w):
++    _validate_call(difficulty, overrides)
++    if type(sample_index) is not int:
++        raise TypeError("sample_index must be an integer")
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++    profile = schedule_profile(seed, sample_index, difficulty)
++    height, width, size = _resolved_axes(ctx, profile, difficulty)
++    red, green = ctx.draw_rng("shape_pair").choice(_pair_bank(size))
++
++    grid = full_grid(height, width, 0)
++    role_order = ctx.draw_choice("role_order", ("red_left", "green_left"))
++    left_shape, left_color, right_shape, right_color = (
++        (red, 2, green, 3)
++        if role_order == "red_left"
++        else (green, 3, red, 2)
++    )
++    _place_in_slot(
++        grid, left_shape, left_color,
++        top_limit=height, left0=0, rng=ctx.draw_rng("left_placement"),
++    )
++    _place_in_slot(
++        grid, right_shape, right_color,
++        top_limit=height, left0=width - _SLOT, rng=ctx.draw_rng("right_placement"),
++    )
++    return grid
++
++
++def _coerce_grid(grid):
++    if not isinstance(grid, (list, tuple)) or not grid:
++        return None, ["grid must be a non-empty list or tuple"]
++    rows = []
++    for row in grid:
++        if not isinstance(row, (list, tuple)) or not row:
++            return None, ["grid rows must be non-empty lists or tuples"]
++        rows.append(list(row))
++    width = len(rows[0])
++    if any(len(row) != width for row in rows):
++        return None, ["grid must be rectangular"]
++    if any(type(value) is not int or not 0 <= value <= 9 for row in rows for value in row):
++        return None, ["grid cells must be integer colors 0..9 (not booleans)"]
++    return rows, []
++
++
++def _components(grid, color: int):
++    remaining = {
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == color
++    }
++    result = []
++    while remaining:
++        start = min(remaining)
++        remaining.remove(start)
++        cells = {start}
++        stack = [start]
++        while stack:
++            row, col = stack.pop()
++            for dr, dc in _CARD:
++                point = (row + dr, col + dc)
++                if point in remaining:
++                    remaining.remove(point)
++                    cells.add(point)
++                    stack.append(point)
++        result.append(cells)
++    return result
++
++
++def _analyze(grid):
++    rows, errors = _coerce_grid(grid)
++    if rows is None:
++        return None, errors
++    height, width = len(rows), len(rows[0])
++    if not 4 <= height <= 18:
++        errors.append("grid height must be in 4..18")
++    if not 9 <= width <= 24:
++        errors.append("grid width must be in 9..24")
++    palette = {value for row in rows for value in row}
++    if not palette <= {0, 2, 3}:
++        errors.append(f"input colors must be drawn from 0,2,3; found {sorted(palette)}")
++        return None, errors
++    if 0 not in palette:
++        errors.append("background color 0 is absent")
++    red_components = _components(rows, 2)
++    green_components = _components(rows, 3)
++    if len(red_components) != 1:
++        errors.append(f"expected exactly one red-2 component, found {len(red_components)}")
++    if len(green_components) != 1:
++        errors.append(f"expected exactly one green-3 component, found {len(green_components)}")
++    if errors:
++        return None, errors
++
++    red_absolute = red_components[0]
++    green_absolute = green_components[0]
++    red = _normalize(red_absolute)
++    green = _normalize(green_absolute)
++    if len(red) != len(green):
++        errors.append("source shapes must have equal cell counts")
++    if not 4 <= len(red) <= 8 or not 4 <= len(green) <= 8:
++        errors.append("each source shape must contain 4..8 cells")
++    for name, shape in (("red", red), ("green", green)):
++        shape_h, shape_w = _bbox_shape(shape)
++        if shape_h > _SLOT or shape_w > _SLOT:
++            errors.append(f"{name} source shape must fit within a 4x4 box")
++    if red == green:
++        errors.append("normalized source shapes must differ")
++    if not (red & green):
++        errors.append("normalized source shapes must overlap")
++    if not (red - green):
++        errors.append("red shape needs a normalized exclusive cell")
++    if not (green - red):
++        errors.append("green shape needs a normalized exclusive cell")
++    if errors:
++        return None, errors
++    xor, output_h, output_w = _uncropped_xor(red, green)
++    return {
++        "grid": rows,
++        "height": height,
++        "width": width,
++        "red": red,
++        "green": green,
++        "red_absolute": red_absolute,
++        "green_absolute": green_absolute,
++        "xor": xor,
++        "output_h": output_h,
++        "output_w": output_w,
++    }, []
++
++
++def self_check(grid, *, difficulty=None, meta=None):
++    del difficulty, meta
++    _analysis, errors = _analyze(grid)
++    return errors
++
++
++def strict_canonical_like(grid):
++    return self_check(grid)
++
++
++def observe_overrides(grid):
++    analysis, errors = _analyze(grid)
++    if errors:
++        raise ValueError("cannot observe overrides: " + "; ".join(errors))
++    return {
++        "grid_h": analysis["height"],
++        "grid_w": analysis["width"],
++        "shape_size": len(analysis["red"]),
++    }
++
++
++def _render(cells, height: int, width: int):
++    occupied = set(cells)
++    return [
++        [8 if (row, col) in occupied else 0 for col in range(width)]
++        for row in range(height)
++    ]
++
++
++def _analysis_or_raise(grid):
++    analysis, errors = _analyze(grid)
++    if errors:
++        raise ValueError("invalid normalized-XOR input: " + "; ".join(errors))
++    return analysis
++
++
++def rule_mirror(grid):
++    analysis = _analysis_or_raise(grid)
++    return _render(analysis["xor"], analysis["output_h"], analysis["output_w"])
++
++
++def _rival_union(grid):
++    analysis = _analysis_or_raise(grid)
++    return _render(analysis["red"] | analysis["green"], analysis["output_h"], analysis["output_w"])
++
++
++def _rival_intersection(grid):
++    analysis = _analysis_or_raise(grid)
++    return _render(analysis["red"] & analysis["green"], analysis["output_h"], analysis["output_w"])
++
++
++def _rival_red_only(grid):
++    analysis = _analysis_or_raise(grid)
++    return _render(analysis["red"], analysis["output_h"], analysis["output_w"])
++
++
++def _rival_green_only(grid):
++    analysis = _analysis_or_raise(grid)
++    return _render(analysis["green"], analysis["output_h"], analysis["output_w"])
++
++
++def _crop_nonzero(grid):
++    cells = {
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value != 0
++    }
++    if not cells:
++        return [[0]]
++    top = min(r for r, _ in cells)
++    bottom = max(r for r, _ in cells)
++    left = min(c for _, c in cells)
++    right = max(c for _, c in cells)
++    return [row[left:right + 1] for row in grid[top:bottom + 1]]
++
++
++def _rival_crop_xor(grid):
++    return _crop_nonzero(rule_mirror(grid))
++
++
++def _rival_absolute_xor(grid):
++    analysis = _analysis_or_raise(grid)
++    occupied = analysis["red_absolute"] ^ analysis["green_absolute"]
++    return _render(occupied, analysis["height"], analysis["width"])
++
++
++SEMANTIC_RIVALS = {
++    "normalized_union": _rival_union,
++    "normalized_intersection": _rival_intersection,
++    "red_only": _rival_red_only,
++    "green_only": _rival_green_only,
++    "crop_xor_again": _rival_crop_xor,
++    "absolute_position_xor": _rival_absolute_xor,
++}
++CANONICAL_SHORTCUTS = {
++    "crop_xor_again": _rival_crop_xor,
++}
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
++
++
++def _normalized_overlap(grid):
++    analysis = _analysis_or_raise(grid)
++    return bool(analysis["red"] & analysis["green"] and analysis["red"] - analysis["green"] and analysis["green"] - analysis["red"])
++
++
++def _uncropped_extent(grid):
++    return _rival_crop_xor(grid) != rule_mirror(grid)
++
++
++def _absolute_irrelevant(grid):
++    return _rival_absolute_xor(grid) != rule_mirror(grid)
++
++
++SEMANTIC_WITNESSES = {
++    "normalized_overlap": _normalized_overlap,
++    "uncropped_xor_extent": _uncropped_extent,
++    "absolute_positions_irrelevant": _absolute_irrelevant,
++}
++
++
++def lesson_identifiable(demos, query) -> list[str]:
++    """Return declared competitors that fit all demonstrations but harm query."""
++    findings = []
++    for name, rival in LESSON_COMPETITORS.items():
++        try:
++            fits = all(rival(pair["input"]) == pair["output"] for pair in demos)
++            harms = rival(query["input"]) != query["output"]
++        except Exception as exc:  # competitor crashes are explicit findings
++            findings.append(f"{name}: crashed: {type(exc).__name__}: {exc}")
+             continue
+-        if not _place(rng, g, occ, s3, 3, h, w):
+-            continue
+-        return g
+-
+-    return _fallback_grid(h, w)   # fallback (rare), still nontrivial
+-
+-
+-
+-def _components_for_color(grid, color):
+-    h, w = len(grid), len(grid[0]) if grid else 0
+-    seen = set()
+-    comps = []
+-    for r in range(h):
+-        for c in range(w):
+-            if grid[r][c] != color or (r, c) in seen:
+-                continue
+-            stack = [(r, c)]
+-            seen.add((r, c))
+-            cells = []
+-            while stack:
+-                rr, cc = stack.pop()
+-                cells.append((rr, cc))
+-                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+-                    nr, nc = rr + dr, cc + dc
+-                    if (0 <= nr < h and 0 <= nc < w and (nr, nc) not in seen
+-                            and grid[nr][nc] == color):
+-                        seen.add((nr, nc))
+-                        stack.append((nr, nc))
+-            comps.append(cells)
+-    return comps
+-
+-
+-def _norm_set(cells):
+-    mr = min(r for r, _ in cells)
+-    mc = min(c for _, c in cells)
+-    return {(r - mr, c - mc) for r, c in cells}
+-
+-
+-def self_check(grid, *, difficulty=None, meta=None):
+-    """Executable invariants for normalized color-2/color-3 XOR inputs."""
+-    errs = []
+-    if not grid or any(len(row) != len(grid[0]) for row in grid):
+-        return ["grid must be nonempty and rectangular"]
+-    colors = {v for row in grid for v in row if v != 0}
+-    if colors != {2, 3}:
+-        errs.append(f"expected exactly colors 2 and 3 on 0-bg, got {sorted(colors)}")
+-        return errs
+-    c2 = _components_for_color(grid, 2)
+-    c3 = _components_for_color(grid, 3)
+-    if len(c2) != 1 or len(c3) != 1:
+-        errs.append(f"expected one component of each color, got color2={len(c2)} color3={len(c3)}")
+-        return errs
+-    s2 = _norm_set(c2[0])
+-    s3 = _norm_set(c3[0])
+-    if s2 == s3:
+-        errs.append("normalized color-2 and color-3 shapes are identical; XOR would be empty")
+-    if not (s2 ^ s3):
+-        errs.append("normalized XOR support is empty")
+-    return errs
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    g = full_grid(12, 14, 0)
+-    a = [(0, 0), (1, 0), (1, 1)]
+-    b = [(0, 0), (0, 1), (1, 1)]
+-    paint_at(g, 2, 2, a, 2)
+-    paint_at(g, 2, 8, b, 3)
+-    if name == "identical_shapes":
+-        paint_at(g, 2, 8, a, 3)
+-        return g
+-    if name == "no_two":
+-        g2 = full_grid(12, 14, 0); paint_at(g2, 2, 2, a, 2)
+-        return g2
+-    if name == "full_grid":
+-        return full_grid(12, 14, 2)
+-    return g
++        if fits and harms:
++            findings.append(f"{name}: survives demonstrations and changes query")
++    return findings
+diff --git a/repo/generators/3cdfed241796/notes.md b/repo/generators/3cdfed241796/notes.md
+--- a/repo/generators/3cdfed241796/notes.md
++++ b/repo/generators/3cdfed241796/notes.md
+@@ -1,4 +1,68 @@
+ # Working notes: 3cdfed241796
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Defect → repair
++
++Imported version 2.1.0 had no pinned canonical rule hash or task-local tests,
++advertised dead/aliased `palette_size`, `position_bias` and `texture` controls,
++used capped random placement, and silently returned a fixed three-cell fallback
++that could violate an explicit `shape_size`. Its self-check did not validate ARC
++cell types, dimensions, source size/bbox limits, normalized overlap, or the
++uncropped-output teaching distinction.
++
++Version 3.0.0 keeps canonical Racket authority `RULE_HASH=9383a670d8c7` and
++replaces only the Python sampler/contract. Final generator SHA-256 is
++`e33237a9f196db8c218296ed01db9fec5bf41ef2b6d6d05bdf7f4398cac4bae3`.
++
++## Constructive domain
++
++- exact observable axes: `grid_h=4..18`, `grid_w=9..24`,
++  `shape_size=4..8`;
++- exactly one connected red-2 and one connected green-3 source, equal in cell
++  count and each fitting a 4×4 box;
++- a deterministic bank of all fixed connected polyominoes in the declared box;
++- finite source-pair banks requiring normalized overlap, a red-only cell, a
++  green-only cell and a significant uncropped zero edge;
++- two disjoint four-column source slots with randomized vertical/within-slot
++  placement and randomized left/right color order;
++- no clipping, capped rejection, dropped object or silent fallback.
++
++Unknown controls, booleans, nonintegers, invalid difficulty values and range
++violations fail loudly. `observe_overrides()` recovers every advertised axis.
++The four-profile schedule supplies exact 4×9 size-4 and 5×9 size-5 canonical
++anchors plus broad size-6 and size-8 cases in every four consecutive samples.
++
++## Semantic contract
++
++The independent transformation is: detect each colored component, translate
++both supports independently to bbox top-left, retain the maximum normalized
++height/width, and paint cyan where membership differs. Zero output margins are
++not cropped away.
++
++Executable competitors cover normalized union, intersection, red-only,
++green-only, post-XOR cropping, and XOR at absolute input positions. Every
++generated example defeats all six by construction. The cyclic regression holds
++out each member of every four-example schedule window and verifies that no
++competitor fitting the other three changes the query.
++
++## Evidence
++
++- test-first baseline: 31 failures and 12 passes against imported v2.1.0;
++- repaired task suite: 43/43 passing;
++- `workspace/xor_audit.py`: all three canonical pairs plus 120 generated draws,
++  zero invalids, zero independent-oracle mismatches, exact canonical-profile
++  support in every band and six-of-six rival disagreement on every draw;
++- `counterexamples/normalized-xor-shortcuts/`: pinned constructive case where
++  post-XOR cropping changes shape/content; protected canonical Racket matches
++  the independent Python oracle at rule hash `9383a670d8c7`;
++- packet battery partial: lint, self-check and Racket rule smoke passed; the
++  controller was interrupted during `defect_lint`, so later battery stages are
++  explicitly unrun rather than reported green.
++
++## Limits and status
++
++The sampler intentionally restricts sources to connected equal-size 4–8-cell
++polyominoes within 4×4 boxes and places them in separated slots. The canonical
++rule itself can act on broader inputs; those are not claimed as generator
++support. The finite rival set is hypothesis-driven, not a uniqueness proof.
++This optional peer repair is reviewer-reported only: the source was catalog-
++unapproved on input and remains owner acceptance/training-safety pending.
+diff --git a/repo/generators/3cdfed241796/tests/test_generator.py b/repo/generators/3cdfed241796/tests/test_generator.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3cdfed241796/tests/test_generator.py
+@@ -0,0 +1,268 @@
++"""Regression contract for normalized-support XOR task 3cdfed241796.
++
++The canonical Racket program remains the label authority.  Expected outputs in
++this suite come from an independent translation-normalize/XOR oracle rather than
++from the generator's production mirror.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++import os
++from pathlib import Path
++import random
++
++import pytest
++
++from reviewer_support import canonical_pairs, find_root
++
++TASK = "3cdfed241796"
++HOME = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
++
++
++def _load_generator():
++    path = Path(os.environ.get("GENERATOR_UNDER_TEST", HOME / "generator.py"))
++    spec = importlib.util.spec_from_file_location("reviewed_3cdfed241796", path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++gen = _load_generator()
++CARD = ((-1, 0), (1, 0), (0, -1), (0, 1))
++
++
++def _component(grid, color):
++    cells = {
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == color
++    }
++    assert cells
++    start = min(cells)
++    seen = {start}
++    stack = [start]
++    while stack:
++        r, c = stack.pop()
++        for dr, dc in CARD:
++            point = (r + dr, c + dc)
++            if point in cells and point not in seen:
++                seen.add(point)
++                stack.append(point)
++    assert seen == cells
++    return seen
++
++
++def _normalize(cells):
++    top = min(r for r, _ in cells)
++    left = min(c for _, c in cells)
++    return {(r - top, c - left) for r, c in cells}
++
++
++def oracle(grid):
++    red = _normalize(_component(grid, 2))
++    green = _normalize(_component(grid, 3))
++    height = max(max(r for r, _ in red), max(r for r, _ in green)) + 1
++    width = max(max(c for _, c in red), max(c for _, c in green)) + 1
++    xor = red ^ green
++    return [
++        [8 if (r, c) in xor else 0 for c in range(width)]
++        for r in range(height)
++    ]
++
++
++def _freeze(grid):
++    return tuple(tuple(row) for row in grid)
++
++
++def _profile(grid):
++    return len(grid), len(grid[0])
++
++
++def _color_left_edge(grid, color):
++    return min(c for row in grid for c, value in enumerate(row) if value == color)
++
++
++@pytest.mark.parametrize(
++    "pair",
++    canonical_pairs(TASK, root=ROOT),
++    ids=lambda p: f"v{p['variant']}-{p['split']}{p['pair_index']}",
++)
++def test_canonical_inputs_are_owned_and_independent_oracle_matches(pair):
++    assert gen.self_check(pair["input"]) == []
++    assert oracle(pair["input"]) == pair["output"]
++
++
++def test_rule_hash_is_pinned_to_selected_authority():
++    assert gen.RULE_HASH == "9383a670d8c7"
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++@pytest.mark.parametrize(
++    "options",
++    [
++        {"grid_h": 4, "grid_w": 9, "shape_size": 4},
++        {"grid_h": 6, "grid_w": 12, "shape_size": 5},
++        {"grid_h": 10, "grid_w": 18, "shape_size": 6},
++        {"grid_h": 18, "grid_w": 24, "shape_size": 8},
++    ],
++)
++def test_every_advertised_override_is_exact_and_observable(band, options):
++    grid = gen.generate(317, 29, difficulty=band, **options)
++    assert gen.self_check(grid) == []
++    assert gen.observe_overrides(grid) == options
++    assert gen.rule_mirror(grid) == oracle(grid)
++
++
++@pytest.mark.parametrize(
++    "kwargs",
++    [
++        {"typo": 1},
++        {"grid_h": True},
++        {"grid_h": 3},
++        {"grid_h": 19},
++        {"grid_w": 8},
++        {"grid_w": 25},
++        {"shape_size": 2},
++        {"shape_size": 9},
++        {"shape_size": 4.0},
++        {"shape_size": "4"},
++    ],
++)
++def test_invalid_overrides_fail_loudly(kwargs):
++    with pytest.raises((TypeError, ValueError)):
++        gen.generate(0, 0, **kwargs)
++
++
++def test_invalid_difficulty_fails_loudly():
++    with pytest.raises(ValueError):
++        gen.generate(0, 0, difficulty="extreme")
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++def test_default_distribution_is_deterministic_lawful_and_canonically_anchored(band):
++    canonical_profiles = {
++        _profile(pair["input"]) for pair in canonical_pairs(TASK, root=ROOT)
++    }
++    inputs = set()
++    outputs = set()
++    sizes = set()
++    role_orders = set()
++    exact_profile_hits = 0
++    for index in range(100):
++        seed = 20_000 + index
++        grid = gen.generate(seed, index, difficulty=band)
++        assert grid == gen.generate(seed, index, difficulty=band)
++        assert gen.self_check(grid) == []
++        assert gen.strict_canonical_like(grid) == []
++        expected = oracle(grid)
++        assert gen.rule_mirror(grid) == expected
++        assert expected != grid
++        values = gen.observe_overrides(grid)
++        sizes.add(values["shape_size"])
++        role_orders.add(_color_left_edge(grid, 2) < _color_left_edge(grid, 3))
++        exact_profile_hits += _profile(grid) in canonical_profiles
++        inputs.add(_freeze(grid))
++        outputs.add(_freeze(expected))
++    assert exact_profile_hits >= 20
++    assert len(inputs) >= 80
++    assert len(outputs) >= 60
++    assert len(sizes) >= 4
++    assert role_orders == {False, True}
++
++
++def test_named_rivals_have_constructive_counterexample():
++    grid = gen.generate(91, 2, difficulty="medium", grid_h=6, grid_w=12, shape_size=6)
++    expected = oracle(grid)
++    assert gen.SEMANTIC_WITNESSES["normalized_overlap"](grid)
++    assert gen.SEMANTIC_WITNESSES["uncropped_xor_extent"](grid)
++    assert gen.SEMANTIC_WITNESSES["absolute_positions_irrelevant"](grid)
++    for name, rival in gen.SEMANTIC_RIVALS.items():
++        assert rival(deepcopy(grid)) != expected, name
++
++
++@pytest.mark.parametrize("band", ["easy", "medium", "hard"])
++def test_every_four_consecutive_schedule_examples_identify_rule_under_all_query_rotations(band):
++    assert len(gen.SCHEDULE_PROFILES) == gen.EXAMPLES_NEEDED == 4
++    for start in range(12):
++        pairs = []
++        profiles = []
++        for offset in range(4):
++            index = start + offset
++            grid = gen.generate(80_000 + start, index, difficulty=band)
++            pairs.append({"input": grid, "output": oracle(grid)})
++            profiles.append(gen.schedule_profile(80_000 + start, index, band))
++        assert set(profiles) == set(gen.SCHEDULE_PROFILES)
++        for query_index in range(4):
++            demos = [pair for i, pair in enumerate(pairs) if i != query_index]
++            assert gen.lesson_identifiable(demos, pairs[query_index]) == []
++
++
++def test_self_check_rejects_malformed_missing_disconnected_equal_and_oversized_cases():
++    valid = gen.generate(88, 4)
++
++    disconnected = deepcopy(valid)
++    red = sorted((r, c) for r, row in enumerate(disconnected) for c, v in enumerate(row) if v == 2)
++    disconnected[red[0][0]][red[0][1]] = 0
++    disconnected[0][-1] = 2
++    assert gen.self_check(disconnected)
++
++    equal = [[0] * 9 for _ in range(4)]
++    for r, c in ((0, 0), (1, 0), (1, 1), (2, 1)):
++        equal[r][c] = 2
++        equal[r][c + 5] = 3
++    assert gen.self_check(equal)
++
++    oversized = [[0] * 12 for _ in range(6)]
++    for c in range(5):
++        oversized[0][c] = 2
++        oversized[3][c + 6] = 3
++    assert gen.self_check(oversized)
++
++    for malformed in (None, [], [[]], [[0], [0, 1]], [[True, 0]], [[0, 10]]):
++        assert gen.self_check(malformed)
++
++
++def test_generation_does_not_mutate_global_random_state():
++    random.seed(418)
++    before = random.getstate()
++    gen.generate(77, 12, difficulty="hard")
++    assert random.getstate() == before
++
++
++def test_workspace_audit_replays_core_contract():
++    path = HOME / "workspace" / "xor_audit.py"
++    spec = importlib.util.spec_from_file_location("xor_audit", path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    report = module.run_audit(per_band=12)
++    assert report["canonical_pairs"] == 3
++    assert report["canonical_failures"] == []
++    assert report["errors"] == []
++    for stats in report["bands"].values():
++        assert stats["invalid"] == 0
++        assert stats["oracle_mismatches"] == 0
++        assert stats["exact_canonical_profiles"] > 0
++        assert all(value == stats["draws"] for value in stats["rival_disagreements"].values())
++
++
++def test_retained_counterexample_is_source_bound_and_authoritative():
++    home = HOME / "counterexamples" / "normalized-xor-shortcuts"
++    metadata = json.loads((home / "metadata.json").read_text())
++    grid = json.loads((home / "input.json").read_text())
++    expected = json.loads((home / "python-oracle.json").read_text())
++    cropped = json.loads((home / "cropped-xor-rival.json").read_text())
++    racket = json.loads((home / "racket.json").read_text())
++    assert metadata["generator_sha256"] == hashlib.sha256((HOME / "generator.py").read_bytes()).hexdigest()
++    assert metadata["rule_hash"] == gen.RULE_HASH == racket["executed_rule_hash"]
++    assert gen.self_check(grid) == []
++    assert oracle(grid) == expected
++    assert racket["results"][0]["output"] == expected
++    assert cropped != expected
++    assert metadata["difference_cells"]
+diff --git a/repo/generators/3cdfed241796/workspace/README.md b/repo/generators/3cdfed241796/workspace/README.md
+--- a/repo/generators/3cdfed241796/workspace/README.md
++++ b/repo/generators/3cdfed241796/workspace/README.md
+@@ -1,4 +1,11 @@
+-# Workspace
++# Workspace — 3cdfed241796
+ 
+-Keep alternate drafts, reproducers, and unfinished experiments here.
+-The selected implementation is `../generator.py`. Workspace drafts are never automatically selected.
++- `xor_audit.py` independently recomputes normalized-support XOR, checks all
++  canonical pairs, samples each difficulty band, records exact axes/schedule
++  coverage and attacks every declared rival. Run from repo root with:
++
++  `PYTHONPATH=src:shared/runtime python3 generators/3cdfed241796/workspace/xor_audit.py --per-band 100 --json-out ../checks/3cdfed241796/current-audit.json`
++
++- `../counterexamples/normalized-xor-shortcuts/build.py` regenerates the pinned
++  uncropped-extent witness. Label it through protected Racket with `arcpuzzles
++  apply`; the retained `racket.json` is evidence only, not approval.
+diff --git a/repo/generators/3cdfed241796/workspace/xor_audit.py b/repo/generators/3cdfed241796/workspace/xor_audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/3cdfed241796/workspace/xor_audit.py
+@@ -0,0 +1,194 @@
++#!/usr/bin/env python3
++"""Portable semantic/distribution audit for generator 3cdfed241796.
++
++The audit independently normalizes the two colored components, computes the
++uncropped symmetric difference, checks every canonical pair, samples all
++schedule/difficulty bands, and reports exact controls plus named-rival results.
++"""
++from __future__ import annotations
++
++from collections import Counter
++from copy import deepcopy
++import argparse
++import importlib.util
++import json
++import os
++from pathlib import Path
++from typing import Any
++
++from reviewer_support import canonical_pairs, find_root
++
++TASK = "3cdfed241796"
++HOME = Path(__file__).resolve().parents[1]
++ROOT = find_root(__file__)
++CARD = ((-1, 0), (1, 0), (0, -1), (0, 1))
++
++
++def _load_generator():
++    path = Path(os.environ.get("GENERATOR_UNDER_TEST", HOME / "generator.py"))
++    spec = importlib.util.spec_from_file_location("audit_3cdfed241796", path)
++    module = importlib.util.module_from_spec(spec)
++    if spec.loader is None:
++        raise RuntimeError(f"cannot load generator from {path}")
++    spec.loader.exec_module(module)
++    return module
++
++
++def _component(grid, color):
++    cells = {
++        (r, c)
++        for r, row in enumerate(grid)
++        for c, value in enumerate(row)
++        if value == color
++    }
++    if not cells:
++        raise ValueError(f"missing color {color}")
++    start = min(cells)
++    seen = {start}
++    stack = [start]
++    while stack:
++        r, c = stack.pop()
++        for dr, dc in CARD:
++            point = (r + dr, c + dc)
++            if point in cells and point not in seen:
++                seen.add(point)
++                stack.append(point)
++    if seen != cells:
++        raise ValueError(f"color {color} is disconnected")
++    return seen
++
++
++def _normalize(cells):
++    top = min(r for r, _ in cells)
++    left = min(c for _, c in cells)
++    return {(r - top, c - left) for r, c in cells}
++
++
++def independent_oracle(grid):
++    red = _normalize(_component(grid, 2))
++    green = _normalize(_component(grid, 3))
++    height = max(max(r for r, _ in red), max(r for r, _ in green)) + 1
++    width = max(max(c for _, c in red), max(c for _, c in green)) + 1
++    xor = red ^ green
++    return [
++        [8 if (r, c) in xor else 0 for c in range(width)]
++        for r in range(height)
++    ]
++
++
++def _freeze(grid):
++    return tuple(tuple(row) for row in grid)
++
++
++def run_audit(*, per_band: int = 100) -> dict[str, Any]:
++    if type(per_band) is not int or per_band <= 0:
++        raise ValueError("per_band must be a positive integer")
++    gen = _load_generator()
++    official = canonical_pairs(TASK, root=ROOT)
++    canonical_profiles = {(len(pair["input"]), len(pair["input"][0])) for pair in official}
++    canonical_failures = []
++    for pair in official:
++        tag = f"v{pair['variant']}-{pair['split']}{pair['pair_index']}"
++        findings = gen.self_check(deepcopy(pair["input"]))
++        if findings:
++            canonical_failures.append({"pair": tag, "kind": "self_check", "detail": findings})
++        if independent_oracle(pair["input"]) != pair["output"]:
++            canonical_failures.append({"pair": tag, "kind": "oracle_mismatch"})
++
++    report: dict[str, Any] = {
++        "task_id": TASK,
++        "generator_version": getattr(gen, "VERSION", None),
++        "rule_hash": getattr(gen, "RULE_HASH", None),
++        "canonical_pairs": len(official),
++        "canonical_profiles": [list(item) for item in sorted(canonical_profiles)],
++        "canonical_failures": canonical_failures,
++        "bands": {},
++        "errors": [],
++    }
++    if canonical_failures:
++        report["errors"].append("canonical contract failure")
++
++    for band_index, band in enumerate(("easy", "medium", "hard")):
++        stats: dict[str, Any] = {
++            "draws": per_band,
++            "invalid": 0,
++            "oracle_mismatches": 0,
++            "exact_canonical_profiles": 0,
++            "distinct_inputs": 0,
++            "distinct_outputs": 0,
++            "axis_counts": {name: Counter() for name in gen.AXES},
++            "schedule_counts": Counter(),
++            "rival_disagreements": Counter(),
++        }
++        inputs = set()
++        outputs = set()
++        for index in range(per_band):
++            seed = 620_000 + band_index * 10_000 + index
++            sample_index = 41_000 + index
++            try:
++                grid = gen.generate(seed, sample_index, difficulty=band)
++            except Exception as exc:
++                stats["invalid"] += 1
++                report["errors"].append(
++                    f"{band} generation crash at {index}: {type(exc).__name__}: {exc}"
++                )
++                continue
++            findings = gen.self_check(deepcopy(grid))
++            if findings:
++                stats["invalid"] += 1
++                report["errors"].append(f"{band} invalid draw {index}: {findings[0]}")
++                continue
++            expected = independent_oracle(grid)
++            if gen.rule_mirror(deepcopy(grid)) != expected:
++                stats["oracle_mismatches"] += 1
++                report["errors"].append(f"{band} oracle mismatch at {index}")
++            if (len(grid), len(grid[0])) in canonical_profiles:
++                stats["exact_canonical_profiles"] += 1
++            inputs.add(_freeze(grid))
++            outputs.add(_freeze(expected))
++            for name, value in gen.observe_overrides(grid).items():
++                stats["axis_counts"][name][str(value)] += 1
++            stats["schedule_counts"][gen.schedule_profile(seed, sample_index, band)] += 1
++            for name, rival in gen.SEMANTIC_RIVALS.items():
++                if rival(deepcopy(grid)) != expected:
++                    stats["rival_disagreements"][name] += 1
++        stats["distinct_inputs"] = len(inputs)
++        stats["distinct_outputs"] = len(outputs)
++        stats["axis_counts"] = {
++            name: dict(sorted(values.items())) for name, values in stats["axis_counts"].items()
++        }
++        stats["schedule_counts"] = dict(sorted(stats["schedule_counts"].items()))
++        stats["rival_disagreements"] = dict(sorted(stats["rival_disagreements"].items()))
++        report["bands"][band] = stats
++        if stats["invalid"]:
++            report["errors"].append(f"{band}: {stats['invalid']} invalid draw(s)")
++        if stats["oracle_mismatches"]:
++            report["errors"].append(f"{band}: {stats['oracle_mismatches']} oracle mismatch(es)")
++        if not stats["exact_canonical_profiles"]:
++            report["errors"].append(f"{band}: no exact canonical-profile support")
++        for name in gen.SEMANTIC_RIVALS:
++            if stats["rival_disagreements"].get(name, 0) != per_band:
++                report["errors"].append(
++                    f"{band}: rival {name} disagreed on "
++                    f"{stats['rival_disagreements'].get(name, 0)}/{per_band} draws"
++                )
++    report["errors"] = list(dict.fromkeys(report["errors"]))
++    return report
++
++
++def main(argv=None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--per-band", type=int, default=100)
++    parser.add_argument("--json-out", type=Path)
++    args = parser.parse_args(argv)
++    report = run_audit(per_band=args.per_band)
++    text = json.dumps(report, indent=2, sort_keys=True)
++    if args.json_out:
++        args.json_out.parent.mkdir(parents=True, exist_ok=True)
++        args.json_out.write_text(text + "\n", encoding="utf-8")
++    print(text)
++    return 1 if report["errors"] else 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

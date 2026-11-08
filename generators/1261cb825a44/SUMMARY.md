@@ -1,0 +1,6 @@
+# 1261cb825a44
+
+0-bg grid (h ∈ 9-12, w ∈ 10-13) with: (a) ONE CORNER KEY CELL — exactly one of the 4 grid corners (0,0), (0,w-1), (h-1,0), or (h-1,w-1) is painted in key_color (drawn from palette[0] ∈ {1..9}); (b) ONE KEY-COLORED BLOB inside the grid — a 3-5 cell irregular blob via grow_blob in the SAME key_color, placed AWAY from any corner (retry if any cell lands on a corner); (c) 1-2 DISTRACTOR BLOBS in OTHER colors (palette[1:] = 2 distinct non-key colors), each a 3-5 cell blob also placed away from corners. Rule (READ THE CORNER KEY, FILTER THE GRID TO KEEP ONLY KEY-COLORED NON-CORNER CELLS, CROP TO THEIR BBOX, OUTPUT): IDENTIFY the unique non-bg CORNER cell — its color is the KEY. FILTER all grid cells: KEEP only cells whose color == key_color AND whose position is NOT a corner. COMPUTE the bbox of the kept cells. CROP to that bbox: OUTPUT a smaller grid containing only the key-colored blob (with 0s where the bbox has no key cells). Net: the corner color picks which blob to extract; the cropped key-blob is the answer; distractors and corner are discarded.
+
+Kind: `per_puzzle`. Imported version: `2.1.1`.
+Approval is derived by the catalog from current code and retained evidence.

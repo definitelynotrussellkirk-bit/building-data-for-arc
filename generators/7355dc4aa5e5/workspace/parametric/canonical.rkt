@@ -1,0 +1,27 @@
+(rule! (lambda (g)
+         (let ((h (rows g))
+               (w (cols g))
+               (dots (find-color g 1)))
+           (reduce (lambda (acc dot)
+                     (let ((r (fst dot))
+                           (c (snd dot)))
+                       (let ((g2 (reduce (lambda (a c2) (set-cell a r c2 1))
+                                         acc
+                                         (range 0 w))))
+                         (let ((g3 (reduce (lambda (a r2) (set-cell a r2 c 1))
+                                           g2
+                                           (range 0 h))))
+                           (let ((g4 (set-cell g3 r c 2)))
+                             (reduce (lambda (a d)
+                                       (let ((nr (+ r (fst d)))
+                                             (nc (+ c (snd d))))
+                                         (if (and (>= nr 0) (< nr h) (>= nc 0) (< nc w))
+                                             (set-cell a nr nc 3)
+                                             a)))
+                                     g4
+                                     (list (list -1 -1)
+                                           (list -1 1)
+                                           (list 1 -1)
+                                           (list 1 1))))))))
+                   g
+                   dots))))

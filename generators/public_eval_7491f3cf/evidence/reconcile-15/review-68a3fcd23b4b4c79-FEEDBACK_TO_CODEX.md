@@ -1,0 +1,1 @@
+F1: Public-creation INTAKE.json classifies newly authored task-local reference.rkt files as tests_notes and omits racket from its top-level components, although RETURN-GUIDE and the per-target declarations classify them as racket; update _intake_summary to use the public-creation component classifier.

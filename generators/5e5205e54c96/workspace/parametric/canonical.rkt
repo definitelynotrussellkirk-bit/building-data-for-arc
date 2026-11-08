@@ -1,0 +1,27 @@
+(rule!
+  (let ((dummy 0))
+    (define (rect-border? obj)
+      (let* ((bb (obj-bbox obj))
+             (h (+ (- (third bb) (first bb)) 1))
+             (w (+ (- (fourth bb) (second bb)) 1))
+             (border-size (- (* h w) (* (max 0 (- h 2)) (max 0 (- w 2))))))
+        (and (>= h 3) (>= w 3) (= (obj-size obj) border-size)
+             (all? (lambda (p)
+                     (or (= (first p) (first bb)) (= (first p) (third bb))
+                         (= (second p) (second bb)) (= (second p) (fourth bb))))
+                   (obj-cells obj)))))
+    (let* ((legend (filter (lambda (v) (not (= v 0))) (first g)))
+           (frames (sort (filter (lambda (obj) (> (obj-r1 obj) 0))
+                                 (filter rect-border? (objects (keep-only g 8) 0)))
+                         (lambda (a b) (> (* (obj-h a) (obj-w a)) (* (obj-h b) (obj-w b)))))))
+      (for/fold ([out g]) ([frame (in-list frames)] [idx (in-naturals)])
+        (let ((inner (if (< (+ idx 1) (length frames)) (list-ref frames (+ idx 1)) #f))
+              (color (list-ref legend (min idx (- (length legend) 1)))))
+          (for*/fold ([acc out])
+                     ([r (in-range (+ (obj-r1 frame) 1) (obj-r2 frame))]
+                      [c (in-range (+ (obj-c1 frame) 1) (obj-c2 frame))])
+            (if (and inner
+                     (>= r (obj-r1 inner)) (<= r (obj-r2 inner))
+                     (>= c (obj-c1 inner)) (<= c (obj-c2 inner)))
+                acc
+                (set-cell acc r c color))))))))

@@ -1,0 +1,74 @@
+--- a/shared/tools/generator_defect_lint.py
++++ b/shared/tools/generator_defect_lint.py
+@@ -1220,12 +1220,42 @@
+     return f"({wrap_rule(src)} g)"
+ 
+ 
++def _sample_requests(samples_per_band):
++    """Probe consecutive indices at one seed, without coupling the two controls.
++
++    The former (seed, index) == (n, n) schedule can visit only one phase of
++    a valid generator, for example (seed + index) % 2. This bounded probe
++    covers sample-index residues at seed 1; it does not exhaust other seeds.
++    """
++    return [(1, index) for index in range(samples_per_band)]
++
++
++def _sampling_record(module, requests, samples_per_band, bands):
++    period = getattr(module, "LESSON_SCHEDULE_PERIOD", None)
++    period = period if type(period) is int and period > 0 else None
++    coverage = {}
++    if period is not None:
++        for band in bands:
++            residues = sorted({request["sample_index"] % period
++                               for request in requests
++                               if request["difficulty"] == band
++                               and request["status"] == "generated"})
++            coverage[str(band)] = {"residues": residues,
++                                   "complete_at_fixed_seed": len(residues) == period}
++    return {"policy": "fixed_seed_consecutive_indices", "fixed_seed": 1,
++            "samples_per_band": samples_per_band, "requests": requests,
++            "declared_schedule_period": period,
++            "generated_index_coverage": coverage,
++            "scope": "Finite sampling at one fixed seed; index coverage is not semantic certification."}
++
++
+ def lint_one(task_id, *, rules, canon, bridge, seeds, bands, gen_file=None, fast=False):
+     if task_id.startswith("generic_"):
+         return lint_generic(task_id, seeds=seeds, bands=bands)
+     m, gen_path = _load_gen(task_id, gen_file)
+     has_sc = callable(getattr(m, "self_check", None))
+     all_in, all_out, in_bands = [], [], []
++    sample_calls = []
+     rule_body = _rule_body(rules[task_id]) if (bridge and task_id in rules) else None
+ 
+     # Capture GenCtx draw provenance during the sampling loop (axis-honesty probe).
+@@ -1243,12 +1273,17 @@
+     crash_idx = []
+     try:
+         for band in bands:
+-            for sd in range(1, seeds + 1):
++            for sample_seed, sample_index in _sample_requests(seeds):
++                request = {"seed": sample_seed, "sample_index": sample_index,
++                           "difficulty": band, "status": "requested"}
++                sample_calls.append(request)
+                 try:
+-                    g = m.generate(sd, sd, difficulty=band)
++                    g = m.generate(sample_seed, sample_index, difficulty=band)
+                 except Exception as e:
+                     return {"task_id": task_id, "error": f"generate() raised: {e!r}"[:160],
+-                            "issues": [], "warnings": [], "notes": []}
++                            "issues": [], "warnings": [], "notes": [],
++                            "sampling": _sampling_record(m, sample_calls, seeds, bands)}
++                request["status"] = "generated"
+                 all_in.append(_norm(g))
+                 in_bands.append(band)
+                 o = None
+@@ -1412,6 +1447,7 @@
+         notes.append("axis probe skipped: gen_base observer unavailable")
+ 
+     return {"task_id": task_id, "error": None, "has_self_check": has_sc,
++            "sampling": _sampling_record(m, sample_calls, seeds, bands),
+             "racket": rule_body is not None, "structure_diagnostic": structure,
+             "strict_scalar_probes": scalar_findings,
+             "strict_scalar_scope": "Request-contract diagnostics on accepted control calls: seed/index/difficulty and exact integer/color override endpoints in easy/default/hard bands. Rejected controls or unavailable domains are unknown coverage, not proof of valid scalar handling or semantic correctness.",

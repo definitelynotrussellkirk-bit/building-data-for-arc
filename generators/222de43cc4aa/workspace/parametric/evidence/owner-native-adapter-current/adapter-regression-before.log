@@ -1,0 +1,133 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+______________ test_native_worker_can_consume_the_adapter_episode ______________
+
+    def test_native_worker_can_consume_the_adapter_episode():
+        """A missing native program field must reject this real generated episode."""
+        contract = json.loads((PARAMETRIC / "promotion.json").read_text())
+>       result = evaluate_contract(
+            ROOT,
+            TASK_ID,
+            contract,
+            [{"seed": 0, "settings": {"round_trips": 1}, "demos": 3, "queries": 4}],
+        )
+
+generators/222de43cc4aa/tests/test_parametric_native_adapter.py:22: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/arcpuzzles/parametric_worker.py:105: in evaluate_contract
+    return _evaluate(Path(root).resolve(), task_id, contract, jobs, apply_program)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+root = PosixPath('/home/user/Desktop/ARCpuzzles'), task_id = '222de43cc4aa'
+contract = {'schema': 'arcpuzzles-parametric-adapter-v1', 'adapter': 'generators/222de43cc4aa/workspace/parametric/adapter.py', 'parameters': {'round_trips': [1, 2]}, 'default': {'round_trips': 2}, ...}
+jobs = [{'seed': 0, 'settings': {'round_trips': 1}, 'demos': 3, 'queries': 4}]
+apply_program = None
+
+    def _evaluate(root, task_id, contract, jobs, apply_program):
+        if not isinstance(task_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', task_id):
+            raise ValueError('Invalid task identity')
+        catalog = Catalog(root)
+        selected = catalog.describe(task_id)
+        rule_task_id = selected.get('rule_task_id', task_id)
+        canonical = {v.get('program_solution') for v in catalog._variants().get(rule_task_id, [])}
+        expected = f'generators/{task_id}/workspace/parametric/adapter.py'
+        if not isinstance(contract, dict) or contract.get('adapter') != expected:
+            raise ValueError('The adapter must be in this task\'s parametric workspace')
+        adapter_path = root / expected
+        if (not adapter_path.is_file() or adapter_path.resolve() != adapter_path
+                or any((root / Path(*PurePosixPath(expected).parts[:i])).is_symlink()
+                       for i in range(1, len(PurePosixPath(expected).parts) + 1))):
+            raise ValueError('The adapter must be a regular same-checkout source file')
+        parameters = contract.get('parameters')
+        if not isinstance(parameters, dict) or any(type(k) is not str for k in parameters):
+            raise ValueError('Declared parameters must be an object')
+        size = 1
+        for key, options in parameters.items():
+            if type(options) is not list or not options or len({_typed(v) for v in options}) != len(options):
+                raise ValueError(f'Parameter {key} needs distinct typed JSON options')
+            size *= len(options)
+            if size > 16:
+                raise ValueError('At most 16 Cartesian parameter settings are supported')
+        default = _settings(contract.get('default'), parameters)
+        if not isinstance(jobs, list) or not jobs:
+            raise ValueError('At least one qualification job is required')
+        normalized_jobs = []
+        for job in jobs:
+            if not isinstance(job, dict):
+                raise ValueError('Qualification jobs must be objects')
+            normalized_jobs.append({'seed': _integer(job.get('seed'), 0, 2**63 - 1, 'seed'),
+                'settings': _settings(job.get('settings'), parameters),
+                'demos': _integer(job.get('demos'), 1, 32, 'demos'),
+                'queries': _integer(job.get('queries'), 1, 32, 'queries')})
+        keys = sorted(parameters)
+        settings = [dict(zip(keys, values)) for values in itertools.product(*(parameters[k] for k in keys))]
+        runtime = root / 'shared/runtime'
+        with _local_imports(runtime, adapter_path.parent):
+            name = '_arc_parametric_' + hashlib.sha256(str(adapter_path).encode()).hexdigest()
+            spec = importlib.util.spec_from_file_location(name, adapter_path)
+            adapter = importlib.util.module_from_spec(spec)
+            sys.modules[name] = adapter
+            spec.loader.exec_module(adapter)
+            if not callable(getattr(adapter, 'program', None)) or not callable(getattr(adapter, 'generate', None)):
+                raise ValueError('Adapter must export program(settings) and generate(seed,settings,demos,queries)')
+            programs = [adapter.program(copy.deepcopy(s)) for s in settings]
+            if any(type(p) is not str or not p.strip() for p in programs):
+                raise ValueError('Every adapter program must be nonempty exact Racket text')
+            default_index = next(i for i, setting in enumerate(settings) if _typed(setting) == _typed(default))
+            if canonical != {programs[default_index]}:
+                raise ValueError('Default program must match the unique selected canonical program byte-for-byte')
+            bridge = None
+            if apply_program is None:
+                apply, identity, bridge = _real_evaluator(runtime)
+            else:
+                if not callable(apply_program):
+                    raise ValueError('apply_program must be callable')
+                apply, identity = apply_program, {'backend': 'test', 'protected': False}
+            episodes, checks, evaluations = [], [], 0
+            def execute(program, grid):
+                nonlocal evaluations
+                evaluations += 1
+                return _grid(apply(program, copy.deepcopy(grid)))
+            try:
+                for job in normalized_jobs:
+                    chosen = next(i for i, setting in enumerate(settings) if _typed(setting) == _typed(job['settings']))
+                    generated = adapter.generate(job['seed'], copy.deepcopy(job['settings']), job['demos'], job['queries'])
+                    if not isinstance(generated, dict) or generated.get('program_solution') != programs[chosen]:
+>                       raise ValueError('Generated program_solution must equal program(settings) exactly')
+E                       ValueError: Generated program_solution must equal program(settings) exactly
+
+src/arcpuzzles/parametric_worker.py:178: ValueError
+_____________ test_adapter_ignores_another_tasks_cached_prototype ______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7061597ee8d0>
+
+    def test_adapter_ignores_another_tasks_cached_prototype(monkeypatch):
+        """A generic cached module must not replace this task's exact program."""
+        foreign = types.ModuleType("prototype")
+        foreign.rule_source = lambda _: "foreign prototype source"
+        monkeypatch.setitem(sys.modules, "prototype", foreign)
+        spec = importlib.util.spec_from_file_location(
+            "round_trip_native_adapter_regression", PARAMETRIC / "adapter.py"
+        )
+        assert spec and spec.loader
+        adapter = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, spec.name, adapter)
+        spec.loader.exec_module(adapter)
+        authority = Catalog(ROOT).describe(TASK_ID).get("rule_task_id", TASK_ID)
+        canonical = {row["program_solution"] for row in Catalog(ROOT)._variants()[authority]}
+        assert len(canonical) == 1
+>       assert {adapter.program({"round_trips": 2})} == canonical
+E       AssertionError: assert {'foreign prototype source'} == {'(rule! (lam... ir c)))))))'}
+E         
+E         Extra items in the left set:
+E         'foreign prototype source'
+E         Extra items in the right set:
+E         '(rule! (lambda (g)\n         (let* ((h (rows g))\n                (w (cols g)))\n           (let* ((period (- h 1))\n...                     (ir (if (<= pos period) pos (- (* 2 period) pos))))\n                           (at g ir c)))))))'
+E         Use -v to get more diff
+
+generators/222de43cc4aa/tests/test_parametric_native_adapter.py:51: AssertionError
+=========================== short test summary info ============================
+FAILED generators/222de43cc4aa/tests/test_parametric_native_adapter.py::test_native_worker_can_consume_the_adapter_episode
+FAILED generators/222de43cc4aa/tests/test_parametric_native_adapter.py::test_adapter_ignores_another_tasks_cached_prototype
+2 failed in 4.61s

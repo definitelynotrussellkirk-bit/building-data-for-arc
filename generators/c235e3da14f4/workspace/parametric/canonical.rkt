@@ -1,0 +1,6 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((objs (objects g 2))
+                  (smallest (pick-min objs obj-size)))
+             (crop-object g smallest)))))

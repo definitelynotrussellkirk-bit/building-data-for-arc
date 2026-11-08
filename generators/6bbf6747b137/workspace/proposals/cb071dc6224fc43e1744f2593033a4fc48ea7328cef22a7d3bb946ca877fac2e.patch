@@ -1,0 +1,1612 @@
+diff --git a/repo/generators/6bbf6747b137/SUMMARY.md b/repo/generators/6bbf6747b137/SUMMARY.md
+--- a/repo/generators/6bbf6747b137/SUMMARY.md
++++ b/repo/generators/6bbf6747b137/SUMMARY.md
+@@ -1,6 +1,11 @@
+ # 6bbf6747b137
+ 
+-Row 0 has K 1-cells (K=2..4) + 3 blobs below at distinct sizes, exactly one of size K.
++Row 0 has K 1-cells (default K=2..6; explicit override 1..6) and three isolated
++body blobs with distinct sizes, exactly one of size K. The reference keeps each
++same-color 4-connected body component of area K and erases everything else.
+ 
+-Kind: `per_puzzle`. Imported version: `1.1.1`.
++Kind: `per_puzzle`. Current version: `1.2.0`.
++Numeric grid-size overrides accept 7..14 in either dimension. Ordinary sampling
++retries failed placements as a complete scene and never emits missing objects.
++Palette-axis metadata remains a known inherited limitation; see `notes.md`.
+ Approval is derived by the catalog from current code and retained evidence.
+diff --git a/repo/generators/6bbf6747b137/generator.py b/repo/generators/6bbf6747b137/generator.py
+--- a/repo/generators/6bbf6747b137/generator.py
++++ b/repo/generators/6bbf6747b137/generator.py
+@@ -2,8 +2,8 @@
+ 
+ Rule: count of 1s in row 0 = K. Keep below-row-0 blobs whose size = K.
+ 
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, K,
+-palette_size, position_bias, n_distinct_colors, density, texture.
++Active numeric axes: grid_h, grid_w, K. Palette metadata is inherited;
++palette_kind/palette_size/n_distinct_colors do not control this sampler.
+ Degenerates: no_markers, no_matching_blob, all_same_size.
+ """
+ from __future__ import annotations
+@@ -13,13 +13,13 @@
+ from puzzle_generators.helpers.blobs import grow_blob
+ 
+ GENERATOR_ID = "6bbf6747b137"
+-VERSION = "1.1.1"
++VERSION = "1.2.0"
+ TASK_ID = "6bbf6747b137"
+-SUMMARY = "Row 0 has K 1-cells (K=2..4) + 3 blobs below at distinct sizes, exactly one of size K."
++SUMMARY = "Row 0 has K 1-cells (default K=2..6; override 1..6) + 3 blobs below at distinct sizes, exactly one of size K."
+ 
+ INVARIANTS = [
+     "background is 0",
+-    "row 0 has K 1-markers (K ∈ 2..4)",
++    "row 0 has K 1-markers (default K ∈ 2..6; override K ∈ 1..6)",
+     "3 below-row-0 blobs at strictly distinct sizes; exactly one has size K",
+ ]
+ 
+@@ -32,7 +32,7 @@
+     "grid_w":         {"type": "int", "default": "rng 8..10", "valid": "7..14"},
+     "palette_kind":   {"type": "str", "default": "rng helpful",
+                        "valid": "|".join(PALETTE_KINDS)},
+-    "K":              {"type": "int", "default": "rng 2..4", "valid": "1..6"},
++    "K":              {"type": "int", "default": "rng 2..6", "valid": "1..6"},
+     "palette_size":   {"type": "int", "default": "rng 3..4", "valid": "2..6"},
+     "position_bias":  {"type": "str", "default": "row0_count_with_below_blobs",
+                        "valid": "row0_count_with_below_blobs"},
+@@ -44,22 +44,37 @@
+ 
+ 
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Verify: bg=0; row 0 has >=2 color-1 cells (K markers); >=1 blob in rows 1+."""
+-    if not grid or not grid[0]:
++    """Check the input domain, including the three explicit edge fixtures.
++
++    This is not a complete validator of the default three-object grammar:
++    canonical inputs can have four objects and edge fixtures can match none/all.
++    """
++    if type(grid) is not list or not grid:
+         return ["empty grid"]
++    if any(type(row) is not list or not row for row in grid):
++        return ["grid rows must be nonempty lists"]
+     h, w = len(grid), len(grid[0])
+     if any(len(row) != w for row in grid):
+         return ["ragged grid"]
++    if any(type(value) is not int or not 0 <= value <= 9
++           for row in grid for value in row):
++        return ["grid cells must be integer colors 0..9"]
+     errs = []
++    if any(value not in (0, 1) for value in grid[0]):
++        errs.append("row 0 must contain only background 0 and color-1 markers")
+     row0_ones = [c for c in range(w) if grid[0][c] == 1]
+-    if not row0_ones:
+-        return errs  # degenerate (no_markers) — allowed
+-    if len(row0_ones) < 2:
+-        errs.append(f"row 0 has only {len(row0_ones)} color-1 marker; K should be >=2")
++    if len(row0_ones) > 6:
++        errs.append("row 0 has more than 6 color-1 markers")
+     body = [(r, c) for r in range(1, h) for c in range(w) if grid[r][c] != 0]
+     if not body:
+-        errs.append("row 0 has markers but no body blobs")
++        errs.append("no body blobs")
+     return errs
++
++
++def _draw_numeric_axis(ctx, name, default_bounds, valid_bounds):
++    """An explicit override uses the full domain, independent of difficulty."""
++    bounds = valid_bounds if ctx.overrides.get(name) is not None else default_bounds
++    return ctx.draw_int_strict(name, *bounds)
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+@@ -69,34 +84,36 @@
+     if overrides.get("texture") in DEGENERATE_TEXTURES:
+         return _draw_from_degenerate(overrides["texture"], None)
+     if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 8, 8)
+-        w = ctx.draw_int("grid_w", 8, 9)
++        h_bounds, w_bounds = (8, 8), (8, 9)
+     elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 9, 10)
+-        w = ctx.draw_int("grid_w", 9, 10)
++        h_bounds, w_bounds = (9, 10), (9, 10)
+     else:
+-        h = ctx.draw_int("grid_h", 8, 10)
+-        w = ctx.draw_int("grid_w", 8, 10)
++        h_bounds = w_bounds = (8, 10)
++    h = _draw_numeric_axis(ctx, "grid_h", h_bounds, (7, 14))
++    w = _draw_numeric_axis(ctx, "grid_w", w_bounds, (7, 14))
++    K = _draw_numeric_axis(ctx, "K", (2, 6), (1, 6))
+     rng = ctx.draw_rng("layout")
+-    g = full_grid(h, w, 0)
+-    K = rng.randint(2, 4)
+     cols = rng.sample(range(w), K)
+-    for c in cols:
+-        g[0][c] = 1
+-    used = {(0, c) for c in cols}
+-    for c in range(w):
+-        used.add((1, c))
+     other_sizes = [s for s in [2, 3, 4, 5, 6] if s != K][:2]
+     sizes = [K] + other_sizes
+     palette = rng.sample([2, 3, 4, 5, 6, 7, 8, 9], 3)
+-    for size, color in zip(sizes, palette):
+-        cells = grow_blob(rng, h, w, used, size, max_attempts=80)
+-        if cells is None:
+-            continue
+-        for r, c in cells:
+-            g[r][c] = color
+-        used |= cells
+-    return g
++    # Retrying the entire body keeps the requested marker count and all three
++    # objects together. A failed placement must never emit a shortened scene.
++    for _ in range(16):
++        g = full_grid(h, w, 0)
++        for c in cols:
++            g[0][c] = 1
++        used = {(r, c) for r in (0, 1) for c in range(w)}
++        for size, color in zip(sizes, palette):
++            cells = grow_blob(rng, h, w, used, size, max_attempts=80)
++            if cells is None:
++                break
++            for r, c in cells:
++                g[r][c] = color
++            used |= cells
++        else:
++            return g
++    raise RuntimeError(f"could not place all three body blobs in {h}x{w} with K={K}")
+ 
+ 
+ def _draw_from_degenerate(name, rng):
+diff --git a/repo/generators/6bbf6747b137/notes.md b/repo/generators/6bbf6747b137/notes.md
+--- a/repo/generators/6bbf6747b137/notes.md
++++ b/repo/generators/6bbf6747b137/notes.md
+@@ -1,4 +1,68 @@
+ # Working notes: 6bbf6747b137
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Current rule and generated subset
++
++Count color-1 cells in row 0. In the remaining rows, retain each same-color,
++4-connected component with exactly that many cells, preserving its color and
++position; erase the header and all other components. The canonical Racket rule
++is unchanged. Its program SHA-256 is
++`6198b0a067b4fffba296a03351abbfb7dee19d04a78420c132750c5f826d1cb4`.
++
++Version 1.2.0 ordinarily samples exactly three isolated body blobs with distinct
++sizes and colors. One size equals K; the two distractor sizes are the smallest
++members of 2..6 other than K. This is a subset of the reference task: the canonical
++test input has four body objects. `self_check` accepts that canonical case and
++checks the input domain, not the entire three-object generation grammar or a
++unique-selection certificate. Explicit `no_markers`, `no_matching_blob`, and
++`all_same_size` textures remain their fixed 9x9 edge fixtures.
++
++## Numeric controls and completion
++
++- K defaults to 2..6, including the canonical K=5 case; explicit K=1..6 works.
++  K=1 is an override-only boundary case.
++- Explicit `grid_h` and `grid_w` each accept 7..14 independently of difficulty.
++  Default sizes retain the old difficulty bands: easy 8x(8..9), hard
++  (9..10)x(9..10), otherwise (8..10)x(8..10).
++- These three numeric controls reject booleans, floats, strings, and values
++  outside their domains. `None` retains the existing no-override convention.
++- A failed blob placement retries the entire body, keeping the requested K and
++  all three target sizes. Exhausting 16 body attempts raises `RuntimeError`;
++  partial scenes are never returned. Each blob attempt retains the shared
++  helper's 80-try bound. Generation is deterministic for fixed arguments.
++- Domain checks reject malformed/ragged grids, non-integer or out-of-palette
++  cells, non-marker header colors, excess markers, and empty bodies. Zero
++  markers and zero/multiple matching blobs remain lawful edge cases.
++
++## Verified scope
++
++Baseline source `721ab5cb6c695e84b2bac04911d803a2cb8bd06d55b600217faf081c91429a15`
++ignored K overrides and rejected advertised 7/14 grid boundaries. See
++`checks/6bbf6747b137/baseline-probe.json`. The regression red run recorded 37
++failures, and a separate coverage regression proved default K=5/6 were absent.
++These are expected pre-repair failures, not current failures.
++
++The current 49 focused tests pass directly and through the staged task-test
++runner, including all three canonical Racket labels, all six K values on 7x7
++inputs, transient/permanent placement-failure injection, numeric validation,
++and the canonical four-object input. Evidence:
++`checks/6bbf6747b137/regression-green.xml` and
++`checks/6bbf6747b137/task-tests-after-v1/result.json`.
++
++The bounded adversarial probe in `workspace/probe_header_count.py` exercised
++96 boundary samples (K=1..6; four 7/14 dimension corners; four seeds), all with
++matching Racket labels and deterministic repeats. It also rejected 15 invalid
++numeric overrides and 11 malformed grids and verified that an injected permanent
++placement failure raises after 16 attempts. Its 3.686-second result and exact
++source/runtime hashes are in `checks/6bbf6747b137/adversarial.json`.
++
++## Remaining limitations
++
++Inherited palette metadata is still inaccurate: `palette_kind`, `palette_size`,
++`n_distinct_colors`, and helpful texture names do not control ordinary sampling.
++The sampler always picks three distinct body colors from 2..9 (four nonzero
++colors including the marker). `position_bias` and `density` remain fixed labels.
++The three explicit degenerate fixtures continue to bypass numeric overrides.
++These existing limitations were not silently redefined during the numeric
++repair. The next useful change is to remove or implement the inactive palette
++metadata and separately consider four-object coverage. No whole-repository
++battery or universal seed claim was made; a bounded retry can still fail visibly.
+diff --git a/repo/generators/6bbf6747b137/tests/test_header_count_contract.py b/repo/generators/6bbf6747b137/tests/test_header_count_contract.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/6bbf6747b137/tests/test_header_count_contract.py
+@@ -0,0 +1,169 @@
++"""Focused contracts for header-count sampling and reference-rule labels."""
++import json
++
++import pytest
++
++from reviewer_support import (
++    canonical_pairs,
++    canonical_path,
++    find_root,
++    load_selected_generator,
++)
++
++
++TASK_ID = "6bbf6747b137"
++ROOT = find_root(__file__)
++
++
++@pytest.fixture(scope="module")
++def generator():
++    return load_selected_generator(TASK_ID, root=ROOT)[0]
++
++
++def body_components(grid):
++    from puzzle_generators.helpers.selfcheck import components
++
++    return components(grid[1:], same_color=True, connectivity=4)
++
++
++def assert_complete_scene(grid, k):
++    assert grid[0].count(1) == k
++    assert set(grid[0]) <= {0, 1}
++    objects = body_components(grid)
++    sizes = [len(obj["cells"]) for obj in objects]
++    assert len(objects) == 3
++    assert len(set(sizes)) == 3
++    assert sizes.count(k) == 1
++
++
++@pytest.mark.parametrize("k", [1, 2, 3, 4, 5, 6])
++def test_header_count_override_controls_the_selected_area(generator, k):
++    grid = generator.generate(0, 0, K=k)
++    assert_complete_scene(grid, k)
++    assert generator.self_check(grid) == []
++
++
++@pytest.mark.parametrize("shape", [(7, 7), (7, 14), (14, 7), (14, 14)])
++@pytest.mark.parametrize("difficulty", [None, "easy", "hard"])
++def test_dimension_override_uses_declared_domain(generator, shape, difficulty):
++    height, width = shape
++    grid = generator.generate(
++        1, 2, difficulty=difficulty, grid_h=height, grid_w=width, K=6
++    )
++    assert (len(grid), len(grid[0])) == shape
++    assert_complete_scene(grid, 6)
++
++
++@pytest.mark.parametrize("override", [
++    {"K": True}, {"K": 2.5}, {"K": "5"},
++    {"grid_h": True}, {"grid_w": 8.5}, {"grid_h": "8"},
++])
++def test_numeric_overrides_do_not_silently_coerce(generator, override):
++    with pytest.raises(TypeError):
++        generator.generate(0, 0, **override)
++
++
++@pytest.mark.parametrize("override", [
++    {"K": 0}, {"K": 7}, {"grid_h": 6}, {"grid_h": 15},
++    {"grid_w": 6}, {"grid_w": 15},
++])
++def test_numeric_overrides_reject_values_outside_the_declared_domain(generator, override):
++    with pytest.raises(ValueError):
++        generator.generate(0, 0, **override)
++
++
++def test_none_override_keeps_default_sampling(generator):
++    assert generator.generate(13, 2, K=None, grid_h=None, grid_w=None) == generator.generate(13, 2)
++
++
++def test_default_sample_schedule_covers_large_header_counts(generator):
++    observed = {generator.generate(seed, 0)[0].count(1) for seed in range(64)}
++    assert {5, 6} <= observed
++    assert observed <= {2, 3, 4, 5, 6}
++
++
++def test_transient_placement_failure_does_not_drop_a_body_object(generator, monkeypatch):
++    grow_blob = generator.grow_blob
++    failures = [None]
++
++    def fail_once(*args, **kwargs):
++        if failures:
++            return failures.pop()
++        return grow_blob(*args, **kwargs)
++
++    monkeypatch.setattr(generator, "grow_blob", fail_once)
++    grid = generator.generate(0, 0, K=2)
++    assert_complete_scene(grid, 2)
++
++
++def test_unplaceable_scene_fails_with_a_bound_instead_of_returning_partial_grid(generator, monkeypatch):
++    attempts = 0
++
++    def cannot_fit(*args, **kwargs):
++        nonlocal attempts
++        attempts += 1
++        assert attempts <= 96, "placement retries must be bounded"
++        return None
++
++    monkeypatch.setattr(generator, "grow_blob", cannot_fit)
++    with pytest.raises(RuntimeError, match="place"):
++        generator.generate(0, 0)
++
++
++@pytest.mark.parametrize("mutation", ["header_color", "float_cell", "invalid_color", "blank"])
++def test_self_check_rejects_malformed_domain_inputs(generator, mutation):
++    grid = generator.generate(0, 0)
++    if mutation == "header_color":
++        grid[0][0] = 2
++    elif mutation == "float_cell":
++        grid[-1][-1] = 2.0
++    elif mutation == "invalid_color":
++        grid[-1][-1] = 10
++    elif mutation == "blank":
++        grid = [[0] * len(grid[0]) for _ in grid]
++    assert generator.self_check(grid)
++
++
++@pytest.mark.parametrize("texture", ["no_markers", "no_matching_blob", "all_same_size"])
++def test_explicit_edge_fixtures_remain_valid(generator, texture):
++    assert generator.self_check(generator.generate(0, 0, texture=texture)) == []
++
++
++def test_self_check_does_not_reject_canonical_four_object_input(generator):
++    pairs = canonical_pairs(TASK_ID, root=ROOT)
++    assert any(len(body_components(pair["input"])) == 4 for pair in pairs)
++    for pair in pairs:
++        assert generator.self_check(pair["input"]) == []
++
++
++@pytest.fixture(scope="module")
++def reference():
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    rows = [json.loads(line) for line in canonical_path(ROOT).read_text().splitlines()]
++    programs = {row["program_solution"] for row in rows if row.get("task_id") == TASK_ID}
++    assert len(programs) == 1
++    program = wrap_rule(programs.pop())
++    with RacketBridge() as bridge:
++        def apply(grid):
++            literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++            return bridge.eval_text(f"({program} {literal})")
++
++        yield apply
++
++
++def test_canonical_racket_labels_are_unchanged(reference):
++    for pair in canonical_pairs(TASK_ID, root=ROOT):
++        assert reference(pair["input"]) == pair["output"]
++
++
++@pytest.mark.parametrize("k", [1, 2, 3, 4, 5, 6])
++def test_racket_keeps_exact_requested_area_on_smallest_grid(generator, reference, k):
++    grid = generator.generate(3, 1, grid_h=7, grid_w=7, K=k)
++    output = reference(grid)
++    retained = [(r, c) for r, row in enumerate(output) for c, value in enumerate(row) if value]
++    assert len(retained) == k
++    assert all(r > 0 and output[r][c] == grid[r][c] for r, c in retained)
++    assert len({output[r][c] for r, c in retained}) == 1
++    assert len(output) == 7 and all(len(row) == 7 for row in output)
+diff --git a/repo/generators/6bbf6747b137/workspace/probe_header_count.py b/repo/generators/6bbf6747b137/workspace/probe_header_count.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/6bbf6747b137/workspace/probe_header_count.py
+@@ -0,0 +1,141 @@
++"""Bounded, source-bound edge probe; run through review.py run from the packet."""
++import argparse
++from collections import Counter
++import hashlib
++import json
++from pathlib import Path
++import time
++
++from reviewer_support import canonical_path, find_root, load_selected_generator
++
++
++TASK_ID = "6bbf6747b137"
++
++
++def digest(value):
++    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", required=True)
++    args = parser.parse_args()
++    started = time.monotonic()
++    root = find_root(__file__)
++    generator, source, source_hash = load_selected_generator(TASK_ID, root=root)
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.helpers.selfcheck import components
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    rules = {row["program_solution"]
++             for line in canonical_path(root).read_text().splitlines()
++             if (row := json.loads(line)).get("task_id") == TASK_ID}
++    assert len(rules) == 1
++    rule = rules.pop()
++    program = wrap_rule(rule)
++    report = {
++        "task_id": TASK_ID,
++        "generator_sha256": source_hash,
++        "canonical_program_sha256": hashlib.sha256(rule.encode()).hexdigest(),
++        "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        "budget_seconds": 300,
++        "surfaces": ["sampler bounds and completion", "numeric and grid rejection paths"],
++        "boundary_sampling": {"cases": 0, "racket_matches": 0, "deterministic_repeats": 0},
++        "representative_labels": [],
++    }
++    shapes = [(7, 7), (7, 14), (14, 7), (14, 14)]
++    case_hashes = []
++    with RacketBridge() as bridge:
++        identity = bridge.runtime_identity
++        report["racket_runtime"] = {key: value for key, value in identity.items()
++                                    if key.endswith("sha256") or key in ("schema", "backend", "protected")}
++        for height, width in shapes:
++            for k in range(1, 7):
++                for seed in range(4):
++                    assert time.monotonic() - started < 240, "edge-probe time limit reached"
++                    kwargs = {"grid_h": height, "grid_w": width, "K": k}
++                    grid = generator.generate(seed, seed % 3, **kwargs)
++                    assert grid == generator.generate(seed, seed % 3, **kwargs)
++                    objects = components(grid[1:])
++                    sizes = [len(obj["cells"]) for obj in objects]
++                    assert (len(grid), len(grid[0]), grid[0].count(1)) == (height, width, k)
++                    assert len(sizes) == len(set(sizes)) == 3 and sizes.count(k) == 1
++                    assert generator.self_check(grid) == []
++                    expected = [[0] * width for _ in range(height)]
++                    for obj in objects:
++                        if len(obj["cells"]) == k:
++                            for row, col in obj["cells"]:
++                                expected[row + 1][col] = obj["color"]
++                    literal = "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++                    output = bridge.eval_text(f"({program} {literal})")
++                    assert output == expected
++                    report["boundary_sampling"]["cases"] += 1
++                    report["boundary_sampling"]["racket_matches"] += 1
++                    report["boundary_sampling"]["deterministic_repeats"] += 1
++                    case_hashes.append(digest({"seed": seed, "sample_index": seed % 3,
++                                               "overrides": kwargs, "input": grid, "output": output}))
++                    if (height, width, seed) == (7, 7, 0) and k in (1, 5, 6):
++                        report["representative_labels"].append({
++                            "seed": seed, "sample_index": 0, "overrides": kwargs,
++                            "input": grid, "racket_output": output,
++                        })
++    report["boundary_sampling"].update({
++        "shapes": shapes, "K_values": list(range(1, 7)), "seeds": list(range(4)),
++        "sample_index": "seed % 3", "case_digest_sha256": digest(case_hashes),
++    })
++    report["default_header_counts"] = dict(Counter(
++        generator.generate(seed, 0)[0].count(1) for seed in range(64)
++    ))
++    assert {5, 6} <= report["default_header_counts"].keys()
++
++    invalid = [{name: value} for name in ("K", "grid_h", "grid_w")
++               for value in (True, 3.5, "8")]
++    invalid += [{"K": 0}, {"K": 7}, {"grid_h": 6}, {"grid_h": 15},
++                {"grid_w": 6}, {"grid_w": 15}]
++    for overrides in invalid:
++        try:
++            generator.generate(0, 0, **overrides)
++        except (TypeError, ValueError):
++            continue
++        raise AssertionError(f"accepted invalid override: {overrides}")
++    report["invalid_overrides_rejected"] = len(invalid)
++    malformed = [None, [], [[]], [0], [[0], [0, 1]], [[True], [2]],
++                 [[0], [2.0]], [[0], [10]], [[2], [3]], [[0], [0]],
++                 [[1] * 7, [2] + [0] * 6]]
++    for grid in malformed:
++        assert generator.self_check(grid), grid
++    report["malformed_grids_rejected"] = len(malformed)
++
++    original_grow = generator.grow_blob
++    calls = 0
++
++    def fail_permanently(*args, **kwargs):
++        nonlocal calls
++        calls += 1
++        assert calls <= 96, "unbounded placement retries"
++        return None
++
++    try:
++        generator.grow_blob = fail_permanently
++        try:
++            generator.generate(0, 0)
++        except RuntimeError as exc:
++            assert "place" in str(exc)
++            report["injected_placement_exhaustion"] = {"calls": calls, "error": str(exc)}
++        else:
++            raise AssertionError("failed placement returned a partial scene")
++    finally:
++        generator.grow_blob = original_grow
++    report["elapsed_seconds"] = round(time.monotonic() - started, 3)
++    report["result"] = "bounded_no_additional_finding"
++    path = Path(args.out)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with path.open("x") as handle:
++        json.dump(report, handle, indent=2)
++        handle.write("\n")
++    print(json.dumps({key: value for key, value in report.items()
++                      if key not in ("representative_labels", "racket_runtime")}, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/repo/generators/6e8324f40386/SUMMARY.md b/repo/generators/6e8324f40386/SUMMARY.md
+--- a/repo/generators/6e8324f40386/SUMMARY.md
++++ b/repo/generators/6e8324f40386/SUMMARY.md
+@@ -1,6 +1,12 @@
+ # 6e8324f40386
+ 
+-0-bg grid with 3-4 small, isolated, monochrome connected components in distinct nonzero colors. At least one component touches the outer border and at least one component is strictly interior. Rule: recolor every border-touching component to 2 and every interior component to 8, preserving their shapes and positions.
++0-bg grid with 3-4 small, isolated, monochrome connected components by default,
++or an explicitly requested 2-5, in distinct nonzero colors. Exact structural
++overrides support 6..14 rows, 8..16 columns, and 1..n-1 border-touching components,
++independently of the default difficulty bands. Layout retries remain bounded;
++densely packed combinations can fail. At least one component is strictly
++interior. Rule: recolor every border-touching component to 2 and every interior
++component to 8, preserving shapes and positions.
+ 
+-Kind: `per_puzzle`. Imported version: `2.1.0`.
++Kind: `per_puzzle`. Version: `2.2.0`.
+ Approval is derived by the catalog from current code and retained evidence.
+diff --git a/repo/generators/6e8324f40386/generator.py b/repo/generators/6e8324f40386/generator.py
+--- a/repo/generators/6e8324f40386/generator.py
++++ b/repo/generators/6e8324f40386/generator.py
+@@ -4,11 +4,9 @@
+ TOUCH the outer border are recolored to 2; objects strictly inside the grid are
+ recolored to 8. Shape and position are preserved.
+ 
+-The old generator text described a stale "vertical gallery pack" task, and its
+-random placement often produced all-interior or all-border examples. Those are
+-valid inputs but poor teaching rows because one of the two recolor branches never
+-fires. This version deliberately includes both branch types in every default
+-sample.
++Every normal sample includes both recolor branches. Explicit structural
++overrides are exact and independent of the default difficulty bands, including
++the smaller grid sizes and two-component layout in the canonical examples.
+ 
+ Combinatorial axes: grid_h, grid_w, n_components, n_touching_border,
+ palette_kind, component_size, position_bias, texture.
+@@ -22,10 +20,10 @@
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "6e8324f40386"
+-VERSION = "2.1.0"  # branch coverage: force at least one border-touching and one interior component; fix stale docs.
++VERSION = "2.2.0"  # exact structural overrides and canonical-size support.
+ TASK_ID = "6e8324f40386"
+ SUMMARY = (
+-    "0-bg grid with 3-4 small, isolated, monochrome connected components in "
++    "0-bg grid with 3-4 (or an explicit 2-5) small, isolated, monochrome connected components in "
+     "distinct nonzero colors. At least one component touches the outer border "
+     "and at least one component is strictly interior. Rule: recolor every "
+     "border-touching component to 2 and every interior component to 8, preserving "
+@@ -34,7 +32,7 @@
+ 
+ INVARIANTS = [
+     "background is 0",
+-    "3-4 isolated connected components in distinct non-zero colors",
++    "2-5 isolated connected components in distinct non-zero colors (default 3-4)",
+     "at least one component touches the grid border (becomes 2)",
+     "at least one component is strictly interior (becomes 8)",
+ ]
+@@ -44,8 +42,8 @@
+ HELPFUL_TEXTURES = PALETTE_KINDS
+ 
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 9..11", "valid": "7..14"},
+-    "grid_w":         {"type": "int", "default": "rng 11..13", "valid": "9..16"},
++    "grid_h":         {"type": "int", "default": "rng 9..11", "valid": "6..14"},
++    "grid_w":         {"type": "int", "default": "rng 11..13", "valid": "8..16"},
+     "palette_kind":   {"type": "str", "default": "rng helpful",
+                        "valid": "|".join(PALETTE_KINDS)},
+     "n":              {"type": "int", "default": "rng 3..4", "valid": "2..5"},
+@@ -128,8 +126,11 @@
+         return []
+     errs = []
+     comps = _components(grid)
+-    if not (3 <= len(comps) <= 4):
+-        errs.append(f"expected 3-4 nonzero components, found {len(comps)}")
++    if not (2 <= len(comps) <= 5):
++        errs.append(f"expected 2-5 nonzero components, found {len(comps)}")
++    expected_n = (meta or {}).get("n")
++    if expected_n is not None and len(comps) != expected_n:
++        errs.append(f"expected {expected_n} nonzero components, found {len(comps)}")
+     colors = [color for color, _ in comps]
+     if len(set(colors)) != len(colors):
+         errs.append("components should have distinct colors before recoloring")
+@@ -139,6 +140,9 @@
+         errs.append("expected at least one border-touching component for the color-2 branch")
+     if interior < 1:
+         errs.append("expected at least one interior component for the color-8 branch")
++    expected_touching = (meta or {}).get("n_touching_border")
++    if expected_touching is not None and touching != expected_touching:
++        errs.append(f"expected {expected_touching} border-touching components, found {touching}")
+     return errs
+ 
+ 
+@@ -158,7 +162,7 @@
+                 return rng.randint(0, h - sh), 0
+             return rng.randint(0, h - sh), w - sw
+         if mode == "interior":
+-            if h - sh <= 2 or w - sw <= 2:
++            if h - sh < 2 or w - sw < 2:
+                 return None
+             return rng.randint(1, h - sh - 1), rng.randint(1, w - sw - 1)
+         return rng.randint(0, h - sh), rng.randint(0, w - sw)
+@@ -176,6 +180,12 @@
+     return False
+ 
+ 
++def _draw_structural_int(ctx, label, default_bounds, valid_bounds):
++    """Difficulty narrows default draws, never an explicitly requested axis."""
++    bounds = valid_bounds if ctx.overrides.get(label) is not None else default_bounds
++    return ctx.draw_int_strict(label, *bounds)
++
++
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+     ctx = gen_ctx(seed=seed, sample_index=sample_index,
+                   version=VERSION, task_id=TASK_ID,
+@@ -183,23 +193,20 @@
+     if overrides.get("texture") in DEGENERATE_TEXTURES:
+         return _draw_from_degenerate(overrides["texture"], None)
+     if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 9, 9)
+-        w = ctx.draw_int("grid_w", 11, 11)
+-        n = ctx.draw_int("n", 3, 3)
++        h_bounds, w_bounds, n_bounds = (9, 9), (11, 11), (3, 3)
+     elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 10, 11)
+-        w = ctx.draw_int("grid_w", 12, 13)
+-        n = ctx.draw_int("n", 4, 4)
++        h_bounds, w_bounds, n_bounds = (10, 11), (12, 13), (4, 4)
+     else:
+-        h = ctx.draw_int("grid_h", 9, 11)
+-        w = ctx.draw_int("grid_w", 11, 13)
+-        n = ctx.draw_int("n", 3, 4)
++        h_bounds, w_bounds, n_bounds = (9, 11), (11, 13), (3, 4)
++    h = _draw_structural_int(ctx, "grid_h", h_bounds, (6, 14))
++    w = _draw_structural_int(ctx, "grid_w", w_bounds, (8, 16))
++    n = _draw_structural_int(ctx, "n", n_bounds, (2, 5))
++    n_touch = ctx.draw_int_strict("n_touching_border", 1, n - 1)
+     rng = ctx.draw_rng("layout")
+ 
+     for _outer in range(80):
+         g = full_grid(h, w, 0)
+         colors = rng.sample([2, 3, 4, 5, 6, 7, 8, 9], n)
+-        n_touch = rng.randint(1, n - 1)
+         modes = ["border"] * n_touch + ["interior"] * (n - n_touch)
+         rng.shuffle(modes)
+         ok = True
+@@ -208,7 +215,7 @@
+             if not _place_component(g, cells, color, rng, mode=mode):
+                 ok = False
+                 break
+-        if ok and not self_check(g):
++        if ok and not self_check(g, meta={"n": n, "n_touching_border": n_touch}):
+             return g
+     raise ValueError("could not realize a mixed border/interior component layout")
+ 
+diff --git a/repo/generators/6e8324f40386/notes.md b/repo/generators/6e8324f40386/notes.md
+--- a/repo/generators/6e8324f40386/notes.md
++++ b/repo/generators/6e8324f40386/notes.md
+@@ -1,4 +1,46 @@
+ # Working notes: 6e8324f40386
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Current rule and structural contract
++
++The unchanged canonical Racket rule recolors each nonzero connected component:
++border-touching components become 2; strictly interior components become 8.
++Shapes, positions and the zero background are preserved.
++
++Version 2.2.0 makes structural overrides exact and independent of difficulty.
++`grid_h` accepts 6..14, `grid_w` 8..16, and `n` 2..5. The default difficulty
++bands remain 9..11 rows, 11..13 columns, and 3..4 components. An explicit
++`n_touching_border` accepts 1..n-1 and stays fixed across layout retries.
++Structural overrides require actual integers; `None` retains the default draw.
++Normal samples have distinct component colors and both recolor branches.
++`self_check` accepts the same component-count range, including all four canonical
++inputs, and checks exact counts when supplied in `meta`.
++
++The previous implementation rejected advertised structural overrides against
++narrow default bands, ignored `n_touching_border`, and rejected a two-component
++canonical input in `self_check`. The exact one-cell interior margin was also
++incorrectly excluded. Focused regressions reproduce these failures on the frozen
++source and pass on the repair.
++
++## Checked scope and remaining limits
++
++`checks/6e8324f40386/before-summary.json` binds the frozen source and 24 reproduced
++failures; the repaired focused suite has 31 passing tests. The short adversarial
++probe in `workspace/probe_structural.py` covers dimension/count extremes and
++integer/count-verifier rejection. Its Racket report at
++`checks/6e8324f40386/edge-racket/report.json` confirms all four canonical labels
++and 26 generated boundary-case labels against the unchanged rule.
++
++Individual axis ranges are not a guarantee that every joint layout fits. The
++6x8, n=5, n_touching_border=1 combination exhausted the 80-layout bound for seeds
++3 and 11: the bounded sampler did not find a layout for four interior motifs of
++3..5 cells under its conservative bounding-box padding. This is not an
++impossibility proof. Those two findings are retained in that report; requested
++counts are never relaxed. A next sampler improvement could add smaller motifs
++or less conservative cellwise separation, with separate distribution checks.
++
++Default sampling still uses larger grids and 3..5-cell motifs, so explicit
++canonical dimensions do not imply a full canonical-size/motif distribution.
++Legacy palette-related axes and helpful texture names remain ineffective; only
++the named degenerate textures select their fixed opt-in fixtures. This structural
++repair does not claim to fix those controls or establish lesson identifiability.
++No canonical rule, shared runtime, or issued test file changed.
+diff --git a/repo/generators/6e8324f40386/tests/test_structural_overrides.py b/repo/generators/6e8324f40386/tests/test_structural_overrides.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/6e8324f40386/tests/test_structural_overrides.py
+@@ -0,0 +1,83 @@
++"""Regression tests for the selected border-recolor generator's shape controls."""
++from __future__ import annotations
++
++import random
++
++import pytest
++
++from reviewer_support import canonical_pairs, find_root, load_selected_generator
++
++
++ROOT = find_root(__file__)
++GEN, _, _ = load_selected_generator("6e8324f40386", root=ROOT)
++
++
++def observed_counts(grid):
++    """The selected sampler gives each separated component a distinct color."""
++    colors = {cell for row in grid for cell in row} - {0}
++    edge_colors = set(grid[0]) | set(grid[-1])
++    edge_colors.update(row[0] for row in grid)
++    edge_colors.update(row[-1] for row in grid)
++    return len(colors), len(edge_colors - {0})
++
++
++@pytest.mark.parametrize("n,touching", [(2, 1), (5, 1), (5, 4)])
++@pytest.mark.parametrize("difficulty", ["easy", None, "hard"])
++def test_component_count_override_is_independent_of_difficulty(n, touching, difficulty):
++    grid = GEN.generate(17, 0, difficulty=difficulty, n=n,
++                        n_touching_border=touching)
++    assert observed_counts(grid) == (n, touching)
++    assert GEN.self_check(grid) == []
++
++
++@pytest.mark.parametrize("touching", [1, 2])
++def test_requested_border_count_is_honored(touching):
++    grid = GEN.generate(0, 0, n=3, n_touching_border=touching)
++    assert observed_counts(grid) == (3, touching)
++
++
++@pytest.mark.parametrize("h,w,n,touching", [(7, 8, 2, 1), (8, 8, 3, 2),
++                                            (6, 9, 3, 1), (8, 9, 3, 2)])
++def test_canonical_geometry_can_be_requested(h, w, n, touching):
++    grid = GEN.generate(31, 0, grid_h=h, grid_w=w, n=n,
++                        n_touching_border=touching)
++    assert (len(grid), len(grid[0])) == (h, w)
++    assert observed_counts(grid) == (n, touching)
++
++
++def test_canonical_inputs_satisfy_component_contract():
++    for pair in canonical_pairs("6e8324f40386", root=ROOT):
++        assert GEN.self_check(pair["input"]) == [], (pair["split"], pair["pair_index"])
++
++
++@pytest.mark.parametrize("axis,value", [("n", 3.5), ("n", "3"),
++                                        ("grid_h", 9.5), ("grid_w", "11"),
++                                        ("n_touching_border", True)])
++def test_structural_counts_reject_noninteger_overrides(axis, value):
++    with pytest.raises(TypeError, match="integer"):
++        GEN.generate(0, 0, **{axis: value})
++
++
++@pytest.mark.parametrize("overrides", [{"n": 1}, {"n": 6},
++                                        {"grid_h": 5}, {"grid_h": 15},
++                                        {"grid_w": 7}, {"grid_w": 17},
++                                        {"n": 3, "n_touching_border": 0},
++                                        {"n": 3, "n_touching_border": 3}])
++def test_out_of_domain_structure_is_rejected(overrides):
++    with pytest.raises(ValueError):
++        GEN.generate(0, 0, **overrides)
++
++
++def test_interior_placement_accepts_exact_one_cell_margin():
++    grid = [[0] * 8 for _ in range(6)]
++    cells = [(0, 0), (1, 0), (2, 0), (3, 0)]
++    assert GEN._place_component(grid, cells, 4, random.Random(3), mode="interior")
++    assert observed_counts(grid) == (1, 0)
++    assert sum(cell == 4 for row in grid for cell in row) == 4
++
++
++def test_self_check_reports_requested_count_mismatches():
++    grid = GEN.generate(10, 0, n=3, n_touching_border=1)
++    assert GEN.self_check(grid, meta={"n": 3, "n_touching_border": 1}) == []
++    assert GEN.self_check(grid, meta={"n": 2})
++    assert GEN.self_check(grid, meta={"n_touching_border": 2})
+diff --git a/repo/generators/6e8324f40386/workspace/probe_structural.py b/repo/generators/6e8324f40386/workspace/probe_structural.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/6e8324f40386/workspace/probe_structural.py
+@@ -0,0 +1,150 @@
++"""Bounded structural-boundary and verifier probe; labels come from Racket.
++
++Run from the packet repository through review.py run, passing a new --out dir.
++This is focused repair evidence, not a general generator census or approval.
++"""
++from __future__ import annotations
++
++import argparse
++from collections import deque
++import hashlib
++import json
++from pathlib import Path
++import time
++
++from arc_repl.racket_bridge import RacketBridge
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_pairs, canonical_path, find_root, load_selected_generator
++
++
++TASK_ID = "6e8324f40386"
++
++
++def digest(value):
++    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
++
++
++def reference_shape(grid):
++    """Independent flood-fill expectation to compare with authoritative labels."""
++    h, w = len(grid), len(grid[0])
++    output = [[0] * w for _ in range(h)]
++    seen = set()
++    components = touching = 0
++    for r in range(h):
++        for c in range(w):
++            if grid[r][c] == 0 or (r, c) in seen:
++                continue
++            cells, queue = [], deque([(r, c)])
++            seen.add((r, c))
++            while queue:
++                a, b = queue.popleft()
++                cells.append((a, b))
++                for x, y in ((a - 1, b), (a + 1, b), (a, b - 1), (a, b + 1)):
++                    if (0 <= x < h and 0 <= y < w and (x, y) not in seen
++                            and grid[x][y] == grid[r][c]):
++                        seen.add((x, y))
++                        queue.append((x, y))
++            border = any(a in (0, h - 1) or b in (0, w - 1) for a, b in cells)
++            components += 1
++            touching += border
++            for a, b in cells:
++                output[a][b] = 2 if border else 8
++    return output, components, touching
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    args.out.mkdir(parents=True, exist_ok=False)
++    root = find_root(__file__)
++    gen, source, source_sha = load_selected_generator(TASK_ID, root=root)
++    rows = [json.loads(line) for line in canonical_path(root).read_text().splitlines()
++            if json.loads(line).get("task_id") == TASK_ID]
++    assert len(rows) == 1
++    rule = rows[0]["program_solution"]
++    started = time.monotonic()
++    report = {"task_id": TASK_ID, "generator_sha256": source_sha,
++              "rule_sha256": hashlib.sha256(rule.encode()).hexdigest(),
++              "surfaces": ["minimum/maximum dimensions and component counts",
++                           "integer rejection and requested-count verifier"],
++              "budget_seconds": 300, "cases": [], "rejections": [], "failures": []}
++    representatives = []
++
++    def label(bridge, grid, identity, expected=None):
++        before = digest(grid)
++        py_output, n, touching = reference_shape(grid)
++        bridge.define_grid("__structural_input", grid)
++        output = bridge.eval_text("(__structural_rule __structural_input)")
++        assert digest(grid) == before, "input mutated"
++        assert output == py_output, "Racket/flood-fill mismatch"
++        if expected is not None:
++            assert output == expected, "canonical label mismatch"
++        record = {**identity, "dimensions": [len(grid), len(grid[0])],
++                  "n": n, "n_touching_border": touching,
++                  "input_sha256": before, "output_sha256": digest(output)}
++        report["cases"].append(record)
++        if len(representatives) < 4 and identity["kind"] == "generated":
++            representatives.append({**identity, "input": grid, "output": output})
++        return n, touching
++
++    with RacketBridge() as bridge:
++        report["runtime_identity"] = bridge.runtime_identity
++        bridge.eval_text(f"(define __structural_rule {wrap_rule(rule)})")
++        for pair in canonical_pairs(TASK_ID, root=root):
++            label(bridge, pair["input"], {"kind": "canonical", "split": pair["split"],
++                                         "pair_index": pair["pair_index"]}, pair["output"])
++
++        settings = []
++        for h, w in ((6, 8), (14, 16)):
++            for n, touching in ((2, 1), (3, 1), (3, 2), (5, 1), (5, 4)):
++                settings.append({"grid_h": h, "grid_w": w, "n": n,
++                                 "n_touching_border": touching})
++        settings.extend(dict(zip(("grid_h", "grid_w", "n", "n_touching_border"), values))
++                        for values in ((7, 8, 2, 1), (8, 8, 3, 2),
++                                       (6, 9, 3, 1), (8, 9, 3, 2)))
++        for overrides in settings:
++            for seed in (3, 11):
++                assert time.monotonic() - started < 300, "five-minute budget exhausted"
++                identity = {"kind": "generated", "seed": seed, "sample_index": 0,
++                            "overrides": overrides}
++                try:
++                    grid = gen.generate(seed, 0, **overrides)
++                    n, touching = label(bridge, grid, identity)
++                    assert (n, touching) == (overrides["n"], overrides["n_touching_border"])
++                    assert gen.self_check(grid, meta=overrides) == []
++                    assert gen.generate(seed, 0, **overrides) == grid, "nondeterministic repeat"
++                except Exception as error:
++                    report["failures"].append({**identity, "error": f"{type(error).__name__}: {error}"})
++
++    invalid = [("n", 3.5, TypeError), ("n", "3", TypeError),
++               ("grid_h", True, TypeError), ("grid_w", 8.0, TypeError),
++               ("n_touching_border", "1", TypeError),
++               ("n_touching_border", 0, ValueError),
++               ("n_touching_border", 3, ValueError)]
++    for axis, value, expected in invalid:
++        try:
++            gen.generate(3, 0, **{"n": 3, axis: value})
++        except expected as error:
++            report["rejections"].append({"axis": axis, "value": value,
++                                         "exception": type(error).__name__})
++        else:
++            report["failures"].append({"axis": axis, "value": value,
++                                       "error": f"expected {expected.__name__}"})
++    grid = gen.generate(3, 0, n=3, n_touching_border=1)
++    assert gen.self_check(grid, meta={"n": 2})
++    assert gen.self_check(grid, meta={"n_touching_border": 2})
++    report["metadata_mismatch_rejections"] = 2
++    report["elapsed_seconds"] = round(time.monotonic() - started, 3)
++    report["canonical_labels"] = sum(case["kind"] == "canonical" for case in report["cases"])
++    report["generated_labels"] = sum(case["kind"] == "generated" for case in report["cases"])
++    report["status"] = "pass" if not report["failures"] else "finding"
++    (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
++    (args.out / "representative_pairs.json").write_text(json.dumps(representatives, indent=2) + "\n")
++    print(json.dumps({key: report[key] for key in ("status", "elapsed_seconds", "canonical_labels",
++                                                  "generated_labels", "failures")}, indent=2))
++    return int(bool(report["failures"]))
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/9c75b1456763/SUMMARY.md b/repo/generators/9c75b1456763/SUMMARY.md
+--- a/repo/generators/9c75b1456763/SUMMARY.md
++++ b/repo/generators/9c75b1456763/SUMMARY.md
+@@ -4,4 +4,4 @@
+ 
+ Kind: `per_puzzle`. Selected generator version: `2.0.0`. Rule hash: `58004efe7e78`.
+ 
+-The constructor cycles all four canonical shape/palette profiles and exposes exact `profile`, `nodes_per_network`, and `layout` controls. Approval remains catalog-derived; this review does not mark the generator approved or train-safe.
++The constructor cycles all four canonical shape/palette profiles and exposes exact `profile`, `nodes_per_network`, and `layout` controls. The lesson hook accepts input-only queries, validates supplied labels as integer grids, and reports ambiguity only for demonstration-fitting rivals that change the current query answer. Sampling and the Racket rule are unchanged by this lesson-validation repair. Approval remains catalog-derived.
+diff --git a/repo/generators/9c75b1456763/generator.py b/repo/generators/9c75b1456763/generator.py
+--- a/repo/generators/9c75b1456763/generator.py
++++ b/repo/generators/9c75b1456763/generator.py
+@@ -589,13 +589,28 @@
+ }
+ 
+ 
++def _lesson_label_errors(label, expected, name: str) -> list[str]:
++    """Validate supplied labels separately from the rival-survival decision."""
++    errors = _rectangular_errors(label)
++    if errors:
++        return [f"{name} output is invalid: {errors[:2]}"]
++    if expected != label:
++        return [f"{name} output disagrees with the authority mirror"]
++    return []
++
++
+ def lesson_identifiable(demos, query) -> list[str]:
+-    """Verify that demonstrations expose the authority and refute named rivals."""
++    """Check whether demo-fitting rivals disagree on this query's answer.
++
++    A query may contain only its public input. If an output is supplied, check
++    its validity too, but never use it to eliminate a competing rule. Rival
++    survival depends only on demonstration pairs; a surviving rule that agrees
++    with the reference on this query does not make its answer ambiguous.
++    """
+     reasons: list[str] = []
+     if not isinstance(demos, (list, tuple)) or len(demos) < EXAMPLES_NEEDED:
+         return [f"need at least {EXAMPLES_NEEDED} demonstrations"]
+ 
+-    surviving = set(LESSON_COMPETITORS)
+     for index, demo in enumerate(demos):
+         if not isinstance(demo, dict) or "input" not in demo or "output" not in demo:
+             reasons.append(f"demo {index} must contain input and output")
+@@ -606,21 +621,27 @@
+             reasons.append(f"demo {index} is outside the teaching grammar: {errors[:2]}")
+             continue
+         expected = rule_mirror(input_grid)
+-        if expected != demo["output"]:
+-            reasons.append(f"demo {index} output disagrees with the authority mirror")
+-        for name in list(surviving):
+-            if LESSON_COMPETITORS[name](input_grid) != demo["output"]:
+-                surviving.remove(name)
+-
+-    if surviving:
+-        reasons.append(f"named rival rules survive every demonstration: {sorted(surviving)}")
+-
+-    if not isinstance(query, dict) or "input" not in query or "output" not in query:
+-        reasons.append("query must contain input and output")
+-    else:
+-        query_errors = self_check(query["input"])
+-        if query_errors:
+-            reasons.append(f"query is outside the teaching grammar: {query_errors[:2]}")
+-        elif rule_mirror(query["input"]) != query["output"]:
+-            reasons.append("query output disagrees with the authority mirror")
++        reasons.extend(_lesson_label_errors(demo["output"], expected, f"demo {index}"))
++
++    if not isinstance(query, dict) or "input" not in query:
++        return reasons + ["query must contain input"]
++    query_errors = self_check(query["input"])
++    if query_errors:
++        return reasons + [f"query is outside the teaching grammar: {query_errors[:2]}"]
++    query_expected = rule_mirror(query["input"])
++    if "output" in query:
++        reasons.extend(_lesson_label_errors(query["output"], query_expected, "query"))
++    if reasons:
++        return reasons
++
++    disagreeing = []
++    for name, rival in sorted(LESSON_COMPETITORS.items()):
++        if all(rival(demo["input"]) == demo["output"] for demo in demos):
++            if rival(query["input"]) != query_expected:
++                disagreeing.append(name)
++    if disagreeing:
++        reasons.append(
++            "named rival rules fit every demonstration but change the query answer: "
++            f"{disagreeing}"
++        )
+     return reasons
+diff --git a/repo/generators/9c75b1456763/notes.md b/repo/generators/9c75b1456763/notes.md
+--- a/repo/generators/9c75b1456763/notes.md
++++ b/repo/generators/9c75b1456763/notes.md
+@@ -1,117 +1,50 @@
+ # Working notes: 9c75b1456763
+ 
+-## Final repair
++## Current implementation
+ 
+-- Final generator SHA-256: `d5056d94e7217a201f16d249328bf02f931acde3a301dfdffa2444e6e997a1c1`.
+-- Version / rule: `2.0.0` / `58004efe7e78`.
+-- Replaced rejection-sampled isolated rectangles with constructively placed connected room networks. Exact node requests no longer underfill.
+-- Every network has one marker, at least two separated fillable room interiors, and remote cells that require component-local marker propagation.
+-- Canonical profiles: `p18_5`, `p20_5`, `p30_4`, `p30_5`; each is scheduled in every band.
+-- Exact axes: `profile`, `nodes_per_network` in 2..4, and `layout` in `straight|bent`. Unknown or invalid overrides are rejected.
+-- Added strict grammar validation, Python rule mirror, three semantic witnesses, three executable rivals, and cyclic lesson identifiability.
+-- Added task-local regression tests and `workspace/semantic_probe.py` for source-bound future checks.
++- Generator SHA-256: `e3b7097081fe9eaf5a20155fc76669b3b8c3cbf1bf5c4e5e890756ee242d4d34`.
++- Generator version: `2.0.0`; normalized rule hash: `58004efe7e78`.
++- This repair changes lesson validation only. The version and sampler are unchanged so existing seeded inputs retain their identity.
++- Constructively place two or three disconnected blue networks, each with 2–4 thick 5x3 rooms joined by one-cell corridors and exactly one distinct marker color.
++- Every network has separated fillable interiors and remote cells that require component-local marker propagation.
++- Schedule all four canonical shape/palette profiles in each band: `p18_5`, `p20_5`, `p30_4`, `p30_5`.
++- Exact, observed axes remain `profile`, `nodes_per_network` in 2..4, and `layout` in `straight|bent`; invalid and unknown overrides fail.
++
++## Lesson validation decisions
++
++- A competitor is ambiguous only if it fits every demonstration and changes the answer to the current query. Answer-equivalent survivors are accepted, as required by `docs/SEMANTIC_GATE_CONTRACT.md`.
++- Demonstration and supplied query labels are validated as rectangular integer ARC grids before equality comparison. Python equality alone accepted `False` as `0` and `0.0` as `0`; those labels now fail.
++- Incorrect demonstration labels fail before rival inference. Rivals eliminated by demonstrations are never reconsidered using the query.
++- An input-only query is a compatible extension. When a query output is present, `_lesson_label_errors` still validates it; that label never decides which rivals survive. An explicitly present `None` is invalid, not a masked label.
++- Query-specific ambiguity is checked against the existing Python mirror; Racket remains the authoritative source of labels. The three production competitors and witnesses are unchanged.
++- The inherited task-test loader now uses `reviewer_support` to avoid caching dependencies from a second runtime layout. No shared loader guard was weakened.
++
++## Current verification
++
++Packet evidence paths below are relative to `WORK/`.
++
++- `checks/9c75b1456763/lesson-before.log`: the new regression file reproduced eight failures on the issued source `d5056d94e7217a201f16d249328bf02f931acde3a301dfdffa2444e6e997a1c1`; eleven cases already passed.
++- `checks/9c75b1456763/lesson-after.log`: 19 focused lesson regressions passed on the repaired generator.
++- `checks/9c75b1456763/task-tests-final.log`: all 31 staged task tests passed, including the retained 12-draw cyclic semantic check.
++- `checks/9c75b1456763/task-tests-after.log`: the first combined run had 12 passes and 19 setup errors caused by the inherited test loader's mixed dependency roots. The task-local loader change resolves this; the failed run remains retained.
++- `checks/9c75b1456763/lesson-racket-final.json`: all four canonical labels matched real Racket execution and the Python mirror. All 22 lesson-boundary cases passed, including four masked/labeled rotations, malformed scalar/grid labels, answer-equivalent survivors, query-changing survivors and eliminated rivals.
++- The final adversarial pass covered label types/malformed grids and demo-survival/query-disagreement boundaries in 4.48 seconds, within the five-minute budget. No additional defect was found in these bounded cases.
++- Reproduce the focused authority/boundary probe with `workspace/lesson_contract_probe.py` through the packet Racket wrapper; choose a new output path. Command receipts and exact source/rule hashes are retained beside the reports.
+ 
+ ## Authority
+ 
+-Only `data/base/solutions/training/09c534e7__9c75b1456763.json#target_code` changed, to become byte-exact with canonical `program_solution`. Final base JSON SHA-256: `4d3854310812a5cb4ddbca39a49ab37d5bb006b385b5c122c1737c1daed13c55`. Canonical `program_solution` exact SHA-256 is `35809851bc0c1916920f2c9fab710a01428f36081fed4b6e81b418bdaa4f867e`; archival `raw_code` exact SHA-256 is `536152449410bd1a8bc8587c95009654c90f854d0b639fef64109e8d0b2e81cf`. Both normalize to rule hash `58004efe7e78` and solve all canonical pairs.
++The canonical program and selected base authority were not edited. Exact canonical program SHA-256: `35809851bc0c1916920f2c9fab710a01428f36081fed4b6e81b418bdaa4f867e`. The selected base `target_code` is byte-exact with that program. Its archival `raw_code` remains separate provenance, exact SHA-256 `536152449410bd1a8bc8587c95009654c90f854d0b639fef64109e8d0b2e81cf`.
+ 
+-## Evidence
++## Limits and inherited findings
+ 
+-- Baseline battery: `checks/before/checks/9c75b1456763_before_battery_summary.json` — 6 green, 2 advisory, 4 failed.
+-- Final battery: `checks/after/checks/9c75b1456763_after_battery_summary.json` — 12/12 green.
+-- Task tests: `checks/task_tests_final.log` — 12 passed.
+-- Retained final-source probe: `checks/semantic_probe_final.json` — 360/360 strict, 360 unique inputs and outputs, every witness/rival and every cyclic two-example lesson verified.
+-- Post-repair solve: `solve/summary.json` — revision 1, 3/3 visible lessons, earlier exposure yes, no reference consulted during solve.
+-
+-## Known limits and future checks
+-
+-- Finite generated-domain evidence only; not a proof of universal model induction.
+-- The probe evaluates actual declared rivals, so future model failures should be harvested into new rivals/witnesses.
+-- Three duplicate-first-row generic mutations remained lawful; do not claim perfect mutation rejection.
+-- Re-run `workspace/semantic_probe.py` after any generator change and verify the reported source SHA before comparing counts.
+-- Keep the selected Racket source synchronized; preserve `raw_code` as archival provenance unless maintainers explicitly migrate it.
+-
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
+-## Current reviewer considerations
+-
+-Source SHA-256: `d5056d94e7217a201f16d249328bf02f931acde3a301dfdffa2444e6e997a1c1`.
+-
+-# Decisions: 9c75b1456763
+-
+-## D1 — Replace rejection sampling with constructive placement (R1)
+-
+-**Baseline behavior and rationale.** The original implementation attempted to place requested rectangles through repeated random proposals. Its likely intent was easy geometric variety, but no retained rationale explained why underfilling an exact request was acceptable. A reproduced exact `n_rects=3` request could return only two rectangles, and the baseline override gate reported generation, mismatch, and self-check failures (`checks/before/checks/9c75b1456763_before_override_results.json`).
+-
+-**Decision.** Compute legal room-center columns directly, with minimum spacing and bounded one-cell jitter. Every requested `nodes_per_network` value in 2..4 is therefore realized without retries or silent underfill.
+-
+-**Rejected alternatives.** Increasing the retry budget would reduce but not remove underfill and would leave seed-dependent tail failures. Retrying the whole scene until success would hide the defect, distort the requested distribution, and make exact overrides harder to audit.
+-
+-**Probe and failure mode.** Exact-axis round trips are covered by `tests/test_generator_9c75b1456763_repair.py`; the official override gate exercised 3,240 draws across 36 cases and three bands. A future width/profile change could violate spacing assumptions, so `_jittered_columns` raises rather than underfills.
+-
+-## D2 — Generate connected room networks, not isolated rectangles (R1, R2)
+-
+-**Original rationale.** The baseline summary described one or two marked solid rectangles. That is locally compatible with the canonical rule but does not force a learner to associate one marker with an entire connected network.
+-
+-**Decision.** Each nonzero component contains 2–4 thick 5x3 rooms connected by one-cell blue corridors. The marker is placed in one room. Other rooms supply distant fully surrounded cells, so `local_marker_room_only` is wrong on every retained probe draw. Two or three disconnected networks use distinct marker colors, defeating `global_first_marker` and `first_component_only`.
+-
+-**Rejected alternatives.** Larger isolated rectangles would increase changed-cell count but still teach only local filling. A single connected component would omit component-local color binding. Fully thick connectors would create uncontrolled interior cells; one-cell corridors preserve connectivity without adding false 3x3 interiors.
+-
+-**Probe and limits.** `test_generated_components_require_marker_propagation_between_nodes` verifies multiple separated interior regions and a remote fillable cell per component. The source-bound probe found all three witnesses on 360/360 draws. The grammar is intentionally narrower than all possible canonical-valid networks; it targets the missing causal evidence rather than universal shape coverage.
+-
+-## D3 — Schedule all canonical shape/palette profiles in every band (R1)
+-
+-**Decision.** The default schedule cycles `p18_5`, `p20_5`, `p30_4`, and `p30_5` in every band. These profiles encode the four public shape/palette combinations and the corresponding two- or three-component scale. The retained 120-per-band probe produced exactly 30 examples of each profile in each band.
+-
+-**Rejected alternatives.** Random profile choice could create accidental small-sample gaps in a battery or lesson shard. Anchoring only one profile per band would entangle difficulty with shape and palette and let a learner treat canvas size as a rule branch.
+-
+-**Probe and limits.** The official profile gate hit exact canonical profiles on 60/60 draws. Exact profile coverage does not by itself guarantee object-geometry boundary coverage; audit A2 is the counterexample motivating feedback F2.
+-
+-## D4 — Expose only exact, recoverable axes (R1)
+-
+-**Decision.** The public axes are `profile`, `nodes_per_network`, and `layout`. `observe_overrides` recovers all three from the generated grid, and unknown keys or invalid values fail loudly. Marker colors remain random because naming a requested palette without a recoverable semantic need would enlarge the contract without improving lessons.
+-
+-**Rejected alternatives.** The baseline `texture`, `grid_h`, and `grid_w` controls were dead, misleading, or incompatible with canonical support. Keeping them as accepted-but-ignored metadata would preserve API appearance at the cost of training-data provenance.
+-
+-**Probe and limits.** The final override gate accepted 3,240/3,240 supported requests and rejected unknown keys. `layout` is inferred from whether a connector detours; a future geometry change must preserve that observability or remove the axis.
+-
+-## D5 — Validate the task grammar, not merely color presence (R2)
+-
+-**Decision.** `self_check` now enforces rectangular ARC grids, one of four canonical profiles, required 0/1 colors, no sealed zero holes, the expected number of 4-connected components, exactly one non-blue marker per component, and multiple separated fillable room interiors. `strict_canonical_like` shares the analysis and accepts all four canonical inputs.
+-
+-**Rejected alternatives.** Checking only shape, palette, and marker count allowed nonsolid rectangles and did not establish that a scene actually teaches propagation. Requiring generated corridor topology for canonical inputs would overfit the constructor and reject lawful public examples, so canonical acceptance is semantic rather than constructor-identical.
+-
+-**Probe and limits.** The validator rejects explicit hole and markerless mutations. The generic mutation probe rejected 50/53 destructive mutations; duplicate-first-row can remain lawful, so mutation sensitivity is strong but not complete.
+-
+-## D6 — Make rival hypotheses executable and bind them to witnesses (R2)
+-
+-**Decision.** The semantic contract declares three named rivals and three witnesses, plus `WITNESS_RIVALS` and `lesson_identifiable`. A witness counts only when the authoritative mirror and its relevant rival differ. `EXAMPLES_NEEDED=2`; the retained probe checks every cyclic two-example start rather than only independent witness frequencies.
+-
+-**Rejected alternatives.** Natural-language claims are not regression tests. Hard-coding rival names only in an external script would allow source declarations and probes to drift. Declaring a canonical shortcut that does not fit every canonical pair would misstate the public ambiguity, so `CANONICAL_SHORTCUTS` is empty.
+-
+-**Probe and limits.** The official semantic gate verified three of three claims; the retained source-bound probe verified all 360 cyclic lesson windows. This still covers declared rivals, not every hypothesis a model may learn; that limitation directly motivates the automated gate proposed in `QUESTION_ANSWER.md`.
+-
+-## D7 — Add a retained source-bound semantic probe (R4)
+-
+-**Decision.** `workspace/semantic_probe.py` imports the final generator by path, records source SHA-256 and rule hash, uses the generator's real schedule and declarations, samples 120 draws per band, checks strictness, uniqueness, axis realization, change density, witness/rival disagreement, canonical shortcut validity, and all cyclic lesson starts.
+-
+-**Rejected alternatives.** A copied list of rivals could become stale. A one-off notebook would be hard for future agents to rerun. A much larger Monte Carlo sweep would cost more while adding little confidence to deterministic profile coverage.
+-
+-**Sampler and limits.** Easy uses seeds 31000–31119, medium 131000–131119, hard 231000–231119, with sample indices 0–119. Results are finite generated-domain evidence only. Reproduce with the command recorded in `RESULTS.json`.
+-
+-## D8 — Synchronize selected authority text without changing semantics (R3)
+-
+-**Decision.** Replace only the base JSON's selected `target_code` with the exact canonical `program_solution`. Preserve canonical JSONL and archival `raw_code`. This makes the selected source byte-exact while retaining the historical executable source.
+-
+-**Rejected alternatives.** Editing the canonical Racket program was unjustified because execution parity already passed. Replacing `raw_code` would erase provenance. Leaving selected textual drift would keep the authority gate red despite equal normalized behavior.
+-
+-**Probe and limits.** Authority sync reports selected exact sync and execution parity PASS for both exact source groups. The archival source remains intentionally exact-text divergent and is labeled as such.
+-
+-## D9 — Freeze and solve the final generator (R2)
+-
+-The final generator was hashed before the post-repair solve. The visible examples alone identified component-local marker propagation; revision 1 matched 3/3. Earlier exposure is declared `yes`, reference consultation during the solve is `no`, and private labels are not claimed. No generator edits were made after the solve freeze.
++- The existing three production rivals are readily refuted on these lessons. The answer-equivalent and shape-conditional competitors in regression tests exercise the hook contract; they are not added to the production rival set.
++- Finite named-rival checks do not establish universal induction, correctness outside `self_check`, approval, or training admission.
++- The construction remains narrower than all canonical-valid networks. It intentionally emphasizes remote propagation between rooms; no sampler-distribution extension was attempted here.
++- The audit in `evidence/review_index.json` remains inherited `needs_triage`, bound to old source `0ce6fb0e9b1b81b24520ad964ad512db0d1e76e95ac1d7d6f443d20b54eaa110`. This lesson repair does not change its disposition or claim a new resolution of the old underfill/hole findings.
++- Prior broad battery/census claims are inherited evidence, not rerun passes for this source. Only the focused checks listed above were run for this repair.
+ 
+ <!-- arcpuzzles-current-supplementary:start -->
+ ## Current supplementary checks
+ 
+-Current source-bound ticket observations: `generators/9c75b1456763/evidence/supplementary-current.json`. Results are reviewer-reported; blocked or unknown stays explicit. These observations do not approve a generator or variant, resolve audits, or admit data to training.
++Inherited source-bound observations remain in `generators/9c75b1456763/evidence/supplementary-current.json`. They do not approve the new source, resolve audits, or admit training data.
+ <!-- arcpuzzles-current-supplementary:end -->
+diff --git a/repo/generators/9c75b1456763/tests/test_generator_9c75b1456763_repair.py b/repo/generators/9c75b1456763/tests/test_generator_9c75b1456763_repair.py
+--- a/repo/generators/9c75b1456763/tests/test_generator_9c75b1456763_repair.py
++++ b/repo/generators/9c75b1456763/tests/test_generator_9c75b1456763_repair.py
+@@ -1,37 +1,22 @@
+ from __future__ import annotations
+ 
+ import copy
+-import importlib.util
+-import json
+-import sys
+-from pathlib import Path
+ 
+ import pytest
+ 
+-REPO = Path(__file__).resolve().parents[3]
+-GENERATOR_PATH = REPO / "generators" / "9c75b1456763" / "generator.py"
+-CANONICAL_PATH = REPO / "shared" / "data" / "canonical" / "puzzles.jsonl"
+-sys.path.insert(0, str(REPO / "shared" / "runtime"))
++from reviewer_support import canonical_pairs, find_root, load_selected_generator
++
++ROOT = find_root(__file__)
++TASK_ID = "9c75b1456763"
+ 
+ 
+ def load_generator():
+-    spec = importlib.util.spec_from_file_location(
+-        "generator_9c75b1456763_under_test", GENERATOR_PATH
+-    )
+-    assert spec and spec.loader
+-    module = importlib.util.module_from_spec(spec)
+-    sys.modules[spec.name] = module
+-    spec.loader.exec_module(module)
++    module, _source, _sha256 = load_selected_generator(TASK_ID, root=ROOT)
+     return module
+ 
+ 
+ def canonical_inputs():
+-    with CANONICAL_PATH.open(encoding="utf-8") as handle:
+-        for line in handle:
+-            row = json.loads(line)
+-            if row.get("task_id") == "9c75b1456763":
+-                return [pair["input"] for pair in row["train"] + row["test"]]
+-    raise AssertionError("canonical task missing")
++    return [pair["input"] for pair in canonical_pairs(TASK_ID, root=ROOT)]
+ 
+ 
+ def components4(grid):
+diff --git a/repo/generators/9c75b1456763/tests/test_lesson_identifiability.py b/repo/generators/9c75b1456763/tests/test_lesson_identifiability.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9c75b1456763/tests/test_lesson_identifiability.py
+@@ -0,0 +1,129 @@
++"""Regression tests for query-answer ambiguity and optional label validation."""
++from __future__ import annotations
++
++from copy import deepcopy
++
++import pytest
++
++from reviewer_support import canonical_pairs, find_root, load_selected_generator
++
++
++TASK_ID = "9c75b1456763"
++
++
++@pytest.fixture
++def lesson():
++    root = find_root(__file__)
++    generator, _path, _sha256 = load_selected_generator(TASK_ID, root=root)
++    pairs = canonical_pairs(TASK_ID, root=root, labeled_only=True)
++    # The 20x20 and 30x30 demonstrations leave the 18x18 canvas held out.
++    by_size = {len(pair["input"]): pair for pair in pairs if pair["split"] == "train"}
++    return generator, [by_size[20], by_size[30]], by_size[18]
++
++
++def test_lesson_accepts_query_with_only_public_input(lesson):
++    generator, demos, query = lesson
++    assert generator.lesson_identifiable(demos, {"input": query["input"]}) == []
++
++
++def test_answer_equivalent_survivor_is_not_query_ambiguity(lesson, monkeypatch):
++    generator, demos, query = lesson
++    monkeypatch.setattr(
++        generator, "LESSON_COMPETITORS", {"equivalent": generator.rule_mirror}
++    )
++    assert generator.lesson_identifiable(demos, query) == []
++
++
++def test_only_demo_fitting_query_disagreements_are_reported(lesson, monkeypatch):
++    generator, demos, query = lesson
++
++    def first_network_on_small_canvas(grid):
++        if len(grid) == 18:
++            return generator._rival_first_component_only(grid)
++        return generator.rule_mirror(grid)
++
++    monkeypatch.setattr(
++        generator,
++        "LESSON_COMPETITORS",
++        {
++            "equivalent": generator.rule_mirror,
++            "small_canvas_first_network": first_network_on_small_canvas,
++            "refuted_global_color": generator._rival_global_first_marker,
++        },
++    )
++    reasons = generator.lesson_identifiable(demos, query)
++    assert len(reasons) == 1
++    assert "small_canvas_first_network" in reasons[0]
++    assert "equivalent" not in reasons[0]
++    assert "refuted_global_color" not in reasons[0]
++
++
++def test_eliminated_rival_is_not_reconsidered_using_query(lesson, monkeypatch):
++    generator, demos, query = lesson
++
++    def refuted_on_demos(grid):
++        if len(grid) == 18:
++            raise AssertionError("an eliminated rival must not inspect the query")
++        return generator._rival_first_component_only(grid)
++
++    monkeypatch.setattr(generator, "LESSON_COMPETITORS", {"refuted": refuted_on_demos})
++    assert generator.lesson_identifiable(demos, query) == []
++
++
++@pytest.mark.parametrize("replacement", [False, 0.0])
++def test_demo_labels_reject_noninteger_values_equal_to_integer_colors(lesson, replacement):
++    generator, demos, query = lesson
++    demos = deepcopy(demos)
++    output = demos[0]["output"]
++    row, col = next(
++        (r, c) for r, values in enumerate(output) for c, value in enumerate(values)
++        if value == 0
++    )
++    output[row][col] = replacement
++    reasons = generator.lesson_identifiable(demos, query)
++    assert reasons
++    assert any("demo 0" in reason and "output" in reason for reason in reasons)
++
++
++@pytest.mark.parametrize("replacement", [False, 0.0])
++def test_present_query_label_rejects_noninteger_values(lesson, replacement):
++    generator, demos, query = lesson
++    query = deepcopy(query)
++    output = query["output"]
++    row, col = next(
++        (r, c) for r, values in enumerate(output) for c, value in enumerate(values)
++        if value == 0
++    )
++    output[row][col] = replacement
++    reasons = generator.lesson_identifiable(demos, query)
++    assert reasons
++    assert any("query output" in reason for reason in reasons)
++
++
++@pytest.mark.parametrize("bad_output", [None, [], [[0]], [[10]], [[0], [0, 0]]])
++def test_present_query_label_must_be_a_correct_grid(lesson, bad_output):
++    generator, demos, query = lesson
++    reasons = generator.lesson_identifiable(demos, {"input": query["input"], "output": bad_output})
++    assert reasons
++    assert any("query output" in reason for reason in reasons)
++
++
++def test_wrong_demo_label_is_rejected_before_rival_inference(lesson, monkeypatch):
++    generator, demos, query = lesson
++    demos = deepcopy(demos)
++    demos[0]["output"] = deepcopy(demos[0]["input"])
++
++    def should_not_infer_from_bad_labels(_grid):
++        raise AssertionError("incorrect labels cannot supply a lesson certificate")
++
++    monkeypatch.setattr(generator, "LESSON_COMPETITORS", {"unused": should_not_infer_from_bad_labels})
++    reasons = generator.lesson_identifiable(demos, query)
++    assert any("demo 0 output" in reason for reason in reasons)
++
++
++@pytest.mark.parametrize("bad_query", [None, {}, {"input": []}, {"input": [[False]]}, {"input": [[0], [0, 1]]}])
++def test_malformed_public_query_returns_reasons(lesson, bad_query):
++    generator, demos, _query = lesson
++    reasons = generator.lesson_identifiable(demos, bad_query)
++    assert reasons
++    assert all(isinstance(reason, str) for reason in reasons)
+diff --git a/repo/generators/9c75b1456763/workspace/README.md b/repo/generators/9c75b1456763/workspace/README.md
+--- a/repo/generators/9c75b1456763/workspace/README.md
++++ b/repo/generators/9c75b1456763/workspace/README.md
+@@ -15,3 +15,20 @@
+ The probe imports the selected generator by path and records its SHA-256 and declared rule hash. It reads the generator's actual `SEMANTIC_WITNESSES`, `SEMANTIC_RIVALS`, `WITNESS_RIVALS`, `CANONICAL_SHORTCUTS`, `LESSON_COMPETITORS`, `EXAMPLES_NEEDED`, and schedule rather than duplicating a rival-name list. It reports strict validity, unique inputs/outputs, exact-axis counts, changed-cell ranges, witness/rival disagreement, canonical shortcut fit, and all cyclic lesson starts.
+ 
+ The report is finite generated-domain evidence. Do not interpret it as universal induction, masked-query accuracy, or correctness outside `self_check`.
++
++## Focused lesson-contract probe
++
++From the outer folder containing `review.py`, with the packet environment active:
++
++```bash
++python3 review.py run --receipt checks/9c75b1456763/lesson-command.json \
++  python3 generators/9c75b1456763/workspace/lesson_contract_probe.py \
++  --out ../checks/9c75b1456763/lesson-contract.json
++```
++
++Use new receipt/output paths. This bounded probe executes the unchanged canonical
++Racket rule on all four canonical inputs, checks masked and labeled query
++rotations, and attacks two boundaries: numeric/grid label validity and rival
++survival versus query disagreement. It binds the generator, probe and exact
++canonical program hashes and reports its elapsed time. Temporary test rivals
++are restored before return; they do not become production declarations.
+diff --git a/repo/generators/9c75b1456763/workspace/lesson_contract_probe.py b/repo/generators/9c75b1456763/workspace/lesson_contract_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/9c75b1456763/workspace/lesson_contract_probe.py
+@@ -0,0 +1,152 @@
++#!/usr/bin/env python3
++"""Bounded Racket-backed checks of lesson labels and query-specific rivals."""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++import time
++
++from puzzle_generators.runner import _apply_rule, _open_bridge_with_rule, wrap_rule
++from reviewer_support import canonical_pairs, canonical_path, find_root, load_selected_generator
++
++
++TASK_ID = "9c75b1456763"
++
++
++def run_probe():
++    started = time.monotonic()
++    root = find_root(__file__)
++    generator, source, source_sha256 = load_selected_generator(TASK_ID, root=root)
++    with canonical_path(root).open(encoding="utf-8") as handle:
++        selected = []
++        for line in handle:
++            if line.strip():
++                row = json.loads(line)
++                if row.get("task_id") == TASK_ID:
++                    selected.append(row)
++    assert len(selected) == 1, "the probe requires one unambiguous task authority"
++    program = selected[0]["program_solution"]
++    pairs = canonical_pairs(TASK_ID, root=root, labeled_only=True)
++
++    bridge, function_name = _open_bridge_with_rule(wrap_rule(program))
++    reference_rows = []
++    try:
++        for pair in pairs:
++            output = _apply_rule(bridge, function_name, pair["input"])
++            assert output == pair["output"], "Racket disagrees with a canonical label"
++            assert output == generator.rule_mirror(pair["input"]), "Python mirror differs"
++            reference_rows.append({
++                "variant": pair["variant"], "split": pair["split"],
++                "pair_index": pair["pair_index"], "racket_matches_label_and_mirror": True,
++            })
++    finally:
++        bridge.shutdown()
++
++    checks = []
++
++    def check(name, demos, query, *, accepted, named=None):
++        reasons = generator.lesson_identifiable(demos, query)
++        assert (not reasons) == accepted, (name, reasons)
++        if named is not None:
++            assert len(reasons) == 1 and named in reasons[0], (name, reasons)
++            assert "equivalent" not in reasons[0], (name, reasons)
++        checks.append({"case": name, "accepted": not reasons, "reasons": reasons})
++
++    for index, pair in enumerate(pairs):
++        demos = pairs[:index] + pairs[index + 1:]
++        check(f"rotation_{index}_masked", demos, {"input": pair["input"]}, accepted=True)
++        check(f"rotation_{index}_labelled", demos, pair, accepted=True)
++
++    by_size = {len(pair["input"]): pair for pair in pairs if pair["split"] == "train"}
++    demos, query = [by_size[20], by_size[30]], by_size[18]
++    for split in ("demo", "query"):
++        for mutation in ("boolean", "float", "missing_grid", "ragged", "wrong_color"):
++            changed_demos, changed_query = deepcopy(demos), deepcopy(query)
++            pair = changed_demos[0] if split == "demo" else changed_query
++            output = pair["output"]
++            r, c = next((r, c) for r, row in enumerate(output) for c, v in enumerate(row) if v == 0)
++            if mutation == "boolean":
++                output[r][c] = False
++            elif mutation == "float":
++                output[r][c] = 0.0
++            elif mutation == "missing_grid":
++                pair["output"] = None
++            elif mutation == "ragged":
++                output[0] = output[0][:-1]
++            else:
++                output[r][c] = 9
++            check(f"{split}_{mutation}", changed_demos, changed_query, accepted=False)
++
++    declared = generator.LESSON_COMPETITORS
++    try:
++        def first_network_on_small_canvas(grid):
++            if len(grid) == 18:
++                return generator._rival_first_component_only(grid)
++            return generator.rule_mirror(grid)
++
++        generator.LESSON_COMPETITORS = {"equivalent": generator.rule_mirror}
++        check("answer_equivalent_survivor", demos, {"input": query["input"]}, accepted=True)
++        generator.LESSON_COMPETITORS = {
++            "equivalent": generator.rule_mirror,
++            "small_canvas_first_network": first_network_on_small_canvas,
++            "global_color_refuted_by_demos": generator._rival_global_first_marker,
++        }
++        check("query_changing_survivor", demos, {"input": query["input"]}, accepted=False,
++              named="small_canvas_first_network")
++        check("survivor_agrees_on_other_query", demos, {"input": pairs[-1]["input"]}, accepted=True)
++
++        def refuted(grid):
++            if len(grid) == 18:
++                raise AssertionError("an eliminated rival must not inspect the query")
++            return generator._rival_first_component_only(grid)
++
++        generator.LESSON_COMPETITORS = {"refuted": refuted}
++        check("eliminated_before_query", demos, {"input": query["input"]}, accepted=True)
++    finally:
++        generator.LESSON_COMPETITORS = declared
++
++    elapsed = time.monotonic() - started
++    assert elapsed <= 300, "adversarial check exceeded its five-minute budget"
++    return {
++        "schema": "9c75b1456763-lesson-contract-probe-v1",
++        "task_id": TASK_ID,
++        "source_binding": {
++            "path": source.relative_to(root).as_posix(), "sha256": source_sha256,
++            "version": generator.VERSION, "declared_rule_hash": generator.RULE_HASH,
++            "canonical_program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++            "probe_path": Path(__file__).resolve().relative_to(root).as_posix(),
++            "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        },
++        "racket_labels": reference_rows,
++        "checks": checks,
++        "adversarial": {
++            "budget_seconds": 300, "elapsed_seconds": elapsed,
++            "surfaces": ["label scalar types and malformed grids", "demo-survival versus query disagreement"],
++            "result": "No additional finding in the bounded cases.",
++        },
++        "limits": [
++            "Four canonical inputs; production sampler coverage is unchanged and not censused here.",
++            "Temporary rivals exercise the hook contract; they are not new production declarations.",
++            "Finite named-rival checks do not prove universal induction or approval.",
++        ],
++    }
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args()
++    if args.out.exists():
++        raise FileExistsError(args.out)
++    report = run_probe()
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(f"Racket labels: {len(report['racket_labels'])}; lesson boundary cases: {len(report['checks'])}; all passed")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

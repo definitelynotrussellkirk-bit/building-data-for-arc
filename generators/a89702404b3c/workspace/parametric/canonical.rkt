@@ -1,0 +1,6 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (if (member? w (list 2 4 6 8 10 12 14 16 18 20 22 24 26 28 30))
+               (subgrid g 0 (- w 2) 1 (- w 1))
+               (subgrid g 0 0 1 1)))))

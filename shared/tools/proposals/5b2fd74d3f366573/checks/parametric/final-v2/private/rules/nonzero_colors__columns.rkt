@@ -1,0 +1,7 @@
+(rule! (lambda (g)
+  (let* ((n (max 1 (length (filter (lambda (color) (not (= color 0))) (grid-colors g)))))
+         (vertical 1)
+         (horizontal n))
+    (grid-from-fn (* (rows g) vertical) (* (cols g) horizontal)
+      (lambda (r c)
+        (cell-at g (quotient r vertical) (quotient c horizontal)))))))

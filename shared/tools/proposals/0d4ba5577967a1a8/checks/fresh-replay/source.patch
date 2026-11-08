@@ -1,0 +1,1049 @@
+diff --git a/repo/generators/2aa2f3b2ed8f/generator.py b/repo/generators/2aa2f3b2ed8f/generator.py
+--- a/repo/generators/2aa2f3b2ed8f/generator.py
++++ b/repo/generators/2aa2f3b2ed8f/generator.py
+@@ -1,232 +1,515 @@
+-"""Generator for 98cf29f8.
+-
+-Rule: a tailed object loses its tail and slides its rectangular body
+-until it touches another rectangle.
+-
+-Combinatorial axes (8): grid_h/w, orientation, body_shape, palette_kind,
+-anchor_corner, asymmetry_force, palette_size, n_distinct_colors.
+-Degenerates: no_tail, no_target, full_grid.
++"""Generator for the tailed-rectangle slide task.
++
++A non-rectangular creature consists of a solid rectangular body plus a
++one-cell-thick tail.  The tail points toward a differently-coloured solid
++rectangle and exactly bridges the gap to it.  The rule consumes the tail and
++slides the body along that direction until the body is flush with the target.
+ """
+ from __future__ import annotations
+ 
++from copy import deepcopy
++
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import draw_rect, full_grid
+ 
+ GENERATOR_ID = "2aa2f3b2ed8f"
+-RULE_HASH = "f1cfb51e6ad7"  # sha256 of whitespace-normalized canonical rule
+-VERSION = "2.0.1"  # shape-locked-in/out: fixed 13x13 layout. Rule reads h,w and slides the tab-body to the target rect; now grid size + band position + target size vary.
+-TASK_ID = "2aa2f3b2ed8f"
+-SUMMARY = "Tailed object loses its tail and slides body until it touches another rectangle."
++TASK_ID = GENERATOR_ID
++RULE_HASH = "f1cfb51e6ad7"
++VERSION = "3.0.0"
++SUMMARY = "Consume a straight tail and slide its rectangular body until flush with the other rectangle."
+ 
+ INVARIANTS = [
+     "the background is zero",
+-    "one object is a plain rectangle",
+-    "one same-color object has a rectangular body plus a one-cell tail",
+-    "the tail points toward the plain rectangle and determines the slide direction",
++    "there are exactly two differently-coloured non-background objects",
++    "one object is a solid rectangle",
++    "the other object is a solid rectangular body plus a straight one-cell-thick tail",
++    "the tail exactly bridges the positive gap from body to target",
++    "the body is the unique largest filled rectangle inside the creature",
+ ]
+ 
+ ORIENTATIONS = ("right", "left", "down", "up")
+-BODY_SHAPES = ("2x2", "2x3", "3x2")
+-PALETTE_KINDS = ("warm", "cool", "broad", "primary")
+-DEGENERATE_TEXTURES = ("no_tail", "no_target", "full_grid")
+-HELPFUL_TEXTURES = ORIENTATIONS
++# Every advertised body shape remains the unique largest internal rectangle for
++# every advertised tail length and orientation.  Canonical 3x3 inputs are still
++# accepted by self_check, but 3x3 is not crossed with tail_length=6 in generation
++# because that creates a largest-rectangle tie in the reference program.
++BODY_SHAPES = ("3x4", "4x3", "4x4", "3x5", "5x3", "4x5", "5x4", "6x8")
++TARGET_SHAPES = ("2x5", "5x2", "3x7", "7x3", "5x5", "7x7", "8x5", "5x8")
++TAIL_LENGTHS = tuple(range(1, 7))
+ 
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 12..18", "valid": "11..21"},
+-    "grid_w":         {"type": "int", "default": "rng 14..21", "valid": "13..25"},
+-    "orientation":    {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(ORIENTATIONS)},
+-    "body_shape":     {"type": "str", "default": "rng",
+-                       "valid": "|".join(BODY_SHAPES)},
+-    "palette_kind":   {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(PALETTE_KINDS)},
+-    "anchor_corner":  {"type": "bool", "default": "false",
+-                       "valid": "true|false"},
+-    "asymmetry_force":{"type": "bool", "default": "false",
+-                       "valid": "true|false"},
+-    "palette_size":   {"type": "int", "default": "2", "valid": "2"},
+-    "n_distinct_colors":{"type": "int", "default": "2", "valid": "2"},
+-    "texture":        {"type": "str", "default": "alias for orientation",
+-                       "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "orientation": {
++        "type": "str",
++        "default": "scheduled canonical/broad draw",
++        "valid": "|".join(ORIENTATIONS),
++    },
++    "body_shape": {
++        "type": "str",
++        "default": "scheduled canonical/broad draw",
++        "valid": "|".join(BODY_SHAPES),
++    },
++    "target_shape": {
++        "type": "str",
++        "default": "scheduled canonical/broad draw",
++        "valid": "|".join(TARGET_SHAPES),
++    },
++    "tail_length": {
++        "type": "int",
++        "default": "scheduled canonical/broad draw",
++        "valid": "1..6",
++    },
+ }
++INCOMPATIBLE_OVERRIDE_COMBINATIONS = ()
++
++# Four of every five samples use a canvas profile seen in the canonical task;
++# the fifth broadens padding and independently varies the constructive axes.
++_SCHEDULE_PERIOD = 5
++EXAMPLES_NEEDED = 3
++_CANONICAL_TEMPLATES = (
++    {
++        "canvas": (13, 18),
++        "orientation": "right",
++        "body_shape": "3x4",
++        "target_shape": "7x7",
++        "tail_length": 3,
++    },
++    {
++        "canvas": (17, 14),
++        "orientation": "up",
++        "body_shape": "3x4",
++        "target_shape": "3x7",
++        "tail_length": 4,
++    },
++    {
++        "canvas": (15, 19),
++        "orientation": "up",
++        "body_shape": "6x8",
++        "target_shape": "2x5",
++        "tail_length": 4,
++    },
++    {
++        "canvas": (12, 17),
++        "orientation": "left",
++        "body_shape": "3x4",
++        "target_shape": "8x5",
++        "tail_length": 5,
++    },
++)
++
++
++def _parse_shape(value: str) -> tuple[int, int]:
++    height, width = value.split("x", 1)
++    return int(height), int(width)
++
++
++def _draw_scheduled_choice(ctx, name: str, domain: tuple[str, ...], default: str) -> str:
++    """Use a deterministic scheduled default while retaining exact overrides."""
++    if name in ctx.overrides and ctx.overrides[name] is not None:
++        return ctx.draw_choice(name, domain)
++    return ctx.draw_choice(name, (default,))
++
++
++def _draw_scheduled_int(ctx, name: str, lo: int, hi: int, default: int) -> int:
++    if name in ctx.overrides and ctx.overrides[name] is not None:
++        return ctx.draw_int_strict(name, lo, hi)
++    return ctx.draw_int_strict(name, default, default)
++
++
++def _scheduled_defaults(ctx, sample_index: int):
++    slot = sample_index % _SCHEDULE_PERIOD
++    if slot < len(_CANONICAL_TEMPLATES):
++        return dict(_CANONICAL_TEMPLATES[slot]), True
++
++    broad_index = sample_index // _SCHEDULE_PERIOD
++    defaults = {
++        # Cycling broad slots guarantees that a short consecutive sample window
++        # includes all four directions, rather than relying on luck.
++        "orientation": ORIENTATIONS[broad_index % len(ORIENTATIONS)],
++        "body_shape": ctx.draw_rng("broad_body_default").choice(BODY_SHAPES),
++        "target_shape": ctx.draw_rng("broad_target_default").choice(TARGET_SHAPES),
++        "tail_length": ctx.draw_rng("broad_tail_default").choice(TAIL_LENGTHS),
++        "canvas": None,
++    }
++    return defaults, False
++
++
++def _minimum_canvas(
++    orientation: str,
++    body_shape: tuple[int, int],
++    target_shape: tuple[int, int],
++    tail_length: int,
++) -> tuple[int, int]:
++    body_h, body_w = body_shape
++    target_h, target_w = target_shape
++    if orientation in ("right", "left"):
++        return max(body_h, target_h) + 2, body_w + tail_length + target_w + 2
++    return body_h + tail_length + target_h + 2, max(body_w, target_w) + 2
++
++
++def _canvas_for(ctx, minimum: tuple[int, int], scheduled_canvas, difficulty, canonical_slot):
++    min_h, min_w = minimum
++    if canonical_slot and scheduled_canvas is not None:
++        return max(min_h, scheduled_canvas[0]), max(min_w, scheduled_canvas[1])
++
++    pad_range = {
++        None: (0, 4),
++        "easy": (0, 1),
++        "medium": (1, 3),
++        "hard": (3, 5),
++    }[difficulty]
++    pad_h = ctx.draw_rng("canvas_padding_h").randint(*pad_range)
++    pad_w = ctx.draw_rng("canvas_padding_w").randint(*pad_range)
++    height, width = min_h + pad_h, min_w + pad_w
++    if height > 30 or width > 30:
++        raise ValueError(f"constructed canvas {(height, width)} exceeds ARC's 30x30 limit")
++    return height, width
++
++
++def _choose_overlapping_offsets(rng, extent: int, first_size: int, second_size: int):
++    """Choose two in-bounds spans and one coordinate in their intersection."""
++    pairs = []
++    for first in range(1, extent - first_size):
++        for second in range(1, extent - second_size):
++            lo = max(first, second)
++            hi = min(first + first_size - 1, second + second_size - 1)
++            if lo <= hi:
++                pairs.append((first, second, lo, hi))
++    if not pairs:
++        raise ValueError(
++            f"no overlapping placements for sizes {first_size} and {second_size} in extent {extent}"
++        )
++    first, second, lo, hi = rng.choice(pairs)
++    return first, second, rng.randint(lo, hi)
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
+-    rng = ctx.draw_rng("layout")
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], rng)
+-    orientation = (overrides.get("texture") if overrides.get("texture") in ORIENTATIONS else None) or \
+-                  overrides.get("orientation") or \
+-                  ctx.draw_choice("orientation", list(ORIENTATIONS))
+-    body_h, body_w = ctx.draw_choice("body_shape", [(2, 2), (2, 3), (3, 2)])
+-    moving, target = ctx.draw_distinct_colors("colors", n=2, exclude={0})
+-    # rule reads h,w and slides the tab-body toward the rectangle; was a fixed 13x13
+-    # layout (in=1). Now grid size + band position + target size all vary.
+-    if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 11, 14); w = ctx.draw_int("grid_w", 13, 17)
+-    elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 15, 21); w = ctx.draw_int("grid_w", 17, 25)
++    if type(sample_index) is not int:
++        raise TypeError("sample_index must be a plain integer")
++    if sample_index < 0:
++        raise ValueError("sample_index must be nonnegative")
++    unknown = set(overrides) - set(AXES)
++    if unknown:
++        raise ValueError(f"unknown override axes: {sorted(unknown)}")
++    if difficulty not in (None, "easy", "medium", "hard"):
++        raise ValueError("difficulty must be None, 'easy', 'medium', or 'hard'")
++
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++    defaults, canonical_slot = _scheduled_defaults(ctx, sample_index)
++    orientation = _draw_scheduled_choice(
++        ctx, "orientation", ORIENTATIONS, defaults["orientation"]
++    )
++    body_name = _draw_scheduled_choice(
++        ctx, "body_shape", BODY_SHAPES, defaults["body_shape"]
++    )
++    target_name = _draw_scheduled_choice(
++        ctx, "target_shape", TARGET_SHAPES, defaults["target_shape"]
++    )
++    tail_length = _draw_scheduled_int(
++        ctx, "tail_length", min(TAIL_LENGTHS), max(TAIL_LENGTHS), defaults["tail_length"]
++    )
++
++    body_h, body_w = _parse_shape(body_name)
++    target_h, target_w = _parse_shape(target_name)
++    minimum = _minimum_canvas(
++        orientation, (body_h, body_w), (target_h, target_w), tail_length
++    )
++    height, width = _canvas_for(
++        ctx, minimum, defaults.get("canvas"), difficulty, canonical_slot
++    )
++    moving_color, target_color = ctx.draw_distinct_colors("colors", n=2, exclude={0})
++    grid = full_grid(height, width, 0)
++    placement_rng = ctx.draw_rng("placement")
++
++    if orientation in ("right", "left"):
++        body_top, target_top, tail_row = _choose_overlapping_offsets(
++            placement_rng, height, body_h, target_h
++        )
++        occupied_width = body_w + tail_length + target_w
++        start_col = placement_rng.randint(1, width - occupied_width - 1)
++        if orientation == "right":
++            body_left = start_col
++            target_left = body_left + body_w + tail_length
++        else:
++            target_left = start_col
++            body_left = target_left + target_w + tail_length
++
++        draw_rect(grid, body_top, body_left, body_h, body_w, moving_color)
++        draw_rect(grid, target_top, target_left, target_h, target_w, target_color)
++        if orientation == "right":
++            for col in range(body_left + body_w, target_left):
++                grid[tail_row][col] = moving_color
++        else:
++            for col in range(target_left + target_w, body_left):
++                grid[tail_row][col] = moving_color
+     else:
+-        h = ctx.draw_int("grid_h", 12, 18); w = ctx.draw_int("grid_w", 14, 21)
+-    g = full_grid(h, w, 0)
+-    if orientation in ("right", "left"):
+-        rb = rng.randint(1, h - body_h - 1)
+-        tw = rng.randint(2, 4)
+-        if orientation == "right":            # moving left, tab right, target right
+-            max_mc0 = max(1, w - tw - body_w - 3)
+-            mc0 = rng.randint(1, min(3, max_mc0))
+-            draw_rect(g, rb, mc0, body_h, body_w, moving)
+-            g[rb][mc0 + body_w] = moving
+-            lo = mc0 + body_w + 3
+-            tc0 = rng.randint(lo, w - tw)
+-            draw_rect(g, rb, tc0, body_h, tw, target)
+-        else:                                 # moving right, tab left, target left
+-            max_tc0 = max(1, w - body_w - tw - 3)
+-            tc0 = rng.randint(1, min(3, max_tc0))
+-            lo = tc0 + tw + 3
+-            mc0 = rng.randint(lo, w - body_w)
+-            draw_rect(g, rb, tc0, body_h, tw, target)
+-            draw_rect(g, rb, mc0, body_h, body_w, moving)
+-            g[rb][mc0 - 1] = moving
+-    else:
+-        cb = rng.randint(1, w - body_w - 1)
+-        th = rng.randint(2, 4)
+-        if orientation == "down":             # moving top, tab down, target bottom
+-            max_mr0 = max(1, h - th - body_h - 3)
+-            mr0 = rng.randint(1, min(3, max_mr0))
+-            draw_rect(g, mr0, cb, body_h, body_w, moving)
+-            g[mr0 + body_h][cb] = moving
+-            lo = mr0 + body_h + 3
+-            tr0 = rng.randint(lo, h - th)
+-            draw_rect(g, tr0, cb, th, body_w, target)
+-        else:                                 # moving bottom, tab up, target top
+-            max_tr0 = max(1, h - body_h - th - 3)
+-            tr0 = rng.randint(1, min(3, max_tr0))
+-            lo = tr0 + th + 3
+-            mr0 = rng.randint(lo, h - body_h)
+-            draw_rect(g, tr0, cb, th, body_w, target)
+-            draw_rect(g, mr0, cb, body_h, body_w, moving)
+-            g[mr0 - 1][cb] = moving
+-    return g
++        body_left, target_left, tail_col = _choose_overlapping_offsets(
++            placement_rng, width, body_w, target_w
++        )
++        occupied_height = body_h + tail_length + target_h
++        start_row = placement_rng.randint(1, height - occupied_height - 1)
++        if orientation == "down":
++            body_top = start_row
++            target_top = body_top + body_h + tail_length
++        else:
++            target_top = start_row
++            body_top = target_top + target_h + tail_length
++
++        draw_rect(grid, body_top, body_left, body_h, body_w, moving_color)
++        draw_rect(grid, target_top, target_left, target_h, target_w, target_color)
++        if orientation == "down":
++            for row in range(body_top + body_h, target_top):
++                grid[row][tail_col] = moving_color
++        else:
++            for row in range(target_top + target_h, body_top):
++                grid[row][tail_col] = moving_color
++
++    return grid
++
++
++def _bbox(cells):
++    rows = [row for row, _ in cells]
++    cols = [col for _, col in cells]
++    return min(rows), min(cols), max(rows), max(cols)
++
++
++def _is_rectangle(cells) -> bool:
++    r1, c1, r2, c2 = _bbox(cells)
++    return len(cells) == (r2 - r1 + 1) * (c2 - c1 + 1)
++
++
++def _components(grid, color):
++    height, width = len(grid), len(grid[0])
++    seen = set()
++    result = []
++    for row in range(height):
++        for col in range(width):
++            if grid[row][col] != color or (row, col) in seen:
++                continue
++            stack = [(row, col)]
++            seen.add((row, col))
++            cells = set()
++            while stack:
++                current = stack.pop()
++                cells.add(current)
++                r, c = current
++                for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
++                    if (
++                        0 <= nr < height
++                        and 0 <= nc < width
++                        and grid[nr][nc] == color
++                        and (nr, nc) not in seen
++                    ):
++                        seen.add((nr, nc))
++                        stack.append((nr, nc))
++            result.append(cells)
++    return result
++
++
++def _largest_filled_rectangle(cells):
++    """Match the reference program's first-maximum enumeration order."""
++    r1, c1, r2, c2 = _bbox(cells)
++    height, width = r2 - r1 + 1, c2 - c1 + 1
++    prefix = [[0] * (width + 1) for _ in range(height + 1)]
++    for row, col in cells:
++        rr, cc = row - r1 + 1, col - c1 + 1
++        prefix[rr][cc] = 1
++    for rr in range(1, height + 1):
++        running = 0
++        for cc in range(1, width + 1):
++            running += prefix[rr][cc]
++            prefix[rr][cc] = prefix[rr - 1][cc] + running
++
++    def count(top, left, bottom, right):
++        a, b = top - r1, left - c1
++        c, d = bottom - r1 + 1, right - c1 + 1
++        return prefix[c][d] - prefix[a][d] - prefix[c][b] + prefix[a][b]
++
++    best_area = 0
++    best_box = None
++    for top in range(r1, r2 + 1):
++        for bottom in range(top, r2 + 1):
++            for left in range(c1, c2 + 1):
++                for right in range(left, c2 + 1):
++                    area = (bottom - top + 1) * (right - left + 1)
++                    if area > best_area and count(top, left, bottom, right) == area:
++                        best_area = area
++                        best_box = (top, left, bottom, right)
++    if best_box is None:
++        raise ValueError("creature has no filled rectangular body")
++    top, left, bottom, right = best_box
++    body = {
++        (row, col)
++        for row in range(top, bottom + 1)
++        for col in range(left, right + 1)
++    }
++    return body, best_box
++
++
++def _analyze_geometry(grid):
++    if not isinstance(grid, (list, tuple)) or not grid:
++        raise ValueError("expected a non-empty rectangular grid")
++    if not isinstance(grid[0], (list, tuple)) or not grid[0]:
++        raise ValueError("expected a non-empty rectangular grid")
++    width = len(grid[0])
++    if any(not isinstance(row, (list, tuple)) or len(row) != width for row in grid):
++        raise ValueError("grid must be rectangular")
++    if not (1 <= len(grid) <= 30 and 1 <= width <= 30):
++        raise ValueError("grid dimensions must be within 1..30")
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        raise ValueError("grid cells must be integer ARC colors 0..9")
++
++    colors = sorted({value for row in grid for value in row if value != 0})
++    if len(colors) != 2:
++        raise ValueError(f"expected exactly two nonzero colors, found {colors}")
++    colored_components = []
++    for color in colors:
++        for cells in _components(grid, color):
++            colored_components.append((color, cells))
++    if len(colored_components) != 2:
++        raise ValueError(
++            f"expected exactly two connected colored objects, found {len(colored_components)}"
++        )
++
++    rectangles = [
++        (color, cells) for color, cells in colored_components if _is_rectangle(cells)
++    ]
++    creatures = [
++        (color, cells) for color, cells in colored_components if not _is_rectangle(cells)
++    ]
++    if len(rectangles) != 1 or len(creatures) != 1:
++        raise ValueError("expected one solid rectangle and one non-rectangular creature")
++
++    target_color, target_cells = rectangles[0]
++    moving_color, moving_cells = creatures[0]
++    body_cells, body_box = _largest_filled_rectangle(moving_cells)
++    tail_cells = moving_cells - body_cells
++    if not tail_cells:
++        raise ValueError("creature must have a non-empty tail")
++
++    br1, bc1, br2, bc2 = body_box
++    tr1, tc1, tr2, tc2 = _bbox(target_cells)
++    direction = None
++    anchor = None
++    expected_tail = None
++    if all(row < br1 for row, _ in tail_cells):
++        direction = "up"
++        cols = {col for _, col in tail_cells}
++        if len(cols) == 1:
++            anchor = next(iter(cols))
++            length = len(tail_cells)
++            expected_tail = {(row, anchor) for row in range(br1 - length, br1)}
++            target_flush = tr2 == br1 - length - 1 and tc1 <= anchor <= tc2
++    elif all(row > br2 for row, _ in tail_cells):
++        direction = "down"
++        cols = {col for _, col in tail_cells}
++        if len(cols) == 1:
++            anchor = next(iter(cols))
++            length = len(tail_cells)
++            expected_tail = {(row, anchor) for row in range(br2 + 1, br2 + length + 1)}
++            target_flush = tr1 == br2 + length + 1 and tc1 <= anchor <= tc2
++    elif all(col < bc1 for _, col in tail_cells):
++        direction = "left"
++        rows = {row for row, _ in tail_cells}
++        if len(rows) == 1:
++            anchor = next(iter(rows))
++            length = len(tail_cells)
++            expected_tail = {(anchor, col) for col in range(bc1 - length, bc1)}
++            target_flush = tc2 == bc1 - length - 1 and tr1 <= anchor <= tr2
++    elif all(col > bc2 for _, col in tail_cells):
++        direction = "right"
++        rows = {row for row, _ in tail_cells}
++        if len(rows) == 1:
++            anchor = next(iter(rows))
++            length = len(tail_cells)
++            expected_tail = {(anchor, col) for col in range(bc2 + 1, bc2 + length + 1)}
++            target_flush = tc1 == bc2 + length + 1 and tr1 <= anchor <= tr2
++
++    if direction is None or anchor is None or expected_tail is None:
++        raise ValueError("tail must be a straight one-cell-thick line outside one body side")
++    if tail_cells != expected_tail:
++        raise ValueError("tail must be contiguous, gap-free, and attached to the body")
++    if not target_flush:
++        raise ValueError("tail must exactly bridge the gap from body to target rectangle")
++
++    body_h, body_w = br2 - br1 + 1, bc2 - bc1 + 1
++    target_h, target_w = tr2 - tr1 + 1, tc2 - tc1 + 1
++    # A strict area advantage makes the rule's largest-rectangle parse stable.
++    runner_up_line = max(body_h, body_w) + len(tail_cells)
++    if len(body_cells) <= runner_up_line:
++        # Canonical 3x3 + length-3 is safe (9 > 6); this primarily protects
++        # future externally supplied grids from tie/line ambiguities.
++        raise ValueError("rectangular body is not uniquely larger than the extended tail line")
++
++    vectors = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}
++    return {
++        "orientation": direction,
++        "body_shape": f"{body_h}x{body_w}",
++        "target_shape": f"{target_h}x{target_w}",
++        "tail_length": len(tail_cells),
++        "body_cells": body_cells,
++        "body_box": body_box,
++        "tail_cells": tail_cells,
++        "moving_cells": moving_cells,
++        "moving_color": moving_color,
++        "target_cells": target_cells,
++        "target_color": target_color,
++        "vector": vectors[direction],
++    }
+ 
+ 
+ def self_check(grid, *, difficulty=None, meta=None):
+-    """Executable invariants for the default tailed-object geometry.
+-
+-    The historical failure mode was an impossible vertical layout on small/easy
+-    grids: the target rectangle was sampled past the bottom edge and generation
+-    crashed. These checks make the geometry contract explicit for any emitted
+-    grid: exactly two nonzero colors, one rectangular target, and one same-color
+-    object whose largest internal rectangle has exactly one tail cell pointing
+-    across a non-empty gap toward the target.
+-    """
+-    problems = []
+-    if not grid or not grid[0] or len({len(row) for row in grid}) != 1:
+-        return ["grid must be non-empty and rectangular"]
+-    h, w = len(grid), len(grid[0])
+-    vals = sorted({v for row in grid for v in row if v != 0})
+-    if len(vals) != 2:
+-        problems.append(f"expected exactly two nonzero colors, found {vals}")
+-        return problems
+-
+-    def components(color):
+-        seen = set(); comps = []
+-        for r in range(h):
+-            for c in range(w):
+-                if grid[r][c] != color or (r, c) in seen:
+-                    continue
+-                stack = [(r, c)]; seen.add((r, c)); cells = []
+-                while stack:
+-                    rr, cc = stack.pop(); cells.append((rr, cc))
+-                    for nr, nc in ((rr-1, cc), (rr+1, cc), (rr, cc-1), (rr, cc+1)):
+-                        if 0 <= nr < h and 0 <= nc < w and grid[nr][nc] == color and (nr, nc) not in seen:
+-                            seen.add((nr, nc)); stack.append((nr, nc))
+-                comps.append(cells)
+-        return comps
+-
+-    def bbox(cells):
+-        rs = [r for r, _ in cells]; cs = [c for _, c in cells]
+-        return min(rs), min(cs), max(rs), max(cs)
+-
+-    def is_rect(cells):
+-        r1, c1, r2, c2 = bbox(cells)
+-        return len(cells) == (r2 - r1 + 1) * (c2 - c1 + 1)
+-
+-    comps = []
+-    for color in vals:
+-        for cells in components(color):
+-            comps.append((color, cells))
+-    if len(comps) != 2:
+-        problems.append(f"expected exactly two objects, found {len(comps)}")
+-        return problems
+-    rects = [(color, cells) for color, cells in comps if is_rect(cells)]
+-    tails = [(color, cells) for color, cells in comps if not is_rect(cells)]
+-    if len(rects) != 1 or len(tails) != 1:
+-        problems.append("expected one rectangular target and one non-rectangular tailed object")
+-        return problems
+-    _, target_cells = rects[0]
+-    _, tail_cells = tails[0]
+-    target_box = bbox(target_cells)
+-
+-    # Find the largest all-filled rectangle inside the tailed object; it is the
+-    # body and all remaining cells should be the one-cell tail.
+-    cellset = set(tail_cells)
+-    best = None
+-    r1, c1, r2, c2 = bbox(tail_cells)
+-    for ar1 in range(r1, r2 + 1):
+-        for ar2 in range(ar1, r2 + 1):
+-            for ac1 in range(c1, c2 + 1):
+-                for ac2 in range(ac1, c2 + 1):
+-                    rect = {(r, c) for r in range(ar1, ar2 + 1) for c in range(ac1, ac2 + 1)}
+-                    if rect <= cellset and (best is None or len(rect) > len(best[0])):
+-                        best = (rect, (ar1, ac1, ar2, ac2))
+-    if best is None:
+-        problems.append("tailed object has no rectangular body")
+-        return problems
+-    body_cells, body_box = best
+-    tail_only = sorted(cellset - body_cells)
+-    if len(tail_only) != 1:
+-        problems.append(f"expected exactly one tail cell outside the body, found {len(tail_only)}")
+-        return problems
+-    br1, bc1, br2, bc2 = body_box
+-    tr, tc = tail_only[0]
+-    if tr < br1:
+-        points = "up"
+-        gap = br1 - target_box[2] - 1
+-    elif tr > br2:
+-        points = "down"
+-        gap = target_box[0] - br2 - 1
+-    elif tc < bc1:
+-        points = "left"
+-        gap = bc1 - target_box[3] - 1
+-    elif tc > bc2:
+-        points = "right"
+-        gap = target_box[1] - bc2 - 1
+-    else:
+-        points = None; gap = 0
+-    if points is None:
+-        problems.append("tail cell is not adjacent outside the rectangular body")
+-    elif gap < 1:
+-        problems.append(f"tail points {points} but target is not separated from body by a positive gap")
+-    return problems
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    g = full_grid(13, 13, 0)
+-    if name == "no_tail":
+-        draw_rect(g, 5, 1, 2, 2, 3)
+-        draw_rect(g, 5, 10, 2, 2, 4)
+-        return g
+-    if name == "no_target":
+-        draw_rect(g, 5, 1, 2, 2, 3)
+-        g[5][3] = 3
+-        return g
+-    if name == "full_grid":
+-        for r in range(13):
+-            for c in range(13):
+-                g[r][c] = 3
+-        return g
+-    return g
++    try:
++        _analyze_geometry(grid)
++    except (TypeError, ValueError) as exc:
++        return [str(exc)]
++    return []
++
++
++def strict_canonical_like(grid):
++    return self_check(grid)
++
++
++def observe_overrides(grid):
++    analysis = _analyze_geometry(grid)
++    return {
++        "orientation": analysis["orientation"],
++        "body_shape": analysis["body_shape"],
++        "target_shape": analysis["target_shape"],
++        "tail_length": analysis["tail_length"],
++    }
++
++
++def _move_body(grid, steps):
++    analysis = _analyze_geometry(grid)
++    dr, dc = analysis["vector"]
++    output = deepcopy(grid)
++    for row, col in analysis["moving_cells"]:
++        output[row][col] = 0
++    for row, col in analysis["body_cells"]:
++        output[row + dr * steps][col + dc * steps] = analysis["moving_color"]
++    return output
++
++
++def _slide_one_cell(grid):
++    """Named rival: erase the tail but move the body only one cell."""
++    return _move_body(grid, 1)
++
++
++def _long_tail_requires_full_slide(grid):
++    try:
++        return _analyze_geometry(grid)["tail_length"] > 1
++    except (TypeError, ValueError):
++        return False
++
++
++SEMANTIC_WITNESSES = {"long_tail_requires_full_slide": _long_tail_requires_full_slide}
++SEMANTIC_RIVALS = {"slide_one_cell": _slide_one_cell}
++WITNESS_RIVALS = {"long_tail_requires_full_slide": ["slide_one_cell"]}
++CANONICAL_SHORTCUTS = {"slide_one_cell": _slide_one_cell}
++LESSON_COMPETITORS = {"slide_one_cell": _slide_one_cell}
+diff --git a/repo/generators/2aa2f3b2ed8f/notes.md b/repo/generators/2aa2f3b2ed8f/notes.md
+--- a/repo/generators/2aa2f3b2ed8f/notes.md
++++ b/repo/generators/2aa2f3b2ed8f/notes.md
+@@ -1,4 +1,31 @@
+-# Working notes: 2aa2f3b2ed8f
++# Current notes: 2aa2f3b2ed8f
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Intended rule
++
++The input contains two differently colored non-background objects on color 0. One is a solid target rectangle. The other is a solid rectangular body with a straight, one-cell-thick tail that points toward the target and exactly bridges the positive gap. The transformation consumes the complete tail and translates only the body along that direction until the body is flush with the target.
++
++The canonical Racket rule remains the authority and is pinned by `RULE_HASH = "f1cfb51e6ad7"`. This review did not alter its logic. It synchronized the training and augmented `racket_target.raw_code` / `target_code` copies to the exact canonical program text so authority checks no longer compare divergent duplicates.
++
++## Reversed baseline decisions
++
++The imported v2.0.1 sampler generated only a one-cell tail and its validator required exactly one tail cell. All eight usable canonical inputs have tails of length 3–5, so the validator rejected 8/8 canonical inputs even though default samples passed. The current v3.0.0 grammar accepts and generates the canonical gap-bridging tail.
++
++The prior public schema advertised grid size, palette aliases, singleton color-count axes, booleans that were not observable, and degenerate textures. These controls were not a falsifiable description of the returned grid. The current public axes are only four constructive, recoverable quantities: `orientation`, `body_shape`, `target_shape`, and `tail_length`. Unknown, retired, mistyped, and out-of-domain controls fail loudly.
++
++## Distribution decisions
++
++Four slots of a private five-slot schedule reproduce the four distinct canonical canvas/geometry profiles. The fifth slot broadens padding and independently varies the four constructive axes. Broad slots cycle directions so short consecutive lesson windows do not rely on luck for directional coverage.
++
++Advertised body shapes are restricted so the intended body remains the unique largest filled rectangle for every advertised orientation and tail length. Canonical 3x3 bodies remain validator-valid, but are not crossed with the longest generated tails because that can tie the reference program's largest-rectangle selection. Target shapes, colors, placement offsets, and difficulty-dependent padding still vary, while all grids remain within 30x30.
++
++## Validation and teaching contract
++
++`self_check` now validates rectangular ARC grids, exactly two connected colored objects, one target rectangle, one body-plus-tail creature, a straight complete bridge, positive body-to-target movement, and an unambiguous body. `observe_overrides` reconstructs every public axis from the grid.
++
++The named near-miss rule `slide_one_cell` erases the tail but moves the body only one cell. `long_tail_requires_full_slide` is the executable witness. Three demonstrations are used per lesson. The final semantic smoke check found 12/12 ordered lessons identifiable against the declared rival and 0/48 ambiguous diagnostic query rotations. A larger production-sampler census found 0/300 ambiguous lessons and 0/1,200 ambiguous rotations, covering 1,191 unique inputs.
++
++## Verification and limits
++
++Final generator SHA-256: `43ae2ae11fb6b9bab871204e652aeb4b9f5a54b9ba10b51e579c01045209e09e`. The complete final battery is 12/12 green; the isolated task suite is 36/36 passing; a 300-lesson census has no declared-rival ambiguity. Evidence is under `checks/after-final/`, `checks/task-tests-final/`, and `checks/lesson-census-final.json`.
++
++These finite checks establish compatibility with the canonical examples and the tested rival family, not unique induction against every imaginable program or every seed. The catalog's approval/training-safety state is derived elsewhere and was not edited by this review. The post-repair visible-only solve used the final generator bytes, matched all three visible demonstrations in one revision, declared earlier rule exposure, and did not consult the reference during that solve.
+diff --git a/repo/generators/2aa2f3b2ed8f/tests/test_generator.py b/repo/generators/2aa2f3b2ed8f/tests/test_generator.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2aa2f3b2ed8f/tests/test_generator.py
+@@ -0,0 +1,241 @@
++"""Portable regressions for the tailed-rectangle slide generator."""
++from __future__ import annotations
++
++from copy import deepcopy
++import importlib.util
++import os
++from pathlib import Path
++
++import pytest
++
++from reviewer_support import canonical_pairs, find_root
++
++
++TASK_ID = "2aa2f3b2ed8f"
++HOME = Path(__file__).resolve().parents[1]
++
++
++def _load_generator():
++    candidate = os.environ.get("GENERATOR_UNDER_TEST")
++    path = Path(candidate) if candidate else HOME / "generator.py"
++    spec = importlib.util.spec_from_file_location("generator_under_test", path)
++    assert spec and spec.loader
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++gen = _load_generator()
++PAIRS = canonical_pairs(TASK_ID, root=find_root(__file__), labeled_only=True)
++CANONICAL_PROFILES = {
++    (
++        len(pair["input"]),
++        len(pair["input"][0]),
++        len({value for row in pair["input"] for value in row}),
++    )
++    for pair in PAIRS
++}
++
++
++def _bbox(cells):
++    rows = [row for row, _ in cells]
++    cols = [col for _, col in cells]
++    return min(rows), min(cols), max(rows), max(cols)
++
++
++def _components_by_color(grid):
++    height, width = len(grid), len(grid[0])
++    seen = set()
++    components = []
++    for row in range(height):
++        for col in range(width):
++            color = grid[row][col]
++            if color == 0 or (row, col) in seen:
++                continue
++            stack = [(row, col)]
++            seen.add((row, col))
++            cells = set()
++            while stack:
++                current = stack.pop()
++                cells.add(current)
++                r, c = current
++                for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
++                    if (
++                        0 <= nr < height
++                        and 0 <= nc < width
++                        and grid[nr][nc] == color
++                        and (nr, nc) not in seen
++                    ):
++                        seen.add((nr, nc))
++                        stack.append((nr, nc))
++            components.append((color, cells))
++    return components
++
++
++def _is_rectangle(cells):
++    r1, c1, r2, c2 = _bbox(cells)
++    return len(cells) == (r2 - r1 + 1) * (c2 - c1 + 1)
++
++
++def _largest_rectangle(cells):
++    """Independent brute-force reconstruction used only by tests."""
++    r1, c1, r2, c2 = _bbox(cells)
++    best = None
++    for top in range(r1, r2 + 1):
++        for bottom in range(top, r2 + 1):
++            for left in range(c1, c2 + 1):
++                for right in range(left, c2 + 1):
++                    rectangle = {
++                        (row, col)
++                        for row in range(top, bottom + 1)
++                        for col in range(left, right + 1)
++                    }
++                    if rectangle <= cells and (best is None or len(rectangle) > len(best)):
++                        best = rectangle
++    assert best
++    return best
++
++
++def _oracle(grid):
++    """Independent Python implementation of the selected Racket rule."""
++    components = _components_by_color(grid)
++    rectangles = [(color, cells) for color, cells in components if _is_rectangle(cells)]
++    movers = [(color, cells) for color, cells in components if not _is_rectangle(cells)]
++    assert len(rectangles) == len(movers) == 1
++    _, target = rectangles[0]
++    moving_color, moving = movers[0]
++    body = _largest_rectangle(moving)
++    tail = moving - body
++    assert tail
++
++    br1, bc1, br2, bc2 = _bbox(body)
++    tr1, tc1, tr2, tc2 = _bbox(target)
++    if all(row < br1 for row, _ in tail):
++        dr, dc, steps = -1, 0, br1 - tr2 - 1
++    elif all(row > br2 for row, _ in tail):
++        dr, dc, steps = 1, 0, tr1 - br2 - 1
++    elif all(col < bc1 for _, col in tail):
++        dr, dc, steps = 0, -1, bc1 - tc2 - 1
++    else:
++        assert all(col > bc2 for _, col in tail)
++        dr, dc, steps = 0, 1, tc1 - bc2 - 1
++    assert steps > 0
++
++    output = deepcopy(grid)
++    for row, col in moving:
++        output[row][col] = 0
++    for row, col in body:
++        output[row + dr * steps][col + dc * steps] = moving_color
++    return output
++
++
++def _profile(grid):
++    return (
++        len(grid),
++        len(grid[0]),
++        len({value for row in grid for value in row}),
++    )
++
++
++def test_metadata_exposes_only_constructive_observable_axes():
++    assert gen.GENERATOR_ID == gen.TASK_ID == TASK_ID
++    assert gen.RULE_HASH == "f1cfb51e6ad7"
++    assert set(gen.AXES) == {"orientation", "body_shape", "target_shape", "tail_length"}
++    assert tuple(gen.INCOMPATIBLE_OVERRIDE_COMBINATIONS) == ()
++
++
++@pytest.mark.parametrize("pair", PAIRS, ids=lambda p: f"{p['split']}-{p['pair_index']}")
++def test_canonical_inputs_are_owned_and_labels_match_independent_oracle(pair):
++    frozen = deepcopy(pair["input"])
++    assert gen.self_check(pair["input"]) == []
++    assert gen.strict_canonical_like(pair["input"]) == []
++    assert _oracle(pair["input"]) == pair["output"]
++    assert pair["input"] == frozen
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++def test_exact_overrides_are_constructive_and_observable_in_every_band(band):
++    requested = {
++        "orientation": "down",
++        "body_shape": "3x4",
++        "target_shape": "7x7",
++        "tail_length": 5,
++    }
++    grid = gen.generate(1701, 29, difficulty=band, **requested)
++    assert gen.self_check(grid, difficulty=band, meta={"overrides": requested}) == []
++    assert gen.observe_overrides(grid) == requested
++    assert _oracle(grid) != grid
++
++
++@pytest.mark.parametrize(
++    "overrides",
++    [
++        {"unknown_axis": 1},
++        {"orientation": "diagonal"},
++        {"body_shape": "9x9"},
++        {"target_shape": "1x1"},
++        {"tail_length": 0},
++        {"tail_length": 7},
++        {"tail_length": True},
++        {"tail_length": "3"},
++        {"palette_kind": "warm"},
++        {"anchor_corner": True},
++        {"texture": "no_tail"},
++    ],
++)
++def test_invalid_unknown_and_retired_overrides_fail_loudly(overrides):
++    with pytest.raises((TypeError, ValueError, KeyError)):
++        gen.generate(0, 0, **overrides)
++
++
++def test_unknown_difficulty_fails_loudly():
++    with pytest.raises(ValueError, match="difficulty"):
++        gen.generate(0, 0, difficulty="extreme")
++
++
++@pytest.mark.parametrize("bad_index", [True, False, -1, 1.5, "1"])
++def test_sample_index_must_be_a_nonnegative_plain_integer(bad_index):
++    with pytest.raises((TypeError, ValueError), match="sample_index"):
++        gen.generate(0, bad_index)
++
++
++@pytest.mark.parametrize("band", ["easy", "medium", "hard"])
++def test_default_distribution_hits_canonical_profiles_and_all_directions(band):
++    grids = [gen.generate(8100 + index, index, difficulty=band) for index in range(24)]
++    assert all(gen.self_check(grid, difficulty=band) == [] for grid in grids)
++    assert any(_profile(grid) in CANONICAL_PROFILES for grid in grids)
++    assert {gen.observe_overrides(grid)["orientation"] for grid in grids} == {
++        "right", "left", "down", "up"
++    }
++
++
++def test_generated_tail_bridges_the_gap_and_reference_oracle_changes_only_mover():
++    for index in range(32):
++        grid = gen.generate(9200 + index, index, difficulty="hard")
++        observed = gen.observe_overrides(grid)
++        assert 1 <= observed["tail_length"] <= 6
++        expected = _oracle(grid)
++        assert expected != grid
++        before_colors = {v for row in grid for v in row}
++        after_colors = {v for row in expected for v in row}
++        assert before_colors == after_colors
++
++
++def test_semantic_witness_refutes_declared_one_step_rival():
++    assert gen.SEMANTIC_WITNESSES
++    assert gen.SEMANTIC_RIVALS
++    for index in range(16):
++        grid = gen.generate(10300, index)
++        if gen.SEMANTIC_WITNESSES["long_tail_requires_full_slide"](grid):
++            assert gen.SEMANTIC_RIVALS["slide_one_cell"](grid) != _oracle(grid)
++            return
++    pytest.fail("default schedule produced no long-tail witness")
++
++
++def test_generation_is_deterministic_and_returns_independent_rows():
++    first = gen.generate(73, 11, difficulty="medium")
++    second = gen.generate(73, 11, difficulty="medium")
++    assert first == second
++    assert len({id(row) for row in first}) == len(first)
++    first[0][0] = 9 if first[0][0] != 9 else 1
++    assert first != second
+diff --git a/repo/shared/data/base/solutions/augmented/98cf29f8__f04657b171a7.json b/repo/shared/data/base/solutions/augmented/98cf29f8__f04657b171a7.json
+--- a/repo/shared/data/base/solutions/augmented/98cf29f8__f04657b171a7.json
++++ b/repo/shared/data/base/solutions/augmented/98cf29f8__f04657b171a7.json
+@@ -66,9 +66,9 @@
+       "description"
+     ],
+     "needs_conversion": false,
+-    "raw_code": "(rule! (lambda (g)\n  (let* ((h (rows g))\n         (w (cols g))\n         (all-objs (objects g 0))\n         (is-rect? (lambda (obj)\n                     (let* ((cells (obj-cells obj))\n                            (bb (obj-bbox obj))\n                            (r1 (nth bb 0)) (c1 (nth bb 1))\n                            (r2 (nth bb 2)) (c2 (nth bb 3))\n                            (expected (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1)))))\n                       (= (length cells) expected))))\n         (rect-obj (first (filter is-rect? all-objs)))\n         (tail-obj (first (filter (lambda (o) (not (is-rect? o))) all-objs)))\n         (tail-cells (obj-cells tail-obj))\n         (tail-color (obj-color tail-obj))\n         (tb (obj-bbox tail-obj))\n         (tr1 (nth tb 0)) (tc1 (nth tb 1))\n         (tr2 (nth tb 2)) (tc2 (nth tb 3))\n         (in-tail? (lambda (r c)\n                     (ormap (lambda (cell)\n                              (and (= (first cell) r) (= (second cell) c)))\n                            tail-cells)))\n         ;; Find all valid rects and pick largest\n         (all-rects\n           (flatmap (lambda (ar1)\n                      (flatmap (lambda (ar2)\n                                 (flatmap (lambda (ac1)\n                                            (flatmap (lambda (ac2)\n                                                       (if (and (<= ar1 ar2) (<= ac1 ac2)\n                                                                (andmap (lambda (r)\n                                                                          (andmap (lambda (c) (in-tail? r c))\n                                                                                  (range ac1 (+ ac2 1))))\n                                                                        (range ar1 (+ ar2 1))))\n                                                           (list (list ar1 ar2 ac1 ac2 \n                                                                       (* (+ 1 (- ar2 ar1)) (+ 1 (- ac2 ac1)))))\n                                                           (list)))\n                                                     (range tc1 (+ tc2 1))))\n                                          (range tc1 (+ tc2 1))))\n                               (range tr1 (+ tr2 1))))\n                    (range tr1 (+ tr2 1))))\n         (sorted-rects (sort-by all-rects (lambda (r) (- 0 (nth r 4)))))\n         (best-rect (first sorted-rects))\n         (body-r1 (nth best-rect 0)) (body-r2 (nth best-rect 1))\n         (body-c1 (nth best-rect 2)) (body-c2 (nth best-rect 3))\n         (non-body-cells (filter (lambda (cell)\n                                   (let ((r (first cell)) (c (second cell)))\n                                     (not (and (>= r body-r1) (<= r body-r2)\n                                               (>= c body-c1) (<= c body-c2)))))\n                                 tail-cells))\n         (above (ormap (lambda (cell) (< (first cell) body-r1)) non-body-cells))\n         (below (ormap (lambda (cell) (> (first cell) body-r2)) non-body-cells))\n         (leftt (ormap (lambda (cell) (< (second cell) body-c1)) non-body-cells))\n         (rightt (ormap (lambda (cell) (> (second cell) body-c2)) non-body-cells))\n         (dr (cond (above -1) (below 1) (else 0)))\n         (dc (cond (leftt -1) (rightt 1) (else 0)))\n         (rb (obj-bbox rect-obj))\n         (rr1 (nth rb 0)) (rc1 (nth rb 1))\n         (rr2 (nth rb 2)) (rc2 (nth rb 3))\n         (steps (cond\n                  ((> dc 0) (- (- rc1 1) body-c2))\n                  ((< dc 0) (- body-c1 (+ rc2 1)))\n                  ((> dr 0) (- (- rr1 1) body-r2))\n                  ((< dr 0) (- body-r1 (+ rr2 1)))\n                  (else 0)))\n\t         (new-r1 (+ body-r1 (* dr steps)))\n\t         (new-r2 (+ body-r2 (* dr steps)))\n\t         (new-c1 (+ body-c1 (* dc steps)))\n\t         (new-c2 (+ body-c2 (* dc steps)))\n\t         (g1 (erase-cells g tail-cells 0))\n\t         (g2 (paint-cells g1 (positions-in-rect new-r1 new-c1 new-r2 new-c2) tail-color)))\n\t    g2)))",
++    "raw_code": "\n(rule!\n ;; Two objects: a solid rectangle WALL and a creature made of a solid\n ;; BODY with a tail sticking out one side. The tail points AWAY from\n ;; travel: the body slides toward the wall until flush against it, and\n ;; the tail is consumed. Background elsewhere unchanged.\n (lambda (g)\n   (let ()\n     (define objs (objects g 0))\n     (define wall (find-first solid-rect? objs))\n     (define creature\n       (find-first (lambda (o) (not (solid-rect? o))) objs))\n     (define cells (obj-cells creature))\n     (define body  ;; largest solid rectangle inside the creature\n       (rest\n        (for*/fold ((best (list 0 0 0 0 0)))\n                   ((r1 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (r2 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (c1 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1)))\n                    (c2 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1))))\n          (if (and (<= r1 r2) (<= c1 c2)\n                   (> (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) (first best))\n                   (all? (lambda (p) (member p cells))\n                         (positions-in-rect r1 c1 r2 c2)))\n              (list (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) r1 r2 c1 c2)\n              best))))\n     (define br1 (first body))\n     (define br2 (second body))\n     (define bc1 (third body))\n     (define bc2 (fourth body))\n     (define tail  ;; creature cells outside the body rect\n       (filter (lambda (p) (not (and (>= (first p) br1)\n                                     (<= (first p) br2)\n                                     (>= (second p) bc1)\n                                     (<= (second p) bc2))))\n               cells))\n     (define dr (cond ((any? (lambda (p) (< (first p) br1)) tail) -1)\n                      ((any? (lambda (p) (> (first p) br2)) tail) 1)\n                      (else 0)))\n     (define dc (cond ((any? (lambda (p) (< (second p) bc1)) tail) -1)\n                      ((any? (lambda (p) (> (second p) bc2)) tail) 1)\n                      (else 0)))\n     (define steps  ;; distance until flush against the wall\n       (cond ((> dc 0) (- (obj-c1 wall) 1 bc2))\n             ((< dc 0) (- bc1 (+ (obj-c2 wall) 1)))\n             ((> dr 0) (- (obj-r1 wall) 1 br2))\n             ((< dr 0) (- br1 (+ (obj-r2 wall) 1)))\n             (else 0)))\n     (paint-cells (erase-cells g cells 0)\n                  (positions-in-rect (+ br1 (* dr steps))\n                                     (+ bc1 (* dc steps))\n                                     (+ br2 (* dr steps))\n                                     (+ bc2 (* dc steps)))\n                  (obj-color creature)))))\n",
+     "solution_language": "racket",
+-    "target_code": "(rule! (lambda (g)\n  (let* ((h (rows g))\n         (w (cols g))\n         ;; 4-connected components (excluding background)\n         (all-objs (objects g 0))\n         (is-rect? (lambda (obj)\n                     ;; List of (r c) cells in obj\n                     (let* ((cells (obj-cells obj))\n                            ;; Bounding box (r1 c1 r2 c2) of obj\n                            (bb (obj-bbox obj))\n                            ;; Top edge (row r1)\n                            (r1 (nth bb 0)) (c1 (nth bb 1))\n                            ;; Bottom edge (row r2)\n                            (r2 (nth bb 2)) (c2 (nth bb 3))\n                            (expected (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1)))))\n                       (= (length cells) expected))))\n         (rect-obj (first (filter is-rect? all-objs)))\n         (tail-obj (first (filter (lambda (o) (not (is-rect? o))) all-objs)))\n         ;; List of (r c) cells in tail-obj\n         (tail-cells (obj-cells tail-obj))\n         (tail-color (obj-color tail-obj))\n         ;; Bounding box (r1 c1 r2 c2) of tail-obj\n         (tb (obj-bbox tail-obj))\n         ;; Top edge (row r1)\n         (tr1 (nth tb 0)) (tc1 (nth tb 1))\n         ;; Bottom edge (row r2)\n         (tr2 (nth tb 2)) (tc2 (nth tb 3))\n         (in-tail? (lambda (r c)\n                     (ormap (lambda (cell)\n                              (and (= (first cell) r) (= (second cell) c)))\n                            tail-cells)))\n         ;; Find all valid rects and pick largest\n         (all-rects\n           (flatmap (lambda (ar1)\n                      (flatmap (lambda (ar2)\n                                 (flatmap (lambda (ac1)\n                                            (flatmap (lambda (ac2)\n                                                       (if (and (<= ar1 ar2) (<= ac1 ac2)\n                                                                (andmap (lambda (r)\n                                                                          (andmap (lambda (c) (in-tail? r c))\n                                                                                  (range ac1 (+ ac2 1))))\n                                                                        (range ar1 (+ ar2 1))))\n                                                           (list (list ar1 ar2 ac1 ac2 \n                                                                       (* (+ 1 (- ar2 ar1)) (+ 1 (- ac2 ac1)))))\n                                                           (list)))\n                                                     (range tc1 (+ tc2 1))))\n                                          (range tc1 (+ tc2 1))))\n                               (range tr1 (+ tr2 1))))\n                    (range tr1 (+ tr2 1))))\n         (sorted-rects (sort-by all-rects (lambda (r) (- 0 (nth r 4)))))\n         (best-rect (first sorted-rects))\n         (body-r1 (nth best-rect 0)) (body-r2 (nth best-rect 1))\n         (body-c1 (nth best-rect 2)) (body-c2 (nth best-rect 3))\n         (non-body-cells (filter (lambda (cell)\n                                   (let ((r (first cell)) (c (second cell)))\n                                     (not (and (>= r body-r1) (<= r body-r2)\n                                               (>= c body-c1) (<= c body-c2)))))\n                                 tail-cells))\n         (above (ormap (lambda (cell) (< (first cell) body-r1)) non-body-cells))\n         (below (ormap (lambda (cell) (> (first cell) body-r2)) non-body-cells))\n         (leftt (ormap (lambda (cell) (< (second cell) body-c1)) non-body-cells))\n         (rightt (ormap (lambda (cell) (> (second cell) body-c2)) non-body-cells))\n         (dr (cond (above -1) (below 1) (else 0)))\n         (dc (cond (leftt -1) (rightt 1) (else 0)))\n         ;; Bounding box (r1 c1 r2 c2) of rect-obj\n         (rb (obj-bbox rect-obj))\n         ;; Top edge (row r1)\n         (rr1 (nth rb 0)) (rc1 (nth rb 1))\n         ;; Bottom edge (row r2)\n         (rr2 (nth rb 2)) (rc2 (nth rb 3))\n         (steps (cond\n                  ((> dc 0) (- (- rc1 1) body-c2))\n                  ((< dc 0) (- body-c1 (+ rc2 1)))\n                  ((> dr 0) (- (- rr1 1) body-r2))\n                  ((< dr 0) (- body-r1 (+ rr2 1)))\n                  (else 0)))\n\t         (new-r1 (+ body-r1 (* dr steps)))\n\t         (new-r2 (+ body-r2 (* dr steps)))\n\t         (new-c1 (+ body-c1 (* dc steps)))\n\t         (new-c2 (+ body-c2 (* dc steps)))\n\t         (g1 (erase-cells g tail-cells 0))\n\t         (g2 (paint-cells g1 (positions-in-rect new-r1 new-c1 new-r2 new-c2) tail-color)))\n\t    g2)))",
++    "target_code": "\n(rule!\n ;; Two objects: a solid rectangle WALL and a creature made of a solid\n ;; BODY with a tail sticking out one side. The tail points AWAY from\n ;; travel: the body slides toward the wall until flush against it, and\n ;; the tail is consumed. Background elsewhere unchanged.\n (lambda (g)\n   (let ()\n     (define objs (objects g 0))\n     (define wall (find-first solid-rect? objs))\n     (define creature\n       (find-first (lambda (o) (not (solid-rect? o))) objs))\n     (define cells (obj-cells creature))\n     (define body  ;; largest solid rectangle inside the creature\n       (rest\n        (for*/fold ((best (list 0 0 0 0 0)))\n                   ((r1 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (r2 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (c1 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1)))\n                    (c2 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1))))\n          (if (and (<= r1 r2) (<= c1 c2)\n                   (> (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) (first best))\n                   (all? (lambda (p) (member p cells))\n                         (positions-in-rect r1 c1 r2 c2)))\n              (list (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) r1 r2 c1 c2)\n              best))))\n     (define br1 (first body))\n     (define br2 (second body))\n     (define bc1 (third body))\n     (define bc2 (fourth body))\n     (define tail  ;; creature cells outside the body rect\n       (filter (lambda (p) (not (and (>= (first p) br1)\n                                     (<= (first p) br2)\n                                     (>= (second p) bc1)\n                                     (<= (second p) bc2))))\n               cells))\n     (define dr (cond ((any? (lambda (p) (< (first p) br1)) tail) -1)\n                      ((any? (lambda (p) (> (first p) br2)) tail) 1)\n                      (else 0)))\n     (define dc (cond ((any? (lambda (p) (< (second p) bc1)) tail) -1)\n                      ((any? (lambda (p) (> (second p) bc2)) tail) 1)\n                      (else 0)))\n     (define steps  ;; distance until flush against the wall\n       (cond ((> dc 0) (- (obj-c1 wall) 1 bc2))\n             ((< dc 0) (- bc1 (+ (obj-c2 wall) 1)))\n             ((> dr 0) (- (obj-r1 wall) 1 br2))\n             ((< dr 0) (- br1 (+ (obj-r2 wall) 1)))\n             (else 0)))\n     (paint-cells (erase-cells g cells 0)\n                  (positions-in-rect (+ br1 (* dr steps))\n                                     (+ bc1 (* dc steps))\n                                     (+ br2 (* dr steps))\n                                     (+ bc2 (* dc steps)))\n                  (obj-color creature)))))\n",
+     "target_status": "verified_racket_available"
+   },
+   "schema_version": 1,
+diff --git a/repo/shared/data/base/solutions/training/98cf29f8__2aa2f3b2ed8f.json b/repo/shared/data/base/solutions/training/98cf29f8__2aa2f3b2ed8f.json
+--- a/repo/shared/data/base/solutions/training/98cf29f8__2aa2f3b2ed8f.json
++++ b/repo/shared/data/base/solutions/training/98cf29f8__2aa2f3b2ed8f.json
+@@ -66,9 +66,9 @@
+       "description"
+     ],
+     "needs_conversion": false,
+-    "raw_code": "(rule!\n ;; Two objects: a solid rectangle WALL and a creature made of a solid\n ;; BODY with a tail sticking out one side. The tail points AWAY from\n ;; travel: the body slides toward the wall until flush against it, and\n ;; the tail is consumed. Background elsewhere unchanged.\n (lambda (g)\n   (let ()\n     (define objs (objects g 0))\n     (define wall (find-first solid-rect? objs))\n     (define creature\n       (find-first (lambda (o) (not (solid-rect? o))) objs))\n     (define cells (obj-cells creature))\n     (define body  ;; largest solid rectangle inside the creature\n       (rest\n        (for*/fold ((best (list 0 0 0 0 0)))\n                   ((r1 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (r2 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (c1 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1)))\n                    (c2 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1))))\n          (if (and (<= r1 r2) (<= c1 c2)\n                   (> (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) (first best))\n                   (all? (lambda (p) (member p cells))\n                         (positions-in-rect r1 c1 r2 c2)))\n              (list (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) r1 r2 c1 c2)\n              best))))\n     (define br1 (first body))\n     (define br2 (second body))\n     (define bc1 (third body))\n     (define bc2 (fourth body))\n     (define tail  ;; creature cells outside the body rect\n       (filter (lambda (p) (not (and (>= (first p) br1)\n                                     (<= (first p) br2)\n                                     (>= (second p) bc1)\n                                     (<= (second p) bc2))))\n               cells))\n     (define dr (cond ((any? (lambda (p) (< (first p) br1)) tail) -1)\n                      ((any? (lambda (p) (> (first p) br2)) tail) 1)\n                      (else 0)))\n     (define dc (cond ((any? (lambda (p) (< (second p) bc1)) tail) -1)\n                      ((any? (lambda (p) (> (second p) bc2)) tail) 1)\n                      (else 0)))\n     (define steps  ;; distance until flush against the wall\n       (cond ((> dc 0) (- (obj-c1 wall) 1 bc2))\n             ((< dc 0) (- bc1 (+ (obj-c2 wall) 1)))\n             ((> dr 0) (- (obj-r1 wall) 1 br2))\n             ((< dr 0) (- br1 (+ (obj-r2 wall) 1)))\n             (else 0)))\n     (paint-cells (erase-cells g cells 0)\n                  (positions-in-rect (+ br1 (* dr steps))\n                                     (+ bc1 (* dc steps))\n                                     (+ br2 (* dr steps))\n                                     (+ bc2 (* dc steps)))\n                  (obj-color creature)))))",
++    "raw_code": "\n(rule!\n ;; Two objects: a solid rectangle WALL and a creature made of a solid\n ;; BODY with a tail sticking out one side. The tail points AWAY from\n ;; travel: the body slides toward the wall until flush against it, and\n ;; the tail is consumed. Background elsewhere unchanged.\n (lambda (g)\n   (let ()\n     (define objs (objects g 0))\n     (define wall (find-first solid-rect? objs))\n     (define creature\n       (find-first (lambda (o) (not (solid-rect? o))) objs))\n     (define cells (obj-cells creature))\n     (define body  ;; largest solid rectangle inside the creature\n       (rest\n        (for*/fold ((best (list 0 0 0 0 0)))\n                   ((r1 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (r2 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (c1 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1)))\n                    (c2 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1))))\n          (if (and (<= r1 r2) (<= c1 c2)\n                   (> (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) (first best))\n                   (all? (lambda (p) (member p cells))\n                         (positions-in-rect r1 c1 r2 c2)))\n              (list (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) r1 r2 c1 c2)\n              best))))\n     (define br1 (first body))\n     (define br2 (second body))\n     (define bc1 (third body))\n     (define bc2 (fourth body))\n     (define tail  ;; creature cells outside the body rect\n       (filter (lambda (p) (not (and (>= (first p) br1)\n                                     (<= (first p) br2)\n                                     (>= (second p) bc1)\n                                     (<= (second p) bc2))))\n               cells))\n     (define dr (cond ((any? (lambda (p) (< (first p) br1)) tail) -1)\n                      ((any? (lambda (p) (> (first p) br2)) tail) 1)\n                      (else 0)))\n     (define dc (cond ((any? (lambda (p) (< (second p) bc1)) tail) -1)\n                      ((any? (lambda (p) (> (second p) bc2)) tail) 1)\n                      (else 0)))\n     (define steps  ;; distance until flush against the wall\n       (cond ((> dc 0) (- (obj-c1 wall) 1 bc2))\n             ((< dc 0) (- bc1 (+ (obj-c2 wall) 1)))\n             ((> dr 0) (- (obj-r1 wall) 1 br2))\n             ((< dr 0) (- br1 (+ (obj-r2 wall) 1)))\n             (else 0)))\n     (paint-cells (erase-cells g cells 0)\n                  (positions-in-rect (+ br1 (* dr steps))\n                                     (+ bc1 (* dc steps))\n                                     (+ br2 (* dr steps))\n                                     (+ bc2 (* dc steps)))\n                  (obj-color creature)))))\n",
+     "solution_language": "racket",
+-    "target_code": "(rule!\n ;; Two objects: a solid rectangle WALL and a creature made of a solid\n ;; BODY with a tail sticking out one side. The tail points AWAY from\n ;; travel: the body slides toward the wall until flush against it, and\n ;; the tail is consumed. Background elsewhere unchanged.\n (lambda (g)\n   (let ()\n     (define objs (objects g 0))\n     (define wall (find-first solid-rect? objs))\n     (define creature\n       (find-first (lambda (o) (not (solid-rect? o))) objs))\n     (define cells (obj-cells creature))\n     (define body  ;; largest solid rectangle inside the creature\n       (rest\n        (for*/fold ((best (list 0 0 0 0 0)))\n                   ((r1 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (r2 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (c1 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1)))\n                    (c2 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1))))\n          (if (and (<= r1 r2) (<= c1 c2)\n                   (> (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) (first best))\n                   (all? (lambda (p) (member p cells))\n                         (positions-in-rect r1 c1 r2 c2)))\n              (list (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) r1 r2 c1 c2)\n              best))))\n     (define br1 (first body))\n     (define br2 (second body))\n     (define bc1 (third body))\n     (define bc2 (fourth body))\n     (define tail  ;; creature cells outside the body rect\n       (filter (lambda (p) (not (and (>= (first p) br1)\n                                     (<= (first p) br2)\n                                     (>= (second p) bc1)\n                                     (<= (second p) bc2))))\n               cells))\n     (define dr (cond ((any? (lambda (p) (< (first p) br1)) tail) -1)\n                      ((any? (lambda (p) (> (first p) br2)) tail) 1)\n                      (else 0)))\n     (define dc (cond ((any? (lambda (p) (< (second p) bc1)) tail) -1)\n                      ((any? (lambda (p) (> (second p) bc2)) tail) 1)\n                      (else 0)))\n     (define steps  ;; distance until flush against the wall\n       (cond ((> dc 0) (- (obj-c1 wall) 1 bc2))\n             ((< dc 0) (- bc1 (+ (obj-c2 wall) 1)))\n             ((> dr 0) (- (obj-r1 wall) 1 br2))\n             ((< dr 0) (- br1 (+ (obj-r2 wall) 1)))\n             (else 0)))\n     (paint-cells (erase-cells g cells 0)\n                  (positions-in-rect (+ br1 (* dr steps))\n                                     (+ bc1 (* dc steps))\n                                     (+ br2 (* dr steps))\n                                     (+ bc2 (* dc steps)))\n                  (obj-color creature)))))",
++    "target_code": "\n(rule!\n ;; Two objects: a solid rectangle WALL and a creature made of a solid\n ;; BODY with a tail sticking out one side. The tail points AWAY from\n ;; travel: the body slides toward the wall until flush against it, and\n ;; the tail is consumed. Background elsewhere unchanged.\n (lambda (g)\n   (let ()\n     (define objs (objects g 0))\n     (define wall (find-first solid-rect? objs))\n     (define creature\n       (find-first (lambda (o) (not (solid-rect? o))) objs))\n     (define cells (obj-cells creature))\n     (define body  ;; largest solid rectangle inside the creature\n       (rest\n        (for*/fold ((best (list 0 0 0 0 0)))\n                   ((r1 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (r2 (range (obj-r1 creature)\n                               (+ (obj-r2 creature) 1)))\n                    (c1 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1)))\n                    (c2 (range (obj-c1 creature)\n                               (+ (obj-c2 creature) 1))))\n          (if (and (<= r1 r2) (<= c1 c2)\n                   (> (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) (first best))\n                   (all? (lambda (p) (member p cells))\n                         (positions-in-rect r1 c1 r2 c2)))\n              (list (* (+ 1 (- r2 r1)) (+ 1 (- c2 c1))) r1 r2 c1 c2)\n              best))))\n     (define br1 (first body))\n     (define br2 (second body))\n     (define bc1 (third body))\n     (define bc2 (fourth body))\n     (define tail  ;; creature cells outside the body rect\n       (filter (lambda (p) (not (and (>= (first p) br1)\n                                     (<= (first p) br2)\n                                     (>= (second p) bc1)\n                                     (<= (second p) bc2))))\n               cells))\n     (define dr (cond ((any? (lambda (p) (< (first p) br1)) tail) -1)\n                      ((any? (lambda (p) (> (first p) br2)) tail) 1)\n                      (else 0)))\n     (define dc (cond ((any? (lambda (p) (< (second p) bc1)) tail) -1)\n                      ((any? (lambda (p) (> (second p) bc2)) tail) 1)\n                      (else 0)))\n     (define steps  ;; distance until flush against the wall\n       (cond ((> dc 0) (- (obj-c1 wall) 1 bc2))\n             ((< dc 0) (- bc1 (+ (obj-c2 wall) 1)))\n             ((> dr 0) (- (obj-r1 wall) 1 br2))\n             ((< dr 0) (- br1 (+ (obj-r2 wall) 1)))\n             (else 0)))\n     (paint-cells (erase-cells g cells 0)\n                  (positions-in-rect (+ br1 (* dr steps))\n                                     (+ bc1 (* dc steps))\n                                     (+ br2 (* dr steps))\n                                     (+ bc2 (* dc steps)))\n                  (obj-color creature)))))\n",
+     "target_status": "verified_racket_available"
+   },
+   "schema_version": 1,
+@@ -2265,4 +2265,4 @@
+       }
+     ]
+   }
+-}
+\ No newline at end of file
++}

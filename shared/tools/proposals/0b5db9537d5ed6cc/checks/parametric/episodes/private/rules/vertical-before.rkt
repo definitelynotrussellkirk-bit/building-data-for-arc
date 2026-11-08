@@ -1,0 +1,1 @@
+(rule! (lambda (g) (let* ((h (rows g)) (w (cols g))) (build-grid (* 2 h) w (r c) (if (< r h) (at g (- (- h 1) r) c) (at g (- r h) c))))))

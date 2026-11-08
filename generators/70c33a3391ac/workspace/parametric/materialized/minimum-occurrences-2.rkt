@@ -1,0 +1,68 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((visited (make-hash))
+                  (obj-grids (list)))
+             (for* ((r (range 0 h)) (c (range 0 w)))
+                   (when
+                     (and (!= (at g r c) 0) (not (hash-has-key? visited (list r c))))
+                     (let ((cells (list)))
+                       (let bfs
+                            ((queue (list (list r c))))
+                            (unless
+                              (null? queue)
+                              (let ((cur (car queue)))
+                                (cond
+                                  ((hash-has-key? visited cur) (bfs (cdr queue)))
+                                  ((or
+                                     (< (first cur) 0)
+                                     (>= (first cur) h)
+                                     (< (second cur) 0)
+                                     (>= (second cur) w)) (bfs (cdr queue)))
+                                  ((zero? (at g (first cur) (second cur))) (bfs (cdr queue)))
+                                  (else (hash-set! visited cur #t)
+                                        (set! cells (cons cur cells))
+                                        (let ((cr (first cur))
+                                              (cc (second cur)))
+                                          (bfs (append (cdr queue)
+                                                       (list (list (- cr 1) cc)
+                                                             (list (+ cr 1) cc)
+                                                             (list cr (- cc 1))
+                                                             (list cr (+ cc 1)))))))))))
+                       (let* ((rs (map first cells))
+                              (cs (map second cells))
+                              (r1 (min-list rs))
+                              (c1 (min-list cs))
+                              (r2 (max-list rs))
+                              (c2 (max-list cs))
+                              (sub (build-grid (+ 1 (- r2 r1))
+                                               (+ 1 (- c2 c1))
+                                               (rr cc)
+                                               (at g (+ r1 rr) (+ c1 cc)))))
+                         (set! obj-grids (cons sub obj-grids))))))
+             (let ((n (length obj-grids)))
+               (let find-dup
+                    ((i 0))
+                    (if (>= i n)
+                        (build-grid 1 1 (r c) 0)
+                        (let ((gi (list-ref obj-grids i)))
+                          (if (> (count-if (lambda (gj)
+                                             (and
+                                               (= (rows gi) (rows gj))
+                                               (= (cols gi) (cols gj))
+                                               (let check
+                                                    ((rr 0))
+                                                    (cond
+                                                      ((>= rr (rows gi)) #t)
+                                                      ((let col-check
+                                                            ((cc 0))
+                                                            (cond
+                                                              ((>= cc (cols gi)) #t)
+                                                              ((= (at gi rr cc)
+                                                                  (at gj rr cc)) (col-check (+ cc 1)))
+                                                              (else #f))) (check (+ rr 1)))
+                                                      (else #f)))))
+                                           obj-grids)
+                                 1)
+                              gi
+                              (find-dup (+ i 1)))))))))))

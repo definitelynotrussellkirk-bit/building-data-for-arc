@@ -1,0 +1,7 @@
+(rule! (lambda (g)
+         (let* ((ones (filter (lambda (cell) (= 1 (third cell))) (grid-cells g)))
+                (min-r (min-list (map fst ones)))
+                (max-r (max-list (map fst ones)))
+                (mid (/ (+ min-r max-r) 2)))
+           (map-grid g (lambda (r c v)
+                         (if (and (= v 1) (>= r mid)) 2 v))))))

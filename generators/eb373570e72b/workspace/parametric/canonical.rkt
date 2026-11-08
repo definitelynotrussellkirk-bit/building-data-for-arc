@@ -1,0 +1,103 @@
+(rule!
+ ;; Markers on the busiest row either FALL as full columns or LIE DOWN
+ ;; as 3-long floor runs: a 3-spaced marker chain marked with blue(1)
+ ;; goes horizontal, the rest drop. In STAGGERED inputs (busiest row
+ ;; below the top) each column starts at its own first marker, loose
+ ;; blue cells become floor runs reaching toward the next column, and
+ ;; single floor gaps between red(2) runs close up.
+ (lambda (g)
+   (let ()
+     (define (row-markers r)
+       (filter (lambda (c) (> (at g r c) 0)) (range 0 w)))
+     (define nonzero-rows
+       (filter (lambda (r) (not (empty? (row-markers r)))) (range 0 h)))
+     (if (empty? nonzero-rows)
+         (empty-grid h w 0)
+         (let* ((max-count (max-of (lambda (r)
+                                     (length (row-markers r)))
+                                   nonzero-rows))
+                (active-row (find-first
+                             (lambda (r) (>= (length (row-markers r))
+                                             (- max-count 1)))
+                             nonzero-rows))
+                (markers (row-markers active-row))
+                (staggered (> active-row 0)))
+           (define (chain-left c)
+             (let loop ((x c))
+               (if (member? (- x 3) markers) (loop (- x 3)) x)))
+           (define (chain-right c)
+             (let loop ((x c))
+               (if (member? (+ x 3) markers) (loop (+ x 3)) x)))
+           (define (chain-cols c)
+             (let ((leftmost (chain-left c))
+                   (rightmost (chain-right c)))
+               (filter (lambda (m) (and (>= m leftmost)
+                                        (<= m rightmost)
+                                        (zero? (modulo (- m leftmost)
+                                                       3))))
+                       markers)))
+           (define (chain-start c)  ;; stop before a 2->1 handoff
+             (let loop ((x c))
+               (let ((prev (- x 3)))
+                 (if (and (member? prev markers)
+                          (not (and (= 2 (at g active-row prev))
+                                    (= 1 (at g active-row x)))))
+                     (loop prev)
+                     x))))
+           (define (horizontal? c)
+             (if staggered
+                 (any? (lambda (cc) (= 1 (at g active-row cc)))
+                       (chain-cols c))
+                 (= 1 (at g active-row (chain-start c)))))
+           (define (first-row-at-col c)
+             (let ((hits (filter (lambda (r) (> (at g r c) 0))
+                                 nonzero-rows)))
+               (if (empty? hits) active-row (first hits))))
+           (define vertical-cols
+             (filter (lambda (c) (not (horizontal? c))) markers))
+           (define base
+             (for/fold ((out (empty-grid h w 0))) ((m markers))
+               (let ((color (at g active-row m)))
+                 (if (horizontal? m)
+                     (recolor-cells out
+                                    (map (lambda (cc) (list (- h 1) cc))
+                                         (range m (min w (+ m 3))))
+                                    color)
+                     (recolor-cells out
+                                    (map (lambda (r) (list r m))
+                                         (range (if staggered
+                                                    (first-row-at-col m)
+                                                    0)
+                                                h))
+                                    color)))))
+           (if (not staggered)
+               base
+               (let ((with-ones  ;; loose blues run along the floor
+                      (for*/fold ((out base))
+                                 ((r (range (+ active-row 1) h))
+                                  (c (range 0 w)))
+                        (if (and (= 1 (at g r c))
+                                 (not (member? c markers)))
+                            (let* ((next-vs (filter (lambda (vc)
+                                                      (> vc c))
+                                                    vertical-cols))
+                                   (end-c (if (empty? next-vs)
+                                              (min (- w 1) (+ c 2))
+                                              (min (- w 1)
+                                                   (- (first next-vs)
+                                                      2)))))
+                              (if (>= end-c c)
+                                  (recolor-cells
+                                   out
+                                   (map (lambda (cc)
+                                          (list (- h 1) cc))
+                                        (range c (+ end-c 1)))
+                                   1)
+                                  out))
+                            out))))
+                 (for/fold ((out with-ones)) ((c (range 1 (- w 1))))
+                   (if (and (zero? (at out (- h 1) c))
+                            (= 2 (at out (- h 1) (- c 1)))
+                            (= 2 (at out (- h 1) (+ c 1))))
+                       (set-cell out (- h 1) c 2)
+                       out)))))))))

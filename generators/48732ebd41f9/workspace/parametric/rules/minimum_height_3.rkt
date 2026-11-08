@@ -1,0 +1,11 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((rect (tallest-rect g 0 3))
+                  (r1 (nth rect 0))
+                  (c1 (nth rect 1))
+                  (r2 (nth rect 2))
+                  (c2 (nth rect 3)))
+             (cellmap g
+                      (r c v)
+                      (if (and (>= r r1) (<= r r2) (>= c c1) (<= c c2) (zero? v)) 6 v))))))

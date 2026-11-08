@@ -1,0 +1,1085 @@
+diff --git a/repo/generators/72a6d8b343e4/SUMMARY.md b/repo/generators/72a6d8b343e4/SUMMARY.md
+--- a/repo/generators/72a6d8b343e4/SUMMARY.md
++++ b/repo/generators/72a6d8b343e4/SUMMARY.md
+@@ -1,6 +1,9 @@
+-# 72a6d8b343e4
++# 72a6d8b343e4 — Endpoint Bridge
+ 
+-0-bg grid (h~5-7, w~7-9) with 1-3 PAIRS of cells in distinct non-bg colors. Each pair is AXIALLY ALIGNED — the two cells share the same row (horizontal pair) OR the same column (vertical pair) — with at least one empty cell between them. The cells between the pair are 0. Rule: for every color appearing in EXACTLY 2 cells that share a row OR column, DRAW a STRAIGHT LINE connecting the two cells in that color: fill all cells between (and including) the two endpoints in the row/col with the color. Pairs not axially aligned are ignored. Net: each axially-aligned same-color pair becomes a continuous colored line spanning its axis.
++Version `3.0.0` generates sparse `0`-background grids in which a nonzero color is bridged only when it appears **exactly twice** and the two cells share a row or column. The inclusive row/column span is filled; diagonal pairs, singletons, adjacent pairs, and aligned three-occurrence colors remain unchanged.
+ 
+-Kind: `per_puzzle`. Imported version: `2.0.1`.
+-Approval is derived by the catalog from current code and retained evidence.
++The distribution now mixes positive horizontal/vertical bridges with two explicit negative families: diagonal exact pairs refute “connect every pair,” and aligned triples refute “connect aligned occurrences regardless of multiplicity.” Reserved, disjoint footprints prevent accidental crossings or overwrites from changing the lesson.
++
++Public exact controls are `grid_h`, `grid_w`, `n_horizontal`, `n_vertical`, `n_diagonal`, `n_triples`, `n_singletons`, and `n_adjacent`. Every advertised value is observable and valid in every difficulty band. Unknown or out-of-range controls are rejected.
++
++One deterministic slot in each three-sample block uses a canonical-size/palette profile; other samples emphasize shortcut witnesses. `RULE_HASH = "3650a4704dc3"` pins the unchanged canonical Racket authority. Approval remains catalog-derived.
+diff --git a/repo/generators/72a6d8b343e4/generator.py b/repo/generators/72a6d8b343e4/generator.py
+--- a/repo/generators/72a6d8b343e4/generator.py
++++ b/repo/generators/72a6d8b343e4/generator.py
+@@ -1,158 +1,466 @@
+-"""Generator for v2_meta_puzzles:M7 — connect aligned same-color pairs (axial).
+-
+-Rule: for each color appearing exactly 2 times, if those 2 cells are
+-axially aligned (same row or column), draw a line between them in that color.
+-
+-Combinatorial axes (8): grid_h, grid_w, palette_kind, palette_size,
+-position_bias, n_distinct_colors, density, n_pairs, texture.
+-Degenerates: no_pairs, no_shared_axis, adjacent_pair.
++"""Input generator for Endpoint Bridge (72a6d8b343e4).
++
++The unchanged Racket authority connects a nonzero color only when it appears
++exactly twice and those two cells share a row or column.  This sampler includes
++both positive bridge pairs and negative evidence: diagonal exact pairs and
++aligned triples.  Reserved footprints keep all teaching cases independent, so
++line order and accidental overwrites cannot become alternate rules.
+ """
+ from __future__ import annotations
+ 
++from collections import Counter, defaultdict
++from functools import lru_cache
++import hashlib
++
+ from puzzle_generators.base import gen_ctx
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "72a6d8b343e4"
+-VERSION = "2.0.1"
+-TASK_ID = "72a6d8b343e4"
++TASK_ID = GENERATOR_ID
++RULE_HASH = "3650a4704dc3"
++VERSION = "3.0.0"
+ 
+ SUMMARY = (
+-    "0-bg grid (h~5-7, w~7-9) with 1-3 PAIRS of "
+-    "cells in distinct non-bg colors. Each pair is "
+-    "AXIALLY ALIGNED — the two cells share the same "
+-    "row (horizontal pair) OR the same column "
+-    "(vertical pair) — with at least one empty cell "
+-    "between them. The cells between the pair are 0. "
+-    "Rule: for every color appearing in EXACTLY 2 "
+-    "cells that share a row OR column, DRAW a "
+-    "STRAIGHT LINE connecting the two cells in that "
+-    "color: fill all cells between (and including) "
+-    "the two endpoints in the row/col with the "
+-    "color. Pairs not axially aligned are ignored. "
+-    "Net: each axially-aligned same-color pair "
+-    "becomes a continuous colored line spanning its "
+-    "axis."
++    "A sparse 0-background grid contains distinct-color marker families. "
++    "Colors appearing exactly twice are connected only when their cells share "
++    "a row or column; the inclusive span is filled with that color. Diagonal "
++    "pairs, singletons, and aligned three-occurrence colors remain unchanged."
+ )
+ 
+ INVARIANTS = [
+-    "background is 0",
+-    "1-3 pairs of cells in distinct colors; each pair shares a row or column with ≥2 cells of separation",
++    "background is 0 and every foreground color is in 1..9",
++    "separated horizontal and vertical exact pairs have empty, disjoint spans",
++    "aligned triples reserve a clean span but remain unchanged because count != 2",
++    "all advertised axes are recoverable from returned pixels",
+ ]
+ 
+-PALETTE_KINDS = ("default", "warm", "cool", "varied")
+-DEGENERATE_TEXTURES = ("no_pairs", "no_shared_axis", "adjacent_pair")
+-HELPFUL_TEXTURES = PALETTE_KINDS
+-
+ AXES = {
+-    "grid_h":         {"type": "int", "default": "rng 5..7", "valid": "4..10"},
+-    "grid_w":         {"type": "int", "default": "rng 7..9", "valid": "5..12"},
+-    "palette_kind":   {"type": "str", "default": "rng helpful",
+-                       "valid": "|".join(PALETTE_KINDS)},
+-    "n_pairs":        {"type": "int", "default": "rng 1..3", "valid": "1..4"},
+-    "palette_size":   {"type": "int", "default": "= n_pairs", "valid": "1..4"},
+-    "position_bias":  {"type": "str", "default": "axially_aligned_pairs",
+-                       "valid": "axially_aligned_pairs"},
+-    "n_distinct_colors": {"type": "int", "default": "= n_pairs", "valid": "1..4"},
+-    "density":        {"type": "str", "default": "sparse", "valid": "sparse"},
+-    "texture":        {"type": "str", "default": "alias for palette_kind",
+-                       "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "grid_h": {"type": "int", "default": "canonical-weighted 6..12", "valid": "6..12"},
++    "grid_w": {"type": "int", "default": "canonical-weighted 6..12", "valid": "6..12"},
++    "n_horizontal": {"type": "int", "default": "0..2", "valid": "0..2"},
++    "n_vertical": {"type": "int", "default": "0..2", "valid": "0..2"},
++    "n_diagonal": {"type": "int", "default": "0..1", "valid": "0..1"},
++    "n_triples": {"type": "int", "default": "0..1", "valid": "0..1"},
++    "n_singletons": {"type": "int", "default": "0..1", "valid": "0..1"},
++    "n_adjacent": {"type": "int", "default": "0..1", "valid": "0..1"},
+ }
+-
+-
+-def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Verify: bg=0, each non-zero color appears exactly twice, and at least one pair is axially aligned."""
+-    if not grid or not grid[0]:
+-        return ["empty grid"]
+-    h, w = len(grid), len(grid[0])
+-    if h > 30 or w > 30:
+-        return [f"grid too large: {h}x{w}"]
+-    errs = []
+-    from collections import Counter
+-    counts = Counter(grid[r][c] for r in range(h) for c in range(w) if grid[r][c] != 0)
+-    if not counts:
+-        errs.append("no non-bg cells found")
+-        return errs
+-    bad = [c for c, n in counts.items() if n != 2]
++INCOMPATIBLE_OVERRIDE_COMBINATIONS = []
++
++_RANGES = {
++    "grid_h": (6, 12),
++    "grid_w": (6, 12),
++    "n_horizontal": (0, 2),
++    "n_vertical": (0, 2),
++    "n_diagonal": (0, 1),
++    "n_triples": (0, 1),
++    "n_singletons": (0, 1),
++    "n_adjacent": (0, 1),
++}
++
++
++def _line_cells(a, b):
++    r1, c1 = a
++    r2, c2 = b
++    if r1 == r2:
++        lo, hi = sorted((c1, c2))
++        return tuple((r1, c) for c in range(lo, hi + 1))
++    if c1 == c2:
++        lo, hi = sorted((r1, r2))
++        return tuple((r, c1) for r in range(lo, hi + 1))
++    return ()
++
++
++@lru_cache(maxsize=256)
++def _candidate_pool(kind, h, w):
++    """Return immutable (occupied, reserved-footprint) candidates."""
++    candidates = []
++    if kind == "horizontal":
++        for r in range(h):
++            for c1 in range(w - 2):
++                for c2 in range(c1 + 2, w):
++                    occupied = ((r, c1), (r, c2))
++                    candidates.append((occupied, _line_cells(*occupied)))
++    elif kind == "vertical":
++        for c in range(w):
++            for r1 in range(h - 2):
++                for r2 in range(r1 + 2, h):
++                    occupied = ((r1, c), (r2, c))
++                    candidates.append((occupied, _line_cells(*occupied)))
++    elif kind == "adjacent":
++        for r in range(h):
++            for c in range(w - 1):
++                occupied = ((r, c), (r, c + 1))
++                candidates.append((occupied, occupied))
++        for r in range(h - 1):
++            for c in range(w):
++                occupied = ((r, c), (r + 1, c))
++                candidates.append((occupied, occupied))
++    elif kind == "diagonal":
++        cells = [(r, c) for r in range(h) for c in range(w)]
++        for index, a in enumerate(cells):
++            for b in cells[index + 1:]:
++                if a[0] != b[0] and a[1] != b[1]:
++                    occupied = (a, b)
++                    candidates.append((occupied, occupied))
++    elif kind == "singleton":
++        for r in range(h):
++            for c in range(w):
++                occupied = ((r, c),)
++                candidates.append((occupied, occupied))
++    else:
++        raise ValueError(f"unknown placement kind: {kind}")
++    return tuple(candidates)
++
++
++def _triple_options(h, w, used, rng):
++    """Aligned pair plus a third marker aligned with neither endpoint."""
++    lines = list(_candidate_pool("horizontal", h, w))
++    lines.extend(_candidate_pool("vertical", h, w))
++    rng.shuffle(lines)
++    all_cells = [(r, c) for r in range(h) for c in range(w)]
++    options = []
++    for occupied, footprint in lines:
++        if any(cell in used for cell in footprint):
++            continue
++        a, b = occupied
++        thirds = [
++            p for p in all_cells
++            if p not in used
++            and p not in footprint
++            and p[0] not in (a[0], b[0])
++            and p[1] not in (a[1], b[1])
++        ]
++        rng.shuffle(thirds)
++        for third in thirds[:4]:
++            options.append((occupied + (third,), footprint + (third,)))
++        if len(options) >= 256:
++            break
++    rng.shuffle(options)
++    return options
++
++
++def _placement_options(kind, h, w, used, rng):
++    if kind == "triple":
++        return _triple_options(h, w, used, rng)
++    options = [
++        candidate for candidate in _candidate_pool(kind, h, w)
++        if all(cell not in used for cell in candidate[1])
++    ]
++    rng.shuffle(options)
++    # Short spans leave more room while the shuffle randomizes equal-length ties.
++    options.sort(key=lambda candidate: len(candidate[1]))
++    return options
++
++
++def _place_objects(kinds, h, w, rng):
++    """Backtrack over disjoint reserved footprints; all declared domains fit 6x6."""
++    placements = []
++    used = set()
++
++    def search(index):
++        if index == len(kinds):
++            return True
++        kind = kinds[index]
++        options = _placement_options(kind, h, w, used, rng)
++        for occupied, footprint in options[:384]:
++            used.update(footprint)
++            placements.append((kind, occupied, footprint))
++            if search(index + 1):
++                return True
++            placements.pop()
++            used.difference_update(footprint)
++        return False
++
++    if not search(0):
++        raise ValueError(
++            f"could not realize layout {kinds!r} on {h}x{w}; this is a generator defect"
++        )
++    return placements
++
++
++def _draw_axis(ctx, name, default_options, overrides):
++    lo, hi = _RANGES[name]
++    options = list(range(lo, hi + 1)) if name in overrides else list(default_options)
++    return ctx.draw_choice(name, options)
++
++
++def _validate_overrides(overrides):
++    unknown = set(overrides) - set(AXES)
++    if unknown:
++        raise ValueError(f"unknown override axes: {sorted(unknown)}")
++    for name, value in overrides.items():
++        if value is None:
++            continue
++        if type(value) is not int:
++            raise ValueError(f"{name} must be an integer, not {type(value).__name__}")
++        lo, hi = _RANGES[name]
++        if not lo <= value <= hi:
++            raise ValueError(f"{name}={value} outside [{lo},{hi}]")
++
++
++
++def _is_canonical_anchor(seed, sample_index, *, has_overrides):
++    """Schedule exactly one canonical-profile draw in every block of three."""
++    if has_overrides:
++        return False
++    block, slot = divmod(sample_index, 3)
++    digest = hashlib.sha256(
++        f"{TASK_ID}|{VERSION}|canonical-profile|{seed}|{block}".encode()
++    ).digest()
++    return slot == digest[0] % 3
++
++def generate(seed, sample_index, *, difficulty=None, **overrides):
++    _validate_overrides(overrides)
++    if difficulty not in (None, "easy", "medium", "hard"):
++        raise ValueError(f"unknown difficulty: {difficulty!r}")
++    ctx = gen_ctx(
++        seed=seed,
++        sample_index=sample_index,
++        version=VERSION,
++        task_id=TASK_ID,
++        difficulty=difficulty,
++        overrides=overrides,
++    )
++
++    # Every band supports the same exact override domain; difficulty only weights defaults.
++    has_overrides = any(value is not None for value in overrides.values())
++    canonical_anchor = _is_canonical_anchor(
++        seed, sample_index, has_overrides=has_overrides
++    )
++    if canonical_anchor:
++        h = _draw_axis(ctx, "grid_h", [8], overrides)
++        w = _draw_axis(ctx, "grid_w", [9, 10, 11], overrides)
++        layout_kind = ctx.draw_rng("canonical_layout").randrange(3)
++        profiles = (
++            (1, 1, 0),  # horizontal + vertical bridge
++            (1, 0, 1),  # horizontal bridge + adjacent pair
++            (0, 1, 1),  # vertical bridge + adjacent pair
++        )
++        wanted_h, wanted_v, wanted_adjacent = profiles[layout_kind]
++        n_horizontal = _draw_axis(ctx, "n_horizontal", [wanted_h], overrides)
++        n_vertical = _draw_axis(ctx, "n_vertical", [wanted_v], overrides)
++        n_diagonal = _draw_axis(ctx, "n_diagonal", [0], overrides)
++        n_triples = _draw_axis(ctx, "n_triples", [0], overrides)
++        n_singletons = _draw_axis(ctx, "n_singletons", [0], overrides)
++        n_adjacent = _draw_axis(ctx, "n_adjacent", [wanted_adjacent], overrides)
++    else:
++        h_defaults = [6, 7, 8, 8, 8, 9] if difficulty == "easy" else [7, 8, 8, 8, 9, 10, 11, 12]
++        w_defaults = [7, 8, 9, 9, 10, 11] if difficulty == "easy" else [7, 8, 9, 9, 10, 10, 11, 12]
++        h = _draw_axis(ctx, "grid_h", h_defaults, overrides)
++        w = _draw_axis(ctx, "grid_w", w_defaults, overrides)
++
++        if difficulty == "easy":
++            h_options, v_options = [0, 1, 1], [0, 1, 1]
++        elif difficulty == "hard":
++            h_options, v_options = [1, 1, 2, 2], [1, 1, 2, 2]
++        else:
++            h_options, v_options = [0, 1, 1, 2], [0, 1, 1, 2]
++        if overrides.get("n_vertical") == 0 and "n_horizontal" not in overrides:
++            h_options = [1, 1, 2]
++        n_horizontal = _draw_axis(ctx, "n_horizontal", h_options, overrides)
++        if n_horizontal == 0 and "n_vertical" not in overrides:
++            v_options = [1, 1, 2]
++        n_vertical = _draw_axis(ctx, "n_vertical", v_options, overrides)
++        n_diagonal = _draw_axis(ctx, "n_diagonal", [1], overrides)
++        n_triples = _draw_axis(ctx, "n_triples", [1], overrides)
++        n_singletons = _draw_axis(ctx, "n_singletons", [0, 1], overrides)
++        n_adjacent = _draw_axis(
++            ctx, "n_adjacent", [0, 1, 1] if difficulty == "easy" else [0, 1], overrides
++        )
++
++    kinds = (
++        ["horizontal"] * n_horizontal
++        + ["vertical"] * n_vertical
++        + ["triple"] * n_triples
++        + ["adjacent"] * n_adjacent
++        + ["diagonal"] * n_diagonal
++        + ["singleton"] * n_singletons
++    )
++    # Constrained line-bearing objects go first; within-kind geometry remains random.
++    priority = {"horizontal": 0, "vertical": 1, "triple": 2,
++                "adjacent": 3, "diagonal": 4, "singleton": 5}
++    kinds.sort(key=priority.__getitem__)
++    placements = _place_objects(kinds, h, w, ctx.draw_rng("layout"))
++    colors = ctx.draw_rng("colors").sample(range(1, 10), len(placements))
++    grid = full_grid(h, w, 0)
++    for color, (_, occupied, _) in zip(colors, placements):
++        for r, c in occupied:
++            grid[r][c] = color
++    return grid
++
++
++def _positions(grid):
++    positions = defaultdict(list)
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if value != 0:
++                positions[value].append((r, c))
++    return positions
++
++
++def _classification(grid):
++    counts = Counter()
++    reserved = []
++    errors = []
++    for color, points in _positions(grid).items():
++        if len(points) == 1:
++            counts["n_singletons"] += 1
++            continue
++        if len(points) == 2:
++            a, b = points
++            segment = _line_cells(a, b)
++            if not segment:
++                counts["n_diagonal"] += 1
++                continue
++            distance = abs(a[0] - b[0]) + abs(a[1] - b[1])
++            if distance == 1:
++                counts["n_adjacent"] += 1
++                continue
++            counts["n_horizontal" if a[0] == b[0] else "n_vertical"] += 1
++            if any(grid[r][c] != 0 for r, c in segment[1:-1]):
++                errors.append(f"color {color} bridge interior is not empty")
++            reserved.append((color, set(segment)))
++            continue
++        if len(points) == 3:
++            aligned = []
++            for i, a in enumerate(points):
++                for b in points[i + 1:]:
++                    segment = _line_cells(a, b)
++                    if len(segment) >= 3:
++                        aligned.append(segment)
++            if len(aligned) != 1:
++                errors.append(f"color {color} triple must have exactly one separated aligned pair")
++                continue
++            if any(grid[r][c] not in (0, color) for r, c in aligned[0]):
++                errors.append(f"color {color} triple witness span is obstructed")
++            counts["n_triples"] += 1
++            reserved.append((color, set(aligned[0])))
++            continue
++        errors.append(f"color {color} appears {len(points)} times; expected 1, 2, or 3")
++
++    for i, (color_a, cells_a) in enumerate(reserved):
++        for color_b, cells_b in reserved[i + 1:]:
++            if cells_a & cells_b:
++                errors.append(f"reserved spans for colors {color_a} and {color_b} overlap")
++    return counts, errors
++
++
++def observe_overrides(grid):
++    counts, _ = _classification(grid)
++    return {
++        "grid_h": len(grid),
++        "grid_w": len(grid[0]) if grid else 0,
++        "n_horizontal": counts["n_horizontal"],
++        "n_vertical": counts["n_vertical"],
++        "n_diagonal": counts["n_diagonal"],
++        "n_triples": counts["n_triples"],
++        "n_singletons": counts["n_singletons"],
++        "n_adjacent": counts["n_adjacent"],
++    }
++
++
++def self_check(grid, *, difficulty=None, meta=None):
++    if not isinstance(grid, (list, tuple)) or not grid:
++        return ["expected a nonempty rectangular grid"]
++    if not isinstance(grid[0], (list, tuple)) or not grid[0]:
++        return ["expected a nonempty rectangular grid"]
++    width = len(grid[0])
++    if any(not isinstance(row, (list, tuple)) or len(row) != width for row in grid):
++        return ["ragged grid"]
++    h, w = len(grid), width
++    errors = []
++    if not (6 <= h <= 12 and 6 <= w <= 12):
++        errors.append(f"grid shape {h}x{w} outside [6,12]x[6,12]")
++    bad = [value for row in grid for value in row
++           if type(value) is not int or not 0 <= value <= 9]
+     if bad:
+-        errs.append(f"colors not appearing exactly twice: {bad[:3]}")
+-    # Check at least one pair is axially aligned
+-    from collections import defaultdict
+-    positions = defaultdict(list)
+-    for r in range(h):
+-        for c in range(w):
+-            if grid[r][c] != 0:
+-                positions[grid[r][c]].append((r, c))
+-    aligned = any(
+-        (p[0][0] == p[1][0] or p[0][1] == p[1][1])
+-        for p in positions.values() if len(p) == 2
++        errors.append("cells must be integer colors in 0..9")
++        return errors
++    counts, geometry_errors = _classification(grid)
++    errors.extend(geometry_errors)
++    override_evidence = (
++        isinstance(meta, dict)
++        and isinstance(meta.get("overrides"), dict)
++        and bool(meta["overrides"])
+     )
+-    if not aligned:
+-        errs.append("no axially-aligned pair found")
+-    return errs
+-
+-
+-def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
+-    if overrides.get("texture") in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(overrides["texture"], None)
+-    if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 5, 6)
+-        w = ctx.draw_int("grid_w", 7, 8)
+-        n = ctx.draw_int("n_pairs", 1, 1)
+-    elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 7, 9)
+-        w = ctx.draw_int("grid_w", 9, 12)
+-        n = ctx.draw_int("n_pairs", 3, 4)
+-    else:
+-        h = ctx.draw_int("grid_h", 5, 7)
+-        w = ctx.draw_int("grid_w", 7, 9)
+-        n = ctx.draw_int("n_pairs", 1, 3)
+-    rng = ctx.draw_rng("layout")
+-
+-    for outer in range(40):
+-        g = full_grid(h, w, 0)
+-        colors = rng.sample([1, 2, 3, 4, 5, 6, 7, 8, 9], n)
+-        ok = True
+-        for color in colors:
+-            placed = False
+-            for _ in range(80):
+-                vert = rng.choice([True, False])
+-                if vert:
+-                    c = rng.randint(0, w - 1)
+-                    r1 = rng.randint(0, h - 4); r2 = rng.randint(r1 + 2, h - 1)
+-                    if g[r1][c] != 0 or g[r2][c] != 0: continue
+-                    if any(g[r][c] != 0 for r in range(r1 + 1, r2)): continue
+-                    g[r1][c] = color; g[r2][c] = color
+-                else:
+-                    r = rng.randint(0, h - 1)
+-                    c1 = rng.randint(0, w - 4); c2 = rng.randint(c1 + 2, w - 1)
+-                    if g[r][c1] != 0 or g[r][c2] != 0: continue
+-                    if any(g[r][c] != 0 for c in range(c1 + 1, c2)): continue
+-                    g[r][c1] = color; g[r][c2] = color
+-                placed = True; break
+-            if not placed:
+-                ok = False; break
+-        if ok:
+-            return g
+-    raise ValueError("could not realize layout")
+-
+-
+-def _draw_from_degenerate(name, rng):
+-    h, w = 7, 9
+-    g = full_grid(h, w, 0)
+-    if name == "no_pairs":
+-        # Empty grid — rule has no pairs to connect.
+-        return g
+-    if name == "no_shared_axis":
+-        # Pair has matching color but on different rows AND cols —
+-        # rule's "axially aligned" precondition fails.
+-        g[1][2] = 4; g[5][6] = 4
+-        return g
+-    if name == "adjacent_pair":
+-        # Pair shares a row but is adjacent — rule's "fill between"
+-        # produces zero filler cells.
+-        g[3][2] = 4; g[3][3] = 4
+-        return g
+-    return g
++    if counts["n_horizontal"] + counts["n_vertical"] == 0 and not override_evidence:
++        errors.append(
++            "no separated aligned exact pair; the canonical rule would not demonstrate a bridge"
++        )
++    for name in ("n_horizontal", "n_vertical"):
++        if counts[name] > 2:
++            errors.append(f"{name}={counts[name]} exceeds 2")
++    for name in ("n_diagonal", "n_triples", "n_singletons", "n_adjacent"):
++        if counts[name] > 1:
++            errors.append(f"{name}={counts[name]} exceeds 1")
++    return errors
++
++
++def strict_canonical_like(grid):
++    return self_check(grid)
++
++
++def rule_mirror(grid):
++    """Pure-Python mirror for tests; the canonical Racket program stays authoritative."""
++    out = [list(row) for row in grid]
++    for color, points in _positions(grid).items():
++        if len(points) != 2:
++            continue
++        for r, c in _line_cells(points[0], points[1]):
++            out[r][c] = color
++    return out
++
++
++def _overconnect_multiples(grid):
++    """RIVAL: connect aligned occurrences even when a color appears 3+ times."""
++    out = [list(row) for row in grid]
++    for color, points in _positions(grid).items():
++        for index, a in enumerate(points):
++            for b in points[index + 1:]:
++                for r, c in _line_cells(a, b):
++                    out[r][c] = color
++    return out
++
++
++def _connect_diagonal_l(grid):
++    """RIVAL: exact pairs always connect; diagonal pairs use a row-then-column L."""
++    out = [list(row) for row in grid]
++    for color, points in _positions(grid).items():
++        if len(points) != 2:
++            continue
++        a, b = points
++        cells = list(_line_cells(a, b))
++        if not cells:
++            r1, c1 = a
++            r2, c2 = b
++            lo_c, hi_c = sorted((c1, c2))
++            lo_r, hi_r = sorted((r1, r2))
++            cells = [(r1, c) for c in range(lo_c, hi_c + 1)]
++            cells.extend((r, c2) for r in range(lo_r, hi_r + 1))
++        for r, c in cells:
++            out[r][c] = color
++    return out
++
++
++def _has_exactly_two_witness(grid):
++    return _overconnect_multiples(grid) != rule_mirror(grid)
++
++
++def _has_axis_alignment_witness(grid):
++    return _connect_diagonal_l(grid) != rule_mirror(grid)
++
++
++SEMANTIC_WITNESSES = {
++    "exactly_two_only": _has_exactly_two_witness,
++    "axis_alignment_only": _has_axis_alignment_witness,
++}
++SEMANTIC_RIVALS = {
++    "overconnect_multiples": _overconnect_multiples,
++    "connect_diagonal_l": _connect_diagonal_l,
++}
++WITNESS_RIVALS = {
++    "exactly_two_only": ["overconnect_multiples"],
++    "axis_alignment_only": ["connect_diagonal_l"],
++}
++CANONICAL_SHORTCUTS = dict(SEMANTIC_RIVALS)
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
+diff --git a/repo/generators/72a6d8b343e4/notes.md b/repo/generators/72a6d8b343e4/notes.md
+--- a/repo/generators/72a6d8b343e4/notes.md
++++ b/repo/generators/72a6d8b343e4/notes.md
+@@ -1,4 +1,68 @@
+ # Working notes: 72a6d8b343e4
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Review scope and baseline
++
++No earlier return was used as a source lead; this review started from the packet's pinned baseline (`generator.py` SHA-256 `9d5b27c33d8162b1f6d23d89f5973ed8ce5031ad74cc827161bdc24e71ce5144`). The canonical Racket rule was treated as authority and was not edited.
++
++The baseline generated almost exclusively exactly-two, axially aligned colors. Those examples demonstrated line drawing but did not distinguish the intended rule from at least two simple rivals:
++
++1. connect aligned occurrences even when the color occurs three or more times;
++2. connect every exact pair, routing a diagonal pair with an L.
++
++It also omitted `RULE_HASH`, advertised controls that were not exact or observable, accepted unknown controls, missed all canonical profiles in the 60-draw profile check, and supplied no executable rival/witness contract.
++
++## Selected design
++
++Version `3.0.0` uses one object per color and constructs the grid from reserved footprints:
++
++- `horizontal` / `vertical`: exactly two separated, aligned markers; the full span is reserved;
++- `adjacent`: exactly two adjacent aligned markers; unchanged visually but still a lawful exact pair;
++- `diagonal`: exactly two markers sharing neither row nor column;
++- `triple`: one separated aligned pair plus a third marker aligned with neither endpoint;
++- `singleton`: one marker.
++
++Backtracking places all requested objects with disjoint reserved footprints. This avoids crossings, interior blockers, and order-dependent overwrites, while making every count recoverable from pixels alone.
++
++## Distribution choices
++
++- Grid dimensions are honestly bounded at `6..12`; every band accepts the same exact override domain.
++- Non-anchor defaults include one diagonal pair and one aligned triple. These are direct counterexamples to the two strongest canonical-fitting shortcuts.
++- At least one separated horizontal or vertical exact pair is generated by default, so routine outputs actually demonstrate the transformation rather than being all identity cases.
++- Exactly one slot in each consecutive block of three sample indices is a canonical-profile anchor. Anchors use an 8-row grid, width 9/10/11, exactly three foreground colors, and one of three simple layouts. This gives stable canonical support without allowing canonical-shape matching to dominate the distribution.
++- Difficulty changes default weights only. It never narrows the public control domain.
++
++Rejected alternatives:
++
++- **Only add rare negative samples.** Rejected because a lesson could still omit the rule-defining witness.
++- **Allow arbitrary overlapping objects and filter afterward.** Rejected because crossings can merge colors or obstruct a span, making controls non-observable and labels order-dependent.
++- **Make every sample canonical-shaped.** Rejected because it would trade one shortcut for another and reduce geometric diversity.
++- **Change the Racket rule.** Rejected: canonical outputs and rule-smoke parity already established that the authority implements the intended transformation.
++
++## Validation and executable semantics
++
++`observe_overrides()` independently reconstructs every control from pixels. `self_check()` validates shape, palette, multiplicity, geometry, span separation, and axis bounds. Unannotated grids with no separated exact aligned pair are rejected as non-demonstrative; an explicit override record permits intentionally requested no-op cases.
++
++The module declares two executable witnesses and rivals:
++
++- `exactly_two_only` versus `overconnect_multiples`;
++- `axis_alignment_only` versus `connect_diagonal_l`.
++
++`workspace/reference_probe.py` independently reconstructs positions, intended output, rivals, profiles, fingerprints, and distribution summaries without importing private generator helpers. It also checks the public canonical pairs through the portable reviewer helper.
++
++## Measured final state
++
++Final `generator.py` SHA-256: `ad4d602d1923dffec7a05ec0b436c5cd2c94ca7856062e4b5d914c3918fd5642`.
++
++- Full after battery: 12/12 green.
++- Task-local tests: 11/11 passed.
++- Rule smoke: 120/120 applied and fired, 0 identities, 0 crashes, 120/120 Python-mirror parity.
++- Canonical-profile floor: 22/60 exact hits; easy 6/20, medium 6/20, hard 10/20.
++- Semantic strict gate: 600/600 strict-valid.
++- Exact-control matrix: 1,071 cases passed across all bands.
++- Source-bound lesson census: 300/300 lessons materialized, 1,200/1,200 unique inputs, both declared rivals refuted in every lesson in every band.
++
++## Remaining limits
++
++The finite declared-rival checks do not prove universal induction, and the production lesson census does not rotate every pair into every query position. The task-local tests cover the two strongest simple rivals, exact controls, canonical support, and minimal impostors, but not every imaginable compound shortcut. The generator remains intentionally sparse and caps foreground object families at the advertised small counts.
++
++Imported associated notes, if any, remain in `evidence/associated_notes.jsonl`.
+diff --git a/repo/generators/72a6d8b343e4/tests/test_generator.py b/repo/generators/72a6d8b343e4/tests/test_generator.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/72a6d8b343e4/tests/test_generator.py
+@@ -0,0 +1,134 @@
++from __future__ import annotations
++
++import os
++from pathlib import Path
++import sys
++
++import pytest
++
++HOME = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(HOME / "workspace"))
++from reference_probe import (
++    alignment_witness,
++    authority_output,
++    canonical_pairs,
++    connect_diagonal_l_output,
++    exact_two_witness,
++    load_generator,
++    observed,
++    overconnect_multiples_output,
++    profile,
++)
++
++gen = load_generator(os.environ.get("GENERATOR_UNDER_TEST"))
++
++
++def test_rule_pin_and_public_contract_are_explicit():
++    assert gen.RULE_HASH == "3650a4704dc3"
++    assert set(gen.AXES) == {
++        "grid_h",
++        "grid_w",
++        "n_horizontal",
++        "n_vertical",
++        "n_diagonal",
++        "n_triples",
++        "n_singletons",
++        "n_adjacent",
++    }
++    assert gen.INCOMPATIBLE_OVERRIDE_COMBINATIONS == []
++    for pair in canonical_pairs():
++        assert gen.self_check(pair["input"]) == []
++        assert authority_output(pair["input"]) == pair["output"]
++
++
++def test_unknown_override_is_rejected_instead_of_silently_ignored():
++    with pytest.raises(ValueError, match="unknown override"):
++        gen.generate(1, 0, typo_axis=1)
++
++
++@pytest.mark.parametrize("difficulty", ["easy", "medium", "hard"])
++def test_every_advertised_override_is_exact_in_every_band(difficulty):
++    options = {
++        "grid_h": 8,
++        "grid_w": 11,
++        "n_horizontal": 1,
++        "n_vertical": 1,
++        "n_diagonal": 1,
++        "n_triples": 1,
++        "n_singletons": 1,
++        "n_adjacent": 1,
++    }
++    grid = gen.generate(1701, 9, difficulty=difficulty, **options)
++    assert observed(grid) == options
++    assert gen.observe_overrides(grid) == options
++    assert gen.self_check(grid, difficulty=difficulty, meta={"overrides": options}) == []
++
++
++def test_declared_rivals_fit_canonical_pairs_and_generated_witnesses_defeat_them():
++    assert set(gen.SEMANTIC_WITNESSES) == {"exactly_two_only", "axis_alignment_only"}
++    assert set(gen.SEMANTIC_RIVALS) == {"overconnect_multiples", "connect_diagonal_l"}
++    for pair in canonical_pairs():
++        assert gen.SEMANTIC_RIVALS["overconnect_multiples"](pair["input"]) == pair["output"]
++        assert gen.SEMANTIC_RIVALS["connect_diagonal_l"](pair["input"]) == pair["output"]
++
++    grid = gen.generate(881, 4, grid_h=8, grid_w=11,
++                        n_horizontal=1, n_vertical=1, n_diagonal=1,
++                        n_triples=1, n_singletons=0, n_adjacent=0)
++    assert exact_two_witness(grid)
++    assert alignment_witness(grid)
++    assert gen.SEMANTIC_WITNESSES["exactly_two_only"](grid)
++    assert gen.SEMANTIC_WITNESSES["axis_alignment_only"](grid)
++    assert gen.SEMANTIC_RIVALS["overconnect_multiples"](grid) == overconnect_multiples_output(grid)
++    assert gen.SEMANTIC_RIVALS["connect_diagonal_l"](grid) == connect_diagonal_l_output(grid)
++    assert gen.rule_mirror(grid) == authority_output(grid)
++
++
++def test_canonical_anchor_schedule_has_one_slot_per_three_and_disables_for_overrides():
++    seen_slots = set()
++    for seed in (20261004, 20261005):
++        for block in range(24):
++            flags = [
++                gen._is_canonical_anchor(seed, block * 3 + slot, has_overrides=False)
++                for slot in range(3)
++            ]
++            assert sum(flags) == 1
++            seen_slots.add(flags.index(True))
++    assert seen_slots == {0, 1, 2}
++    assert not gen._is_canonical_anchor(20261004, 0, has_overrides=True)
++
++
++@pytest.mark.parametrize("difficulty", ["easy", "medium", "hard"])
++def test_default_distribution_keeps_canonical_profiles_and_shortcut_witnesses(difficulty):
++    grids = [gen.generate(20261004, index, difficulty=difficulty) for index in range(60)]
++    canonical_profiles = {(8, 9, 3), (8, 10, 3), (8, 11, 3)}
++    assert sum(profile(grid) in canonical_profiles for grid in grids) >= 18
++    assert sum(exact_two_witness(grid) for grid in grids) >= 30
++    assert sum(alignment_witness(grid) for grid in grids) >= 30
++    assert all(gen.self_check(grid, difficulty=difficulty) == [] for grid in grids)
++    assert all(authority_output(grid) != grid for grid in grids)
++
++
++def test_self_check_rejects_noop_minimal_impostors_without_override_evidence():
++    blank = [[0] * 8 for _ in range(8)]
++    singleton = [[0] * 8 for _ in range(8)]
++    singleton[4][4] = 7
++    assert gen.self_check(blank), "an unannotated all-background grid must be rejected"
++    assert gen.self_check(singleton), "an unannotated singleton-only grid must be rejected"
++
++    deliberate_noop = {
++        "grid_h": 8,
++        "grid_w": 8,
++        "n_horizontal": 0,
++        "n_vertical": 0,
++        "n_diagonal": 0,
++        "n_triples": 0,
++        "n_singletons": 1,
++        "n_adjacent": 0,
++    }
++    grid = gen.generate(991, 2, difficulty="hard", **deliberate_noop)
++    assert observed(grid) == deliberate_noop
++    assert gen.self_check(
++        grid,
++        difficulty="hard",
++        meta={"overrides": deliberate_noop},
++    ) == []
+diff --git a/repo/generators/72a6d8b343e4/workspace/README.md b/repo/generators/72a6d8b343e4/workspace/README.md
+--- a/repo/generators/72a6d8b343e4/workspace/README.md
++++ b/repo/generators/72a6d8b343e4/workspace/README.md
+@@ -1,4 +1,12 @@
+ # Workspace
+ 
+-Keep alternate drafts, reproducers, and unfinished experiments here.
+-The selected implementation is `../generator.py`. Workspace drafts are never automatically selected.
++`reference_probe.py` is the reusable, portable reviewer probe for this task. It loads the selected generator (or `GENERATOR_UNDER_TEST`), reconstructs object counts from pixels, computes an independent intended output, evaluates both declared rivals, reads canonical pairs through the copied-runtime public helper, and reports per-band diversity/witness statistics.
++
++From a repository checkout:
++
++```bash
++python3 generators/72a6d8b343e4/workspace/reference_probe.py \
++  --per-band 120 --out /tmp/72a6d8b343e4-probe.json
++```
++
++The selected implementation is `../generator.py`; tests are in `../tests/`. Workspace probes are evidence and diagnostics, never label authority. The canonical Racket program remains authoritative.
+diff --git a/repo/generators/72a6d8b343e4/workspace/reference_probe.py b/repo/generators/72a6d8b343e4/workspace/reference_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/72a6d8b343e4/workspace/reference_probe.py
+@@ -0,0 +1,222 @@
++"""Independent probes for ARC task 72a6d8b343e4 (Endpoint Bridge).
++
++This is reviewer tooling, not label authority.  It intentionally reconstructs
++all geometry from pixels and never imports private helpers from generator.py.
++"""
++from __future__ import annotations
++
++import argparse
++from collections import Counter
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++import os
++from pathlib import Path
++import sys
++from typing import Iterable
++
++TASK_ID = "72a6d8b343e4"
++GENERATOR_HOME = Path(__file__).resolve().parents[1]
++REPO_ROOT = GENERATOR_HOME.parents[1]
++for _path in (REPO_ROOT / "shared/runtime", REPO_ROOT / "src", REPO_ROOT):
++    _text = str(_path)
++    if _text not in sys.path:
++        sys.path.insert(0, _text)
++
++
++def load_generator(path: str | os.PathLike[str] | None = None):
++    selected = path or os.environ.get("GENERATOR_UNDER_TEST")
++    selected_path = Path(selected) if selected else GENERATOR_HOME / "generator.py"
++    spec = importlib.util.spec_from_file_location(
++        f"generator_under_test_{TASK_ID}", selected_path
++    )
++    if spec is None or spec.loader is None:
++        raise RuntimeError(f"cannot load generator from {selected_path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def canonical_pairs() -> list[dict]:
++    """Load normalized public pairs through the portable copied-runtime helper."""
++    from reviewer_support import canonical_pairs as _canonical_pairs, find_root
++
++    return [
++        {"input": [list(row) for row in pair["input"]],
++         "output": [list(row) for row in pair["output"]]}
++        for pair in _canonical_pairs(TASK_ID, root=find_root(__file__))
++    ]
++
++
++def _positions_by_color(grid: list[list[int]]) -> dict[int, list[tuple[int, int]]]:
++    positions: dict[int, list[tuple[int, int]]] = {}
++    for r, row in enumerate(grid):
++        for c, value in enumerate(row):
++            if value != 0:
++                positions.setdefault(value, []).append((r, c))
++    return positions
++
++
++def _segment(a: tuple[int, int], b: tuple[int, int]) -> list[tuple[int, int]]:
++    r1, c1 = a
++    r2, c2 = b
++    if r1 == r2:
++        lo, hi = sorted((c1, c2))
++        return [(r1, c) for c in range(lo, hi + 1)]
++    if c1 == c2:
++        lo, hi = sorted((r1, r2))
++        return [(r, c1) for r in range(lo, hi + 1)]
++    return []
++
++
++def authority_output(grid: list[list[int]]) -> list[list[int]]:
++    """Independent mirror of the selected rule, using original-grid counts."""
++    out = deepcopy(grid)
++    for color, points in _positions_by_color(grid).items():
++        if len(points) != 2:
++            continue
++        for r, c in _segment(points[0], points[1]):
++            out[r][c] = color
++    return out
++
++
++def overconnect_multiples_output(grid: list[list[int]]) -> list[list[int]]:
++    """Rival: connect every aligned same-color pair, even with 3+ occurrences."""
++    out = deepcopy(grid)
++    for color, points in _positions_by_color(grid).items():
++        for i, a in enumerate(points):
++            for b in points[i + 1:]:
++                for r, c in _segment(a, b):
++                    out[r][c] = color
++    return out
++
++
++def connect_diagonal_l_output(grid: list[list[int]]) -> list[list[int]]:
++    """Rival: connect every exact pair; diagonal pairs use a row-then-column L."""
++    out = deepcopy(grid)
++    for color, points in _positions_by_color(grid).items():
++        if len(points) != 2:
++            continue
++        a, b = points
++        segment = _segment(a, b)
++        if segment:
++            cells = segment
++        else:
++            r1, c1 = a
++            r2, c2 = b
++            c_lo, c_hi = sorted((c1, c2))
++            r_lo, r_hi = sorted((r1, r2))
++            cells = [(r1, c) for c in range(c_lo, c_hi + 1)]
++            cells += [(r, c2) for r in range(r_lo, r_hi + 1)]
++        for r, c in cells:
++            out[r][c] = color
++    return out
++
++
++def observed(grid: list[list[int]]) -> dict[str, int]:
++    counts = Counter()
++    for points in _positions_by_color(grid).values():
++        if len(points) == 1:
++            counts["n_singletons"] += 1
++        elif len(points) == 2:
++            (r1, c1), (r2, c2) = points
++            if r1 == r2 and abs(c1 - c2) == 1:
++                counts["n_adjacent"] += 1
++            elif c1 == c2 and abs(r1 - r2) == 1:
++                counts["n_adjacent"] += 1
++            elif r1 == r2:
++                counts["n_horizontal"] += 1
++            elif c1 == c2:
++                counts["n_vertical"] += 1
++            else:
++                counts["n_diagonal"] += 1
++        elif len(points) == 3:
++            counts["n_triples"] += 1
++        else:
++            counts["other_multiplicity"] += 1
++    return {
++        "grid_h": len(grid),
++        "grid_w": len(grid[0]) if grid else 0,
++        "n_horizontal": counts["n_horizontal"],
++        "n_vertical": counts["n_vertical"],
++        "n_diagonal": counts["n_diagonal"],
++        "n_triples": counts["n_triples"],
++        "n_singletons": counts["n_singletons"],
++        "n_adjacent": counts["n_adjacent"],
++    }
++
++
++def exact_two_witness(grid: list[list[int]]) -> bool:
++    return overconnect_multiples_output(grid) != authority_output(grid)
++
++
++def alignment_witness(grid: list[list[int]]) -> bool:
++    return connect_diagonal_l_output(grid) != authority_output(grid)
++
++
++def profile(grid: list[list[int]]) -> tuple[int, int, int]:
++    return len(grid), len(grid[0]), len({value for row in grid for value in row})
++
++
++def fingerprint(grid: list[list[int]]) -> str:
++    payload = json.dumps(grid, separators=(",", ":")).encode()
++    return hashlib.sha256(payload).hexdigest()
++
++
++def audit(module, *, per_band: int = 120) -> dict:
++    report: dict[str, object] = {"task_id": TASK_ID, "bands": {}}
++    canonical = canonical_pairs()
++    report["canonical_pairs"] = len(canonical)
++    report["canonical_oracle_matches"] = sum(
++        authority_output(pair["input"]) == pair["output"] for pair in canonical
++    )
++    for band in ("easy", "medium", "hard"):
++        rows = []
++        for index in range(per_band):
++            grid = module.generate(20261004, index, difficulty=band)
++            rows.append({
++                "fingerprint": fingerprint(grid),
++                "profile": profile(grid),
++                "observed": observed(grid),
++                "self_check": module.self_check(grid, difficulty=band),
++                "exact_two_witness": exact_two_witness(grid),
++                "alignment_witness": alignment_witness(grid),
++                "oracle_changed_cells": sum(
++                    a != b
++                    for in_row, out_row in zip(grid, authority_output(grid))
++                    for a, b in zip(in_row, out_row)
++                ),
++            })
++        report["bands"][band] = {
++            "samples": len(rows),
++            "unique_inputs": len({row["fingerprint"] for row in rows}),
++            "canonical_profiles": sum(
++                tuple(row["profile"]) in {(8, 9, 3), (8, 10, 3), (8, 11, 3)}
++                for row in rows
++            ),
++            "exact_two_witnesses": sum(row["exact_two_witness"] for row in rows),
++            "alignment_witnesses": sum(row["alignment_witness"] for row in rows),
++            "self_check_failures": sum(bool(row["self_check"]) for row in rows),
++            "unchanged_outputs": sum(row["oracle_changed_cells"] == 0 for row in rows),
++        }
++    return report
++
++
++def main(argv: Iterable[str] | None = None) -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--generator")
++    parser.add_argument("--per-band", type=int, default=120)
++    parser.add_argument("--out")
++    args = parser.parse_args(list(argv) if argv is not None else None)
++    report = audit(load_generator(args.generator), per_band=args.per_band)
++    text = json.dumps(report, indent=2, sort_keys=True) + "\n"
++    if args.out:
++        Path(args.out).write_text(text)
++    else:
++        print(text, end="")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

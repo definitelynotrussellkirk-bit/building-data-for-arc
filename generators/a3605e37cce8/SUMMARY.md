@@ -1,0 +1,6 @@
+# a3605e37cce8
+
+0-bg grid (h~8-11, w~10-13) with 2-3 BLOBS of 2-4 cells each (4-connected, grown via grow_blob), each in a DISTINCT non-0 color drawn from {1..9}. Blobs are constrained: (a) STRICTLY IN THE UPPER ROWS (rows h-3 and below are marked `used` to keep blobs out of the bottom 3 rows so gravity has somewhere to drop); (b) DISJOINT COLUMN RANGES — each blob's column span (cmin..cmax) is tracked, and new blobs are required not to overlap any existing column range (so dropping doesn't cause collisions). Bottom rows start empty. Rule (DROP EACH BLOB AS A UNIT TO THE BOTTOM — EACH BLOB SLIDES DOWN UNTIL ITS BBOX-BOTTOM ROW HITS THE GRID BOTTOM): for EACH 4-connected non-bg blob: COMPUTE its bbox top-left (r1, c1) and bbox-bottom row r2. COMPUTE the DROP DELTA = (h-1) - r2 (how many rows the blob can slide before its bbox-bottom hits the grid bottom). SHIFT every cell of the blob DOWN by DROP DELTA rows (cells move from (r, c) to (r + delta, c)). The ORIGINAL blob positions become bg-0; the shifted positions take on the blob's color. Other blobs in disjoint columns are dropped independently. Net: each blob falls as a rigid unit until its lowest cell sits on the bottom row.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

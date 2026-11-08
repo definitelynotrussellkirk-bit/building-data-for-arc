@@ -1,0 +1,41 @@
+(rule!
+  (let ((dummy 0))
+    (define (objs-of color)
+      (filter (lambda (obj) (= (obj-color obj) color)) (objects g 0)))
+    (define (normalize-cells cells)
+      (if (empty? cells)
+          (list)
+          (let* ((bb (bbox-of-cells cells))
+                 (r0 (first bb))
+                 (c0 (second bb)))
+            (sort (map (lambda (p)
+                         (list (- (first p) r0) (- (second p) c0)))
+                       cells)
+                  cell<))))
+    (define (solid-2x2? obj)
+      (equal? (normalize-cells (obj-cells obj))
+              (list (list 0 0) (list 0 1) (list 1 0) (list 1 1))))
+    (define objects6 (objs-of 6))
+    (define non-squares (filter (lambda (obj) (not (solid-2x2? obj))) objects6))
+    (define controller
+      (first (sort non-squares (lambda (a b) (> (obj-size a) (obj-size b))))))
+    (define bb (obj-bbox controller))
+    (define horizontal?
+      (> (+ (- (fourth bb) (second bb)) 1)
+         (+ (- (third bb) (first bb)) 1)))
+    ;; Deliberately corrupt the intermediate: use the axis perpendicular to
+    ;; the controller's long axis, through the controller's midpoint.
+    (define wrong-horizontal? (not horizontal?))
+    (define wrong-axis
+      (if horizontal?
+          (quotient (+ (second bb) (fourth bb)) 2)
+          (quotient (+ (first bb) (third bb)) 2)))
+    (define (wrong-aligned? obj)
+      (ormap (lambda (p)
+               (= (if wrong-horizontal? (first p) (second p)) wrong-axis))
+             (obj-cells obj)))
+    (for/fold ((out (empty-grid (rows g) (cols g) 0)))
+              ((obj (in-list objects6)))
+      (if (and (solid-2x2? obj) (wrong-aligned? obj))
+          (paint-cells out (obj-cells obj) 6)
+          out))))

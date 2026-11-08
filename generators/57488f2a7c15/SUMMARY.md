@@ -1,0 +1,9 @@
+# 57488f2a7c15 — main-diagonal completion
+
+Generator version **2.0.0**. Every nonzero source is copied to its transposed position, preserving existing cells and colors. The canonical Racket rule remains unchanged (`RULE_HASH = 2b970065d6a3`). Generator SHA-256: `695c31b0bf2506cde10a9f240b78d59f1bb5efd85038186bc9f532d4305eeaa7`.
+
+The repair samples unordered transpose orbits constructively: an orbit is empty, has one source, or contains an equal-color completed pair. Unequal occupied partners are prohibited. Diagonal cells remain lawful. Six exact controls expose square side, occupied-cell count, distinct colors, diagonal count, completed pairs, and incomplete-source orientation. Invalid requests are rejected with structured incompatibility information.
+
+The declared teaching contract is **five consecutive ordered demonstrations**, ordinary no-override sampling, with an 18-profile cycle covering both copying directions and shared/unique/absent diagonal-color contexts. Request `--train 5` / `n_train=5` explicitly in consumers that ignore `EXAMPLES_NEEDED`. Five is conservative, not an established minimum: saved-label diagnostics also found 0/300 ambiguous four-demo prefixes, while 147/300 three-demo prefixes were ambiguous. Arbitrary query rotations are outside the contract (300/1,800 measured ambiguities).
+
+Final review evidence: 12/12 battery stages green; 155/155 isolated task tests; no structural conflict/domain violation in 30,000 draws (21,847 globally unique inputs); 300/300 ordered five-demo lessons distinguish all 11 declared rivals, with 1,800 globally unique pairs. All five canonical pairs are supported. These finite results do not establish universal identifiability, training admission, or measured model improvement. Approval remains derived by the catalog. See `notes.md` and `workspace/README.md` for exact scope and reusable tools.

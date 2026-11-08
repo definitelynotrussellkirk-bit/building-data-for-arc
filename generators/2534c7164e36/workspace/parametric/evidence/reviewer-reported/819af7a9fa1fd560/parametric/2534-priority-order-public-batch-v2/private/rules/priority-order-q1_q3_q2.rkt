@@ -1,0 +1,1 @@
+(rule! (build-grid 4 4 (r c) (let ((q1 (at g r c)) (q2 (at g r (+ c 5))) (q3 (at g r (+ c 10)))) (cond ((!= q1 0) q1) ((!= q3 0) q3) (else q2)))))

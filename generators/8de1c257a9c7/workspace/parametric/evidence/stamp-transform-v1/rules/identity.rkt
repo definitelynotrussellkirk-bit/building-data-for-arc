@@ -1,0 +1,25 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (begin
+             (define greens (find-color g 3))
+             (define reds (find-color g 2))
+             (define eights (find-color g 8))
+             (define gr (first (first greens)))
+             (define gc (second (first greens)))
+             (define offsets
+               (map (lambda (p) (list (- (first p) gr) (- (second p) gc))) eights))
+             (define empty (cellmap g (r c v) 0))
+             (reduce (lambda (gg red)
+                       (let ((rr (first red))
+                             (rc (second red)))
+                         (reduce (lambda (gx off)
+                                   (let ((nr (+ rr (first off)))
+                                         (nc (+ rc (second off))))
+                                     (if (and (>= nr 0) (< nr h) (>= nc 0) (< nc w))
+                                         (set-cell gx nr nc 8)
+                                         gx)))
+                                 gg
+                                 offsets)))
+                     empty
+                     reds)))))

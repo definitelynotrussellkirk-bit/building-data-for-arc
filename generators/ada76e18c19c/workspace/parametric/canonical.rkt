@@ -1,0 +1,12 @@
+(rule!
+  (grid-from-fn (rows g) (cols g)
+    (lambda (r c)
+      (let* ((vals (filter (lambda (v) (not (= v 0))) (row-at g r)))
+             (colors (remove-duplicates vals)))
+        (if (and (= (length colors) 1) (= (length vals) 2))
+            (let* ((color (first colors))
+                   (cols (map second (filter (lambda (cell) (= (third cell) color))
+                                             (for/list ([cc (in-range (cols g))])
+                                               (list r cc (at g r cc)))))))
+              (if (and (>= c (apply min cols)) (<= c (apply max cols))) color (at g r c)))
+            (at g r c))))))

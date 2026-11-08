@@ -1,0 +1,127 @@
+--- a/shared/tools/generator_defect_lint.py
++++ b/shared/tools/generator_defect_lint.py
+@@ -994,7 +994,9 @@
+     return lawful
+ 
+ 
+-def probe_selfcheck_minimal_impostors(module, inputs, bands, canonical_train=None):
++def probe_selfcheck_minimal_impostors(module, inputs, bands, canonical_train=None,
++                                     *, reference_label=None, rule_hash=None,
++                                     validation_notes=None):
+     """Name every minimal impostor accepted on the task's real background.
+ 
+     The aggregate power ratio can look healthy while one dangerous exception
+@@ -1005,6 +1007,37 @@
+     sc = getattr(module, "self_check", None)
+     if not callable(sc):
+         return []
++    # Optional semantic declaration, never a blanket waiver. A live canonical
++    # label validates the claimed result, not semantic domain membership; the
++    # task justification still needs maintainer review. Missing reference
++    # execution or stale/malformed declarations retain the original finding.
++    declarations = getattr(module, "LAWFUL_MINIMAL_PROBES", {})
++    declaration_warnings = []
++    specs = {}
++    known = {"all_background", "full_one_color", "singleton", "solid_2x2", "short_line"}
++    if not isinstance(declarations, dict):
++        declaration_warnings.append("lawful-minimal-probes: expected a named mapping")
++    else:
++        for name, spec in declarations.items():
++            valid = (
++                isinstance(name, str) and name in known
++                and isinstance(spec, dict)
++                and set(spec) == {"justification", "rule_hash", "expected_output"}
++                and isinstance(spec["justification"], str)
++                and len(spec["justification"].strip()) >= 30
++                and isinstance(rule_hash, str) and bool(rule_hash)
++                and spec["rule_hash"] == rule_hash
++                and _valid_arc_grid(spec["expected_output"])
++                and callable(reference_label)
++            )
++            if valid:
++                specs[name] = spec
++            else:
++                declaration_warnings.append(
++                    f"lawful-minimal-probes: {name!r} not validated; require a known "
++                    "kind, task justification, current rule hash, digit-grid expected "
++                    "output, and live canonical reference")
++    validated = Counter()
+     accepted = Counter()
+     totals = Counter()
+     used = 0
+@@ -1017,6 +1050,12 @@
+         except Exception:
+             continue
+         used += 1
++        source_valid = False
++        if specs:
++            try:
++                source_valid = _valid_arc_grid(_norm(reference_label(grid)))
++            except Exception:
++                pass
+         for name, mutation in _minimal_impostors(grid):
+             totals[name] += 1
+             try:
+@@ -1025,15 +1064,37 @@
+                 rejected = True
+             if not rejected:
+                 accepted[name] += 1
++                if name in specs and source_valid:
++                    try:
++                        output = _norm(reference_label(mutation))
++                        if (_valid_arc_grid(output)
++                                and output == specs[name]["expected_output"]):
++                            validated[name] += 1
++                    except Exception:
++                        pass
+     canonical_lawful = _canonical_minimal_kinds(canonical_train)
++    reference_lawful = {name for name in specs
++                       if accepted[name] and validated[name] == accepted[name]}
++    for name in sorted(set(specs) - reference_lawful):
++        if accepted[name]:
++            declaration_warnings.append(
++                f"lawful-minimal-probes: {name!r} live reference validation "
++                f"passed {validated[name]}/{accepted[name]} accepted probes; "
++                "original minimal-impostor finding retained")
++    if reference_lawful and validation_notes is not None:
++        validation_notes.append(
++            f"lawful-minimal-probes: current canonical rule {rule_hash} validated "
++            + ", ".join(f"{name} {validated[name]}/{accepted[name]}"
++                        for name in sorted(reference_lawful))
++            + "; domain membership remains a reviewed semantic declaration")
+     bad = [
+         f"{name} {accepted[name]}/{totals[name]}"
+         for name in sorted(accepted)
+-        if accepted[name] and name not in canonical_lawful
++        if accepted[name] and name not in canonical_lawful | reference_lawful
+     ]
+     if not bad:
+-        return []
+-    return [
++        return declaration_warnings
++    return declaration_warnings + [
+         "selfcheck-minimal-impostor: self_check accepted "
+         + ", ".join(bad)
+         + " probes built on its own modal background; narrow the named "
+@@ -1310,10 +1371,20 @@
+     warns += [{"issue": w, "count": 1} for w in ax_warns]
+     warns += [{"issue": w, "count": 1} for w in probe_selfcheck_power(m, all_in, in_bands)]
+     errs += [{"issue": e, "count": 1} for e in probe_mutation_fixtures(m)]
++    minimal_reference = None
++    minimal_rule_hash = None
++    if rule_body is not None:
++        from scripts.canonical_profile_gate import normalized_rule_hash
++        minimal_rule_hash = normalized_rule_hash(rules[task_id])
++        def minimal_reference(grid):
++            bridge.define_grid("g", grid)
++            return _norm(bridge.eval_text(rule_body))
+     warns += [
+         {"issue": w, "count": 1}
+         for w in probe_selfcheck_minimal_impostors(
+-            m, all_in, in_bands, canonical_train=canon.get(task_id)
++            m, all_in, in_bands, canonical_train=canon.get(task_id),
++            reference_label=minimal_reference, rule_hash=minimal_rule_hash,
++            validation_notes=notes,
+         )
+     ]
+     rh_errs, rh_notes = probe_rule_hash(m, task_id, rules)

@@ -1,0 +1,435 @@
+diff --git a/repo/generators/ef02aedbac38/notes.md b/repo/generators/ef02aedbac38/notes.md
+--- a/repo/generators/ef02aedbac38/notes.md
++++ b/repo/generators/ef02aedbac38/notes.md
+@@ -116,3 +116,39 @@
+ repair must not be interpreted as approval of the alternate rule, and the
+ rotation limitation applies to the current production lesson schedule rather
+ than to the two retained prototype episodes.
++
++## D8 — Bind public IDs to the exact visible bytes
++
++**Defect.** Prototype v1.0.0 hashed only the train/test input grids while writing
++pretty-printed public JSON. Two public challenges with the same inputs but
++materially different visible demonstration outputs therefore shared a filename,
++and the filename digest was not the digest of the bytes on disk.
++
++**Choice.** Prototype v1.1.0 projects the public challenge first, serializes it
++with `reviewer_support.public_challenge_bytes`, names it with
++`public_challenge_id`, and writes those exact bytes. Demonstration outputs and
++all visible inputs now affect the ID; hidden setting metadata, seeds, rule text,
++and query answers do not. The writer rejects a duplicate public path rather than
++overwriting it.
++
++**Evidence.** The RED collision and exact-byte failures are retained under
++`checks/tdd-red-public-evidence/`; the focused GREEN run is under
++`checks/tdd-green-public-evidence/`.
++
++## D9 — Expose episode counts and retain four distinct queries
++
++**Choice.** Keep one episode-fixed `selector_role`, but expose `demo_count` and
++`query_count` through both `write_evidence` and the CLI. The default evidence
++shape is three demonstrations plus four queries. Counts are validated before
++creating the destination, exactly one seed must select each declared setting,
++and every retained episode must have distinct demonstration/query inputs.
++
++**Rationale.** This adds supervision rather than a second hidden semantic axis.
++Four independently labelled queries exercise the same inferred rule on varied
++inputs while the three demonstrations already distinguish the only declared
++rival. Production generation, canonical program text, `RULE_HASH=0e568f927b22`,
++and generator version 4.1.0 remain unchanged.
++
++**Limits.** Counts remain bounded to 1..8 demonstrations and 1..4 queries, with
++at most 12 total pairs. The finite declared-rival check does not exclude arbitrary
++alternative programs, and the prototype remains proposed rather than approved.
+diff --git a/repo/generators/ef02aedbac38/tests/test_parametric_public_names.py b/repo/generators/ef02aedbac38/tests/test_parametric_public_names.py
+--- a/repo/generators/ef02aedbac38/tests/test_parametric_public_names.py
++++ b/repo/generators/ef02aedbac38/tests/test_parametric_public_names.py
+@@ -2,6 +2,7 @@
+ from __future__ import annotations
+ 
+ from copy import deepcopy
++import hashlib
+ import importlib.util
+ import json
+ from pathlib import Path
+@@ -22,7 +23,7 @@
+     return module
+ 
+ 
+-def test_public_identifier_ignores_private_metadata_and_answers(prototype):
++def test_public_identifier_hashes_visible_bytes_but_ignores_private_answers(prototype):
+     episode = {
+         'meta': {'selector_role': 'five', 'episode_seed': 0},
+         'train': [{'input': [[5, 2]], 'output': [[2, 0]]}],
+@@ -31,22 +32,74 @@
+     name = prototype.public_filename(episode)
+     changed = deepcopy(episode)
+     changed['meta'] = {'selector_role': 'companion', 'episode_seed': 99}
+-    changed['train'][0]['output'] = [[0, 5]]
+     changed['test'][0]['output'] = [[5, 0]]
+     assert prototype.public_filename(changed) == name
+     assert re.fullmatch(r'challenge-[0-9a-f]{64}\.json', name)
++
++    changed = deepcopy(episode)
++    changed['train'][0]['output'] = [[0, 5]]
++    assert prototype.public_filename(changed) != name
++
++    changed = deepcopy(episode)
+     changed['train'][0]['input'] = [[2, 5]]
+     assert prototype.public_filename(changed) != name
+ 
+ 
+ def test_real_racket_export_uses_only_opaque_public_filenames(prototype, tmp_path):
+     destination = tmp_path / 'export'
+-    report = prototype.write_evidence(destination)
++    report = prototype.write_evidence(
++        destination,
++        demo_count=3,
++        query_count=4,
++    )
++    assert report['episode_shape'] == {'demo_count': 3, 'query_count': 4}
+     for row in report['episodes'].values():
+         path = destination / row['public_path']
+         assert re.fullmatch(r'challenge-[0-9a-f]{64}\.json', path.name)
++        assert hashlib.sha256(path.read_bytes()).hexdigest() == path.stem.removeprefix(
++            'challenge-'
++        )
+         challenge = json.loads(path.read_text())
+         assert set(challenge) == {'train', 'test'}
++        assert len(challenge['train']) == 3
++        assert len(challenge['test']) == 4
+         assert all(set(pair) == {'input'} for pair in challenge['test'])
++        query_inputs = [json.dumps(pair['input'], sort_keys=True) for pair in challenge['test']]
++        assert len(set(query_inputs)) == 4
+         private = json.loads((destination / row['private_path']).read_text())
+         assert path.name == prototype.public_filename(private['episode'])
++        assert private['checks']['demo_count'] == 3
++        assert private['checks']['query_count'] == 4
++        assert private['checks']['all_episode_inputs_distinct'] is True
++
++
++@pytest.mark.parametrize(
++    ('demo_count', 'query_count'),
++    [(0, 4), (3, 0), (True, 4), (3, True), (9, 4), (3, 5)],
++)
++def test_writer_rejects_invalid_counts_before_creating_output(
++    prototype,
++    tmp_path,
++    demo_count,
++    query_count,
++):
++    destination = tmp_path / f'invalid-{demo_count!r}-{query_count!r}'
++    with pytest.raises(ValueError, match='count'):
++        prototype.write_evidence(
++            destination,
++            demo_count=demo_count,
++            query_count=query_count,
++        )
++    assert not destination.exists()
++
++
++def test_writer_requires_exactly_one_seed_for_each_setting(prototype, tmp_path):
++    destination = tmp_path / 'duplicate-setting'
++    with pytest.raises(ValueError, match='exactly once'):
++        prototype.write_evidence(
++            destination,
++            seeds=(0, 2, 1),
++            demo_count=3,
++            query_count=4,
++        )
++    assert not destination.exists()
+diff --git a/repo/generators/ef02aedbac38/tests/test_parametric_selector_role.py b/repo/generators/ef02aedbac38/tests/test_parametric_selector_role.py
+--- a/repo/generators/ef02aedbac38/tests/test_parametric_selector_role.py
++++ b/repo/generators/ef02aedbac38/tests/test_parametric_selector_role.py
+@@ -100,7 +100,12 @@
+         episode = prototype.build_episode(20261022, setting=setting)
+         assert episode["meta"][prototype.PARAMETER_NAME] == setting
+         assert len(episode["train"]) == 3
+-        assert len(episode["test"]) == 1
++        assert len(episode["test"]) == 4
++        inputs = [
++            json.dumps(pair["input"], sort_keys=True)
++            for pair in episode["train"] + episode["test"]
++        ]
++        assert len(set(inputs)) == 7
+         rival = next(value for value in prototype.ALLOWED_SETTINGS if value != setting)
+         pairs = episode["train"] + episode["test"]
+         assert all(
+diff --git a/repo/generators/ef02aedbac38/workspace/parametric/README.md b/repo/generators/ef02aedbac38/workspace/parametric/README.md
+--- a/repo/generators/ef02aedbac38/workspace/parametric/README.md
++++ b/repo/generators/ef02aedbac38/workspace/parametric/README.md
+@@ -16,19 +16,26 @@
+ prototype.
+ 
+ The parameter is chosen exactly once with
+-`("five", "companion")[episode_seed % 2]` and reused for three demonstrations
+-and one query. Input generation is independent of the setting. Because every
+-lawful input contains both roles, every demonstration distinguishes the two
+-declared settings. Public files contain labeled demonstrations and unlabeled
+-query inputs only; hidden settings, rule text, seeds, metadata, and query answers
+-remain private.
++`("five", "companion")[episode_seed % 2]` and reused for every pair in the
++episode. Demonstration and query counts are separate command-line settings;
++the retained default is three demonstrations and four distinct queries. Input
++generation is independent of the setting. Because every lawful input contains
++both roles, every demonstration and query distinguishes the two declared
++settings.
++
++Public files contain labeled demonstrations and unlabeled query inputs only.
++Their opaque filename is the SHA-256 of the exact canonical bytes written, so
++changing a visible demonstration output or any visible input changes the ID.
++Hidden settings, rule text, seeds, metadata, and query answers remain private
++and cannot affect either the public bytes or the public ID.
+ 
+ From the outer extracted packet directory, build fresh Racket-verified evidence:
+ 
+ ```bash
+ python3 review.py run python3 \
+   generators/ef02aedbac38/workspace/parametric/prototype.py \
+-  --out ../checks/parametric/selector-role-v1 --seeds 0 1
++  --out ../checks/parametric/selector-role-v1_1 \
++  --seeds 0 1 --demo-count 3 --query-count 4
+ ```
+ 
+ Run focused prototype tests through the task-local portable test stage:
+@@ -40,10 +47,11 @@
+ ```
+ 
+ The evidence builder writes exact programs, two complete private episodes, two
+-redacted public challenges, direct Racket predictions for both settings, all
+-canonical-default checks, a setting-difference witness, source/runtime hashes,
+-and a file manifest. A Python mirror is used only as an independent parity
+-check; every retained label is produced by the bundled Racket runtime.
++content-addressed public challenges, direct Racket predictions for both
++settings, all canonical-default checks, four distinct queries per episode, a
++setting-difference witness, source/runtime hashes, and a file manifest. A
++Python mirror is used only as an independent parity check; every retained label
++is produced by the bundled Racket runtime.
+ 
+ This is a **proposed prototype**, not a production parametric API, catalog
+ approval, or training-admission claim. Evidence is bounded to the declared
+diff --git a/repo/generators/ef02aedbac38/workspace/parametric/prototype.py b/repo/generators/ef02aedbac38/workspace/parametric/prototype.py
+--- a/repo/generators/ef02aedbac38/workspace/parametric/prototype.py
++++ b/repo/generators/ef02aedbac38/workspace/parametric/prototype.py
+@@ -26,13 +26,17 @@
+     canonical_path,
+     find_root,
+     load_selected_generator,
++    public_challenge_bytes,
++    public_challenge_id,
+ )
+ 
+ TASK_ID = "ef02aedbac38"
+-PROTOTYPE_VERSION = "1.0.0"
++PROTOTYPE_VERSION = "1.1.0"
+ PARAMETER_NAME = "selector_role"
+ ALLOWED_SETTINGS = ("five", "companion")
+ DEFAULT_SETTING = "five"
++DEFAULT_DEMO_COUNT = 3
++DEFAULT_QUERY_COUNT = 4
+ PARAMETER_SPEC = {
+     "name": PARAMETER_NAME,
+     "allowed": list(ALLOWED_SETTINGS),
+@@ -133,6 +137,14 @@
+         [paint if value == selected else 0 for value in row]
+         for row in grid
+     ]
++
++
++def _validate_episode_counts(demo_count: Any, query_count: Any) -> tuple[int, int]:
++    if type(demo_count) is not int or not 1 <= demo_count <= 8:
++        raise ValueError("demo_count must be an integer in 1..8")
++    if type(query_count) is not int or not 1 <= query_count <= 4:
++        raise ValueError("query_count must be an integer in 1..4")
++    return demo_count, query_count
+ 
+ 
+ def _episode_inputs(
+@@ -164,8 +176,8 @@
+     *,
+     setting: str | None = None,
+     root: Path | str = ROOT,
+-    demo_count: int = 3,
+-    query_count: int = 1,
++    demo_count: int = DEFAULT_DEMO_COUNT,
++    query_count: int = DEFAULT_QUERY_COUNT,
+ ) -> dict[str, Any]:
+     """Build a deterministic complete episode using the independent mirror.
+ 
+@@ -179,10 +191,7 @@
+         selected = choose_setting(seed)
+     else:
+         selected = _validate_setting(setting)
+-    if type(demo_count) is not int or not 1 <= demo_count <= 8:
+-        raise ValueError("demo_count must be an integer in 1..8")
+-    if type(query_count) is not int or not 1 <= query_count <= 4:
+-        raise ValueError("query_count must be an integer in 1..4")
++    demo_count, query_count = _validate_episode_counts(demo_count, query_count)
+     grids = _episode_inputs(
+         seed,
+         root=root,
+@@ -205,15 +214,8 @@
+ 
+ 
+ def public_filename(episode: dict[str, Any]) -> str:
+-    """Identify an input set without encoding its hidden setting or answers."""
+-    inputs = {
+-        split: [pair["input"] for pair in episode[split]]
+-        for split in ("train", "test")
+-    }
+-    digest = _sha256_bytes(
+-        json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+-    )
+-    return f"challenge-{digest}.json"
++    """Content-address the exact visible demonstrations and query inputs."""
++    return f"challenge-{public_challenge_id(public_challenge(episode))}.json"
+ 
+ 
+ def public_challenge(episode: dict[str, Any]) -> dict[str, Any]:
+@@ -288,20 +290,27 @@
+     out: Path | str,
+     *,
+     seeds: tuple[int, ...] | list[int] = (0, 1),
++    demo_count: int = DEFAULT_DEMO_COUNT,
++    query_count: int = DEFAULT_QUERY_COUNT,
+     root: Path | str = ROOT,
+ ) -> dict[str, Any]:
+     """Materialize Racket-verified public/private evidence for both settings."""
++    demo_count, query_count = _validate_episode_counts(demo_count, query_count)
++    if not seeds or any(type(seed) is not int for seed in seeds):
++        raise ValueError("seeds must be a non-empty sequence of integers")
++    selected_settings = [choose_setting(seed) for seed in seeds]
++    if (
++        len(selected_settings) != len(ALLOWED_SETTINGS)
++        or sorted(selected_settings) != sorted(ALLOWED_SETTINGS)
++    ):
++        raise ValueError(
++            f"seeds must select each setting exactly once; got {selected_settings}"
++        )
++
+     out = Path(out)
+     root = Path(root)
+     if out.exists():
+         raise FileExistsError(f"evidence output already exists: {out}")
+-    if not seeds or any(type(seed) is not int for seed in seeds):
+-        raise ValueError("seeds must be a non-empty sequence of integers")
+-    selected_settings = [choose_setting(seed) for seed in seeds]
+-    if set(selected_settings) != set(ALLOWED_SETTINGS):
+-        raise ValueError(
+-            f"seeds must cover both settings {ALLOWED_SETTINGS}; got {selected_settings}"
+-        )
+ 
+     public_dir = out / "public"
+     private_dir = out / "private"
+@@ -355,9 +364,28 @@
+         for episode_index, seed in enumerate(seeds):
+             selected = choose_setting(seed)
+             rival = next(value for value in ALLOWED_SETTINGS if value != selected)
+-            mirror_episode = build_episode(seed, setting=selected, root=root)
++            mirror_episode = build_episode(
++                seed,
++                setting=selected,
++                root=root,
++                demo_count=demo_count,
++                query_count=query_count,
++            )
+             pairs = mirror_episode["train"] + mirror_episode["test"]
+             grids = [pair["input"] for pair in pairs]
++            input_fingerprints = [
++                _sha256_bytes(
++                    json.dumps(grid, sort_keys=True, separators=(",", ":")).encode(
++                        "utf-8"
++                    )
++                )
++                for grid in grids
++            ]
++            all_episode_inputs_distinct = len(set(input_fingerprints)) == len(
++                input_fingerprints
++            )
++            if not all_episode_inputs_distinct:
++                raise AssertionError("episode demonstrations and queries must be distinct")
+             predictions: dict[str, list[list[list[int]]]] = {}
+ 
+             for setting in ALLOWED_SETTINGS:
+@@ -409,7 +437,12 @@
+             public = public_challenge(racket_episode)
+             _assert_public_redaction(public)
+             public_path = public_dir / public_filename(racket_episode)
+-            _write_json(public_path, public)
++            public_bytes = public_challenge_bytes(public)
++            if public_path.exists():
++                raise ValueError(f"duplicate public challenge: {public_path.name}")
++            public_path.write_bytes(public_bytes)
++            if _sha256_bytes(public_bytes) != public_path.stem.removeprefix("challenge-"):
++                raise AssertionError("public filename does not hash the exact written bytes")
+ 
+             private_path = private_dir / f"episode-{selected}.json"
+             private_record = {
+@@ -428,8 +461,13 @@
+                 "query_answers": selected_outputs[query_start:],
+                 "checks": {
+                     "setting_chosen_once": True,
+-                    "three_demonstrations": len(racket_episode["train"]) == 3,
+-                    "one_query": len(racket_episode["test"]) == 1,
++                    "demo_count": len(racket_episode["train"]),
++                    "query_count": len(racket_episode["test"]),
++                    "requested_counts_match": (
++                        len(racket_episode["train"]) == demo_count
++                        and len(racket_episode["test"]) == query_count
++                    ),
++                    "all_episode_inputs_distinct": all_episode_inputs_distinct,
+                     "all_labels_executed_by_racket": True,
+                     "python_mirror_parity": True,
+                     "demonstrations_distinguish_rival": bool(demo_disagreements),
+@@ -452,6 +490,8 @@
+                 "private_sha256": _sha256_file(private_path),
+                 "demonstration_disagreement_indices": demo_disagreements,
+                 "query_disagreement_indices": query_disagreements,
++                "demo_count": len(racket_episode["train"]),
++                "query_count": len(racket_episode["test"]),
+             }
+ 
+         witness_input = canonical_pairs(
+@@ -484,6 +524,7 @@
+         HERE / "README.md",
+         Path(generator_path),
+         root / "generators" / TASK_ID / "tests" / "test_parametric_selector_role.py",
++        root / "generators" / TASK_ID / "tests" / "test_parametric_public_names.py",
+     ]
+     report = {
+         "schema": "ef02aedbac38-parametric-selector-role-v1",
+@@ -492,6 +533,10 @@
+         "task_id": TASK_ID,
+         "prototype_version": PROTOTYPE_VERSION,
+         "parameter": PARAMETER_SPEC,
++        "episode_shape": {
++            "demo_count": demo_count,
++            "query_count": query_count,
++        },
+         "input_constraints": (
+             "unchanged production grammar: rectangular two-color {5, X} grids "
+             "with both roles nontrivial and spatially distributed"
+@@ -560,14 +605,22 @@
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--out", type=Path, required=True)
+     parser.add_argument("--seeds", nargs="+", type=int, default=[0, 1])
++    parser.add_argument("--demo-count", type=int, default=DEFAULT_DEMO_COUNT)
++    parser.add_argument("--query-count", type=int, default=DEFAULT_QUERY_COUNT)
+     args = parser.parse_args(argv)
+-    report = write_evidence(args.out, seeds=args.seeds)
++    report = write_evidence(
++        args.out,
++        seeds=args.seeds,
++        demo_count=args.demo_count,
++        query_count=args.query_count,
++    )
+     print(
+         json.dumps(
+             {
+                 "status": report["status"],
+                 "task_id": report["task_id"],
+                 "parameter": report["parameter"],
++                "episode_shape": report["episode_shape"],
+                 "evidence": str(args.out),
+             },
+             indent=2,

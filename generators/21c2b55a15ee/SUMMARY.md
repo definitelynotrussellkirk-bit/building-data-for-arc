@@ -1,0 +1,6 @@
+# 21c2b55a15ee
+
+0-bg grid (h~9-13, w~10-14) with 2-4 SMALL PARTIAL-BBOX COMPONENTS — each shape drawn from the _PARTIALS bank (L-shapes, plus signs, complex partials, donut, etc.) chosen so that each component's CELL COUNT < bbox_h × bbox_w (i.e., the bbox has at least one bg-0 cell — the component does NOT fill its bbox). Each component is painted in a DISTINCT non-0 color drawn from {1, 2, 3, 4, 6, 7, 8, 9}. Components are placed at non-overlapping positions with 1-cell padding (tracked via a used cell set, preventing bbox overlap between components). Rule (REPLACE EACH COMPONENT WITH A SOLID BBOX-FILLED RECTANGLE IN ITS COLOR): for EACH 4-CONNECTED non-bg COMPONENT of color C: COMPUTE its bbox (r1, c1, r2, c2). PAINT every cell inside the bbox (rectangular region) with COLOR C — the original cells stay C, and the bg-0 cells inside the bbox are filled in. Cells outside every component bbox stay bg-0. Net: irregular shapes inflate into solid colored rectangles, each matching the original component's color and bbox; the bg-0 gaps inside bboxes are all closed up.
+
+Kind: `per_puzzle`. Imported version: `2.0.1`.
+Approval is derived by the catalog from current code and retained evidence.

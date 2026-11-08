@@ -1,0 +1,2490 @@
+diff --git a/repo/generators/2376352117fc/notes.md b/repo/generators/2376352117fc/notes.md
+--- a/repo/generators/2376352117fc/notes.md
++++ b/repo/generators/2376352117fc/notes.md
+@@ -178,3 +178,31 @@
+ review, replay of the recorded probes and battery, and maintainer query scoring.
+ A useful next experiment is a controlled learner comparison on a deduplicated,
+ Racket-labeled corpus with clipping/overlap held-out evaluations; none was run here.
++
++## Native parametric review — review-64519201510b2909
++
++Built the task-local `finish` family under `workspace/parametric/` without
++changing the production generator or canonical authority. `translate_only`
++returns the byte-exact canonical program
++(`6dc047f6d5665a74ecdc862875ecc605e91210827d6803d542bea74c0360183d`).
++`largest_visible_fragment` first applies the exact marker-vector translation
++with clipping, then recomputes visible color-8 four-connected fragments and
++recolors the unique largest fragment yellow. The connected U-shaped source
++splits into two unequal candidates only when its translated bridge is clipped,
++so stage B cannot select its object before stage A.
++
++The sampler supports 2–6 demonstrations, 1–4 prefix-stable private queries,
++matched inputs across settings, four distinct queries, and a substantive 30×30
++case with at least 40 source cells. The reusable `audit.py` checked 320 episodes,
++2,560 labeled pairs, 1,280 public turns and 60 protected-Racket evaluations; no
++declared shortcut survived. Native qualification covered both settings at seeds
++0 and 17 with 40 Racket labels. The official wrong-order witness replayed and
++changed five cells.
++
++Final staged result: 61 tests passed. The strict public exporter produced and
++verified 16 opaque one-query files with three demonstrations each and no findings.
++
++Status is reviewer-ready, not owner-accepted. Exact-source owner integration,
++fresh qualification and witness replay, semantic acceptance, and any later
++training admission remain pending. The finite rival/seed audit is not a proof of
++unique induction or measured learning gain.
+diff --git a/repo/generators/2376352117fc/tests/test_parametric_family.py b/repo/generators/2376352117fc/tests/test_parametric_family.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/tests/test_parametric_family.py
+@@ -0,0 +1,93 @@
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++HOME = Path(__file__).resolve().parents[1]
++PARAM = HOME / "workspace" / "parametric"
++
++
++def load_adapter():
++    path = PARAM / "adapter.py"
++    spec = importlib.util.spec_from_file_location("translate_fragment_adapter", path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def fingerprint(grid):
++    return json.dumps(grid, separators=(",", ":"))
++
++
++def test_settings_share_inputs_and_default_program_is_exact():
++    adapter = load_adapter()
++    canonical = adapter.generate(17, {"finish": "translate_only"}, demos=3, queries=4)
++    alternate = adapter.generate(17, {"finish": "largest_visible_fragment"}, demos=3, queries=4)
++    assert [p["input"] for p in canonical["train"] + canonical["test"]] == [
++        p["input"] for p in alternate["train"] + alternate["test"]
++    ]
++    assert adapter.program({"finish": "translate_only"}).encode() == (PARAM / "canonical.rkt").read_bytes()
++
++
++@pytest.mark.parametrize("demos", range(2, 7))
++@pytest.mark.parametrize("queries", range(1, 5))
++def test_counts_prefix_and_teaching(demos, queries):
++    adapter = load_adapter()
++    episode = adapter.generate(5, {"finish": "largest_visible_fragment"}, demos=demos, queries=queries)
++    assert len(episode["train"]) == demos
++    assert len(episode["test"]) == queries
++    fps = [fingerprint(p["input"]) for p in episode["train"] + episode["test"]]
++    assert len(fps) == len(set(fps))
++    assert adapter.teaching_check(episode)["status"] == "identified"
++
++
++def test_queries_are_prefix_stable_and_public_projection_is_input_only():
++    adapter = load_adapter()
++    four = adapter.generate(9, {"finish": "translate_only"}, demos=3, queries=4)
++    one = adapter.generate(9, {"finish": "translate_only"}, demos=3, queries=1)
++    assert four["train"] == one["train"]
++    assert four["test"][0] == one["test"][0]
++    assert adapter.public_turn(four, 0) == adapter.public_turn(one, 0)
++    for index in range(4):
++        turn = adapter.public_turn(four, index)
++        assert len(turn["test"]) == 1
++        assert turn["test"][0] == {"input": four["test"][index]["input"]}
++        assert "settings" not in turn and "program_solution" not in turn
++        if index:
++            assert set(turn) == {"test"}
++
++
++def test_clipping_creates_fragments_and_wrong_order_changes_output():
++    adapter = load_adapter()
++    episode = adapter.generate(0, {"finish": "largest_visible_fragment"}, demos=2, queries=4)
++    grid = episode["test"][0]["input"]
++    selected = adapter.solve(grid, {"finish": "largest_visible_fragment"})
++    wrong = adapter.wrong_order_solve(grid)
++    trace = adapter.dependency_trace(grid, {"finish": "largest_visible_fragment"})
++    assert selected != wrong
++    assert trace["visible_components"] == 2
++    assert trace["largest_visible_cells"] > trace["smallest_visible_cells"]
++    assert sum(v == 4 for row in selected for v in row) == trace["largest_visible_cells"]
++    assert sum(v == 8 for row in selected for v in row) == trace["smallest_visible_cells"]
++
++
++def test_fourth_query_is_substantive_30_by_30():
++    adapter = load_adapter()
++    episode = adapter.generate(23, {"finish": "largest_visible_fragment"}, demos=2, queries=4)
++    grid = episode["test"][3]["input"]
++    assert (len(grid), len(grid[0])) == (30, 30)
++    assert sum(v == 3 for row in grid for v in row) >= 40
++    out = episode["test"][3]["output"]
++    assert sum(v == 4 for row in out for v in row) >= 10
++    assert sum(v == 8 for row in out for v in row) >= 8
++
++
++@pytest.mark.parametrize("settings", [{}, {"finish": "bogus"}, {"finish": True}, {"finish": "translate_only", "x": 1}])
++def test_invalid_settings_reject(settings):
++    adapter = load_adapter()
++    with pytest.raises(ValueError):
++        adapter.generate(0, settings, demos=2, queries=1)
+diff --git a/repo/generators/2376352117fc/workspace/parametric/README.md b/repo/generators/2376352117fc/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/README.md
+@@ -0,0 +1,23 @@
++# Clipped translation → largest visible fragment
++
++The default `translate_only` setting is the byte-exact canonical vector
++translation. The alternate `largest_visible_fragment` setting is sequential:
++
++1. **A:** translate every green source cell by the color-1→color-2 marker vector,
++   clipping targets outside the canvas and painting visible targets color 8.
++2. **Intermediate:** the clipped translated mask. The source is a connected U,
++   but its bridge moves just beyond one border, leaving two unequal fragments.
++3. **B:** recompute the visible four-connected components and recolor only the
++   unique largest fragment yellow (4), leaving the smaller fragment color 8.
++
++The retained wrong-order program selects the connected source before clipping,
++so it recolors both visible fragments. The family supports 2–6 demonstrations,
++1–4 prefix-stable queries, matched inputs, and a substantive 30×30 case with a
++44-cell source motif.
++
++## Reproducible review
++
++Run `audit.py --seeds 32 --out evidence/current/self-review.json` from the
++repository runtime. It checks the 2–6 demonstration matrix, all four public
++turns, matched inputs, the 30×30 case, declared shortcut rejection,
++protected-Racket parity, and the source-bound wrong-order witness.
+diff --git a/repo/generators/2376352117fc/workspace/parametric/adapter.py b/repo/generators/2376352117fc/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/adapter.py
+@@ -0,0 +1,25 @@
++"""Native promotion adapter loading only the adjacent translation prototype."""
++from __future__ import annotations
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_NAME = "_translation_fragment_" + hashlib.sha256(str(_PATH).encode()).hexdigest()
++_SPEC = importlib.util.spec_from_file_location(_NAME, _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(_PATH)
++_MODULE = importlib.util.module_from_spec(_SPEC)
++sys.modules[_NAME] = _MODULE
++_SPEC.loader.exec_module(_MODULE)
++
++program = _MODULE.program
++generate = _MODULE.generate
++solve = _MODULE.solve
++teaching_check = _MODULE.teaching_check
++public_turn = _MODULE.public_turn
++dependency_trace = _MODULE.dependency_trace
++wrong_order_solve = _MODULE.wrong_order_solve
++rival_outputs = _MODULE.rival_outputs
++sample_input = _MODULE.sample_input
+diff --git a/repo/generators/2376352117fc/workspace/parametric/audit.py b/repo/generators/2376352117fc/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/audit.py
+@@ -0,0 +1,259 @@
++#!/usr/bin/env python3
++"""Bounded structural, teaching, public-projection, and protected-Racket audit."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any
++
++from reviewer_support import find_root, public_challenge_bytes, public_challenge_id
++
++TASK_ID = "2376352117fc"
++HERE = Path(__file__).resolve().parent
++ROOT = find_root(__file__)
++SETTINGS = ("translate_only", "largest_visible_fragment")
++RIVAL_FILES = {
++    "select_before_clipping": "select_before_clipping.rkt",
++    "first_visible_fragment": "first_visible_fragment.rkt",
++    "smallest_visible_fragment": "smallest_visible_fragment.rkt",
++}
++
++
++def load_adapter():
++    path = HERE / "adapter.py"
++    name = "_translation_fragment_audit_" + hashlib.sha256(str(path).encode()).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def same_inputs(left: dict[str, Any], right: dict[str, Any]) -> bool:
++    return all(
++        [pair["input"] for pair in left[split]] == [pair["input"] for pair in right[split]]
++        for split in ("train", "test")
++    )
++
++
++def structural(adapter, seed_count: int) -> dict[str, Any]:
++    failures: list[dict[str, Any]] = []
++    harmful: list[dict[str, Any]] = []
++    episodes = pairs = public_turns = stress = 0
++    ids: set[str] = set()
++    for seed in range(seed_count):
++        for demos in range(2, 7):
++            by_setting: dict[str, dict[str, Any]] = {}
++            for finish in SETTINGS:
++                settings = {"finish": finish}
++                try:
++                    episode = adapter.generate(seed, settings, demos=demos, queries=4)
++                    one = adapter.generate(seed, settings, demos=demos, queries=1)
++                except Exception as error:
++                    failures.append({
++                        "seed": seed, "demos": demos, "setting": finish,
++                        "kind": type(error).__name__, "message": str(error),
++                    })
++                    continue
++                by_setting[finish] = episode
++                episodes += 1
++                pairs += demos + 4
++                if episode["train"] != one["train"] or episode["test"][:1] != one["test"]:
++                    failures.append({"seed": seed, "demos": demos, "setting": finish, "kind": "prefix"})
++                teaching = adapter.teaching_check(episode)
++                if teaching["surviving_rivals"]:
++                    harmful.append({
++                        "seed": seed, "demos": demos, "setting": finish,
++                        "rivals": teaching["surviving_rivals"],
++                    })
++                for query_index in range(4):
++                    turn = adapter.public_turn(episode, query_index)
++                    public_turns += 1
++                    if query_index == 0:
++                        try:
++                            public_challenge_bytes(turn)
++                            ids.add(public_challenge_id(turn))
++                        except Exception as error:
++                            failures.append({
++                                "seed": seed, "demos": demos, "setting": finish,
++                                "query": query_index, "kind": "public", "message": str(error),
++                            })
++                    if any("output" in pair for pair in turn.get("test", [])):
++                        failures.append({
++                            "seed": seed, "demos": demos, "setting": finish,
++                            "query": query_index, "kind": "query_answer_leak",
++                        })
++                    if query_index > 0 and set(turn) != {"test"}:
++                        failures.append({
++                            "seed": seed, "demos": demos, "setting": finish,
++                            "query": query_index, "kind": "future_turn_context_leak",
++                        })
++                large = episode["test"][3]["input"]
++                if (
++                    len(large) == 30 and len(large[0]) == 30
++                    and sum(value == 3 for row in large for value in row) >= 40
++                ):
++                    stress += 1
++                else:
++                    failures.append({"seed": seed, "demos": demos, "setting": finish, "kind": "stress"})
++                trace = adapter.dependency_trace(episode["test"][0]["input"], settings)
++                if trace["visible_components"] != 2 or not trace["largest_visible_cells"] > trace["smallest_visible_cells"]:
++                    failures.append({
++                        "seed": seed, "demos": demos, "setting": finish,
++                        "kind": "fragment_structure", "trace": trace,
++                    })
++            if set(by_setting) == set(SETTINGS) and not same_inputs(by_setting[SETTINGS[0]], by_setting[SETTINGS[1]]):
++                failures.append({"seed": seed, "demos": demos, "kind": "matched_inputs"})
++    return {
++        "seed_count": seed_count,
++        "episodes": episodes,
++        "pairs": pairs,
++        "public_turns": public_turns,
++        "unique_public_ids": len(ids),
++        "stress_30x30_cases": stress,
++        "harmful_declared_rival_survivors": harmful,
++        "failures": failures,
++    }
++
++
++def protected_racket(adapter) -> dict[str, Any]:
++    from arcpuzzles.parametric_worker import _local_imports, _real_evaluator
++
++    rival_programs = {
++        name: (HERE / filename).read_text(encoding="utf-8")
++        for name, filename in RIVAL_FILES.items()
++    }
++    mismatches: list[dict[str, Any]] = []
++    harmful: list[dict[str, Any]] = []
++    cache: dict[tuple[str, str], list[list[int]]] = {}
++    evaluations = 0
++    runtime = ROOT / "shared/runtime"
++    with _local_imports(runtime, HERE):
++        apply, identity, bridge = _real_evaluator(runtime)
++        try:
++            def run(program_text: str, grid: list[list[int]]) -> list[list[int]]:
++                nonlocal evaluations
++                key = (program_text, json.dumps(grid, separators=(",", ":")))
++                if key not in cache:
++                    cache[key] = apply(program_text, grid)
++                    evaluations += 1
++                return cache[key]
++
++            for seed in (0, 17):
++                for finish in SETTINGS:
++                    settings = {"finish": finish}
++                    episode = adapter.generate(seed, settings, demos=2, queries=4)
++                    labels: list[list[list[int]]] = []
++                    selected_program = adapter.program(settings)
++                    programs = {
++                        "other_setting": adapter.program({"finish": SETTINGS[1] if finish == SETTINGS[0] else SETTINGS[0]}),
++                        **rival_programs,
++                    }
++                    rival_labels: dict[str, list[list[list[int]]]] = {name: [] for name in programs}
++                    for pair_index, pair in enumerate(episode["train"] + episode["test"]):
++                        selected = run(selected_program, pair["input"])
++                        labels.append(selected)
++                        if selected != pair["output"]:
++                            mismatches.append({
++                                "seed": seed, "setting": finish, "pair": pair_index,
++                                "program": "selected", "kind": "selected_label",
++                            })
++                        python_rivals = adapter.rival_outputs(pair["input"], settings)
++                        for name, text in programs.items():
++                            output = run(text, pair["input"])
++                            rival_labels[name].append(output)
++                            if name in python_rivals and output != python_rivals[name]:
++                                mismatches.append({
++                                    "seed": seed, "setting": finish, "pair": pair_index,
++                                    "program": name, "kind": "python_racket",
++                                })
++                    for name, outputs in rival_labels.items():
++                        if outputs[:2] == labels[:2] and any(
++                            actual != expected
++                            for actual, expected in zip(outputs[2:], labels[2:], strict=True)
++                        ):
++                            harmful.append({"seed": seed, "setting": finish, "rival": name})
++
++            witness = adapter.generate(0, {"finish": SETTINGS[1]}, demos=2, queries=4)["test"][3]["input"]
++            selected_output = run(adapter.program({"finish": SETTINGS[1]}), witness)
++            wrong_output = run(rival_programs["select_before_clipping"], witness)
++            causal = {
++                "input_shape": [len(witness), len(witness[0])],
++                "ablation": "select the connected source before stage-A clipping splits its translated image",
++                "outputs_differ": selected_output != wrong_output,
++                "selected_matches_python": selected_output == adapter.solve(witness, {"finish": SETTINGS[1]}),
++                "counterfactual_matches_python": wrong_output == adapter.wrong_order_solve(witness),
++                "changed_cells": sum(
++                    a != b
++                    for row_a, row_b in zip(selected_output, wrong_output, strict=True)
++                    for a, b in zip(row_a, row_b, strict=True)
++                ),
++            }
++        finally:
++            bridge.close()
++    return {
++        "executed": True,
++        "runtime_identity": identity,
++        "evaluations": evaluations,
++        "python_racket_mismatches": mismatches,
++        "harmful_survivors": harmful,
++        "causal_counterfactual": causal,
++    }
++
++
++def build(seed_count: int) -> dict[str, Any]:
++    adapter = load_adapter()
++    s = structural(adapter, seed_count)
++    r = protected_racket(adapter)
++    failed = bool(
++        s["failures"]
++        or s["harmful_declared_rival_survivors"]
++        or r["python_racket_mismatches"]
++        or r["harmful_survivors"]
++        or not r["causal_counterfactual"]["outputs_differ"]
++        or not r["causal_counterfactual"]["selected_matches_python"]
++        or not r["causal_counterfactual"]["counterfactual_matches_python"]
++    )
++    return {
++        "schema": "arcpuzzles-parametric-self-review-v1",
++        "task_id": TASK_ID,
++        "status": "failed" if failed else "passed",
++        "structural": s,
++        "racket": r,
++        "sequential_dependency": {
++            "step_a": "translate the connected green source by the color-1 to color-2 vector and clip targets outside the canvas",
++            "intermediate": "a clipped color-8 translation split into two unequal four-connected visible fragments",
++            "step_b": "recompute the visible fragments and recolor only the unique largest one yellow",
++            "why_b_depends_on_a": "the two candidate fragments do not exist separately until stage A moves the source bridge outside the boundary",
++        },
++        "scope_note": "Finite declared rivals and bounded seeds; not a proof of unique induction.",
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", type=int, default=32)
++    args = parser.parse_args()
++    report = build(args.seeds)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(json.dumps({
++        "task_id": TASK_ID,
++        "status": report["status"],
++        "episodes": report["structural"]["episodes"],
++        "pairs": report["structural"]["pairs"],
++        "public_turns": report["structural"]["public_turns"],
++        "racket_evaluations": report["racket"]["evaluations"],
++    }, sort_keys=True))
++    return 0 if report["status"] == "passed" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/2376352117fc/workspace/parametric/canonical.rkt b/repo/generators/2376352117fc/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (let* ((p1 (first (find-color g 1))) (p2 (first (find-color g 2))) (dr (- (first p2) (first p1))) (dc (- (second p2) (second p1)))) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((p (in-list (find-color g 3)))) (let ((rr (+ (first p) dr)) (cc (+ (second p) dc))) (if (in-bounds? rr cc (rows g) (cols g)) (set-cell out rr cc 8) out))))))
+\ No newline at end of file
+diff --git a/repo/generators/2376352117fc/workspace/parametric/evidence/current/self-review.json b/repo/generators/2376352117fc/workspace/parametric/evidence/current/self-review.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/evidence/current/self-review.json
+@@ -0,0 +1,49 @@
++{
++  "racket": {
++    "causal_counterfactual": {
++      "ablation": "select the connected source before stage-A clipping splits its translated image",
++      "changed_cells": 10,
++      "counterfactual_matches_python": true,
++      "input_shape": [
++        30,
++        30
++      ],
++      "outputs_differ": true,
++      "selected_matches_python": true
++    },
++    "evaluations": 60,
++    "executed": true,
++    "harmful_survivors": [],
++    "python_racket_mismatches": [],
++    "runtime_identity": {
++      "backend": "racket",
++      "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++      "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++      "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++      "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++      "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++      "protected": true,
++      "schema": "arc-protected-racket-runtime-v1"
++    }
++  },
++  "schema": "arcpuzzles-parametric-self-review-v1",
++  "scope_note": "Finite declared rivals and bounded seeds; not a proof of unique induction.",
++  "sequential_dependency": {
++    "intermediate": "a clipped color-8 translation split into two unequal four-connected visible fragments",
++    "step_a": "translate the connected green source by the color-1 to color-2 vector and clip targets outside the canvas",
++    "step_b": "recompute the visible fragments and recolor only the unique largest one yellow",
++    "why_b_depends_on_a": "the two candidate fragments do not exist separately until stage A moves the source bridge outside the boundary"
++  },
++  "status": "passed",
++  "structural": {
++    "episodes": 320,
++    "failures": [],
++    "harmful_declared_rival_survivors": [],
++    "pairs": 2560,
++    "public_turns": 1280,
++    "seed_count": 32,
++    "stress_30x30_cases": 320,
++    "unique_public_ids": 320
++  },
++  "task_id": "2376352117fc"
++}
+diff --git a/repo/generators/2376352117fc/workspace/parametric/evidence/manifest.json b/repo/generators/2376352117fc/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,112 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "6dc047f6d5665a74ecdc862875ecc605e91210827d6803d542bea74c0360183d",
++  "canonical_rule_hash": "6dc047f6d566",
++  "default": {
++    "finish": "translate_only"
++  },
++  "evidence_root": "generators/2376352117fc/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 12896,
++      "path": "generators/2376352117fc/generator.py",
++      "sha256": "3ce804dbd66c74ca79c075ee6e0e506f534445cdae6618deb8b7f6e193644bc8"
++    },
++    {
++      "bytes": 5497,
++      "path": "generators/2376352117fc/tests/test_generator_2376352117fc.py",
++      "sha256": "6fcf4d71895b883551018b2ad2c57c74fdaa3c70b7763e1188449e4b93e617db"
++    },
++    {
++      "bytes": 3913,
++      "path": "generators/2376352117fc/tests/test_parametric_family.py",
++      "sha256": "2eb8580d9fdc1e7ceaf191947830e48beb577bcfce8fead3a345b3ebc58f0587"
++    },
++    {
++      "bytes": 1254,
++      "path": "generators/2376352117fc/tests/test_workspace_probes.py",
++      "sha256": "9b56d1619fd79e948cea59d3d745a9ca111a5bbafc806edb4757abbab32c95cd"
++    },
++    {
++      "bytes": 1256,
++      "path": "generators/2376352117fc/workspace/parametric/README.md",
++      "sha256": "bf34d6216dccc0f37eeea5da5f15b9c99662ce8eba4b2b935c0ce8882b163f74"
++    },
++    {
++      "bytes": 890,
++      "path": "generators/2376352117fc/workspace/parametric/adapter.py",
++      "sha256": "d1e3094cd17a210739e76e35f73be7bcfba1ff5460fcee8e2332d6b57cdc6de9"
++    },
++    {
++      "bytes": 12026,
++      "path": "generators/2376352117fc/workspace/parametric/audit.py",
++      "sha256": "7b3b4e81f3e76bdfe98c452a0cb8943172499f5909a0cc0c9ef8f4f0410de0b9"
++    },
++    {
++      "bytes": 365,
++      "path": "generators/2376352117fc/workspace/parametric/canonical.rkt",
++      "sha256": "6dc047f6d5665a74ecdc862875ecc605e91210827d6803d542bea74c0360183d"
++    },
++    {
++      "bytes": 2011,
++      "path": "generators/2376352117fc/workspace/parametric/evidence/current/self-review.json",
++      "sha256": "cd0d4f2e9bcbfb06dbe5317ef490803f9a1882226d4e1850e02e7706d4332d70"
++    },
++    {
++      "bytes": 677,
++      "path": "generators/2376352117fc/workspace/parametric/first_visible_fragment.rkt",
++      "sha256": "0ec1c18b2d3a2a9ea90699d91582ac158496d16c41cabc96c7ec8e21fd3f37a7"
++    },
++    {
++      "bytes": 1189,
++      "path": "generators/2376352117fc/workspace/parametric/largest_visible_fragment.rkt",
++      "sha256": "53efac3ef25a7e9915dc2e8ea2b463ccf3fd9fb446e125f18b1a7b5f7ac78a2a"
++    },
++    {
++      "bytes": 998,
++      "path": "generators/2376352117fc/workspace/parametric/promotion.json",
++      "sha256": "17fccd2816441e6c405676d6691de742a7b7940e1a234f0de7a9e9db38e0d34c"
++    },
++    {
++      "bytes": 16146,
++      "path": "generators/2376352117fc/workspace/parametric/prototype.py",
++      "sha256": "823f3edd9ebd32b1a03af9cb154f39b931fae12998cf4aef2eba324dcbe65dfe"
++    },
++    {
++      "bytes": 525,
++      "path": "generators/2376352117fc/workspace/parametric/select_before_clipping.rkt",
++      "sha256": "786c9511eda4be9050651a38c3f2a5c2a7568a75d67e20af299ced929d5992d1"
++    },
++    {
++      "bytes": 822,
++      "path": "generators/2376352117fc/workspace/parametric/smallest_visible_fragment.rkt",
++      "sha256": "ea4f60a0dbc74fbe6b49f8c21a4026a44349b64584542b83432af308dbd9b2dd"
++    }
++  ],
++  "generator_sha256": "3ce804dbd66c74ca79c075ee6e0e506f534445cdae6618deb8b7f6e193644bc8",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "finish": [
++      "translate_only",
++      "largest_visible_fragment"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "61 task tests passed; bounded self-review covered 320 episodes, 2560 pairs, 1280 public turns and 60 protected-Racket evaluations.",
++  "rule_task_id": "2376352117fc",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "2376352117fc",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/2376352117fc/workspace/parametric/first_visible_fragment.rkt b/repo/generators/2376352117fc/workspace/parametric/first_visible_fragment.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/first_visible_fragment.rkt
+@@ -0,0 +1,14 @@
++(rule!
++  (let ((dummy 0))
++    (define p1 (first (find-color g 1)))
++    (define p2 (first (find-color g 2)))
++    (define dr (- (first p2) (first p1)))
++    (define dc (- (second p2) (second p1)))
++    (define intermediate
++      (for/fold ([out (empty-grid (rows g) (cols g) 0)]) ([p (in-list (find-color g 3))])
++        (let ((rr (+ (first p) dr)) (cc (+ (second p) dc)))
++          (if (in-bounds? rr cc (rows g) (cols g)) (set-cell out rr cc 8) out))))
++    (define selected
++      (first (filter (lambda (obj) (= (obj-color obj) 8)) (objects intermediate 0))))
++    (for/fold ([out intermediate]) ([p (in-list (obj-cells selected))])
++      (set-cell out (first p) (second p) 4))))
+diff --git a/repo/generators/2376352117fc/workspace/parametric/largest_visible_fragment.rkt b/repo/generators/2376352117fc/workspace/parametric/largest_visible_fragment.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/largest_visible_fragment.rkt
+@@ -0,0 +1,26 @@
++(rule!
++  (let ((dummy 0))
++    (define p1 (first (find-color g 1)))
++    (define p2 (first (find-color g 2)))
++    (define dr (- (first p2) (first p1)))
++    (define dc (- (second p2) (second p1)))
++    ;; Stage A: exact clipped vector translation.
++    (define intermediate
++      (for/fold ([out (empty-grid (rows g) (cols g) 0)]) ([p (in-list (find-color g 3))])
++        (let ((rr (+ (first p) dr)) (cc (+ (second p) dc)))
++          (if (in-bounds? rr cc (rows g) (cols g))
++              (set-cell out rr cc 8)
++              out))))
++    (define visible
++      (filter (lambda (obj) (= (obj-color obj) 8)) (objects intermediate 0)))
++    (define (better? a b)
++      (or (> (obj-size a) (obj-size b))
++          (and (= (obj-size a) (obj-size b))
++               (or (< (obj-r1 a) (obj-r1 b))
++                   (and (= (obj-r1 a) (obj-r1 b)) (< (obj-c1 a) (obj-c1 b)))))))
++    ;; Stage B: select the unique largest component after clipping.
++    (define selected
++      (for/fold ([best (first visible)]) ([obj (in-list (rest visible))])
++        (if (better? obj best) obj best)))
++    (for/fold ([out intermediate]) ([p (in-list (obj-cells selected))])
++      (set-cell out (first p) (second p) 4))))
+diff --git a/repo/generators/2376352117fc/workspace/parametric/promotion.json b/repo/generators/2376352117fc/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/promotion.json
+@@ -0,0 +1,34 @@
++{
++  "adapter": "generators/2376352117fc/workspace/parametric/adapter.py",
++  "default": {
++    "finish": "translate_only"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "finish": [
++      "translate_only",
++      "largest_visible_fragment"
++    ]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/2376352117fc/workspace/parametric/prototype.py",
++    "generators/2376352117fc/workspace/parametric/canonical.rkt",
++    "generators/2376352117fc/workspace/parametric/largest_visible_fragment.rkt",
++    "generators/2376352117fc/workspace/parametric/select_before_clipping.rkt",
++    "generators/2376352117fc/workspace/parametric/first_visible_fragment.rkt",
++    "generators/2376352117fc/workspace/parametric/smallest_visible_fragment.rkt",
++    "generators/2376352117fc/workspace/parametric/audit.py",
++    "generators/2376352117fc/workspace/parametric/README.md"
++  ],
++  "schema": "arcpuzzles-parametric-adapter-v1"
++}
+diff --git a/repo/generators/2376352117fc/workspace/parametric/prototype.py b/repo/generators/2376352117fc/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/prototype.py
+@@ -0,0 +1,393 @@
++"""Matched-input parametric family for ARC task ``2376352117fc``.
++
++``translate_only`` is the exact selected canonical vector-translation rule.
++``largest_visible_fragment`` first performs that translation with clipping,
++then recomputes the four-connected visible fragments and recolors only the
++unique largest fragment yellow.  The source is a connected U: its bridge is
++translated just beyond one boundary, so clipping creates two fragments that
++do not exist as separate objects before stage A.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any, Iterable
++
++TASK_ID = "2376352117fc"
++PARAMETER = "finish"
++SETTINGS = ("translate_only", "largest_visible_fragment")
++DEFAULT = {PARAMETER: SETTINGS[0]}
++MIN_DEMOS = 2
++MAX_DEMOS = 6
++MIN_QUERIES = 1
++MAX_QUERIES = 4
++MAX_SEED = 2**63 - 1
++HOME = Path(__file__).resolve().parent
++PROGRAM_FILES = {
++    SETTINGS[0]: HOME / "canonical.rkt",
++    SETTINGS[1]: HOME / "largest_visible_fragment.rkt",
++}
++CARDINALS = ((-1, 0), (1, 0), (0, -1), (0, 1))
++
++# h, w, clipped side, bridge offset, bridge span, endpoint leg A, endpoint leg B
++TRAIN_PROFILES = (
++    (12, 14, "top", 3, 7, 3, 5),
++    (14, 12, "left", 3, 7, 6, 3),
++    (16, 17, "bottom", 4, 9, 4, 7),
++    (18, 16, "right", 4, 9, 8, 5),
++    (22, 24, "top", 5, 12, 7, 10),
++    (24, 22, "left", 5, 12, 11, 7),
++)
++QUERY_PROFILES = (
++    (16, 18, "bottom", 4, 9, 5, 8),
++    (18, 20, "right", 4, 10, 9, 5),
++    (24, 26, "top", 5, 14, 8, 11),
++    (30, 30, "left", 6, 20, 14, 10),
++)
++
++
++def _exact_int(name: str, value: Any, low: int, high: int) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be an exact integer; bool is forbidden")
++    if not low <= value <= high:
++        raise ValueError(f"{name} must be in [{low}, {high}]")
++    return value
++
++
++def _finish(settings: Any) -> str:
++    if type(settings) is not dict or set(settings) != {PARAMETER}:
++        raise ValueError(f"settings must contain exactly {PARAMETER!r}")
++    value = settings[PARAMETER]
++    if type(value) is not str or value not in SETTINGS:
++        raise ValueError(f"{PARAMETER} must be one of {SETTINGS!r}")
++    return value
++
++
++def program(settings: Any) -> str:
++    return PROGRAM_FILES[_finish(settings)].read_text(encoding="utf-8")
++
++
++def _grid(value: Any) -> tuple[int, int]:
++    if type(value) is not list or not value or type(value[0]) is not list or not value[0]:
++        raise ValueError("grid must be a nonempty list of nonempty rows")
++    width = len(value[0])
++    if len(value) > 30 or width > 30:
++        raise ValueError("grid dimensions must not exceed 30")
++    if any(
++        type(row) is not list
++        or len(row) != width
++        or any(type(cell) is not int or cell not in (0, 1, 2, 3) for cell in row)
++        for row in value
++    ):
++        raise ValueError("input must be rectangular with exact integer colors 0,1,2,3")
++    return len(value), width
++
++
++def _positions(grid: list[list[int]], color: int) -> set[tuple[int, int]]:
++    return {(r, c) for r, row in enumerate(grid) for c, value in enumerate(row) if value == color}
++
++
++def _components_from_cells(cells: Iterable[tuple[int, int]]) -> list[frozenset[tuple[int, int]]]:
++    remaining = set(cells)
++    result: list[frozenset[tuple[int, int]]] = []
++    while remaining:
++        start = min(remaining)
++        remaining.remove(start)
++        stack = [start]
++        component = {start}
++        while stack:
++            r, c = stack.pop()
++            for dr, dc in CARDINALS:
++                point = (r + dr, c + dc)
++                if point in remaining:
++                    remaining.remove(point)
++                    component.add(point)
++                    stack.append(point)
++        result.append(frozenset(component))
++    result.sort(key=lambda component: min(component))
++    return result
++
++
++def analyze(value: Any) -> dict[str, Any]:
++    h, w = _grid(value)
++    one = sorted(_positions(value, 1))
++    two = sorted(_positions(value, 2))
++    source = _positions(value, 3)
++    if len(one) != 1 or len(two) != 1:
++        raise ValueError("scene must contain exactly one color-1 and color-2 marker")
++    if not source or len(_components_from_cells(source)) != 1:
++        raise ValueError("color-3 source must be one four-connected object")
++    dr = two[0][0] - one[0][0]
++    dc = two[0][1] - one[0][1]
++    if dr == 0 and dc == 0:
++        raise ValueError("translation vector must be nonzero")
++    targets = {(r + dr, c + dc) for r, c in source if 0 <= r + dr < h and 0 <= c + dc < w}
++    if not targets:
++        raise ValueError("translation must leave at least one visible target cell")
++    return {"height": h, "width": w, "p1": one[0], "p2": two[0], "dr": dr, "dc": dc, "source": source, "targets": targets}
++
++
++def canonical_intermediate(value: Any) -> list[list[int]]:
++    scene = analyze(value)
++    out = [[0 for _ in range(scene["width"])] for _ in range(scene["height"])]
++    for r, c in scene["targets"]:
++        out[r][c] = 8
++    return out
++
++
++def _visible_components(value: Any) -> list[frozenset[tuple[int, int]]]:
++    return _components_from_cells(_positions(canonical_intermediate(value), 8))
++
++
++def _select(components: list[frozenset[tuple[int, int]]], mode: str) -> frozenset[tuple[int, int]]:
++    if not components:
++        raise ValueError("visible translation has no component")
++    if mode == "largest":
++        ordered = sorted(components, key=lambda cells: (-len(cells), min(cells)))
++        if len(ordered) > 1 and len(ordered[0]) == len(ordered[1]):
++            raise ValueError("largest visible fragment must be unique")
++        return ordered[0]
++    if mode == "smallest":
++        ordered = sorted(components, key=lambda cells: (len(cells), min(cells)))
++        return ordered[0]
++    if mode == "first":
++        return components[0]
++    if mode == "last":
++        return components[-1]
++    raise ValueError(mode)
++
++
++def _recolor_selected(intermediate: list[list[int]], selected: Iterable[tuple[int, int]]) -> list[list[int]]:
++    out = deepcopy(intermediate)
++    for r, c in selected:
++        out[r][c] = 4
++    return out
++
++
++def solve(value: Any, settings: Any) -> list[list[int]]:
++    finish = _finish(settings)
++    intermediate = canonical_intermediate(value)
++    if finish == SETTINGS[0]:
++        return intermediate
++    return _recolor_selected(intermediate, _select(_components_from_cells(_positions(intermediate, 8)), "largest"))
++
++
++def wrong_order_solve(value: Any) -> list[list[int]]:
++    """Counterfactual: select the connected source before clipping splits it."""
++    intermediate = canonical_intermediate(value)
++    return [[4 if cell == 8 else cell for cell in row] for row in intermediate]
++
++
++def _fragment_rival(value: Any, mode: str) -> list[list[int]]:
++    intermediate = canonical_intermediate(value)
++    components = _components_from_cells(_positions(intermediate, 8))
++    return _recolor_selected(intermediate, _select(components, mode))
++
++
++def _reverse_vector(value: Any, settings: Any) -> list[list[int]]:
++    scene = analyze(value)
++    out = [[0 for _ in range(scene["width"])] for _ in range(scene["height"])]
++    for r, c in scene["source"]:
++        rr, cc = r - scene["dr"], c - scene["dc"]
++        if 0 <= rr < scene["height"] and 0 <= cc < scene["width"]:
++            out[rr][cc] = 8
++    if _finish(settings) == SETTINGS[0]:
++        return out
++    components = _components_from_cells(_positions(out, 8))
++    if not components:
++        return out
++    selected = sorted(components, key=lambda cells: (-len(cells), min(cells)))[0]
++    return _recolor_selected(out, selected)
++
++
++def rival_outputs(value: Any, settings: Any) -> dict[str, list[list[int]]]:
++    finish = _finish(settings)
++    other = SETTINGS[1] if finish == SETTINGS[0] else SETTINGS[0]
++    return {
++        "other_setting": solve(value, {PARAMETER: other}),
++        "select_before_clipping": wrong_order_solve(value),
++        "first_visible_fragment": _fragment_rival(value, "first"),
++        "last_visible_fragment": _fragment_rival(value, "last"),
++        "smallest_visible_fragment": _fragment_rival(value, "smallest"),
++        "reverse_vector": _reverse_vector(value, settings),
++    }
++
++
++def teaching_check(episode: Any) -> dict[str, Any]:
++    if type(episode) is not dict:
++        raise ValueError("episode must be an object")
++    settings = episode.get("settings")
++    _finish(settings)
++    train = episode.get("train")
++    if type(train) is not list or not MIN_DEMOS <= len(train) <= MAX_DEMOS:
++        raise ValueError("episode must contain two through six demonstrations")
++    per_demo = []
++    names: set[str] = set()
++    for pair in train:
++        if type(pair) is not dict or not {"input", "output"} <= set(pair):
++            raise ValueError("demonstrations require input/output")
++        if solve(pair["input"], settings) != pair["output"]:
++            raise ValueError("demonstration label differs from selected rule")
++        outputs = rival_outputs(pair["input"], settings)
++        per_demo.append(outputs)
++        names.update(outputs)
++    survivors = sorted(
++        name for name in names
++        if all(outputs[name] == pair["output"] for outputs, pair in zip(per_demo, train, strict=True))
++    )
++    return {
++        "status": "identified" if not survivors else "ambiguous",
++        "surviving_rivals": survivors,
++        "demonstrations": len(train),
++        "used_query_answers": False,
++        "limits": "Finite named rivals fitted to demonstrations only; not universal uniqueness.",
++    }
++
++
++def dependency_trace(value: Any, settings: Any) -> dict[str, Any]:
++    finish = _finish(settings)
++    scene = analyze(value)
++    intermediate = canonical_intermediate(value)
++    components = _components_from_cells(_positions(intermediate, 8))
++    sizes = sorted((len(cells) for cells in components), reverse=True)
++    return {
++        "setting": {PARAMETER: finish},
++        "step_a": "translate every green source cell by the marker vector and clip out-of-bounds targets",
++        "intermediate": intermediate,
++        "step_b": "recompute visible four-connected fragments and recolor only the unique largest fragment yellow",
++        "why_b_depends_on_a": "the connected U source becomes two disconnected visible fragments only when stage A translates its bridge beyond the boundary",
++        "vector": [scene["dr"], scene["dc"]],
++        "visible_components": len(components),
++        "largest_visible_cells": sizes[0],
++        "smallest_visible_cells": sizes[-1],
++    }
++
++
++def _rng(seed: int, split: str, index: int) -> random.Random:
++    raw = f"{TASK_ID}|visible-fragment-v2|{seed}|{split}|{index}".encode()
++    return random.Random(int.from_bytes(hashlib.sha256(raw).digest()[:16], "big"))
++
++
++def _profile_grid(seed: int, split: str, index: int) -> list[list[int]]:
++    profiles = TRAIN_PROFILES if split == "train" else QUERY_PROFILES
++    h, w, side, offset, span, leg_a, leg_b = profiles[index]
++    rng = _rng(seed, split, index)
++    grid = [[0 for _ in range(w)] for _ in range(h)]
++    source: set[tuple[int, int]] = set()
++
++    if side in ("top", "bottom"):
++        available = w - span - 4
++        start = 2 + (rng.randrange(available + 1) if available >= 0 else 0)
++        marker_col = 0 if rng.randrange(2) == 0 else w - 1
++        if side == "top":
++            bridge = offset
++            source.update((bridge, c) for c in range(start, start + span))
++            source.update((r, start) for r in range(bridge + 1, bridge + leg_a + 1))
++            source.update((r, start + span - 1) for r in range(bridge + 1, bridge + leg_b + 1))
++            p1 = (h - 1, marker_col)
++            p2 = (h - 1 - (offset + 1), marker_col)
++        else:
++            bridge = h - 1 - offset
++            source.update((bridge, c) for c in range(start, start + span))
++            source.update((r, start) for r in range(bridge - 1, bridge - leg_a - 1, -1))
++            source.update((r, start + span - 1) for r in range(bridge - 1, bridge - leg_b - 1, -1))
++            p1 = (0, marker_col)
++            p2 = (offset + 1, marker_col)
++    else:
++        available = h - span - 4
++        start = 2 + (rng.randrange(available + 1) if available >= 0 else 0)
++        marker_row = 0 if rng.randrange(2) == 0 else h - 1
++        if side == "left":
++            bridge = offset
++            source.update((r, bridge) for r in range(start, start + span))
++            source.update((start, c) for c in range(bridge + 1, bridge + leg_a + 1))
++            source.update((start + span - 1, c) for c in range(bridge + 1, bridge + leg_b + 1))
++            p1 = (marker_row, w - 1)
++            p2 = (marker_row, w - 1 - (offset + 1))
++        else:
++            bridge = w - 1 - offset
++            source.update((r, bridge) for r in range(start, start + span))
++            source.update((start, c) for c in range(bridge - 1, bridge - leg_a - 1, -1))
++            source.update((start + span - 1, c) for c in range(bridge - 1, bridge - leg_b - 1, -1))
++            p1 = (marker_row, 0)
++            p2 = (marker_row, offset + 1)
++
++    if p1 in source or p2 in source or p1 == p2:
++        raise RuntimeError("marker/source collision")
++    for r, c in source:
++        if not (0 <= r < h and 0 <= c < w):
++            raise RuntimeError("profile source escaped grid")
++        grid[r][c] = 3
++    grid[p1[0]][p1[1]] = 1
++    grid[p2[0]][p2[1]] = 2
++
++    scene = analyze(grid)
++    visible = _components_from_cells(scene["targets"])
++    if len(visible) != 2 or len(visible[0]) == len(visible[1]):
++        raise RuntimeError(f"profile did not create two unequal visible fragments: {list(map(len, visible))}")
++    return grid
++
++
++def sample_input(seed: int, split: str, index: int) -> list[list[int]]:
++    _exact_int("seed", seed, 0, MAX_SEED)
++    if split not in ("train", "test"):
++        raise ValueError("split must be 'train' or 'test'")
++    profiles = TRAIN_PROFILES if split == "train" else QUERY_PROFILES
++    _exact_int("index", index, 0, len(profiles) - 1)
++    return _profile_grid(seed, split, index)
++
++
++def generate(seed: int, settings: Any, demos: int = 3, queries: int = 4) -> dict[str, Any]:
++    _exact_int("seed", seed, 0, MAX_SEED)
++    _finish(settings)
++    _exact_int("demos", demos, MIN_DEMOS, MAX_DEMOS)
++    _exact_int("queries", queries, MIN_QUERIES, MAX_QUERIES)
++    train = [
++        {"input": (grid := sample_input(seed, "train", index)), "output": solve(grid, settings)}
++        for index in range(demos)
++    ]
++    test = [
++        {"input": (grid := sample_input(seed, "test", index)), "output": solve(grid, settings)}
++        for index in range(queries)
++    ]
++    fingerprints = [json.dumps(pair["input"], separators=(",", ":")) for pair in train + test]
++    if len(fingerprints) != len(set(fingerprints)):
++        raise RuntimeError("constructed episode contains duplicate inputs")
++    episode = {
++        "task_id": TASK_ID,
++        "seed": seed,
++        "settings": deepcopy(settings),
++        "train": train,
++        "test": test,
++        "program_solution": program(settings),
++        "sampling": {"draws": demos + queries, "duplicate_rejections": 0},
++    }
++    certificate = teaching_check(episode)
++    if certificate["surviving_rivals"]:
++        raise RuntimeError("constructed demonstrations leave declared rivals alive: " + ", ".join(certificate["surviving_rivals"]))
++    episode["teaching"] = certificate
++    return episode
++
++
++def public_turn(episode: Any, query_index: Any = 0) -> dict[str, Any]:
++    if type(episode) is not dict or type(episode.get("train")) is not list or type(episode.get("test")) is not list:
++        raise ValueError("episode must contain train/test lists")
++    test = episode["test"]
++    _exact_int("query_index", query_index, 0, len(test) - 1)
++    query = {"input": deepcopy(test[query_index]["input"])}
++    if query_index == 0:
++        return {
++            "train": [{"input": deepcopy(pair["input"]), "output": deepcopy(pair["output"])} for pair in episode["train"]],
++            "test": [query],
++        }
++    return {"test": [query]}
++
++
++__all__ = [
++    "DEFAULT", "SETTINGS", "analyze", "canonical_intermediate", "dependency_trace",
++    "generate", "program", "public_turn", "rival_outputs", "sample_input", "solve",
++    "teaching_check", "wrong_order_solve",
++]
+diff --git a/repo/generators/2376352117fc/workspace/parametric/select_before_clipping.rkt b/repo/generators/2376352117fc/workspace/parametric/select_before_clipping.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/select_before_clipping.rkt
+@@ -0,0 +1,12 @@
++(rule!
++  (let ((dummy 0))
++    (define p1 (first (find-color g 1)))
++    (define p2 (first (find-color g 2)))
++    (define dr (- (first p2) (first p1)))
++    (define dc (- (second p2) (second p1)))
++    ;; Wrong order: the connected source is selected before clipping splits it.
++    (for/fold ([out (empty-grid (rows g) (cols g) 0)]) ([p (in-list (find-color g 3))])
++      (let ((rr (+ (first p) dr)) (cc (+ (second p) dc)))
++        (if (in-bounds? rr cc (rows g) (cols g))
++            (set-cell out rr cc 4)
++            out)))))
+diff --git a/repo/generators/2376352117fc/workspace/parametric/smallest_visible_fragment.rkt b/repo/generators/2376352117fc/workspace/parametric/smallest_visible_fragment.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2376352117fc/workspace/parametric/smallest_visible_fragment.rkt
+@@ -0,0 +1,17 @@
++(rule!
++  (let ((dummy 0))
++    (define p1 (first (find-color g 1)))
++    (define p2 (first (find-color g 2)))
++    (define dr (- (first p2) (first p1)))
++    (define dc (- (second p2) (second p1)))
++    (define intermediate
++      (for/fold ([out (empty-grid (rows g) (cols g) 0)]) ([p (in-list (find-color g 3))])
++        (let ((rr (+ (first p) dr)) (cc (+ (second p) dc)))
++          (if (in-bounds? rr cc (rows g) (cols g)) (set-cell out rr cc 8) out))))
++    (define visible
++      (filter (lambda (obj) (= (obj-color obj) 8)) (objects intermediate 0)))
++    (define selected
++      (for/fold ([best (first visible)]) ([obj (in-list (rest visible))])
++        (if (< (obj-size obj) (obj-size best)) obj best)))
++    (for/fold ([out intermediate]) ([p (in-list (obj-cells selected))])
++      (set-cell out (first p) (second p) 4))))
+diff --git a/repo/generators/e14a91c50791/notes.md b/repo/generators/e14a91c50791/notes.md
+--- a/repo/generators/e14a91c50791/notes.md
++++ b/repo/generators/e14a91c50791/notes.md
+@@ -2,3 +2,30 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Native parametric review — review-64519201510b2909
++
++Built the task-local `finish` family under `workspace/parametric/` without
++changing the production generator or canonical authority. `bbox_only` returns
++the byte-exact canonical program (`af5d729bf23b180b26cc7f9b4174002cc0ccf5f7d11842e482031e2111d3b37a`).
++`largest_orange_cluster` first performs that odd-rotation-class bounding-box
++fill, then recomputes orange four-connected components and recolors the unique
++largest one blue. Two complementary target boxes merge only after the canonical
++fill, so the stage-B object is not present in the source.
++
++The sampler supports 2–6 demonstrations, 1–4 prefix-stable private queries,
++matched inputs across settings, four distinct queries, and a substantive 30×30
++case. The reusable `audit.py` checked 320 episodes, 2,560 labeled pairs, 1,280
++public turns and 60 protected-Racket evaluations; no declared shortcut survived.
++Native qualification covered both settings at seeds 0 and 17 with 40 Racket
++labels. The official wrong-intermediate witness replayed and changed four cells.
++
++The inherited canonical test used a checkout-relative data path; it was repaired
++to use `reviewer_support` so the staged task suite runs portably. Final staged
++result: 38 tests and 12 subtests passed. One pre-existing non-failing deprecation
++warning remains for a private `GenCtx` field.
++
++Status is reviewer-ready, not owner-accepted. Exact-source owner integration,
++fresh qualification and witness replay, semantic acceptance, and any later
++training admission remain pending. The finite rival/seed audit is not a proof of
++unique induction or measured learning gain.
+diff --git a/repo/generators/e14a91c50791/tests/test_generator_e14a91c50791.py b/repo/generators/e14a91c50791/tests/test_generator_e14a91c50791.py
+--- a/repo/generators/e14a91c50791/tests/test_generator_e14a91c50791.py
++++ b/repo/generators/e14a91c50791/tests/test_generator_e14a91c50791.py
+@@ -7,9 +7,10 @@
+ 
+ from puzzle_generators import base
+ from puzzle_generators.per_puzzle.e14a91c50791 import generator
+-
+-
+-ROOT = Path(__file__).resolve().parents[1]
++from reviewer_support import canonical_pairs as load_canonical_pairs, find_root
++
++
++ROOT = find_root(__file__)
+ 
+ 
+ def as_grid(value):
+@@ -20,17 +21,9 @@
+ 
+ 
+ def canonical_pairs():
+-    with (ROOT / "data" / "canonical" / "puzzles.jsonl").open() as handle:
+-        for line in handle:
+-            row = json.loads(line)
+-            if row.get("task_id") != generator.TASK_ID:
+-                continue
+-            for split in ("train", "test"):
+-                value = row.get(split)
+-                pairs = value if isinstance(value, list) else [value]
+-                for pair in pairs:
+-                    if pair:
+-                        yield as_grid(pair["input"]), as_grid(pair["output"])
++    for pair in load_canonical_pairs(generator.TASK_ID, root=ROOT, labeled_only=True):
++        yield as_grid(pair["input"]), as_grid(pair["output"])
++
+ 
+ 
+ class E14a91c50791GeneratorTests(unittest.TestCase):
+diff --git a/repo/generators/e14a91c50791/tests/test_parametric_family.py b/repo/generators/e14a91c50791/tests/test_parametric_family.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/tests/test_parametric_family.py
+@@ -0,0 +1,93 @@
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++HOME = Path(__file__).resolve().parents[1]
++PARAM = HOME / "workspace" / "parametric"
++
++
++def load_adapter():
++    path = PARAM / "adapter.py"
++    spec = importlib.util.spec_from_file_location("e14_parametric_adapter", path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def input_fingerprint(grid):
++    return json.dumps(grid, separators=(",", ":"))
++
++
++def test_settings_share_inputs_and_default_program_is_exact():
++    adapter = load_adapter()
++    left = adapter.generate(17, {"finish": "bbox_only"}, demos=3, queries=4)
++    right = adapter.generate(17, {"finish": "largest_orange_cluster"}, demos=3, queries=4)
++    assert [p["input"] for p in left["train"] + left["test"]] == [
++        p["input"] for p in right["train"] + right["test"]
++    ]
++    assert adapter.program({"finish": "bbox_only"}).encode() == (PARAM / "canonical.rkt").read_bytes()
++    assert left["program_solution"] == adapter.program({"finish": "bbox_only"})
++
++
++@pytest.mark.parametrize("demos", range(2, 7))
++@pytest.mark.parametrize("queries", range(1, 5))
++def test_supported_counts_are_independent_and_inputs_distinct(demos, queries):
++    adapter = load_adapter()
++    episode = adapter.generate(5, {"finish": "largest_orange_cluster"}, demos=demos, queries=queries)
++    assert len(episode["train"]) == demos
++    assert len(episode["test"]) == queries
++    inputs = [input_fingerprint(p["input"]) for p in episode["train"] + episode["test"]]
++    assert len(inputs) == len(set(inputs))
++    assert adapter.teaching_check(episode)["status"] == "identified"
++
++
++def test_queries_are_prefix_stable_and_public_turns_hide_answers_and_future_queries():
++    adapter = load_adapter()
++    four = adapter.generate(9, {"finish": "bbox_only"}, demos=3, queries=4)
++    one = adapter.generate(9, {"finish": "bbox_only"}, demos=3, queries=1)
++    assert four["train"] == one["train"]
++    assert four["test"][0] == one["test"][0]
++    first = adapter.public_turn(four, 0)
++    assert first == adapter.public_turn(one, 0)
++    assert len(first["test"]) == 1 and "output" not in first["test"][0]
++    assert "settings" not in first and "program_solution" not in first
++    for index in range(1, 4):
++        turn = adapter.public_turn(four, index)
++        assert set(turn) == {"test"}
++        assert turn == {"test": [{"input": four["test"][index]["input"]}]}
++
++
++def test_alternative_uses_post_fill_cluster_and_counterfactual_changes_output():
++    adapter = load_adapter()
++    episode = adapter.generate(0, {"finish": "largest_orange_cluster"}, demos=2, queries=4)
++    grid = episode["test"][3]["input"]
++    selected = adapter.solve(grid, {"finish": "largest_orange_cluster"})
++    wrong = adapter.wrong_intermediate_solve(grid)
++    trace = adapter.dependency_trace(grid, {"finish": "largest_orange_cluster"})
++    assert selected != wrong
++    assert trace["orange_components"] >= 2
++    assert trace["largest_orange_cells"] > trace["smallest_orange_cells"]
++    assert trace["step_a"] and trace["step_b"] and trace["why_b_depends_on_a"]
++
++
++def test_fourth_query_is_substantive_30_by_30():
++    adapter = load_adapter()
++    episode = adapter.generate(23, {"finish": "largest_orange_cluster"}, demos=2, queries=4)
++    grid = episode["test"][3]["input"]
++    assert (len(grid), len(grid[0])) == (30, 30)
++    assert sum(cell != 0 for row in grid for cell in row) >= 25
++    out = episode["test"][3]["output"]
++    assert sum(cell == 4 for row in out for cell in row) >= 8
++    assert sum(cell == 7 for row in out for cell in row) >= 4
++
++
++@pytest.mark.parametrize("settings", [{}, {"finish": "bogus"}, {"finish": True}, {"finish": "bbox_only", "x": 1}])
++def test_invalid_settings_reject(settings):
++    adapter = load_adapter()
++    with pytest.raises(ValueError):
++        adapter.generate(0, settings, demos=2, queries=1)
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/README.md b/repo/generators/e14a91c50791/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/README.md
+@@ -0,0 +1,16 @@
++# Odd-class bbox fill → largest orange cluster
++
++The default `bbox_only` setting is the byte-exact canonical rule. The alternate
++`largest_orange_cluster` setting is sequential:
++
++1. **A:** group red objects by shape up to rotation and fill the unique
++   odd-frequency class's bounding boxes orange.
++2. **Intermediate:** the canonical filled grid. Two formerly separate red
++   targets now form one 8-cell orange cluster; a third equal-shape target is an
++   isolated 4-cell orange cluster.
++3. **B:** recompute orange components and recolor only the unique largest one
++   blue.
++
++The retained wrong-intermediate program selects one source object before A,
++so it cannot see the merged post-fill cluster. The family supports 2–6 demos,
++1–4 prefix-stable queries, matched inputs across settings, and a 30×30 query.
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/adapter.py b/repo/generators/e14a91c50791/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/adapter.py
+@@ -0,0 +1,25 @@
++"""Native promotion adapter loading only the adjacent e14 prototype."""
++from __future__ import annotations
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_NAME = "_e14_orange_cluster_" + hashlib.sha256(str(_PATH).encode()).hexdigest()
++_SPEC = importlib.util.spec_from_file_location(_NAME, _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(_PATH)
++_MODULE = importlib.util.module_from_spec(_SPEC)
++sys.modules[_NAME] = _MODULE
++_SPEC.loader.exec_module(_MODULE)
++
++program = _MODULE.program
++generate = _MODULE.generate
++solve = _MODULE.solve
++teaching_check = _MODULE.teaching_check
++public_turn = _MODULE.public_turn
++dependency_trace = _MODULE.dependency_trace
++wrong_intermediate_solve = _MODULE.wrong_intermediate_solve
++rival_outputs = _MODULE.rival_outputs
++sample_input = _MODULE.sample_input
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/audit.py b/repo/generators/e14a91c50791/workspace/parametric/audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/audit.py
+@@ -0,0 +1,216 @@
++#!/usr/bin/env python3
++"""Bounded structural, teaching, public-projection, and Racket audit."""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any
++
++from reviewer_support import find_root, public_challenge_bytes, public_challenge_id
++
++TASK_ID = "e14a91c50791"
++HERE = Path(__file__).resolve().parent
++ROOT = find_root(__file__)
++SETTINGS = ("bbox_only", "largest_orange_cluster")
++RIVAL_FILES = {
++    "mark_all_orange": "mark_all_orange.rkt",
++    "first_orange_component": "first_orange_component.rkt",
++    "wrong_intermediate": "wrong_intermediate.rkt",
++}
++
++
++def load_adapter():
++    path = HERE / "adapter.py"
++    name = "_e14_audit_" + hashlib.sha256(str(path).encode()).hexdigest()
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def same_inputs(left: dict[str, Any], right: dict[str, Any]) -> bool:
++    return all(
++        [pair["input"] for pair in left[split]] == [pair["input"] for pair in right[split]]
++        for split in ("train", "test")
++    )
++
++
++def structural(adapter, seed_count: int) -> dict[str, Any]:
++    failures = []
++    harmful = []
++    episodes = pairs = public_turns = stress = 0
++    ids: set[str] = set()
++    for seed in range(seed_count):
++        for demos in range(2, 7):
++            by_setting = {}
++            for finish in SETTINGS:
++                settings = {"finish": finish}
++                try:
++                    episode = adapter.generate(seed, settings, demos=demos, queries=4)
++                    one = adapter.generate(seed, settings, demos=demos, queries=1)
++                except Exception as error:
++                    failures.append({"seed": seed, "demos": demos, "setting": finish, "kind": type(error).__name__, "message": str(error)})
++                    continue
++                by_setting[finish] = episode
++                episodes += 1
++                pairs += demos + 4
++                if episode["train"] != one["train"] or episode["test"][:1] != one["test"]:
++                    failures.append({"seed": seed, "demos": demos, "setting": finish, "kind": "prefix"})
++                teaching = adapter.teaching_check(episode)
++                if teaching["surviving_rivals"]:
++                    harmful.append({"seed": seed, "demos": demos, "setting": finish, "rivals": teaching["surviving_rivals"]})
++                for query_index in range(4):
++                    turn = adapter.public_turn(episode, query_index)
++                    public_turns += 1
++                    if query_index == 0:
++                        try:
++                            public_challenge_bytes(turn)
++                            ids.add(public_challenge_id(turn))
++                        except Exception as error:
++                            failures.append({"seed": seed, "demos": demos, "setting": finish, "kind": "public", "message": str(error)})
++                    if any("output" in pair for pair in turn.get("test", [])):
++                        failures.append({"seed": seed, "demos": demos, "setting": finish, "kind": "query_answer_leak"})
++                large = episode["test"][3]["input"]
++                if len(large) == 30 and len(large[0]) == 30 and sum(v != 0 for row in large for v in row) >= 25:
++                    stress += 1
++                else:
++                    failures.append({"seed": seed, "demos": demos, "setting": finish, "kind": "stress"})
++            if set(by_setting) == set(SETTINGS) and not same_inputs(by_setting[SETTINGS[0]], by_setting[SETTINGS[1]]):
++                failures.append({"seed": seed, "demos": demos, "kind": "matched_inputs"})
++    return {
++        "seed_count": seed_count,
++        "episodes": episodes,
++        "pairs": pairs,
++        "public_turns": public_turns,
++        "unique_first_turn_ids": len(ids),
++        "stress_30x30_cases": stress,
++        "harmful_declared_rival_survivors": harmful,
++        "failures": failures,
++    }
++
++
++def protected_racket(adapter) -> dict[str, Any]:
++    from arcpuzzles.parametric_worker import _local_imports, _real_evaluator
++
++    rival_programs = {name: (HERE / filename).read_text(encoding="utf-8") for name, filename in RIVAL_FILES.items()}
++    mismatches = []
++    harmful = []
++    cache: dict[tuple[str, str], list[list[int]]] = {}
++    evaluations = 0
++    runtime = ROOT / "shared/runtime"
++    with _local_imports(runtime, HERE):
++        apply, identity, bridge = _real_evaluator(runtime)
++        try:
++            def run(program_text: str, grid: list[list[int]]) -> list[list[int]]:
++                nonlocal evaluations
++                key = (program_text, json.dumps(grid, separators=(",", ":")))
++                if key not in cache:
++                    cache[key] = apply(program_text, grid)
++                    evaluations += 1
++                return cache[key]
++
++            for seed in (0, 17):
++                for finish in SETTINGS:
++                    settings = {"finish": finish}
++                    episode = adapter.generate(seed, settings, demos=2, queries=4)
++                    labels = []
++                    selected_program = adapter.program(settings)
++                    programs = {
++                        "other_setting": adapter.program({"finish": SETTINGS[1] if finish == SETTINGS[0] else SETTINGS[0]}),
++                        **rival_programs,
++                    }
++                    rival_labels = {name: [] for name in programs}
++                    for pair_index, pair in enumerate(episode["train"] + episode["test"]):
++                        selected = run(selected_program, pair["input"])
++                        labels.append(selected)
++                        if selected != pair["output"]:
++                            mismatches.append({"seed": seed, "setting": finish, "pair": pair_index, "program": "selected"})
++                        python_rivals = adapter.rival_outputs(pair["input"], settings)
++                        for name, text in programs.items():
++                            output = run(text, pair["input"])
++                            rival_labels[name].append(output)
++                            if name in python_rivals and output != python_rivals[name]:
++                                mismatches.append({"seed": seed, "setting": finish, "pair": pair_index, "program": name, "kind": "python_racket"})
++                    for name, outputs in rival_labels.items():
++                        if outputs[:2] == labels[:2] and any(a != b for a, b in zip(outputs[2:], labels[2:], strict=True)):
++                            harmful.append({"seed": seed, "setting": finish, "rival": name})
++
++            witness = adapter.generate(0, {"finish": SETTINGS[1]}, demos=2, queries=4)["test"][3]["input"]
++            selected_output = run(adapter.program({"finish": SETTINGS[1]}), witness)
++            wrong_output = run(rival_programs["wrong_intermediate"], witness)
++            causal = {
++                "input_shape": [len(witness), len(witness[0])],
++                "ablation": "select one source target before canonical bbox fills can merge two targets",
++                "outputs_differ": selected_output != wrong_output,
++                "selected_matches_python": selected_output == adapter.solve(witness, {"finish": SETTINGS[1]}),
++                "counterfactual_matches_python": wrong_output == adapter.wrong_intermediate_solve(witness),
++                "changed_cells": sum(a != b for ra, rb in zip(selected_output, wrong_output, strict=True) for a, b in zip(ra, rb, strict=True)),
++            }
++        finally:
++            bridge.close()
++    return {
++        "executed": True,
++        "runtime_identity": identity,
++        "evaluations": evaluations,
++        "python_racket_mismatches": mismatches,
++        "harmful_survivors": harmful,
++        "causal_counterfactual": causal,
++    }
++
++
++def build(seed_count: int) -> dict[str, Any]:
++    adapter = load_adapter()
++    s = structural(adapter, seed_count)
++    r = protected_racket(adapter)
++    failed = bool(
++        s["failures"]
++        or s["harmful_declared_rival_survivors"]
++        or r["python_racket_mismatches"]
++        or r["harmful_survivors"]
++        or not r["causal_counterfactual"]["outputs_differ"]
++        or not r["causal_counterfactual"]["selected_matches_python"]
++        or not r["causal_counterfactual"]["counterfactual_matches_python"]
++    )
++    return {
++        "schema": "arcpuzzles-parametric-self-review-v1",
++        "task_id": TASK_ID,
++        "status": "failed" if failed else "passed",
++        "structural": s,
++        "racket": r,
++        "sequential_dependency": {
++            "step_a": "fill bounding boxes of the unique odd rotation class orange",
++            "intermediate": "canonical grid whose filled target boxes form 4- and 8-cell orange components",
++            "step_b": "recolor the unique largest orange component blue",
++            "why_b_depends_on_a": "the selected 8-cell component is formed by two red objects only after A fills their complementary missing bbox cells",
++        },
++        "scope_note": "Finite declared rivals and bounded seeds; not a proof of unique induction.",
++    }
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", type=int, default=32)
++    args = parser.parse_args()
++    report = build(args.seeds)
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    print(json.dumps({
++        "task_id": TASK_ID,
++        "status": report["status"],
++        "episodes": report["structural"]["episodes"],
++        "pairs": report["structural"]["pairs"],
++        "racket_evaluations": report["racket"]["evaluations"],
++    }, sort_keys=True))
++    return 0 if report["status"] == "passed" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/canonical.rkt b/repo/generators/e14a91c50791/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/canonical.rkt
+@@ -0,0 +1,32 @@
++(rule!
++  (let ((dummy 0))
++    (define red-objs (filter (lambda (obj) (= (obj-color obj) 2)) (objects g 0)))
++    (define (same-pos? a b)
++      (and (= (fst a) (fst b)) (= (snd a) (snd b))))
++    (define (has-cell? p cells)
++      (any? (lambda (q) (same-pos? p q)) cells))
++    (define (same-cells? a b)
++      (and (= (length a) (length b))
++           (all? (lambda (p) (has-cell? p b)) a)))
++    (define (rotations cells)
++      (let* ((r0 (normalize-cells cells))
++             (r1 (normalize-cells (rotate-cells-cw r0)))
++             (r2 (normalize-cells (rotate-cells-cw r1)))
++             (r3 (normalize-cells (rotate-cells-cw r2))))
++        (list r0 r1 r2 r3)))
++    (define (same-rot-shape? a b)
++      (let ((sa (normalize-cells (obj-cells a)))
++            (rots (rotations (obj-cells b))))
++        (any? (lambda (rb) (same-cells? sa rb)) rots)))
++    (define (same-count obj)
++      (count-where (lambda (other) (same-rot-shape? obj other)) red-objs))
++    (define targets (filter (lambda (obj) (= (remainder (same-count obj) 2) 1)) red-objs))
++    (define (inside-target-bbox? r c)
++      (any?
++        (lambda (obj)
++          (and (>= r (obj-r1 obj)) (<= r (obj-r2 obj))
++               (>= c (obj-c1 obj)) (<= c (obj-c2 obj))))
++        targets))
++    (grid-from-fn h w
++      (lambda (r c)
++        (if (inside-target-bbox? r c) 7 (cell-at g r c))))))
+\ No newline at end of file
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/evidence/current/self-review.json b/repo/generators/e14a91c50791/workspace/parametric/evidence/current/self-review.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/evidence/current/self-review.json
+@@ -0,0 +1,49 @@
++{
++  "racket": {
++    "causal_counterfactual": {
++      "ablation": "select one source target before canonical bbox fills can merge two targets",
++      "changed_cells": 12,
++      "counterfactual_matches_python": true,
++      "input_shape": [
++        30,
++        30
++      ],
++      "outputs_differ": true,
++      "selected_matches_python": true
++    },
++    "evaluations": 60,
++    "executed": true,
++    "harmful_survivors": [],
++    "python_racket_mismatches": [],
++    "runtime_identity": {
++      "backend": "racket",
++      "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++      "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++      "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++      "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++      "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++      "protected": true,
++      "schema": "arc-protected-racket-runtime-v1"
++    }
++  },
++  "schema": "arcpuzzles-parametric-self-review-v1",
++  "scope_note": "Finite declared rivals and bounded seeds; not a proof of unique induction.",
++  "sequential_dependency": {
++    "intermediate": "canonical grid whose filled target boxes form 4- and 8-cell orange components",
++    "step_a": "fill bounding boxes of the unique odd rotation class orange",
++    "step_b": "recolor the unique largest orange component blue",
++    "why_b_depends_on_a": "the selected 8-cell component is formed by two red objects only after A fills their complementary missing bbox cells"
++  },
++  "status": "passed",
++  "structural": {
++    "episodes": 320,
++    "failures": [],
++    "harmful_declared_rival_survivors": [],
++    "pairs": 2560,
++    "public_turns": 1280,
++    "seed_count": 32,
++    "stress_30x30_cases": 320,
++    "unique_first_turn_ids": 320
++  },
++  "task_id": "e14a91c50791"
++}
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/evidence/manifest.json b/repo/generators/e14a91c50791/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,107 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "af5d729bf23b180b26cc7f9b4174002cc0ccf5f7d11842e482031e2111d3b37a",
++  "canonical_rule_hash": "c7f37a119f36",
++  "default": {
++    "finish": "bbox_only"
++  },
++  "evidence_root": "generators/e14a91c50791/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 15441,
++      "path": "generators/e14a91c50791/generator.py",
++      "sha256": "f85149e1d82095a3f8710f61f88ea96b0e696cfd0049aa8cd60f65bb8fcc4d39"
++    },
++    {
++      "bytes": 12176,
++      "path": "generators/e14a91c50791/tests/test_generator_e14a91c50791.py",
++      "sha256": "5208ae1f270803d3890a89122c3822d800976578b39387493b4afc9eb6074b38"
++    },
++    {
++      "bytes": 3947,
++      "path": "generators/e14a91c50791/tests/test_parametric_family.py",
++      "sha256": "d1638aae62417d01bee3026f7e42ccdf850422f5ce8d7ec092855237b020dfc2"
++    },
++    {
++      "bytes": 813,
++      "path": "generators/e14a91c50791/workspace/parametric/README.md",
++      "sha256": "6905f55ccf9dcc92772925944534a4f7a74d64e79313556a4e91c28b6a9549bf"
++    },
++    {
++      "bytes": 894,
++      "path": "generators/e14a91c50791/workspace/parametric/adapter.py",
++      "sha256": "1b081a319c561224a832a73fe392157bf165f76bfe687a307d402be442b07325"
++    },
++    {
++      "bytes": 10061,
++      "path": "generators/e14a91c50791/workspace/parametric/audit.py",
++      "sha256": "cfd45bda6a70152e75efc7eeb0db0485044890bfecd3186488499a8a52d616ab"
++    },
++    {
++      "bytes": 1345,
++      "path": "generators/e14a91c50791/workspace/parametric/canonical.rkt",
++      "sha256": "af5d729bf23b180b26cc7f9b4174002cc0ccf5f7d11842e482031e2111d3b37a"
++    },
++    {
++      "bytes": 1932,
++      "path": "generators/e14a91c50791/workspace/parametric/evidence/current/self-review.json",
++      "sha256": "0a5cd4817c9f24ad1e0f76c9c4087d2b49a410c7372d1d90fcc2beee29d2d053"
++    },
++    {
++      "bytes": 1552,
++      "path": "generators/e14a91c50791/workspace/parametric/first_orange_component.rkt",
++      "sha256": "dbc4886e969f7fa503f3a47c4a6569da3311427c03b8ce774f54cf2f6dca1a2c"
++    },
++    {
++      "bytes": 2110,
++      "path": "generators/e14a91c50791/workspace/parametric/largest_orange_cluster.rkt",
++      "sha256": "cf0f9e43ef165a36721b27a4f6dddb43a4b85c22ec7a95002b2795551b4bf8ca"
++    },
++    {
++      "bytes": 1286,
++      "path": "generators/e14a91c50791/workspace/parametric/mark_all_orange.rkt",
++      "sha256": "26aaf043b7cd2e0c3eb4c269186f8a6f6694ae80a11c40dda97205f7cf60a581"
++    },
++    {
++      "bytes": 970,
++      "path": "generators/e14a91c50791/workspace/parametric/promotion.json",
++      "sha256": "33b1de5a2b0ec8a586f9e442228744572a28bf28711ada9592f4449d5d640e5e"
++    },
++    {
++      "bytes": 18886,
++      "path": "generators/e14a91c50791/workspace/parametric/prototype.py",
++      "sha256": "8783423fcbbe8fb1a5415499edfa4d4b33ff34125dbd4a73cfec96e9b8452576"
++    },
++    {
++      "bytes": 1551,
++      "path": "generators/e14a91c50791/workspace/parametric/wrong_intermediate.rkt",
++      "sha256": "d88034e132c386e89aa7554b43c734deebe92e276880808dd64cc3d4e0bcf8bb"
++    }
++  ],
++  "generator_sha256": "f85149e1d82095a3f8710f61f88ea96b0e696cfd0049aa8cd60f65bb8fcc4d39",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "finish": [
++      "bbox_only",
++      "largest_orange_cluster"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "38 task tests and 12 subtests passed; bounded self-review covered 320 episodes, 2560 pairs, 1280 public turns and 60 protected-Racket evaluations.",
++  "rule_task_id": "e14a91c50791",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "e14a91c50791",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/first_orange_component.rkt b/repo/generators/e14a91c50791/workspace/parametric/first_orange_component.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/first_orange_component.rkt
+@@ -0,0 +1,32 @@
++(rule!
++  (let ((dummy 0))
++    (define red-objs (filter (lambda (obj) (= (obj-color obj) 2)) (objects g 0)))
++    (define (same-pos? a b) (and (= (fst a) (fst b)) (= (snd a) (snd b))))
++    (define (has-cell? p cells) (any? (lambda (q) (same-pos? p q)) cells))
++    (define (same-cells? a b)
++      (and (= (length a) (length b)) (all? (lambda (p) (has-cell? p b)) a)))
++    (define (rotations cells)
++      (let* ((r0 (normalize-cells cells))
++             (r1 (normalize-cells (rotate-cells-cw r0)))
++             (r2 (normalize-cells (rotate-cells-cw r1)))
++             (r3 (normalize-cells (rotate-cells-cw r2))))
++        (list r0 r1 r2 r3)))
++    (define (same-rot-shape? a b)
++      (let ((sa (normalize-cells (obj-cells a))) (rots (rotations (obj-cells b))))
++        (any? (lambda (rb) (same-cells? sa rb)) rots)))
++    (define (same-count obj)
++      (count-where (lambda (other) (same-rot-shape? obj other)) red-objs))
++    (define targets (filter (lambda (obj) (= (remainder (same-count obj) 2) 1)) red-objs))
++    (define intermediate
++      (grid-from-fn h w
++        (lambda (r c)
++          (if (any? (lambda (obj)
++                      (and (>= r (obj-r1 obj)) (<= r (obj-r2 obj))
++                           (>= c (obj-c1 obj)) (<= c (obj-c2 obj))))
++                    targets)
++              7
++              (cell-at g r c)))))
++    (define selected
++      (first (filter (lambda (obj) (= (obj-color obj) 7)) (objects intermediate 0))))
++    (for/fold ([out intermediate]) ([p (in-list (obj-cells selected))])
++      (set-cell out (first p) (second p) 4))))
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/largest_orange_cluster.rkt b/repo/generators/e14a91c50791/workspace/parametric/largest_orange_cluster.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/largest_orange_cluster.rkt
+@@ -0,0 +1,46 @@
++(rule!
++  (let ((dummy 0))
++    (define red-objs (filter (lambda (obj) (= (obj-color obj) 2)) (objects g 0)))
++    (define (same-pos? a b)
++      (and (= (fst a) (fst b)) (= (snd a) (snd b))))
++    (define (has-cell? p cells)
++      (any? (lambda (q) (same-pos? p q)) cells))
++    (define (same-cells? a b)
++      (and (= (length a) (length b))
++           (all? (lambda (p) (has-cell? p b)) a)))
++    (define (rotations cells)
++      (let* ((r0 (normalize-cells cells))
++             (r1 (normalize-cells (rotate-cells-cw r0)))
++             (r2 (normalize-cells (rotate-cells-cw r1)))
++             (r3 (normalize-cells (rotate-cells-cw r2))))
++        (list r0 r1 r2 r3)))
++    (define (same-rot-shape? a b)
++      (let ((sa (normalize-cells (obj-cells a)))
++            (rots (rotations (obj-cells b))))
++        (any? (lambda (rb) (same-cells? sa rb)) rots)))
++    (define (same-count obj)
++      (count-where (lambda (other) (same-rot-shape? obj other)) red-objs))
++    (define targets (filter (lambda (obj) (= (remainder (same-count obj) 2) 1)) red-objs))
++    (define (inside-target-bbox? r c)
++      (any? (lambda (obj)
++              (and (>= r (obj-r1 obj)) (<= r (obj-r2 obj))
++                   (>= c (obj-c1 obj)) (<= c (obj-c2 obj))))
++            targets))
++    ;; Stage A: exact canonical odd-class bbox fill.
++    (define intermediate
++      (grid-from-fn h w
++        (lambda (r c)
++          (if (inside-target-bbox? r c) 7 (cell-at g r c)))))
++    (define orange-objs
++      (filter (lambda (obj) (= (obj-color obj) 7)) (objects intermediate 0)))
++    (define (better? a b)
++      (or (> (obj-size a) (obj-size b))
++          (and (= (obj-size a) (obj-size b))
++               (or (< (obj-r1 a) (obj-r1 b))
++                   (and (= (obj-r1 a) (obj-r1 b)) (< (obj-c1 a) (obj-c1 b)))))))
++    ;; Stage B: select the unique largest orange component created by A.
++    (define selected
++      (for/fold ([best (first orange-objs)]) ([obj (in-list (rest orange-objs))])
++        (if (better? obj best) obj best)))
++    (for/fold ([out intermediate]) ([p (in-list (obj-cells selected))])
++      (set-cell out (first p) (second p) 4))))
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/mark_all_orange.rkt b/repo/generators/e14a91c50791/workspace/parametric/mark_all_orange.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/mark_all_orange.rkt
+@@ -0,0 +1,27 @@
++(rule!
++  (let ((dummy 0))
++    (define red-objs (filter (lambda (obj) (= (obj-color obj) 2)) (objects g 0)))
++    (define (same-pos? a b) (and (= (fst a) (fst b)) (= (snd a) (snd b))))
++    (define (has-cell? p cells) (any? (lambda (q) (same-pos? p q)) cells))
++    (define (same-cells? a b)
++      (and (= (length a) (length b)) (all? (lambda (p) (has-cell? p b)) a)))
++    (define (rotations cells)
++      (let* ((r0 (normalize-cells cells))
++             (r1 (normalize-cells (rotate-cells-cw r0)))
++             (r2 (normalize-cells (rotate-cells-cw r1)))
++             (r3 (normalize-cells (rotate-cells-cw r2))))
++        (list r0 r1 r2 r3)))
++    (define (same-rot-shape? a b)
++      (let ((sa (normalize-cells (obj-cells a))) (rots (rotations (obj-cells b))))
++        (any? (lambda (rb) (same-cells? sa rb)) rots)))
++    (define (same-count obj)
++      (count-where (lambda (other) (same-rot-shape? obj other)) red-objs))
++    (define targets (filter (lambda (obj) (= (remainder (same-count obj) 2) 1)) red-objs))
++    (grid-from-fn h w
++      (lambda (r c)
++        (if (any? (lambda (obj)
++                    (and (>= r (obj-r1 obj)) (<= r (obj-r2 obj))
++                         (>= c (obj-c1 obj)) (<= c (obj-c2 obj))))
++                  targets)
++            4
++            (cell-at g r c))))))
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/promotion.json b/repo/generators/e14a91c50791/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/promotion.json
+@@ -0,0 +1,34 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/e14a91c50791/workspace/parametric/adapter.py",
++  "parameters": {
++    "finish": [
++      "bbox_only",
++      "largest_orange_cluster"
++    ]
++  },
++  "default": {
++    "finish": "bbox_only"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/e14a91c50791/workspace/parametric/prototype.py",
++    "generators/e14a91c50791/workspace/parametric/canonical.rkt",
++    "generators/e14a91c50791/workspace/parametric/largest_orange_cluster.rkt",
++    "generators/e14a91c50791/workspace/parametric/wrong_intermediate.rkt",
++    "generators/e14a91c50791/workspace/parametric/mark_all_orange.rkt",
++    "generators/e14a91c50791/workspace/parametric/first_orange_component.rkt",
++    "generators/e14a91c50791/workspace/parametric/README.md",
++    "generators/e14a91c50791/workspace/parametric/audit.py"
++  ]
++}
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/prototype.py b/repo/generators/e14a91c50791/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/prototype.py
+@@ -0,0 +1,485 @@
++"""Matched-input parametric family for ARC task ``e14a91c50791``.
++
++``bbox_only`` is the byte-exact canonical rule: group red components by shape
++up to rotation and fill every member of the unique odd-frequency class's
++bounding box orange.
++
++``largest_orange_cluster`` performs that exact step A, then recomputes the
++four-connected orange components created by the fills and recolors the unique
++largest orange cluster blue.  Two target boxes are constructed to become
++connected only after their missing cells are filled, while a third equal-shape
++target remains isolated.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any, Iterable
++
++TASK_ID = "e14a91c50791"
++PARAMETER = "finish"
++SETTINGS = ("bbox_only", "largest_orange_cluster")
++DEFAULT = {PARAMETER: SETTINGS[0]}
++MIN_DEMOS = 2
++MAX_DEMOS = 6
++MIN_QUERIES = 1
++MAX_QUERIES = 4
++MAX_SEED = 2**63 - 1
++HOME = Path(__file__).resolve().parent
++PROGRAM_FILES = {
++    SETTINGS[0]: HOME / "canonical.rkt",
++    SETTINGS[1]: HOME / "largest_orange_cluster.rkt",
++}
++CARDINALS = ((-1, 0), (1, 0), (0, -1), (0, 1))
++
++# The first two profiles deliberately reverse whether the isolated orange box
++# or the merged pair appears first in row-major order.  This makes two demos
++# refute a first/last-component shortcut without increasing demonstration cost.
++TRAIN_PROFILES = (
++    (13, 13, 0, False),
++    (15, 17, 1, True),
++    (17, 15, 2, False),
++    (20, 20, 3, True),
++    (24, 26, 0, False),
++    (26, 24, 1, True),
++)
++QUERY_PROFILES = (
++    (14, 18, 2, True),
++    (18, 22, 3, False),
++    (26, 26, 1, True),
++    (30, 30, 0, False),
++)
++
++TARGET_A = ((0, 0), (0, 1), (1, 0))
++TARGET_B = ((0, 1), (1, 0), (1, 1))
++DISTRACTOR_BASES = (
++    ((0, 0), (0, 1)),
++    ((0, 0), (0, 1), (0, 2), (1, 1)),
++    ((0, 0), (0, 1), (1, 0), (1, 1), (2, 0)),
++)
++
++
++def _exact_int(name: str, value: Any, low: int, high: int) -> int:
++    if type(value) is not int:
++        raise TypeError(f"{name} must be an exact integer; bool is forbidden")
++    if not low <= value <= high:
++        raise ValueError(f"{name} must be in [{low}, {high}]")
++    return value
++
++
++def _finish(settings: Any) -> str:
++    if type(settings) is not dict or set(settings) != {PARAMETER}:
++        raise ValueError(f"settings must contain exactly {PARAMETER!r}")
++    value = settings[PARAMETER]
++    if type(value) is not str or value not in SETTINGS:
++        raise ValueError(f"{PARAMETER} must be one of {SETTINGS!r}")
++    return value
++
++
++def program(settings: Any) -> str:
++    return PROGRAM_FILES[_finish(settings)].read_text(encoding="utf-8")
++
++
++def _grid(value: Any) -> tuple[int, int]:
++    if type(value) is not list or not value or type(value[0]) is not list or not value[0]:
++        raise ValueError("grid must be a nonempty list of nonempty rows")
++    width = len(value[0])
++    if len(value) > 30 or width > 30:
++        raise ValueError("grid dimensions must not exceed 30")
++    if any(
++        type(row) is not list
++        or len(row) != width
++        or any(type(cell) is not int or cell not in (0, 2) for cell in row)
++        for row in value
++    ):
++        raise ValueError("input must be rectangular with exact integer colors 0 or 2")
++    return len(value), width
++
++
++def _norm(cells: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
++    cells = tuple(cells)
++    if not cells:
++        return ()
++    r0 = min(r for r, _ in cells)
++    c0 = min(c for _, c in cells)
++    return tuple(sorted((r - r0, c - c0) for r, c in cells))
++
++
++def _rotate_cw(cells: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
++    cells = _norm(cells)
++    height = max(r for r, _ in cells) + 1
++    return _norm((c, height - 1 - r) for r, c in cells)
++
++
++def _rotate(cells: Iterable[tuple[int, int]], turns: int) -> tuple[tuple[int, int], ...]:
++    out = _norm(cells)
++    for _ in range(turns % 4):
++        out = _rotate_cw(out)
++    return out
++
++
++def _rotation_key(cells: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
++    current = _norm(cells)
++    variants = []
++    for _ in range(4):
++        variants.append(current)
++        current = _rotate_cw(current)
++    return min(variants)
++
++
++def _components(grid: list[list[int]], color: int) -> list[frozenset[tuple[int, int]]]:
++    height, width = len(grid), len(grid[0])
++    remaining = {(r, c) for r in range(height) for c in range(width) if grid[r][c] == color}
++    result: list[frozenset[tuple[int, int]]] = []
++    while remaining:
++        start = min(remaining)
++        remaining.remove(start)
++        stack = [start]
++        cells = {start}
++        while stack:
++            r, c = stack.pop()
++            for dr, dc in CARDINALS:
++                q = (r + dr, c + dc)
++                if q in remaining:
++                    remaining.remove(q)
++                    cells.add(q)
++                    stack.append(q)
++        result.append(frozenset(cells))
++    result.sort(key=lambda cells: min(cells))
++    return result
++
++
++def _bbox(cells: Iterable[tuple[int, int]]) -> tuple[int, int, int, int]:
++    cells = tuple(cells)
++    return (
++        min(r for r, _ in cells),
++        min(c for _, c in cells),
++        max(r for r, _ in cells),
++        max(c for _, c in cells),
++    )
++
++
++def analyze(value: Any, *, exact_orientation: bool = False) -> dict[str, Any]:
++    _grid(value)
++    red = _components(value, 2)
++    if not red:
++        raise ValueError("scene must contain red components")
++    groups: dict[tuple[tuple[int, int], ...], list[frozenset[tuple[int, int]]]] = {}
++    for cells in red:
++        key = _norm(cells) if exact_orientation else _rotation_key(cells)
++        groups.setdefault(key, []).append(cells)
++    odd = [key for key, values in groups.items() if len(values) % 2 == 1]
++    if len(odd) != 1:
++        raise ValueError("scene must contain exactly one odd-frequency class")
++    return {"red_components": red, "groups": groups, "odd_key": odd[0]}
++
++
++def canonical_intermediate(value: Any, *, exact_orientation: bool = False) -> list[list[int]]:
++    scene = analyze(value, exact_orientation=exact_orientation)
++    out = deepcopy(value)
++    for cells in scene["groups"][scene["odd_key"]]:
++        r1, c1, r2, c2 = _bbox(cells)
++        for r in range(r1, r2 + 1):
++            for c in range(c1, c2 + 1):
++                out[r][c] = 7
++    return out
++
++
++def _largest(cells_list: list[frozenset[tuple[int, int]]]) -> frozenset[tuple[int, int]]:
++    if not cells_list:
++        raise ValueError("no component to select")
++    ordered = sorted(cells_list, key=lambda cells: (-len(cells), min(cells)))
++    if len(ordered) > 1 and len(ordered[0]) == len(ordered[1]):
++        raise ValueError("largest component must be unique")
++    return ordered[0]
++
++
++def _finish_cluster(intermediate: list[list[int]], selector: str = "largest") -> list[list[int]]:
++    orange = _components(intermediate, 7)
++    if selector == "largest":
++        selected = _largest(orange)
++    elif selector == "first":
++        selected = orange[0]
++    elif selector == "last":
++        selected = orange[-1]
++    else:
++        raise ValueError(selector)
++    out = deepcopy(intermediate)
++    for r, c in selected:
++        out[r][c] = 4
++    return out
++
++
++def solve(value: Any, settings: Any) -> list[list[int]]:
++    finish = _finish(settings)
++    intermediate = canonical_intermediate(value)
++    if finish == SETTINGS[0]:
++        return intermediate
++    return _finish_cluster(intermediate, "largest")
++
++
++def wrong_intermediate_solve(value: Any) -> list[list[int]]:
++    """Counterfactual: select one source target before the fills can merge."""
++    scene = analyze(value)
++    targets = sorted(scene["groups"][scene["odd_key"]], key=min)
++    selected = targets[0]
++    out = canonical_intermediate(value)
++    r1, c1, r2, c2 = _bbox(selected)
++    for r in range(r1, r2 + 1):
++        for c in range(c1, c2 + 1):
++            out[r][c] = 4
++    return out
++
++
++def _all_orange_to_blue(value: Any) -> list[list[int]]:
++    return [[4 if cell == 7 else cell for cell in row] for row in canonical_intermediate(value)]
++
++
++def _exact_orientation_output(value: Any, settings: Any) -> list[list[int]]:
++    # Plausible wrong rule: count exact orientations rather than rotation classes,
++    # and fill every exact-orientation class with odd multiplicity.  Unlike the
++    # selected grammar this rival can have several odd classes, so it must remain
++    # total rather than reusing ``analyze``'s one-odd-class invariant.
++    _grid(value)
++    groups: dict[tuple[tuple[int, int], ...], list[frozenset[tuple[int, int]]]] = {}
++    for cells in _components(value, 2):
++        groups.setdefault(_norm(cells), []).append(cells)
++    out = deepcopy(value)
++    for values in groups.values():
++        if len(values) % 2 == 0:
++            continue
++        for cells in values:
++            r1, c1, r2, c2 = _bbox(cells)
++            for r in range(r1, r2 + 1):
++                for c in range(c1, c2 + 1):
++                    out[r][c] = 7
++    if _finish(settings) == SETTINGS[0]:
++        return out
++    orange = _components(out, 7)
++    if not orange:
++        return out
++    selected = sorted(orange, key=lambda cells: (-len(cells), min(cells)))[0]
++    result = deepcopy(out)
++    for r, c in selected:
++        result[r][c] = 4
++    return result
++
++
++def rival_outputs(value: Any, settings: Any) -> dict[str, list[list[int]]]:
++    finish = _finish(settings)
++    other = SETTINGS[1] if finish == SETTINGS[0] else SETTINGS[0]
++    intermediate = canonical_intermediate(value)
++    return {
++        "other_setting": solve(value, {PARAMETER: other}),
++        "mark_all_orange": _all_orange_to_blue(value),
++        "first_orange_component": _finish_cluster(intermediate, "first"),
++        "last_orange_component": _finish_cluster(intermediate, "last"),
++        "wrong_intermediate": wrong_intermediate_solve(value),
++        "exact_orientation_parity": _exact_orientation_output(value, settings),
++    }
++
++
++def teaching_check(episode: Any) -> dict[str, Any]:
++    if type(episode) is not dict:
++        raise ValueError("episode must be an object")
++    settings = episode.get("settings")
++    _finish(settings)
++    train = episode.get("train")
++    if type(train) is not list or not MIN_DEMOS <= len(train) <= MAX_DEMOS:
++        raise ValueError("episode must contain two through six demonstrations")
++    per_demo = []
++    names: set[str] = set()
++    for pair in train:
++        if type(pair) is not dict or set(pair) < {"input", "output"}:
++            raise ValueError("demonstrations require input/output")
++        if solve(pair["input"], settings) != pair["output"]:
++            raise ValueError("demonstration label differs from selected rule")
++        outputs = rival_outputs(pair["input"], settings)
++        per_demo.append(outputs)
++        names.update(outputs)
++    survivors = sorted(
++        name for name in names
++        if all(outputs[name] == pair["output"] for outputs, pair in zip(per_demo, train, strict=True))
++    )
++    return {
++        "status": "identified" if not survivors else "ambiguous",
++        "surviving_rivals": survivors,
++        "demonstrations": len(train),
++        "used_query_answers": False,
++        "limits": "Finite named rivals fitted to demonstrations only; not universal uniqueness.",
++    }
++
++
++def dependency_trace(value: Any, settings: Any) -> dict[str, Any]:
++    finish = _finish(settings)
++    intermediate = canonical_intermediate(value)
++    orange = _components(intermediate, 7)
++    sizes = sorted((len(cells) for cells in orange), reverse=True)
++    return {
++        "setting": {PARAMETER: finish},
++        "step_a": "group red components up to rotation and fill the unique odd-frequency class bounding boxes orange",
++        "intermediate": intermediate,
++        "step_b": "recompute orange components and recolor the unique largest connected orange cluster blue",
++        "why_b_depends_on_a": "two separate red target objects become one larger component only after their missing bbox cells are filled by step A",
++        "orange_components": len(orange),
++        "largest_orange_cells": sizes[0],
++        "smallest_orange_cells": sizes[-1],
++    }
++
++
++def _rng(seed: int, split: str, index: int) -> random.Random:
++    raw = f"{TASK_ID}|orange-cluster-v2|{seed}|{split}|{index}".encode()
++    return random.Random(int.from_bytes(hashlib.sha256(raw).digest()[:16], "big"))
++
++
++def _shift(cells: Iterable[tuple[int, int]], top: int, left: int) -> frozenset[tuple[int, int]]:
++    return frozenset((top + r, left + c) for r, c in cells)
++
++
++def _rotate_group(groups: list[tuple[tuple[int, int], ...]], turns: int):
++    all_cells = [(gi, r, c) for gi, group in enumerate(groups) for r, c in group]
++    h = max(r for _, r, _ in all_cells) + 1
++    w = max(c for _, _, c in all_cells) + 1
++    rotated: list[list[tuple[int, int]]] = [[] for _ in groups]
++    for gi, r, c in all_cells:
++        rr, cc = r, c
++        hh, ww = h, w
++        for _ in range(turns % 4):
++            rr, cc = cc, hh - 1 - rr
++            hh, ww = ww, hh
++        rotated[gi].append((rr, cc))
++    min_r = min(r for group in rotated for r, _ in group)
++    min_c = min(c for group in rotated for _, c in group)
++    return [tuple(sorted((r - min_r, c - min_c) for r, c in group)) for group in rotated]
++
++
++def _can_place(cells: frozenset[tuple[int, int]], occupied: set[tuple[int, int]], h: int, w: int, forbidden: set[tuple[int, int]]) -> bool:
++    if any(not (0 <= r < h and 0 <= c < w) or (r, c) in occupied or (r, c) in forbidden for r, c in cells):
++        return False
++    return not any((r + dr, c + dc) in occupied for r, c in cells for dr, dc in CARDINALS)
++
++
++def _place_component(base: tuple[tuple[int, int], ...], h: int, w: int, occupied: set[tuple[int, int]], forbidden: set[tuple[int, int]], rng: random.Random) -> frozenset[tuple[int, int]]:
++    shape = _rotate(base, rng.randrange(4))
++    sh = max(r for r, _ in shape) + 1
++    sw = max(c for _, c in shape) + 1
++    candidates = [(r, c) for r in range(h - sh + 1) for c in range(w - sw + 1)]
++    rng.shuffle(candidates)
++    for top, left in candidates:
++        cells = _shift(shape, top, left)
++        if _can_place(cells, occupied, h, w, forbidden):
++            return cells
++    raise RuntimeError("unable to place separated distractor component")
++
++
++def sample_input(seed: int, split: str, index: int) -> list[list[int]]:
++    _exact_int("seed", seed, 0, MAX_SEED)
++    if split not in ("train", "test"):
++        raise ValueError("split must be 'train' or 'test'")
++    profiles = TRAIN_PROFILES if split == "train" else QUERY_PROFILES
++    _exact_int("index", index, 0, len(profiles) - 1)
++    h, w, turns, cluster_first = profiles[index]
++    rng = _rng(seed, split, index)
++
++    pair_groups = [TARGET_A, tuple((r, c + 2) for r, c in TARGET_B)]
++    pair_a, pair_b = _rotate_group(pair_groups, turns)
++    pair_h = max(r for group in (pair_a, pair_b) for r, _ in group) + 1
++    pair_w = max(c for group in (pair_a, pair_b) for _, c in group) + 1
++    if cluster_first:
++        pair_top, pair_left = 1, 1
++        iso_top, iso_left = h - 4, w - 4
++    else:
++        pair_top, pair_left = h - pair_h - 2, w - pair_w - 2
++        iso_top, iso_left = 1, 1
++    target1 = _shift(pair_a, pair_top, pair_left)
++    target2 = _shift(pair_b, pair_top, pair_left)
++    isolated_shape = _rotate(TARGET_A, turns)
++    target3 = _shift(isolated_shape, iso_top, iso_left)
++
++    # The two cluster objects remain separate red components but their 2x2
++    # bboxes touch. The isolated object shares target1's exact orientation.
++    occupied = set(target1 | target2 | target3)
++    if len(_components([[2 if (r, c) in occupied else 0 for c in range(w)] for r in range(h)], 2)) != 3:
++        raise RuntimeError("target construction merged before stage A")
++    forbidden: set[tuple[int, int]] = set()
++    for cells in (target1, target2, target3):
++        r1, c1, r2, c2 = _bbox(cells)
++        forbidden.update((r, c) for r in range(r1, r2 + 1) for c in range(c1, c2 + 1))
++
++    components = [target1, target2, target3]
++    for base in DISTRACTOR_BASES:
++        for _ in range(2):
++            cells = _place_component(base, h, w, occupied, forbidden, rng)
++            components.append(cells)
++            occupied.update(cells)
++
++    grid = [[0 for _ in range(w)] for _ in range(h)]
++    for cells in components:
++        for r, c in cells:
++            grid[r][c] = 2
++
++    scene = analyze(grid)
++    counts = sorted(len(values) for values in scene["groups"].values())
++    if counts != [2, 2, 2, 3]:
++        raise RuntimeError(f"constructed class multiplicities changed: {counts}")
++    intermediate = canonical_intermediate(grid)
++    orange = _components(intermediate, 7)
++    if sorted(map(len, orange)) != [4, 8]:
++        raise RuntimeError("stage A did not create the intended 4/8 orange clusters")
++    return grid
++
++
++def generate(seed: int, settings: Any, demos: int = 3, queries: int = 4) -> dict[str, Any]:
++    _exact_int("seed", seed, 0, MAX_SEED)
++    _finish(settings)
++    _exact_int("demos", demos, MIN_DEMOS, MAX_DEMOS)
++    _exact_int("queries", queries, MIN_QUERIES, MAX_QUERIES)
++    train = [
++        {"input": (grid := sample_input(seed, "train", index)), "output": solve(grid, settings)}
++        for index in range(demos)
++    ]
++    test = [
++        {"input": (grid := sample_input(seed, "test", index)), "output": solve(grid, settings)}
++        for index in range(queries)
++    ]
++    fingerprints = [json.dumps(pair["input"], separators=(",", ":")) for pair in train + test]
++    if len(fingerprints) != len(set(fingerprints)):
++        raise RuntimeError("constructed episode contains duplicate inputs")
++    episode = {
++        "task_id": TASK_ID,
++        "seed": seed,
++        "settings": deepcopy(settings),
++        "train": train,
++        "test": test,
++        "program_solution": program(settings),
++        "sampling": {"draws": demos + queries, "duplicate_rejections": 0},
++    }
++    certificate = teaching_check(episode)
++    if certificate["surviving_rivals"]:
++        raise RuntimeError("constructed demonstrations leave declared rivals alive: " + ", ".join(certificate["surviving_rivals"]))
++    episode["teaching"] = certificate
++    return episode
++
++
++def public_turn(episode: Any, query_index: Any = 0) -> dict[str, Any]:
++    if type(episode) is not dict or type(episode.get("train")) is not list or type(episode.get("test")) is not list:
++        raise ValueError("episode must contain train/test lists")
++    test = episode["test"]
++    _exact_int("query_index", query_index, 0, len(test) - 1)
++    query = {"input": deepcopy(test[query_index]["input"])}
++    if query_index == 0:
++        return {
++            "train": [{"input": deepcopy(pair["input"]), "output": deepcopy(pair["output"])} for pair in episode["train"]],
++            "test": [query],
++        }
++    return {"test": [query]}
++
++
++__all__ = [
++    "DEFAULT", "SETTINGS", "analyze", "canonical_intermediate", "dependency_trace",
++    "generate", "program", "public_turn", "rival_outputs", "sample_input", "solve",
++    "teaching_check", "wrong_intermediate_solve",
++]
+diff --git a/repo/generators/e14a91c50791/workspace/parametric/wrong_intermediate.rkt b/repo/generators/e14a91c50791/workspace/parametric/wrong_intermediate.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/e14a91c50791/workspace/parametric/wrong_intermediate.rkt
+@@ -0,0 +1,31 @@
++(rule!
++  (let ((dummy 0))
++    (define red-objs (filter (lambda (obj) (= (obj-color obj) 2)) (objects g 0)))
++    (define (same-pos? a b) (and (= (fst a) (fst b)) (= (snd a) (snd b))))
++    (define (has-cell? p cells) (any? (lambda (q) (same-pos? p q)) cells))
++    (define (same-cells? a b)
++      (and (= (length a) (length b)) (all? (lambda (p) (has-cell? p b)) a)))
++    (define (rotations cells)
++      (let* ((r0 (normalize-cells cells))
++             (r1 (normalize-cells (rotate-cells-cw r0)))
++             (r2 (normalize-cells (rotate-cells-cw r1)))
++             (r3 (normalize-cells (rotate-cells-cw r2))))
++        (list r0 r1 r2 r3)))
++    (define (same-rot-shape? a b)
++      (let ((sa (normalize-cells (obj-cells a))) (rots (rotations (obj-cells b))))
++        (any? (lambda (rb) (same-cells? sa rb)) rots)))
++    (define (same-count obj)
++      (count-where (lambda (other) (same-rot-shape? obj other)) red-objs))
++    (define targets (filter (lambda (obj) (= (remainder (same-count obj) 2) 1)) red-objs))
++    ;; Wrong intermediate: select the first source object before bbox fills can merge.
++    (define selected (first targets))
++    (grid-from-fn h w
++      (lambda (r c)
++        (cond
++          [(and (>= r (obj-r1 selected)) (<= r (obj-r2 selected))
++                (>= c (obj-c1 selected)) (<= c (obj-c2 selected))) 4]
++          [(any? (lambda (obj)
++                   (and (>= r (obj-r1 obj)) (<= r (obj-r2 obj))
++                        (>= c (obj-c1 obj)) (<= c (obj-c2 obj))))
++                 targets) 7]
++          [else (cell-at g r c)])))))

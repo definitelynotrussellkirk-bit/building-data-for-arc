@@ -1,0 +1,1357 @@
+diff --git a/repo/generators/0c023af8384a/SUMMARY.md b/repo/generators/0c023af8384a/SUMMARY.md
+--- a/repo/generators/0c023af8384a/SUMMARY.md
++++ b/repo/generators/0c023af8384a/SUMMARY.md
+@@ -1,6 +1,27 @@
+-# 0c023af8384a
++# 0c023af8384a — original-grid mirror overlay
+ 
+-Scattered marks copy to their mirrored ROW - sources sit in BOTH halves (refutes 'top-to-bottom copy'; the old generator was top-half only). swap_pair boards put different colors at mutually mirrored spots: they SWAP (mirror writes overwrite, input does not win). on_axis boards use odd height with center-row self-mirror no-ops; dense packs 8-14 marks.
++Copy each nonzero cell across the horizontal midline, reading the **original**
++input. A mirrored nonzero value overwrites an occupied destination: different
++colors at a mirror pair **swap**. The selected Racket rule is unchanged.
+ 
+-Kind: `per_puzzle`. Imported version: `2.0.2`.
+-Approval is derived by the catalog from current code and retained evidence.
++Version: `3.0.0`. Kind: `per_puzzle`. Pinned rule: `57674fc89a33`.
++
++The generator now honors exact total occupied-cell counts and feasible dimensions;
++rejects malformed or incompatible pins rather than silently changing them; and
++separates negative fixtures from the ordinary texture domain. The five positive
++branches are `plain`, `swap_pair`, `on_axis`, `dense`, and `same_pair`.
++
++Every three consecutive unoverridden draws with the same seed and difficulty
++include a collision and a center-row witness. Together they refute the seven
++executable rivals declared in the module. Every nine draws also retain at least
++three canonical-scale examples in **every** difficulty band. Other profiles keep
++wide, dense, multiple-collision, same-color-pair, and repeated-color support.
++
++This is a finite-rival curriculum guarantee, not universal identifiability or
++measured model accuracy. Explicit pins or downstream resampling may break the
++schedule guarantee; check assembled lessons when changing either.
++
++`workspace/` contains an independent Racket census and a reusable all-stage
++battery wrapper. `tests/` contains the contract and tool regressions. See
++`notes.md` for the retained strict-linter disagreement. Approval remains derived
++from the catalog and independently reviewed evidence; it has not been changed.
+diff --git a/repo/generators/0c023af8384a/generator.py b/repo/generators/0c023af8384a/generator.py
+--- a/repo/generators/0c023af8384a/generator.py
++++ b/repo/generators/0c023af8384a/generator.py
+@@ -1,167 +1,347 @@
+-"""Generator for 0c023af8384a — union with the UD-flip.
+-
+-Rule: starting FROM the input, each non-zero cell (row-major, reading
+-the ORIGINAL grid) paints its value at the vertically mirrored row
+-(h-1-r, c). Sources in BOTH halves mirror; mutually mirrored cells of
+-different colors SWAP; center-row cells (odd h) self-mirror (no-op);
+-a source on another's mirror spot is overwritten. Vertical twin of
+-099aeda5aa7b.
+-
+-Combinatorial axes: grid_h/w, marks, texture
+-(plain|swap_pair|on_axis|dense).
+-Degenerates: empty_grid, already_symmetric (identity).
++"""0c023af8384a: overlay the vertically flipped ORIGINAL grid on the input.
++
++A nonzero mirrored value wins, including at occupied destinations. Conflicting
++mirror partners therefore swap, rather than forming a symmetric output. The
++canonical examples contain no conflicts; swap_pair is an explicit extension
++verified against the unchanged Racket authority, not inferred from those pairs.
++
++Ordinary defaults interleave collision, center-row, and varied scatter lessons.
++Every three consecutive default draws refute the declared finite rival set.
++Pinned axes take precedence; incompatible pins raise a structured ValueError.
++marks always means TOTAL occupied input cells, including special witnesses.
+ """
+ from __future__ import annotations
+ 
+-from puzzle_generators.base import gen_ctx
++from puzzle_generators.base import gen_ctx, stable_rng
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "0c023af8384a"
+-VERSION = "2.0.2"
++VERSION = "3.0.0"
+ TASK_ID = "0c023af8384a"
++RULE_HASH = "57674fc89a33"
+ SUMMARY = (
+-    "Scattered marks copy to their mirrored ROW - sources sit in "
+-    "BOTH halves (refutes 'top-to-bottom copy'; the old generator "
+-    "was top-half only). swap_pair boards put different colors at "
+-    "mutually mirrored spots: they SWAP (mirror writes overwrite, "
+-    "input does not win). on_axis boards use odd height with "
+-    "center-row self-mirror no-ops; dense packs 8-14 marks."
++    "Copy nonzero cells across the horizontal midline, reading the original "
++    "grid; conflicting mirror partners swap. Exact total-mark overrides, "
++    "same-color pairs, multiple collisions, center-row witnesses, and a "
++    "three-demo default schedule with executable rival checks."
+ )
+-
+-# Rivals: 'copy top half down' refuted by bottom-half sources
+-# mirroring up. 'existing cells win' refuted by swap_pair. 'center
+-# row duplicates' refuted by on_axis no-ops. 3-4 demos with sources
+-# in both halves.
+ EXAMPLES_NEEDED = 3
+-
+ INVARIANTS = [
+-    "sources appear in BOTH halves across the task",
+-    "swap_pair boards: a mirrored pair with different colors",
+-    "on_axis boards: odd height and >=1 center-row mark",
++    "ordinary inputs are rectangular 0..9 grids with a nonidentity mirror overlay",
++    "marks is the exact total number of occupied cells, including witnesses",
++    "every three consecutive unoverridden draws include a collision and an axis witness",
+ ]
+-
+ DEGENERATE_TEXTURES = ("empty_grid", "already_symmetric")
+-HELPFUL_TEXTURES = ("plain", "swap_pair", "on_axis", "dense")
+-
++HELPFUL_TEXTURES = ("plain", "swap_pair", "on_axis", "dense", "same_pair")
+ AXES = {
+-    "grid_h":  {"type": "int", "default": "rng 6..12", "valid": "4..16"},
+-    "grid_w":  {"type": "int", "default": "rng 7..13", "valid": "5..18"},
+-    "marks":   {"type": "int", "default": "rng 3..6", "valid": "1..20"},
+-    "texture": {"type": "str", "default": "rng helpful",
+-                "valid": "plain|swap_pair|on_axis|dense|"
+-                         "empty_grid|already_symmetric",
+-                "doc": "swap_pair: different colors at (r,c)/(h-1-r,c) "
+-                       "swap; on_axis: center-row self-mirror no-ops."},
++    "grid_h": {"type": "int", "default": "feasible 4..16; difficulty-weighted", "valid": "4..16"},
++    "grid_w": {"type": "int", "default": "feasible 5..18; difficulty-weighted", "valid": "5..18"},
++    "marks": {"type": "int", "default": "feasible 3..20; dense favors 8..20", "valid": "1..20"},
++    "texture": {"type": "str", "default": "seed-rotated nine-profile schedule",
++                "valid": "plain|swap_pair|on_axis|dense|same_pair",
++                "doc": "Positive branch requirements, not uniquely recoverable labels. "
++                       "on_axis needs odd height and >=2 marks; swap_pair >=2; "
++                       "same_pair >=3. Empty/symmetric textures are explicit negative fixtures."},
+ }
+-
+-_COLORS = (1, 2, 3, 4, 5, 6, 7, 8, 9)
+-
+-
+-def _mirror(g):
+-    h, w = len(g), len(g[0])
+-    out = [row[:] for row in g]
++# Empty declaration opts into strict classification. Predicate-dependent refusals
++# name their exact conflicting axes on the exception rather than waiving a matrix.
++INCOMPATIBLE_OVERRIDE_COMBINATIONS = []
++SCHEDULE_PROFILES = tuple(range(9))
++CANONICAL_SCALE_PROFILES = (0, 1, 2)
++_PROFILE_TEXTURES = ("plain", "swap_pair", "on_axis", "same_pair", "swap_pair",
++                     "on_axis", "dense", "swap_pair", "on_axis")
++_COLORS = tuple(range(1, 10))
++_MIN_MARKS = {"plain": 1, "dense": 1, "swap_pair": 2, "on_axis": 2, "same_pair": 3}
++
++
++def schedule_profile(seed, sample_index, difficulty=None):
++    """Profile before overrides; a seed rotation avoids a globally fixed order."""
++    phase = stable_rng(seed, TASK_ID + "|schedule", VERSION).randrange(9)
++    return (phase + sample_index) % 9
++
++
++def _mirror(grid):
++    """Python audit mirror only; production labels still come from Racket."""
++    h, w = len(grid), len(grid[0])
++    out = [list(row) for row in grid]
+     for r in range(h):
+         for c in range(w):
+-            v = g[r][c]
+-            if v != 0:
+-                out[h - 1 - r][c] = v
++            if grid[r][c] != 0:
++                out[h - 1 - r][c] = grid[r][c]
+     return out
+ 
+ 
++def _grid_errors(grid):
++    if not isinstance(grid, (list, tuple)) or not grid:
++        return ["grid must be a nonempty sequence of rows"]
++    if any(not isinstance(row, (list, tuple)) or not row for row in grid):
++        return ["grid rows must be nonempty sequences of cells"]
++    if any(len(row) != len(grid[0]) for row in grid):
++        return ["grid must be rectangular"]
++    if not (1 <= len(grid) <= 30 and 1 <= len(grid[0]) <= 30):
++        return ["grid dimensions must be within 1..30"]
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        return ["grid cells must be integers 0..9 (not booleans)"]
++    return []
++
++
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+-    """Verify: non-empty board whose horizontal-midline mirror changes something."""
+-    if not grid or not grid[0] or any(len(row) != len(grid[0]) for row in grid):
+-        return ["grid must be nonempty and rectangular"]
+-    errs = []
+-    h, w = len(grid), len(grid[0])
+-    nz = [(r, c) for r in range(h) for c in range(w) if grid[r][c] != 0]
+-    if not nz:
+-        errs.append("grid is empty: no sources for vertical mirror")
+-    if h < 2:
+-        errs.append(f"height {h} too small for vertical mirror")
+-    if nz and _mirror(grid) == grid:
+-        errs.append("input is already horizontally symmetric; mirror rule is a no-op")
+-    return errs
++    """Ordinary admission, not a shape heuristic: tiny lawful sources stay legal."""
++    errors = _grid_errors(grid)
++    if errors:
++        return errors
++    if not any(value for row in grid for value in row):
++        return ["grid is empty: no sources for vertical mirror"]
++    if _mirror(grid) == [list(row) for row in grid]:
++        return ["mirror overlay is a no-op (symmetric input or axis-only sources)"]
++    return []
++
++
++def _incompatible(message, *axes):
++    error = ValueError(message)
++    error.incompatible_axes = tuple(axes)
++    raise error
++
++
++def _validate_overrides(overrides):
++    unknown = sorted(set(overrides) - set(AXES))
++    if unknown:
++        raise TypeError("unknown override axis/axes: " + ", ".join(unknown))
++    for name, lo, hi in (("grid_h", 4, 16), ("grid_w", 5, 18), ("marks", 1, 20)):
++        value = overrides.get(name)
++        if value is not None and (type(value) is not int or not lo <= value <= hi):
++            raise ValueError(f"{name} must be an integer within {lo}..{hi}; got {value!r}")
++    texture = overrides.get("texture")
++    if texture is not None and texture not in HELPFUL_TEXTURES + DEGENERATE_TEXTURES:
++        raise ValueError(f"unknown texture: {texture!r}")
++
++
++def _capacity(h, w, texture):
++    orbits = (h // 2) * w
++    if texture == "swap_pair":
++        return 2 * orbits
++    if texture == "same_pair":
++        return 2 * orbits - 1  # retain a lone source to make the output change
++    return orbits + (texture == "on_axis")
++
++
++def _weighted(values, favored):
++    lo, hi = favored
++    return [value for value in values for _ in range(4 if lo <= value <= hi else 1)]
+ 
+ 
+ def generate(seed, sample_index, *, difficulty=None, **overrides):
+-    ctx = gen_ctx(seed=seed, sample_index=sample_index,
+-                  version=VERSION, task_id=TASK_ID,
+-                  difficulty=difficulty, overrides=overrides)
++    _validate_overrides(overrides)
++    if type(seed) is not int or type(sample_index) is not int or sample_index < 0:
++        raise ValueError("seed must be an integer and sample_index a nonnegative integer")
++    if difficulty not in (None, "easy", "medium", "hard"):
++        raise ValueError(f"unsupported difficulty {difficulty!r}")
++    profile = schedule_profile(seed, sample_index, difficulty)
++    # One third of defaults keep canonical dimensions/palette/count in EVERY
++    # band. The remaining two thirds retain wide and dense stress support.
++    # These are ranges, not copied canonical boards or seed-specific exceptions.
++    core = profile in CANONICAL_SCALE_PROFILES and not any(
++        value is not None for value in overrides.values())
+     texture = overrides.get("texture")
+     if texture in DEGENERATE_TEXTURES:
+-        return _draw_from_degenerate(texture, ctx)
++        return _draw_from_degenerate(texture, gen_ctx(
++            seed=seed, sample_index=sample_index, version=VERSION, task_id=TASK_ID,
++            difficulty=difficulty, overrides=overrides))
+     if texture is None:
+-        texture = ctx.draw_choice("texture", ("plain", "plain", "swap_pair",
+-                                              "on_axis", "dense"))
+-    if difficulty == "easy":
+-        h = ctx.draw_int("grid_h", 6, 8)
+-        w = ctx.draw_int("grid_w", 7, 10)
+-        marks = ctx.draw_int("marks", 2, 4)
+-    elif difficulty == "hard":
+-        h = ctx.draw_int("grid_h", 10, 12)
+-        w = ctx.draw_int("grid_w", 11, 13)
+-        marks = ctx.draw_int("marks", 5, 7)
++        texture = _PROFILE_TEXTURES[profile]
++        # A single explicit axis must not fail because an unrequested default
++        # texture is incompatible. Change only the unpinned texture, never a pin.
++        if ((texture == "on_axis" and overrides.get("grid_h") is not None
++             and overrides["grid_h"] % 2 == 0)
++                or (overrides.get("marks") is not None
++                    and overrides["marks"] < _MIN_MARKS[texture])):
++            texture = "plain"
++    if texture == "on_axis" and overrides.get("grid_h") is not None and overrides["grid_h"] % 2 == 0:
++        _incompatible("on_axis texture requires an odd grid_h", "texture", "grid_h")
++    requested_marks = overrides.get("marks")
++    if requested_marks is not None and requested_marks < _MIN_MARKS[texture]:
++        _incompatible(f"{texture} texture requires marks >= {_MIN_MARKS[texture]}", "texture", "marks")
++
++    effective = dict(overrides)
++    effective["texture"] = texture
++    ctx = gen_ctx(seed=seed, sample_index=sample_index, version=VERSION, task_id=TASK_ID,
++                  difficulty=difficulty, overrides=effective)
++    texture = ctx.draw_choice("texture", HELPFUL_TEXTURES)
++    needed = requested_marks if requested_marks is not None else max(3, _MIN_MARKS[texture])
++    heights = [overrides["grid_h"]] if overrides.get("grid_h") is not None else list(range(4, 17))
++    widths = [overrides["grid_w"]] if overrides.get("grid_w") is not None else list(range(5, 19))
++    sizes = [(h, w) for h in heights for w in widths
++             if (texture != "on_axis" or h % 2 == 1) and _capacity(h, w, texture) >= needed]
++    if core:
++        sizes = [(h, w) for h, w in sizes if 7 <= h <= 10 and 8 <= w <= 12]
++    if not sizes:
++        _incompatible("grid_h, grid_w and marks exceed the available mirror-orbit capacity",
++                      "grid_h", "grid_w", "marks")
++    bands = {
++        "easy": ((6, 9), (7, 11), (3, 5)),
++        "medium": ((6, 12), (7, 13), (3, 7)),
++        "hard": ((9, 16), (10, 18), (5, 12)),
++    }
++    hb, wb, mb = bands.get(difficulty, bands["medium"])
++    h = ctx.draw_choice("grid_h", _weighted(sorted({a for a, _ in sizes}), hb))
++    w = ctx.draw_choice("grid_w", _weighted([b for a, b in sizes if a == h], wb))
++    maximum = min(4 if core else 20, _capacity(h, w, texture))
++    if requested_marks is not None:
++        marks = ctx.draw_int("marks", _MIN_MARKS[texture], maximum)
+     else:
+-        h = ctx.draw_int("grid_h", 6, 12)
+-        w = ctx.draw_int("grid_w", 7, 13)
+-        marks = ctx.draw_int("marks", 3, 6)
++        minimum = min(8, maximum) if texture == "dense" else max(3, _MIN_MARKS[texture])
++        marks = ctx.draw_choice("marks", _weighted(range(minimum, maximum + 1), mb))
+     rng = ctx.draw_rng("layout")
+-    if texture == "on_axis" and h % 2 == 0:
+-        h += 1
+-    if texture == "dense":
+-        marks = rng.randint(8, 14)
+-    g = full_grid(h, w, 0)
+-    used = set()
+-
+-    def free_pair(r, c):
+-        return (r, c) not in used and (h - 1 - r, c) not in used
+-
+-    if texture == "swap_pair":
+-        ca, cb = rng.sample(_COLORS, 2)
+-        r = rng.randint(0, h // 2 - 1)
+-        c = rng.randint(0, w - 1)
+-        g[r][c] = ca
+-        g[h - 1 - r][c] = cb
+-        used |= {(r, c), (h - 1 - r, c)}
+-        marks = max(1, marks - 2)
+-    if texture == "on_axis":
+-        axis = h // 2
+-        for _ in range(rng.randint(1, 2)):
+-            c = rng.randint(0, w - 1)
+-            if (axis, c) not in used:
+-                g[axis][c] = rng.choice(_COLORS)
+-                used.add((axis, c))
+-    placed_any = False
+-    for _ in range(marks):
+-        for _t in range(120):
+-            r = rng.randint(0, h - 1)  # BOTH halves
+-            c = rng.randint(0, w - 1)
+-            if r == h - 1 - r or not free_pair(r, c):
+-                continue
+-            g[r][c] = rng.choice(_COLORS)
+-            used.add((r, c))
+-            placed_any = True
+-            break
+-    if not placed_any and texture != "swap_pair":
+-        g[0][0] = rng.choice(_COLORS)
+-    return g
++    grid = full_grid(h, w, 0)
++    distinct_colors = iter(rng.sample(_COLORS, marks)) if core else None
++    def color():
++        return next(distinct_colors) if distinct_colors is not None else rng.choice(_COLORS)
++    orbits = [(r, c) for r in range(h // 2) for c in range(w)]
++    rng.shuffle(orbits)
++    remaining = marks
++    if texture in ("swap_pair", "same_pair"):
++        min_pairs = max(1, marks - len(orbits))
++        max_pairs = marks // 2 if texture == "swap_pair" else (marks - 1) // 2
++        pairs = rng.randint(min_pairs, min(max_pairs, len(orbits)))
++        for _ in range(pairs):
++            r, c = orbits.pop()
++            a, b = (color(), color()) if core else rng.sample(_COLORS, 2)
++            grid[r][c] = a
++            grid[h - 1 - r][c] = b if texture == "swap_pair" else a
++        remaining -= 2 * pairs
++    elif texture == "on_axis":
++        grid[h // 2][rng.randrange(w)] = color()
++        remaining -= 1
++    # Sampling orbit slots without replacement has no retry cap, silent
++    # underfill, overwritten marks, or seed-dependent fallback coordinates.
++    side = rng.randrange(2)
++    for index in range(remaining):
++        r, c = orbits.pop()
++        # Both halves are demonstrated whenever there are at least two lone
++        # sources; subsequent placements keep independent random orientation.
++        lower = (side + index) % 2 if index < 2 else rng.randrange(2)
++        grid[h - 1 - r if lower else r][c] = color()
++    return grid
+ 
+ 
+ def _draw_from_degenerate(name, ctx):
+-    """empty_grid — blank: identity. already_symmetric — mirrored
+-    same-color pairs: every write repaints an identical value,
+-    identity. rng-varied."""
++    if ctx.overrides.get("marks") is not None:
++        _incompatible("negative-fixture texture has no ordinary marks budget", "texture", "marks")
++    h = ctx.draw_int("grid_h", 4, 16)
++    w = ctx.draw_int("grid_w", 5, 18)
++    grid = full_grid(h, w, 0)
++    if name == "empty_grid":
++        return grid
+     rng = ctx.draw_rng("degenerate_layout")
+-    h = ctx.draw_int("grid_h", 6, 10)
+-    w = ctx.draw_int("grid_w", 7, 12)
+-    g = full_grid(h, w, 0)
+-    if name == "empty_grid":
+-        return g
+-    for _ in range(rng.randint(2, 4)):
+-        r = rng.randint(0, h // 2 - 1)
+-        c = rng.randint(0, w - 1)
+-        color = rng.choice(_COLORS)
+-        g[r][c] = color
+-        g[h - 1 - r][c] = color
+-    return g
++    orbits = rng.sample([(r, c) for r in range(h // 2) for c in range(w)], rng.randint(2, 4))
++    for r, c in orbits:
++        grid[r][c] = grid[h - 1 - r][c] = rng.choice(_COLORS)
++    return grid
++
++
++def observe_overrides(grid):
++    return {"grid_h": len(grid), "grid_w": len(grid[0]),
++            "marks": sum(value != 0 for row in grid for value in row)}
++
++
++def _has_conflict(grid):
++    return any(grid[r][c] and grid[-1-r][c] and grid[r][c] != grid[-1-r][c]
++               for r in range(len(grid) // 2) for c in range(len(grid[0])))
++
++
++def strict_canonical_like(grid):
++    """Canonical-like conflict-free manifold; collisions are declared extensions."""
++    errors = self_check(grid)
++    if not errors and _has_conflict(grid):
++        errors.append("conflicting mirror partners are a positive extension, absent from canonical")
++    return errors
++
++
++def _preserve_occupied(grid):
++    return [[a or b for a, b in zip(row, mirrored)]
++            for row, mirrored in zip(grid, reversed(grid))]
++
++
++def _maximum_merge(grid):
++    return [[max(a, b) for a, b in zip(row, mirrored)]
++            for row, mirrored in zip(grid, reversed(grid))]
++
++
++def _in_place(grid):
++    out = [list(row) for row in grid]
++    for r in range(len(out)):
++        for c in range(len(out[0])):
++            if out[r][c]:
++                out[-1-r][c] = out[r][c]
++    return out
++
++
++def _one_direction(grid, *, from_top):
++    out = [list(row) for row in grid]
++    for r in range(len(grid) // 2):
++        source = r if from_top else len(grid) - 1 - r
++        for c, value in enumerate(grid[source]):
++            if value:
++                out[-1-source][c] = value
++    return out
++
++
++def _drop_axis(grid):
++    out = _mirror(grid)
++    if len(grid) % 2:
++        out[len(grid) // 2] = [0] * len(grid[0])
++    return out
++
++
++SEMANTIC_RIVALS = {
++    "preserve occupied": _preserve_occupied,
++    "maximum merge": _maximum_merge,
++    "sequential in-place copy": _in_place,
++    "copy top to bottom only": lambda g: _one_direction(g, from_top=True),
++    "copy bottom to top only": lambda g: _one_direction(g, from_top=False),
++    "flip without keeping sources": lambda g: [row[:] for row in reversed(g)],
++    "erase center row": _drop_axis,
++}
++LESSON_COMPETITORS = SEMANTIC_RIVALS
++CANONICAL_SHORTCUTS = {name: SEMANTIC_RIVALS[name] for name in
++                       ("preserve occupied", "maximum merge", "sequential in-place copy")}
++SEMANTIC_WITNESSES = {
++    "conflicting_mirror_partners": _has_conflict,
++    "lone_source_is_kept": lambda g: any(
++        bool(g[r][c]) != bool(g[-1-r][c])
++        for r in range(len(g) // 2) for c in range(len(g[0]))),
++    "center_row_is_kept": lambda g: len(g) % 2 == 1 and any(g[len(g) // 2]),
++}
++WITNESS_RIVALS = {
++    "conflicting_mirror_partners": ["preserve occupied", "maximum merge", "sequential in-place copy",
++                                    "copy top to bottom only", "copy bottom to top only"],
++    "lone_source_is_kept": ["flip without keeping sources"],
++    "center_row_is_kept": ["erase center row"],
++}
++POSITIVE_EXTENSION_WITNESSES = ("conflicting_mirror_partners",)
++
++
++def lesson_identifiable(demos, query):
++    """Check the named finite rival set, NOT uniqueness among all possible rules."""
++    if not isinstance(demos, list) or not demos:
++        return ["at least one demonstration is required"]
++    errors = []
++    for index, example in enumerate([*demos, query]):
++        if not isinstance(example, dict) or "input" not in example or "output" not in example:
++            errors.append(f"pair {index} must contain input and output")
++        elif _grid_errors(example["input"]) or _grid_errors(example["output"]):
++            errors.append(f"pair {index} contains an invalid grid")
++        elif _mirror(example["input"]) != example["output"]:
++            errors.append(f"pair {index} output disagrees with the pinned mirror-overlay rule")
++    if errors:
++        return errors
++    return [f"demonstrations do not refute rival: {name}"
++            for name, rival in LESSON_COMPETITORS.items()
++            if all(rival(p["input"]) == p["output"] for p in demos)
++            and rival(query["input"]) != query["output"]]
++
++
++def mutation_fixtures():
++    return [("blank", [[0, 0], [0, 0]]), ("same-color mirror partners", [[1], [1]]),
++            ("axis-only", [[0], [2], [0]]), ("out-of-palette", [[10], [0]]),
++            ("ragged", [[1], [0, 0]])]
+diff --git a/repo/generators/0c023af8384a/notes.md b/repo/generators/0c023af8384a/notes.md
+--- a/repo/generators/0c023af8384a/notes.md
++++ b/repo/generators/0c023af8384a/notes.md
+@@ -1,4 +1,77 @@
+ # Working notes: 0c023af8384a
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Review 2026-09-28 — review-27f8c31f6124f652
++
++Model: GPT-6 Astra Pro. Baseline `2.0.2` → proposed `3.0.0`. Canonical rule and
++base authority files unchanged. The incoming associated-notes file was empty;
++no unrecorded rationale is attributed to its author.
++
++### Semantic boundary
++
++For an input `g`, output cell `(r,c)` is `g[h-1-r][c] or g[r][c]` for ARC
++colors 0..9. Thus an occupied pair `(a,b)`, where both values are nonzero and
++unequal, becomes `(b,a)`. It does not become `(a,b)`, `(max(a,b),max(a,b))`,
++or the result of sequentially reading and overwriting a mutable board.
++
++All five canonical pairs agree with the unchanged Racket program, but none
++contains a conflicting mirror pair. Conflict handling is therefore a declared
++positive extension grounded in the existing program, not uniquely inferred
++from the demonstrations. `strict_canonical_like` excludes conflicts, while
++ordinary admission includes them. The original generator already sampled
++single collisions; this review fixes their lesson-level coverage rather than
++claiming to invent that feature.
++
++### Input contracts
++
++`marks` is the total occupied input count, including pair partners and center
++witnesses. Heights 4..16, widths 5..18, and marks 1..20 are global advertised
++bounds, not promises that every joint tuple is feasible. Pins stay exact.
++`on_axis` needs odd height and at least two marks; `swap_pair` needs two;
++`same_pair` needs three so it can retain a lone source and change the output.
++Orbit-capacity violations report the conflicting axes in a ValueError.
++Unknown keys and values fail loudly. Optional `None` values mean unpinned.
++
++Negative `empty_grid` and `already_symmetric` inputs remain available explicitly,
++but not in ordinary AXES.texture.valid, and self_check rejects their no-op
++outputs. Legal singletons, lines and blocks remain accepted when the rule
++changes them. Palette, rectangularity, sequence rows and dimensions are checked
++before applying the audit mirror.
++
++### Curriculum and coverage
++
++A seed-rotated cycle repeats:
++
++```
++plain, swap_pair, on_axis,
++same_pair, swap_pair, on_axis,
++dense, swap_pair, on_axis
++```
++
++Every three consecutive defaults contain one collision and one colored center
++row. An on-axis default has at least two lone sources; these refute pure-flip
++behavior. Collision witnesses refute destination-preserving, maximum, in-place,
++and one-direction-only rivals. Center witnesses refute axis erasure. This proves
++coverage for the declared seven competitors, not every possible program.
++
++Profiles 0,1,2 retain h=7..10, w=8..12, 3..4 distinct foreground marks in all
++bands; the other six retain broader difficulty-weighted support, repeated colors,
++and crowded/colliding cases. This repaired a real hard-band coverage regression
++found by the first all-stage post-change battery. No copied canonical board,
++battery-specific seed condition, opt-out or threshold change is used.
++
++### Measurements retained in the return
++
++- Named-rival ambiguity: 76/400 baseline lessons, 0/400 proposed lessons. Each
++  has three demonstrations and one query; four difficulty settings are sampled.
++- 5,907 distinct inputs evaluated by the canonical Racket rule, including all
++  1,100 two-cell/three-cell mirror-orbit color configurations and five canonical
++  pairs. Python audit expressions agree on the recorded cases.
++- Strict final battery: 11 green, 1 failed, all 12 stages run. Override matrix:
++  37,620 draws, 36,720 accepted and 900 structured incompatible-pin refusals.
++- Remaining failure: generic `selfcheck-minimal-impostor` warning promoted to
++  failure by strict defect_lint. Positive singleton/line/block outputs are
++  reference-checked in the probe; rejecting them would falsely narrow this task.
++
++The return includes earlier failures rather than replacing them with final
++logs. The two peer audits are findings-only; their sources were not edited.
++These measurements are generator/evaluation results, not trained-model scores.
+diff --git a/repo/generators/0c023af8384a/tests/test_battery_wrapper.py b/repo/generators/0c023af8384a/tests/test_battery_wrapper.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0c023af8384a/tests/test_battery_wrapper.py
+@@ -0,0 +1,28 @@
++import importlib.util
++from pathlib import Path
++
++import pytest
++
++
++def load_wrapper():
++    path = Path(__file__).resolve().parents[1] / "workspace/run_battery.py"
++    assert path.is_file(), "Missing all-stage evidence collector"
++    spec = importlib.util.spec_from_file_location("all_stage_wrapper_under_test", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_full_strict_after_command_retains_keep_going_and_fresh():
++    module = load_wrapper()
++    assert module.battery_command("0c023af8384a", "after") == [
++        "bash", "scripts/run_generator_battery.sh", "0c023af8384a", "after", "--fresh", "--keep-going"]
++
++
++def test_existing_evidence_directory_is_never_overwritten(tmp_path):
++    module = load_wrapper()
++    with pytest.raises(FileExistsError):
++        module.check_output(tmp_path)
++    fresh = tmp_path / "fresh"
++    module.check_output(fresh)
++    assert not fresh.exists()
+diff --git a/repo/generators/0c023af8384a/tests/test_generator_contract.py b/repo/generators/0c023af8384a/tests/test_generator_contract.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0c023af8384a/tests/test_generator_contract.py
+@@ -0,0 +1,205 @@
++"""Task-local contract regressions; run from any working directory with pytest."""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import importlib.util
++import itertools
++import json
++from pathlib import Path
++import sys
++
++import pytest
++
++HOME = Path(__file__).resolve().parents[1]
++REPO = HOME.parents[1]
++sys.path.insert(0, str(REPO / "shared/runtime"))
++spec = importlib.util.spec_from_file_location("mirror_generator_under_test", HOME / "generator.py")
++gen = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(gen)
++
++
++def reference(grid):
++    """Independent cellwise expression for overlay(g, flip_ud(g))."""
++    return [[b or a for a, b in zip(row, mirrored)]
++            for row, mirrored in zip(grid, reversed(grid))]
++
++
++def canonical():
++    with (REPO / "shared/data/canonical/puzzles.jsonl").open() as stream:
++        return next(row for line in stream
++                    if (row := json.loads(line))["task_id"] == gen.TASK_ID)
++
++
++def nonzeros(grid):
++    return sum(value != 0 for row in grid for value in row)
++
++
++def collisions(grid):
++    return [(r, c) for r in range(len(grid) // 2) for c in range(len(grid[0]))
++            if grid[r][c] and grid[-1-r][c] and grid[r][c] != grid[-1-r][c]]
++
++
++def pair(grid):
++    return {"input": grid, "output": reference(grid)}
++
++
++def test_reference_pin_and_every_canonical_pair():
++    row = canonical()
++    assert getattr(gen, "RULE_HASH", None) == hashlib.sha256(
++        " ".join(row["program_solution"].split()).encode()).hexdigest()[:12]
++    for example in row["train"] + row["test"]:
++        assert gen.self_check(example["input"]) == []
++        assert reference(example["input"]) == example["output"]
++        assert gen._mirror(example["input"]) == example["output"]
++
++
++@pytest.mark.parametrize("overrides", [{"texture": "typo"}, {"mark": 3}, {"grid_heigth": 6}])
++def test_unknown_overrides_fail_loudly(overrides):
++    with pytest.raises((TypeError, ValueError)):
++        gen.generate(0, 0, **overrides)
++
++
++@pytest.mark.parametrize("name", ["grid_h", "grid_w", "marks"])
++@pytest.mark.parametrize("value", [True, 6.5, "6"])
++def test_integer_axes_do_not_silently_coerce(name, value):
++    with pytest.raises((TypeError, ValueError)):
++        gen.generate(0, 0, **{name: value})
++
++
++@pytest.mark.parametrize("difficulty", [None, "easy", "medium", "hard"])
++def test_single_axis_overrides_are_exact_in_every_band(difficulty):
++    for name, values in {"grid_h": range(4, 17), "grid_w": range(5, 19),
++                         "marks": range(1, 21)}.items():
++        for value in values:
++            for seed in (0, 1, 17):
++                grid = gen.generate(seed, 0, difficulty=difficulty, **{name: value})
++                actual = {"grid_h": len(grid), "grid_w": len(grid[0]), "marks": nonzeros(grid)}
++                assert actual[name] == value, (difficulty, seed, name, value, actual)
++                assert gen.self_check(grid) == []
++
++
++@pytest.mark.parametrize("texture,minimum", [("plain", 1), ("dense", 1),
++                                            ("swap_pair", 2), ("on_axis", 2),
++                                            ("same_pair", 3)])
++def test_texture_count_is_total_occupied_cells(texture, minimum):
++    for count in range(minimum, 21):
++        grid = gen.generate(0, count, texture=texture, marks=count)
++        assert nonzeros(grid) == count
++        assert gen.self_check(grid) == []
++        if texture == "on_axis":
++            assert len(grid) % 2 and any(grid[len(grid) // 2])
++        elif texture == "swap_pair":
++            assert collisions(grid)
++        elif texture == "same_pair":
++            assert any(grid[r][c] and grid[r][c] == grid[-1-r][c]
++                       for r in range(len(grid) // 2) for c in range(len(grid[0])))
++
++
++@pytest.mark.parametrize("overrides,axes", [
++    ({"texture": "on_axis", "grid_h": 6}, {"texture", "grid_h"}),
++    ({"texture": "on_axis", "marks": 1}, {"texture", "marks"}),
++    ({"texture": "swap_pair", "marks": 1}, {"texture", "marks"}),
++    ({"texture": "same_pair", "marks": 2}, {"texture", "marks"}),
++    ({"texture": "plain", "grid_h": 4, "grid_w": 5, "marks": 20},
++     {"grid_h", "grid_w", "marks"}),
++])
++def test_incompatible_pins_are_rejected_not_changed(overrides, axes):
++    with pytest.raises(ValueError) as caught:
++        gen.generate(0, 0, **overrides)
++    assert set(getattr(caught.value, "incompatible_axes", ())) == axes
++
++
++@pytest.mark.parametrize("grid", [None, [], [[]], [[1], [0, 0]], [[10], [0]],
++                                   [[-1], [0]], [[True], [0]], [[1.5], [0]],
++                                   [["1"], [0]], ["10", "00"]])
++def test_self_check_rejects_malformed_grids_without_crashing(grid):
++    assert gen.self_check(grid)
++
++
++def test_lawful_small_shapes_remain_accepted():
++    for grid in ([[1], [0]], [[1, 1, 1], [0, 0, 0]],
++                 [[2, 2, 0], [2, 2, 0], [0, 0, 0], [0, 0, 0]]):
++        assert gen.self_check(grid) == []
++        assert gen._mirror(grid) == reference(grid)
++
++
++@pytest.mark.parametrize("texture", ["empty_grid", "already_symmetric"])
++def test_negative_fixtures_stay_outside_ordinary_domain(texture):
++    assert texture not in gen.AXES["texture"]["valid"].split("|")
++    for seed in range(12):
++        grid = gen.generate(seed, 0, texture=texture)
++        assert reference(grid) == grid
++        assert gen.self_check(grid)
++
++
++def test_pairwise_reference_exhaustive_and_non_mutating():
++    for a, b in itertools.product(range(10), repeat=2):
++        grid = [[a, 0], [0, 7], [b, 0]]
++        saved = deepcopy(grid)
++        assert gen._mirror(grid) == reference(grid)
++        assert grid == saved
++
++
++def test_rivals_fit_canonical_but_swap_counterexample_refutes_them():
++    shortcuts = getattr(gen, "CANONICAL_SHORTCUTS", {})
++    assert shortcuts, "Missing executable canonical-surviving rival rules"
++    row = canonical()
++    for name, rival in shortcuts.items():
++        assert all(rival(p["input"]) == p["output"] for p in row["train"] + row["test"]), name
++        grid = [[1], [2]]
++        assert rival(grid) != reference(grid), name
++
++
++def test_identifiability_detects_insufficient_demonstrations():
++    hook = getattr(gen, "lesson_identifiable", None)
++    assert callable(hook), "Missing lesson-identifiability hook"
++    demos = [pair([[1], [0]]), pair([[0], [2]])]
++    assert any("preserve occupied" in reason for reason in hook(demos, pair([[1], [2]])))
++    assert hook(demos + [pair([[1], [2]])], pair([[3], [4]])) == []
++    bad = pair([[1], [2]])
++    bad["output"] = [[1], [2]]
++    assert hook([bad], pair([[3], [4]]))
++
++
++@pytest.mark.parametrize("difficulty", [None, "easy", "medium", "hard"])
++def test_every_three_consecutive_default_demos_refute_declared_rivals(difficulty):
++    hook = getattr(gen, "lesson_identifiable", None)
++    assert callable(hook), "Missing lesson-identifiability hook"
++    for seed in (0, 1, 17, 731):
++        grids = [gen.generate(seed, i, difficulty=difficulty) for i in range(21)]
++        for start in range(18):
++            demos = [pair(g) for g in grids[start:start+3]]
++            query = pair(grids[start+3])
++            assert hook(demos, query) == [], (seed, start, difficulty)
++            for name, rival in gen.LESSON_COMPETITORS.items():
++                assert any(rival(p["input"]) != p["output"] for p in demos), (seed, start, name)
++
++
++def test_observer_reports_realized_counts_and_determinism():
++    observer = getattr(gen, "observe_overrides", None)
++    assert callable(observer), "Missing realized-axis observer"
++    for seed in range(20):
++        g = gen.generate(seed, 2)
++        assert gen.generate(seed, 2) == g
++        assert observer(g) == {"grid_h": len(g), "grid_w": len(g[0]), "marks": nonzeros(g)}
++
++
++def test_sequence_rows_are_accepted_without_mutation():
++    grid = ((1,), (0,))
++    assert gen.self_check(grid) == []
++    assert gen._mirror(grid) == [[1], [1]]
++    assert grid == ((1,), (0,))
++
++
++@pytest.mark.parametrize("band", [None, "easy", "medium", "hard"])
++def test_every_nine_default_draws_retain_three_canonical_scale_examples(band):
++    # This is an independent distribution contract, not the battery's pinned
++    # seeds or marginal threshold. Keep the original scale in every band.
++    for seed in (101, 987, 31415):
++        for start in (0, 11, 100):
++            grids = [gen.generate(seed, start + i, difficulty=band) for i in range(9)]
++            anchored = [g for g in grids if 7 <= len(g) <= 10 and 8 <= len(g[0]) <= 12
++                        and 3 <= nonzeros(g) <= 4
++                        and 4 <= len({v for row in g for v in row}) <= 5]
++            assert len(anchored) >= 3, (seed, start, band, len(anchored))
+diff --git a/repo/generators/0c023af8384a/tests/test_review_probe.py b/repo/generators/0c023af8384a/tests/test_review_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0c023af8384a/tests/test_review_probe.py
+@@ -0,0 +1,69 @@
++"""Unit tests for the reusable lesson-analysis portion of the review probe."""
++from copy import deepcopy
++import importlib.util
++from pathlib import Path
++
++import pytest
++
++
++@pytest.fixture
++def probe():
++    path = Path(__file__).resolve().parents[1] / "workspace/review_probe.py"
++    assert path.is_file(), "Missing reference-checked review probe"
++    spec = importlib.util.spec_from_file_location("review_probe_under_test", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def pair(g):
++    return {"input": g, "output": [[b or a] for [a], [b] in zip(g, reversed(g))]}
++
++
++def preserve(g):
++    return [[a or b] for [a], [b] in zip(g, reversed(g))]
++
++
++def test_lesson_audit_separates_ambiguity_from_surviving_harmless_rivals(probe):
++    lessons = [
++        {"band": "easy", "seed": 0, "sample_index": 0,
++         "demos": [pair([[1], [0]])], "query": pair([[1], [2]])},
++        {"band": "easy", "seed": 1, "sample_index": 0,
++         "demos": [pair([[1], [0]])], "query": pair([[2], [0]])},
++        {"band": "easy", "seed": 2, "sample_index": 0,
++         "demos": [pair([[1], [2]])], "query": pair([[3], [4]])},
++    ]
++    saved = deepcopy(lessons)
++    result = probe.analyze_lessons(lessons, {"preserve occupied": preserve})
++    assert result["total_lessons"] == 3
++    assert result["ambiguous_lessons"] == 1
++    assert result["rivals"]["preserve occupied"] == {
++        "refuted": 1, "survived_same_query": 1, "survived_wrong_query": 1}
++    assert result["examples"][0]["seed"] == 0
++    assert lessons == saved
++
++
++def test_lesson_audit_records_rival_errors_as_failures(probe):
++    def broken(g):
++        raise ValueError("bad rival")
++    lesson = {"band": "easy", "seed": 0, "sample_index": 0,
++              "demos": [pair([[1], [0]])], "query": pair([[1], [2]])}
++    with pytest.raises(ValueError, match="bad rival"):
++        probe.analyze_lessons([lesson], {"broken": broken})
++
++
++def test_profile_recovers_mirror_structure(probe):
++    p = probe.profile([[1, 4, 0], [0, 2, 0], [3, 4, 5]])
++    assert p["marks"] == 6
++    assert p["conflicting_pairs"] == 1
++    assert p["same_color_pairs"] == 1
++    assert p["axis_marks"] == 1
++    assert p["lone_sources"] == 1
++
++
++def test_oracle_cases_include_all_ordered_pairs_and_axis_colors(probe):
++    grids = probe.exhaustive_orbit_cases()
++    assert len(grids) == 1100
++    assert [[0], [0]] in grids
++    assert [[9], [1]] in grids
++    assert [[1], [9], [2]] in grids
+diff --git a/repo/generators/0c023af8384a/workspace/README.md b/repo/generators/0c023af8384a/workspace/README.md
+--- a/repo/generators/0c023af8384a/workspace/README.md
++++ b/repo/generators/0c023af8384a/workspace/README.md
+@@ -1,4 +1,67 @@
+-# Workspace
++# Mirror review tools
+ 
+-Keep alternate drafts, reproducers, and unfinished experiments here.
+-The selected implementation is `../generator.py`. Workspace drafts are never automatically selected.
++Run these commands from the **full review packet root**, where `repo/`,
++`run_with_racket.py`, and `setup_racket.py` live. The wrapper changes its working
++directory to `repo/`, so its output arguments use `../checks/...`.
++Use a new output path on each run; evidence is never overwritten.
++
++## Contract tests
++
++```bash
++python3 -B -m pytest -q repo/generators/0c023af8384a/tests
++```
++
++## Reference-checked before/after census
++
++```bash
++python3 -B setup_racket.py
++python3 -B run_with_racket.py python3 -B \
++  generators/0c023af8384a/workspace/review_probe.py \
++  --baseline ../.review/baseline/repo/generators/0c023af8384a/generator.py \
++  --per-band 200 --lessons 100 --out ../checks/mirror-probe-REPLAY
++```
++
++Omit `--baseline` for current-only checks. The baseline file is created by the
++packet's assignment draw; do not use another evolving checkout as a baseline.
++
++`report.json` records source/rule hashes, a staged runtime manifest, per-band
++morphology and witness counts, canonical support, named-rival ambiguity, exact
++counterexamples and limitations. `racket-cases.jsonl` retains every unique input
++and its actual Racket output. Each Racket batch also checks an independently
++written cellwise expression; Python is not the label authority. Batching reuses
++the repository's rule wrapper and embeds the callable on each call, so a bridge
++restart cannot lose a private definition.
++
++`analyze_lessons(lessons, rivals)` is task-agnostic and reusable: it distinguishes
++refuted, surviving/harmless and surviving/wrong-query rivals. Exceptions stay
++failures. Other helpers and the CLI's morphology/exhaustive corpus are deliberately
++mirror-specific; they are not a general evaluator for unrelated tasks.
++
++## Collect every strict battery stage
++
++```bash
++python3 -B run_with_racket.py python3 -B \
++  generators/0c023af8384a/workspace/run_battery.py \
++  --task-id 0c023af8384a --phase after --out ../checks/after-REPLAY
++```
++
++The wrapper copies the selected generator to an isolated runtime and invokes the
++existing battery with `--fresh --keep-going`. It does **not** relax a threshold,
++change a linter, approve a source, or turn a failed stage into success. It preserves
++real exit status, a process-group timeout receipt, the manifest and all stage logs.
++The optional `--task-id` works for other cataloged tasks, so future reviewers can
++collect complete failure evidence without editing shared tools.
++
++For this source, the expected strict result remains exit 1: generic minimal-shape
++heuristics object to lawful positive cases. Inspect the probe evidence and
++`FEEDBACK_TO_CODEX.md` in the return rather than interpreting 11/12 as approval.
++The standard API's fail-fast result is also retained for comparison.
++
++## Public API / integration checks
++
++The return's `checks/worker_smoke.py` exercises actual source-bound episode
++generation and stores Racket outputs, accepted indices, rejections and provenance.
++Its `allow_unapproved=True` is explicit research execution, not an approval write.
++`checks/peer_audit.py` reproduces the two independently drawn peer findings without
++modifying their files. These scripts are evidence artifacts, not shared tooling
++installed into unrelated generators.
+diff --git a/repo/generators/0c023af8384a/workspace/review_probe.py b/repo/generators/0c023af8384a/workspace/review_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0c023af8384a/workspace/review_probe.py
+@@ -0,0 +1,284 @@
++"""Reference-checked mirror census and finite-rival lesson audit.
++
++Run from the packet root (outputs must be new):
++  python3 run_with_racket.py python3 generators/0c023af8384a/workspace/review_probe.py \
++      --baseline ../.review/baseline/repo/generators/0c023af8384a/generator.py \
++      --out ../checks/mirror-probe
++
++The lesson analysis is reusable with arbitrary callable rivals. Mirror-specific
++profiles and exhaustive cases are intentionally task-local. ALL recorded labels
++come from the selected Racket rule through the repository's own rule wrapper.
++Python mirrors/rivals are audited against those labels, never used as teachers.
++"""
++from __future__ import annotations
++
++import argparse
++from collections import Counter
++from copy import deepcopy
++import hashlib
++import importlib.util
++import itertools
++import json
++from pathlib import Path
++import sys
++import tempfile
++import time
++import traceback
++from typing import Callable, Any
++
++HOME = Path(__file__).resolve().parents[1]
++REPO = HOME.parents[1]
++TASK_ID = HOME.name
++Grid = list[list[int]]
++
++
++def analyze_lessons(lessons: list[dict], rivals: dict[str, Callable], *,
++                    max_examples: int = 12) -> dict:
++    """Distinguish a refuted rival from a surviving harmless/harmful one.
++
++    Rivals receive isolated copies. Errors are failures, never evidence of
++    refutation. A lesson is ambiguous only when the SAME rival fits every
++    demonstration and predicts a DIFFERENT query output.
++    """
++    counts = {name: {"refuted": 0, "survived_same_query": 0, "survived_wrong_query": 0}
++              for name in rivals}
++    examples, ambiguous = [], 0
++    for lesson in lessons:
++        if not lesson.get("demos"):
++            raise ValueError("A lesson must contain at least one demonstration")
++        wrong = {}
++        for name, rival in rivals.items():
++            if not all(rival(deepcopy(p["input"])) == p["output"] for p in lesson["demos"]):
++                counts[name]["refuted"] += 1
++                continue
++            predicted = rival(deepcopy(lesson["query"]["input"]))
++            same = predicted == lesson["query"]["output"]
++            counts[name]["survived_same_query" if same else "survived_wrong_query"] += 1
++            if not same:
++                wrong[name] = predicted
++        if wrong:
++            ambiguous += 1
++            if len(examples) < max_examples:
++                examples.append({**deepcopy(lesson), "wrong_predictions": wrong})
++    return {"total_lessons": len(lessons), "ambiguous_lessons": ambiguous,
++            "rivals": counts, "examples": examples}
++
++
++def profile(grid: Grid) -> dict[str, int]:
++    h, w = len(grid), len(grid[0])
++    pairs = [(grid[r][c], grid[-1-r][c]) for r in range(h // 2) for c in range(w)]
++    return {"height": h, "width": w, "marks": sum(bool(v) for row in grid for v in row),
++            "palette_size": len({v for row in grid for v in row}),
++            "conflicting_pairs": sum(bool(a and b and a != b) for a, b in pairs),
++            "same_color_pairs": sum(bool(a and b and a == b) for a, b in pairs),
++            "lone_sources": sum(bool(a) != bool(b) for a, b in pairs),
++            "axis_marks": sum(bool(v) for v in grid[h // 2]) if h % 2 else 0}
++
++
++def exhaustive_orbit_cases() -> list[Grid]:
++    return ([[[a], [b]] for a, b in itertools.product(range(10), repeat=2)]
++            + [[[a], [c], [b]] for a, b, c in itertools.product(range(10), repeat=3)])
++
++
++def cellwise_reference(grid: Grid) -> Grid:
++    """Independent expression, not a call to the generator's Python helper."""
++    return [[b or a for a, b in zip(row, mirrored)]
++            for row, mirrored in zip(grid, reversed(grid))]
++
++
++def load_generator(path: Path, name: str):
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(f"Cannot load generator: {path}")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def stable_seed(kind: str, band: str | None, index: int) -> int:
++    text = f"mirror-review-v1:{kind}:{band}:{index}"
++    return int(hashlib.sha256(text.encode()).hexdigest()[:12], 16)
++
++
++def digest(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def grid_key(grid: Grid) -> str:
++    return json.dumps(grid, separators=(",", ":"))
++
++
++def racket_data(value: Any) -> str:
++    # Never interpolate source text from grids. Only bounded ARC integers and
++    # literal lists enter the quoted data expression.
++    if type(value) is int and 0 <= value <= 9:
++        return str(value)
++    if isinstance(value, (list, tuple)) and value:
++        return "(" + " ".join(racket_data(v) for v in value) + ")"
++    raise ValueError(f"Not nonempty ARC grid data: {value!r}")
++
++
++class RacketLabels:
++    """Deduplicated batched reference calls, with a replayable JSONL receipt."""
++    def __init__(self, bridge, wrapped_rule: str, stream, batch_size: int = 25):
++        self.bridge, self.wrapped_rule = bridge, wrapped_rule
++        self.stream, self.batch_size = stream, batch_size
++        self.cache: dict[str, Grid] = {}
++        self.calls = 0
++
++    def label(self, grids: list[Grid]) -> list[dict[str, Grid]]:
++        missing = list({grid_key(g): g for g in grids if grid_key(g) not in self.cache}.values())
++        for start in range(0, len(missing), self.batch_size):
++            batch = missing[start:start + self.batch_size]
++            # Inline the callable in EACH batch; bridge restart cannot silently
++            # lose a previously defined variable and invalidate later evidence.
++            expression = f"(map {self.wrapped_rule} '{racket_data(batch)})"
++            outputs = self.bridge.eval_text(expression)
++            self.calls += 1
++            if not isinstance(outputs, list) or len(outputs) != len(batch):
++                raise RuntimeError("Racket returned an invalid batch shape")
++            for grid, output in zip(batch, outputs):
++                if cellwise_reference(grid) != output:
++                    raise AssertionError({"input": grid, "racket_output": output,
++                                          "cellwise_output": cellwise_reference(grid)})
++                key = grid_key(grid)
++                self.cache[key] = output
++                self.stream.write(json.dumps({"input_sha256": hashlib.sha256(key.encode()).hexdigest(),
++                                               "input": grid, "output": output}, separators=(",", ":")) + "\n")
++        return [{"input": deepcopy(g), "output": deepcopy(self.cache[grid_key(g)])} for g in grids]
++
++
++def summarize_profiles(grids: list[Grid], canonical: list[dict]) -> dict:
++    profiles = [profile(g) for g in grids]
++    canonical_profiles = [profile(p["input"]) for p in canonical]
++    exact = {(p["height"], p["width"], p["palette_size"]) for p in canonical_profiles}
++    ranges = {k: (min(p[k] for p in canonical_profiles), max(p[k] for p in canonical_profiles))
++              for k in ("height", "width", "palette_size")}
++    return {"inputs": len(grids), "unique_inputs": len({grid_key(g) for g in grids}),
++            "distributions": {k: dict(sorted(Counter(p[k] for p in profiles).items())) for k in profiles[0]},
++            "canonical_exact_profile_hits": sum((p["height"], p["width"], p["palette_size"]) in exact for p in profiles),
++            "canonical_envelope_hits": sum(all(lo <= p[k] <= hi for k, (lo, hi) in ranges.items()) for p in profiles),
++            "collision_inputs": sum(p["conflicting_pairs"] > 0 for p in profiles),
++            "multiple_collision_inputs": sum(p["conflicting_pairs"] > 1 for p in profiles),
++            "same_color_pair_inputs": sum(p["same_color_pairs"] > 0 for p in profiles),
++            "axis_inputs": sum(p["axis_marks"] > 0 for p in profiles)}
++
++
++def run(args, output: Path) -> dict:
++    sys.path.insert(0, str(REPO / "src"))
++    from arcpuzzles.catalog import Catalog
++    from arcpuzzles.runtime import prepare_runtime
++    with tempfile.TemporaryDirectory(prefix="arc-mirror-probe-") as directory:
++        stage = Path(directory)
++        manifest = prepare_runtime(Catalog(REPO), stage, TASK_ID)
++        sys.path.insert(0, str(stage))
++        from arc_repl.racket_bridge import RacketBridge
++        from puzzle_generators.rule_wrap import wrap_rule
++        from scripts.canonical_profile_gate import canonical_pairs, canonical_rule_source, normalized_rule_hash
++        canonical, source = canonical_pairs(TASK_ID), canonical_rule_source(TASK_ID)
++        current_path = HOME / "generator.py"
++        current = load_generator(current_path, "mirror_review_current")
++        subjects = {"current": (current, current_path)}
++        if args.baseline:
++            baseline = args.baseline.resolve()
++            if baseline == current_path.resolve():
++                raise ValueError("Baseline must be a separate immutable source file")
++            subjects = {"baseline": (load_generator(baseline, "mirror_review_baseline"), baseline), **subjects}
++        report = {"schema": "arc-mirror-review-v1", "task_id": TASK_ID,
++                  "generator_sha256": digest(current_path), "probe_sha256": digest(Path(__file__)),
++                  "rule_hash": normalized_rule_hash(source),
++                  "rule_source_sha256": hashlib.sha256(source.encode()).hexdigest(),
++                  "configuration": {"inputs_per_band": args.per_band, "lessons_per_band": args.lessons,
++                                    "demos_per_lesson": 3, "bands": [None, "easy", "medium", "hard"],
++                                    "seed_scheme": "mirror-review-v1; sha256(kind,band,index)",
++                                    "counterexample_orbits": 1100},
++                  "limitations": ["Finite named rival set, not universal rule identifiability.",
++                                  "Sample counts are not trained-model accuracy measurements.",
++                                  "Three-demo guarantee applies only to consecutive default draws.",
++                                  "Fixed-seed before/after source comparison changes VERSION RNG streams; not a same-grid ablation."],
++                  "runtime_manifest": manifest, "subjects": {}, "errors": []}
++        with RacketBridge() as bridge, (output / "racket-cases.jsonl").open("w") as stream:
++            oracle = RacketLabels(bridge, wrap_rule(source), stream)
++            canon_checked = oracle.label([p["input"] for p in canonical])
++            if canon_checked != canonical:
++                raise AssertionError("Racket authority disagrees with canonical pairs")
++            report["canonical_pairs_verified"] = len(canonical)
++            exhaustive = oracle.label(exhaustive_orbit_cases())
++            for pair in exhaustive:
++                if current._mirror(pair["input"]) != pair["output"]:
++                    raise AssertionError("Generator audit mirror disagrees with Racket")
++            report["exhaustive_orbit_cases_verified"] = len(exhaustive)
++            counterexample = oracle.label([[[1], [2]]])[0]
++            report["counterexample"] = {**counterexample,
++                "rivals": {name: {"fits_all_canonical_pairs": all(fn(p["input"]) == p["output"] for p in canonical),
++                                    "prediction": fn(counterexample["input"])}
++                           for name, fn in current.CANONICAL_SHORTCUTS.items()}}
++            shapes = {"singleton": [[1], [0]], "short_line": [[1, 1, 1], [0, 0, 0]],
++                      "solid_2x2": [[2, 2, 0], [2, 2, 0], [0, 0, 0], [0, 0, 0]]}
++            report["lawful_tiny_shapes"] = {}
++            for name, grid in shapes.items():
++                pair = oracle.label([grid])[0]
++                report["lawful_tiny_shapes"][name] = {**pair, "self_check": current.self_check(grid),
++                                                       "output_changes": pair["input"] != pair["output"]}
++            for subject, (module, path) in subjects.items():
++                all_lessons, band_reports = [], {}
++                for band in (None, "easy", "medium", "hard"):
++                    grids = []
++                    for i in range(args.per_band):
++                        seed = stable_seed("draw", band, i)
++                        grid = module.generate(seed, seed % 7919 + i, difficulty=band)
++                        errors = module.self_check(grid)
++                        if errors:
++                            raise AssertionError({"subject": subject, "band": band, "seed": seed,
++                                                  "index": i, "self_check": errors, "input": grid})
++                        grids.append(grid)
++                    for pair in oracle.label(grids):
++                        if module._mirror(pair["input"]) != pair["output"]:
++                            raise AssertionError("Subject Python mirror disagrees with Racket")
++                    lessons = []
++                    for i in range(args.lessons):
++                        seed = stable_seed("lesson", band, i)
++                        start = seed % 7919 + 7 * i
++                        pairs = oracle.label([module.generate(seed, start + j, difficulty=band) for j in range(4)])
++                        lessons.append({"band": band, "seed": seed, "sample_index": start,
++                                        "demos": pairs[:3], "query": pairs[3]})
++                    all_lessons.extend(lessons)
++                    band_reports[str(band)] = {"profiles": summarize_profiles(grids, canonical),
++                                               "lessons": analyze_lessons(lessons, current.SEMANTIC_RIVALS)}
++                report["subjects"][subject] = {"version": module.VERSION, "sha256": digest(path),
++                                               "bands": band_reports,
++                                               "lessons": analyze_lessons(all_lessons, current.SEMANTIC_RIVALS)}
++            report["unique_racket_inputs_verified"] = len(oracle.cache)
++            report["racket_batch_calls"] = oracle.calls
++        if report["subjects"]["current"]["lessons"]["ambiguous_lessons"]:
++            report["errors"].append("Current default lessons leave named rivals ambiguous")
++        report["passed"] = not report["errors"]
++        return report
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--baseline", type=Path)
++    parser.add_argument("--per-band", type=int, default=200)
++    parser.add_argument("--lessons", type=int, default=100)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    if args.per_band < 1 or args.lessons < 1:
++        parser.error("--per-band and --lessons must be positive")
++    output = args.out.resolve()
++    output.mkdir(parents=True, exist_ok=False)
++    start = time.monotonic()
++    try:
++        report = run(args, output)
++    except Exception as exc:
++        report = {"schema": "arc-mirror-review-v1", "task_id": TASK_ID, "passed": False,
++                  "errors": [repr(exc)], "traceback": traceback.format_exc()}
++    report["elapsed_seconds"] = time.monotonic() - start
++    (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
++    print(json.dumps({key: report.get(key) for key in
++                      ("task_id", "passed", "unique_racket_inputs_verified", "errors", "elapsed_seconds")}))
++    return 0 if report["passed"] else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/0c023af8384a/workspace/run_battery.py b/repo/generators/0c023af8384a/workspace/run_battery.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/0c023af8384a/workspace/run_battery.py
+@@ -0,0 +1,69 @@
++"""Collect every strict battery stage without editing or relaxing shared gates.
++
++From the packet root:
++  python3 run_with_racket.py python3 generators/0c023af8384a/workspace/run_battery.py \
++      --task-id 0c023af8384a --phase after --out ../checks/after-full
++
++The optional --task-id makes this useful to subsequent generator reviewers.
++Output must be new. A failed gate remains a nonzero exit and failed receipt.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++from pathlib import Path
++import shutil
++import sys
++import tempfile
++
++REPO = Path(__file__).resolve().parents[3]
++
++
++def battery_command(task_id: str, phase: str) -> list[str]:
++    return ["bash", "scripts/run_generator_battery.sh", task_id, phase, "--fresh", "--keep-going"]
++
++
++def check_output(path: Path) -> None:
++    if path.exists():
++        raise FileExistsError(f"Evidence destination must be new: {path}")
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--task-id", default=Path(__file__).resolve().parents[1].name)
++    parser.add_argument("--phase", choices=("before", "after"), default="after")
++    parser.add_argument("--timeout", type=float, default=1200)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    if args.timeout <= 0:
++        parser.error("--timeout must be positive")
++    out = args.out.resolve()
++    check_output(out)
++    sys.path.insert(0, str(REPO / "src"))
++    from arcpuzzles.catalog import Catalog
++    from arcpuzzles.runtime import prepare_runtime, run_process
++    catalog = Catalog(REPO)
++    task_id = catalog.resolve(args.task_id)
++    with tempfile.TemporaryDirectory(prefix="arc-review-all-stages-") as directory:
++        stage = Path(directory)
++        manifest = prepare_runtime(catalog, stage, task_id)
++        run = run_process(battery_command(task_id, args.phase), stage, timeout=args.timeout)
++        summary_path = stage / f"checks/{task_id}_{args.phase}_battery_summary.json"
++        summary = json.loads(summary_path.read_text()) if summary_path.is_file() else None
++        # Exclusive directory creation also protects against a competing writer
++        # that created the destination after check_output().
++        out.mkdir(parents=True, exist_ok=False)
++        if (stage / "checks").is_dir():
++            shutil.copytree(stage / "checks", out / "checks")
++        result = {**run, "schema": "arcpuzzles-task-review-battery-v1", "task_id": task_id,
++                  "phase": args.phase, "keep_going": True, "runtime_manifest": manifest,
++                  "battery_summary": summary,
++                  "passed": run["exit_code"] == 0 and not run["timed_out"] and summary is not None}
++        (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
++        print(json.dumps({key: result[key] for key in
++                          ("task_id", "phase", "exit_code", "timed_out", "passed")}))
++    return 0 if result["passed"] else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

@@ -1,0 +1,7 @@
+(rule! (lambda (g)
+  (let* ((objs (objects g 0))
+         (cue (first (filter (lambda (obj) (= (obj-color obj) 1)) objs)))
+         (cue-parity (modulo (obj-size cue) 2)))
+    (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((obj objs))
+      (paint-cells out (obj-cells obj)
+        (if (= (modulo (obj-size obj) 2) cue-parity) 3 8))))))

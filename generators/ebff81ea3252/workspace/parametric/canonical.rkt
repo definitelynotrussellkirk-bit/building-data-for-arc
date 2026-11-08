@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (for*/fold ((out g)) ((r (in-range 1 (- (rows g) 1))) (c (in-range 1 (- (cols g) 1)))) (if (and (= (at g r c) 3) (= (at g (- r 1) c) 3) (= (at g (+ r 1) c) 3) (= (at g r (- c 1)) 3) (= (at g r (+ c 1)) 3)) (paint-cells out (list (list r c) (list (- r 1) c) (list (+ r 1) c) (list r (- c 1)) (list r (+ c 1))) 7) out))))

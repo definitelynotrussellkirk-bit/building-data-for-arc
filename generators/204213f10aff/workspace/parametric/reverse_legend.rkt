@@ -1,0 +1,22 @@
+(rule!
+  (let* ((legend (filter (lambda (v) (not (= v 0))) (row g 0))))
+    (define (piece color)
+      (let ((obj (first (filter (lambda (o)
+                                  (and (= (obj-color o) color)
+                                       (all? (lambda (p) (> (first p) 0)) (obj-cells o))))
+                                (objects g 0)))))
+        (subgrid g (obj-r1 obj) (obj-c1 obj) (obj-r2 obj) (obj-c2 obj))))
+    (define parts (map piece legend))
+    (define ordered (reverse parts))
+    (define out-h (apply max (map rows ordered)))
+    (define out-w (+ (apply + (map cols ordered)) (max 0 (- (length ordered) 1))))
+    (let pack ([remaining ordered] [left 0] [out (empty-grid out-h out-w 0)])
+      (if (empty? remaining)
+          out
+          (let* ((p (first remaining))
+                 (next (for*/fold ([acc out])
+                                   ([r (in-range (rows p))]
+                                    [c (in-range (cols p))])
+                         (let ((v (at p r c)))
+                           (if (not (= v 0)) (set-cell acc r (+ left c) v) acc)))))
+            (pack (rest remaining) (+ left (cols p) 1) next))))))

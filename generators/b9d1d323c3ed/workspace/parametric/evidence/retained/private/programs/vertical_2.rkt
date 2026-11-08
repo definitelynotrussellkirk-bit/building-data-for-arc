@@ -1,0 +1,7 @@
+(rule! (lambda (g)
+  (let* ((cells (find-color g (find-first (lambda (c) (!= c 0)) (grid-colors g))))
+         (r1 (min-of first cells)) (r2 (max-of first cells))
+         (c1 (min-of second cells)) (c2 (max-of second cells))
+         (bh (+ 1 (- r2 r1))) (bw (+ 1 (- c2 c1))))
+    (build-grid (* bh 2) bw (r c)
+      (at g (+ r1 (mod r bh)) (+ c1 c))))))

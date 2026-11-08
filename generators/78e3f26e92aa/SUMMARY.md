@@ -1,0 +1,5 @@
+# Generator 78e3f26e92aa — v3.0.0
+
+A 22–24 by 17–20 zero-background grid contains two separated one-cell-wide vertical green bars and two analogous cyan bars. Same-color bars share a row span and height; the green and cyan pairs are vertically disjoint and may appear in either order. Each pair emits two bidirectional step-rays from its outer columns, moving one column outward per full bar-height of vertical distance. The output uses 3 for green-only rays, 8 for cyan-only rays, 6 at overlaps, and 0 elsewhere.
+
+The eight-profile schedule starts with the four canonical size/geometry anchors, then crosses values to avoid locked axes. Three demonstrations cover both color orders, height-scaled versus unit-step behavior, upward and downward propagation, and intersection/no-intersection cases. All eight observable axes are strict exact overrides across every difficulty band. Canonical rule hash: `ed1ed1d0980e`; final generator SHA-256: `0e7493ac2619602a3a6a7e3f6d060c29fc67bcb78797039efd4493a2e632a181`.

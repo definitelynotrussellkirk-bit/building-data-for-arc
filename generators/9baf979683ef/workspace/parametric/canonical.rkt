@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (let ((divider (first (filter (lambda (c) (all? (lambda (r) (= (at g r c) 5)) (range (rows g)))) (range (cols g)))))) (for*/fold ((out g)) ((r (in-range (rows g))) (c (in-range divider))) (let ((v (at g r c)) (mc (- (* 2 divider) c))) (if (and (not (member? v (list 0 5))) (in-bounds? r mc (rows g) (cols g))) (set-cell out r mc v) out))))))

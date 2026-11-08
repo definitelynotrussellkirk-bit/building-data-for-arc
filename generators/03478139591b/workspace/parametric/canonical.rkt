@@ -1,0 +1,6 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((color (find-first (lambda (c) (!= c 0)) (grid-colors g)))
+                  (nc (casev color (hash 3 1 5 4 8 2) color)))
+             (cellmap g (r c v) (if (!= v 0) 0 nc))))))

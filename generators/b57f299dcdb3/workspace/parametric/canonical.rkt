@@ -1,0 +1,32 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((bg (mode g))
+                  (centers (for*/list ((r (range 1 (- h 1))) (c (range 1 (- w 1)))
+                               #:when
+                               (and
+                                 (= (at g r c) 4)
+                                 (let ((up (at g (- r 1) c))
+                                       (dn (at g (+ r 1) c))
+                                       (lt (at g r (- c 1)))
+                                       (rt (at g r (+ c 1))))
+                                   (and
+                                     (!= up 0)
+                                     (!= up bg)
+                                     (= up dn)
+                                     (= up lt)
+                                     (= up rt)))))
+                             (at g (- r 1) c)))
+                  (best-color (let ((freq (make-hash))
+                                    (best 0)
+                                    (best-count -1))
+                                (for ((col centers))
+                                  (hash-set! freq col (+ 1 (hash-ref freq col 0))))
+                                (hash-for-each freq
+                                               (lambda (k v)
+                                                 (when
+                                                   (> v best-count)
+                                                   (set! best k)
+                                                   (set! best-count v))))
+                                best)))
+             (build-grid 1 1 (r c) best-color)))))

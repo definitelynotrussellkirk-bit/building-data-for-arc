@@ -1,0 +1,10 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((zeros (find-color g 0))
+                  (zcols (sort (unique (map fst zeros)) <)))
+             (reduce (lambda (acc p)
+                       (let ((rank (+ 1 (count-if (lambda (c) (> c (fst p))) zcols))))
+                         (set-cell acc (fst p) (snd p) rank)))
+                     g
+                     zeros)))))

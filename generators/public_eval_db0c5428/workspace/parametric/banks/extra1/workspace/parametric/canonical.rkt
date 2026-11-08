@@ -1,0 +1,63 @@
+(rule!
+ ;; The foreground is a 3x3 array of equal square tiles with a blank center.
+ ;; Reconstruct the missing center from the inward-facing boundary of its eight
+ ;; neighbors, fill its interior with the common base color, retain the source
+ ;; 3x3 array, and copy every surrounding tile two macro-steps through the center.
+ (lambda (g)
+  (let ()
+   (define scope-mode 0)
+   (define bg (mode g -1))
+   (define fg (filter (lambda (p) (!= (at g (first p) (second p)) bg)) (grid-positions g)))
+   (define r0 (apply min (map first fg)))
+   (define r1 (apply max (map first fg)))
+   (define c0 (apply min (map second fg)))
+   (define c1 (apply max (map second fg)))
+   (define size (quotient (+ 1 (- r1 r0)) 3))
+   (define mid (quotient size 2))
+   (define out-r0 (- r0 size))
+   (define out-c0 (- c0 size))
+   (define (tile ir ic r c)
+    (at g (+ r0 (* ir size) r) (+ c0 (* ic size) c)))
+   (define source-colors (filter (lambda (v) (!= v bg)) (grid-colors g)))
+   (define base (pick-max source-colors (lambda (v) (count-color g v))))
+   (define records
+    (for*/list ((ir (range 3)) (ic (range 3))
+                #:when (not (and (= ir 1) (= ic 1))))
+     (let ((sr (cond ((= ir 0) (- size 1)) ((= ir 2) 0) (else mid)))
+           (sc (cond ((= ic 0) (- size 1)) ((= ic 2) 0) (else mid))))
+      (list ir ic (tile ir ic sr sc)))))
+   (define modal-record
+    (pick-max records
+     (lambda (record)
+      (count-if (lambda (other) (= (third other) (third record))) records))))
+   (define modal-color (third modal-record))
+   (define (sample ir ic)
+    (third (for/first ((record records)
+                       #:when (and (= (first record) ir) (= (second record) ic))) record)))
+   (define (summary r c)
+    (cond
+     ((and (= r 0) (= c 0)) (tile 0 0 (- size 1) (- size 1)))
+     ((and (= r 0) (= c (- size 1))) (tile 0 2 (- size 1) 0))
+     ((and (= r (- size 1)) (= c 0)) (tile 2 0 0 (- size 1)))
+     ((and (= r (- size 1)) (= c (- size 1))) (tile 2 2 0 0))
+     ((= r 0) (tile 0 1 (- size 1) c))
+     ((= r (- size 1)) (tile 2 1 0 c))
+     ((= c 0) (tile 1 0 r (- size 1)))
+     ((= c (- size 1)) (tile 1 2 r 0))
+     (else base)))
+   (build-grid (rows g) (cols g) (r c)
+    (let ((lr (- r out-r0)) (lc (- c out-c0)))
+     (if (or (< lr 0) (< lc 0) (>= lr (* 5 size)) (>= lc (* 5 size)))
+         bg
+         (let* ((mr (quotient lr size)) (mc (quotient lc size))
+                (tr (modulo lr size)) (tc (modulo lc size)))
+          (cond
+           ((and (<= 1 mr) (<= mr 3) (<= 1 mc) (<= mc 3))
+            (let ((ir (- mr 1)) (ic (- mc 1)))
+             (if (and (= ir 1) (= ic 1)) (summary tr tc) (tile ir ic tr tc))))
+           ((and (= (modulo mr 2) 0) (= (modulo mc 2) 0)
+                 (not (and (= mr 2) (= mc 2))))
+            (let ((ir (quotient (- 4 mr) 2)) (ic (quotient (- 4 mc) 2)))
+             (if (or (= scope-mode 0) (= (sample ir ic) modal-color))
+                 (tile ir ic tr tc) bg)))
+           (else bg)))))))))

@@ -1,0 +1,31 @@
+(rule! (lambda (g)
+  (let* ((w (cols g))
+         (mask (grid-from-fn 4 w
+                 (lambda (r c)
+                   (if (!= (= 0 (cell-at g r c))
+                           (= 0 (cell-at g (+ r 5) c)))
+                       1 0))))
+         (objs (objects mask 0)))
+    (if (empty? objs)
+        (grid-from-fn 4 w (lambda (r c) 0))
+        (let* ((best
+                 (first
+                   (sort objs
+                     (lambda (a b)
+                       (or (> (obj-size a) (obj-size b))
+                           (and (= (obj-size a) (obj-size b))
+                                (or (< (obj-r1 a) (obj-r1 b))
+                                    (and (= (obj-r1 a) (obj-r1 b))
+                                         (< (obj-c1 a) (obj-c1 b))))))))))
+               (bb (obj-bbox best))
+               (r0 (fst bb))
+               (c0 (snd bb))
+               (r1 (nth bb 2))
+               (c1 (nth bb 3)))
+          (grid-from-fn 4 w
+            (lambda (r c)
+              (if (and (>= r r0) (<= r r1)
+                       (>= c c0) (<= c c1)
+                       (or (= r r0) (= r r1) (= c c0) (= c c1)))
+                  3 0)))))))
+)

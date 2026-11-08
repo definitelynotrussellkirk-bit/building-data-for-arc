@@ -1,0 +1,15 @@
+(rule! (lambda (g)
+         (let* ((h (rows g))
+                (w (cols g)))
+           (let* ((hh (/ (rows g) 2))
+                  (hw (/ (cols g) 2)))
+             (build-grid hh
+                         hw
+                         (r c)
+                         (let* ((v (at g r (+ c hw)))
+                                (v (if (!= (at g (+ r hh) c) 0) (at g (+ r hh) c) v))
+                                (v (if (!= (at g (+ r hh) (+ c hw)) 0)
+                                       (at g (+ r hh) (+ c hw))
+                                       v))
+                                (v (if (!= (at g r c) 0) (at g r c) v)))
+                           v))))))

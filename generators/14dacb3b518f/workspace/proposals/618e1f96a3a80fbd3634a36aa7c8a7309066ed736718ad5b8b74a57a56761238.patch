@@ -1,0 +1,1241 @@
+diff --git a/repo/generators/07ae7be573fc/generator.py b/repo/generators/07ae7be573fc/generator.py
+--- a/repo/generators/07ae7be573fc/generator.py
++++ b/repo/generators/07ae7be573fc/generator.py
+@@ -310,6 +310,132 @@
+     return errors
+ 
+ 
++
++
++def _component_crops_with_enclosed_holes(grid):
++    """Return row-major same-color component crops and enclosed-hole counts."""
++    if not grid or not grid[0]:
++        return []
++    h, w = len(grid), len(grid[0])
++    color = next((value for row in grid for value in row if value != 0), None)
++    if color is None:
++        return []
++
++    seen = set()
++    records = []
++    for r0 in range(h):
++        for c0 in range(w):
++            if grid[r0][c0] != color or (r0, c0) in seen:
++                continue
++            stack = [(r0, c0)]
++            seen.add((r0, c0))
++            cells = set()
++            while stack:
++                row, col = stack.pop()
++                cells.add((row, col))
++                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
++                    nxt = (row + dr, col + dc)
++                    if (0 <= nxt[0] < h and 0 <= nxt[1] < w
++                            and nxt not in seen
++                            and grid[nxt[0]][nxt[1]] == color):
++                        seen.add(nxt)
++                        stack.append(nxt)
++
++            top = min(row for row, _ in cells)
++            bottom = max(row for row, _ in cells)
++            left = min(col for _, col in cells)
++            right = max(col for _, col in cells)
++            crop = [list(row[left:right + 1]) for row in grid[top:bottom + 1]]
++
++            background = {
++                (row, col)
++                for row, values in enumerate(crop)
++                for col, value in enumerate(values)
++                if value == 0
++            }
++            visited = set()
++            enclosed_holes = 0
++            for start in sorted(background):
++                if start in visited:
++                    continue
++                region = [start]
++                visited.add(start)
++                touches_edge = False
++                while region:
++                    row, col = region.pop()
++                    if row in (0, len(crop) - 1) or col in (0, len(crop[0]) - 1):
++                        touches_edge = True
++                    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
++                        nxt = (row + dr, col + dc)
++                        if nxt in background and nxt not in visited:
++                            visited.add(nxt)
++                            region.append(nxt)
++                if not touches_edge:
++                    enclosed_holes += 1
++
++            records.append({
++                "top": top,
++                "left": left,
++                "crop": crop,
++                "enclosed_holes": enclosed_holes,
++            })
++    return records
++
++
++def _most_enclosed_holes(grid):
++    """Wrong but plausible rival: crop the row-major max-hole object."""
++    records = _component_crops_with_enclosed_holes(grid)
++    if not records:
++        return [list(row) for row in grid]
++    selected = max(
++        records,
++        key=lambda record: (
++            record["enclosed_holes"],
++            -record["top"],
++            -record["left"],
++        ),
++    )
++    return [list(row) for row in selected["crop"]]
++
++
++SEMANTIC_RIVALS = {"most_enclosed_holes": _most_enclosed_holes}
++LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
++
++
++def lesson_identifiable(demos, query) -> list[str]:
++    """Reject labeled lessons that a declared rival also explains."""
++    if not isinstance(demos, list) or len(demos) < EXAMPLES_NEEDED:
++        return [f"at least {EXAMPLES_NEEDED} demonstrations are required"]
++
++    reasons = []
++    pairs = [*demos, query]
++    for index, pair in enumerate(pairs):
++        role = f"demo {index}" if index < len(demos) else "query"
++        if not isinstance(pair, dict) or "input" not in pair or "output" not in pair:
++            reasons.append(f"{role} is missing input/output")
++            continue
++        errors = self_check(pair["input"])
++        if errors:
++            reasons.append(f"{role} input is not lawful: {errors[0]}")
++            continue
++        expected = _mirror(pair["input"])
++        if pair["output"] != expected:
++            reasons.append(f"{role} output disagrees with the unique-zero-count rule")
++    if reasons:
++        return reasons
++
++    for name, competitor in LESSON_COMPETITORS.items():
++        survives = all(
++            competitor(pair["input"]) == pair["output"]
++            for pair in demos
++        )
++        if survives and competitor(query["input"]) != query["output"]:
++            reasons.append(
++                f"competitor {name!r} matches every demo but changes the query answer"
++            )
++    return reasons
++
++
+ def _draw_from_degenerate(name, ctx):
+     """lone_object — one object: its count is trivially unique, the
+     rule CROPS it (not identity). full_grid — a single solid object
+diff --git a/repo/generators/07ae7be573fc/notes.md b/repo/generators/07ae7be573fc/notes.md
+--- a/repo/generators/07ae7be573fc/notes.md
++++ b/repo/generators/07ae7be573fc/notes.md
+@@ -2,3 +2,11 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## 2026-10-24 bounded learnability repair
++
++A finite rotation audit found a concrete ambiguity at seed 0: with sample index 3 held out, “crop the row-major object with the most enclosed holes” matches all four visible demonstrations but changes the query answer. This is plausible because the intended rule counts every zero in each component bounding box, including open gaps, while the shortcut counts only enclosed background regions.
++
++The generator now declares that executable rival in `LESSON_COMPETITORS` and exposes `lesson_identifiable(demos, query)`. The hook validates lawful labels, then rejects exactly when the rival survives every demonstration and changes the query. A 64-seed, five-rotation sweep found five such ambiguous rotations and the checker detected all five with zero mismatches. The seed-0 five-pair source case was replayed against the protected canonical Racket rule.
++
++This change does not alter generation or labels and does not claim the task is universally identifiable. Lesson assembly must call the hook or resample rejected rotations; only the named rival and seeds 0–63 were checked.
+diff --git a/repo/generators/07ae7be573fc/tests/test_lesson_identifiability.py b/repo/generators/07ae7be573fc/tests/test_lesson_identifiability.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/07ae7be573fc/tests/test_lesson_identifiability.py
+@@ -0,0 +1,48 @@
++from __future__ import annotations
++
++import importlib.util
++import sys
++from pathlib import Path
++
++
++TASK_HOME = Path(__file__).resolve().parents[1]
++
++
++def _load_generator():
++    path = TASK_HOME / "generator.py"
++    spec = importlib.util.spec_from_file_location("test_generator_07ae7be573fc", path)
++    assert spec and spec.loader
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[spec.name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _pairs(generator, seed: int = 0):
++    return [
++        {"input": grid, "output": generator._mirror(grid)}
++        for index in range(5)
++        for grid in [generator.generate(seed, index)]
++    ]
++
++
++def test_seed_zero_rotation_rejects_most_enclosed_holes_shortcut():
++    generator = _load_generator()
++    pairs = _pairs(generator)
++    query = pairs[3]
++    demos = [pair for index, pair in enumerate(pairs) if index != 3]
++
++    rival = generator.LESSON_COMPETITORS["most_enclosed_holes"]
++    assert all(rival(pair["input"]) == pair["output"] for pair in demos)
++    assert rival(query["input"]) != query["output"]
++    assert generator.lesson_identifiable(demos, query) == [
++        "competitor 'most_enclosed_holes' matches every demo but changes the query answer"
++    ]
++
++
++def test_rotation_with_refuting_demo_is_accepted_by_declared_checker():
++    generator = _load_generator()
++    pairs = _pairs(generator)
++    query = pairs[0]
++    demos = [pair for index, pair in enumerate(pairs) if index != 0]
++    assert generator.lesson_identifiable(demos, query) == []
+diff --git a/repo/generators/14dacb3b518f/notes.md b/repo/generators/14dacb3b518f/notes.md
+--- a/repo/generators/14dacb3b518f/notes.md
++++ b/repo/generators/14dacb3b518f/notes.md
+@@ -104,3 +104,13 @@
+ - **Original rationale:** Required by the review protocol.
+ - **Alternative rejected:** Manufacture a failure or call the post-repair solve blind.
+ - **Probe:** `solve-blind/summary.json` records two attempts and no earlier exposure; `solve/summary.json` records one attempt and earlier exposure `yes`.
++
++## 2026-10-24 native parametric admission candidate
++
++The retained native family is under `workspace/parametric/`. Its exact canonical default is `rule_mode=hole_presence`, whose Racket bytes hash to `fe78a969401a4f718a8537ef8ea1a2a748a34cd2a3a8bcdd28b964d1654b1f9d`. The alternative `rule_mode=most_holed_size_threshold` first selects the unique component with the most enclosed holes, binds that component's occupied-cell count as `anchor_size`, then recolors every component by whether its size is at least that input-derived threshold. Its program hash is `8680e4030bf7e4d61eeb18491c9906437661209cf2da469251c96fd892b4c6eb`.
++
++The first four-object sampler made the alternative collapse to “paint the two largest objects.” I replaced it with five components: a unique two-hole anchor, a one-hole object and a leaky bbox-gap distractor whose sizes cross the anchor threshold across demonstrations, plus large and small solids. Protected-Racket teaching evidence now rejects both the two-largest and any-bbox-gap rivals in visible demonstrations. The sampler sweep covered 1,280 episodes (32 seeds, both settings, demos 2–6, queries 1–4) with zero construction/parity/privacy/count failures, including a substantive 30×30 case.
++
++Native qualification at `checks/14dacb3b518f/qualification/qualification.json` passed four protected-Racket jobs (both settings, seeds 0 and 17, four queries each); sibling execution evidence is retained. The source-bound sequential witness uses a 30×30 alternative-setting query: changing `anchor_size` from 39 to 40 changes 39 output cells. The candidate is reviewer-ready only. Exact-source owner acceptance and any training admission remain pending.
++
++Limits: the teaching audit covers the named two-largest and bbox-gap rivals, not every possible rule; the causal witness is one bounded executed case. No production generator or canonical rule bytes were changed by this parametric addition.
+diff --git a/repo/generators/14dacb3b518f/tests/test_parametric_14dacb3b518f.py b/repo/generators/14dacb3b518f/tests/test_parametric_14dacb3b518f.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/14dacb3b518f/tests/test_parametric_14dacb3b518f.py
+@@ -0,0 +1,281 @@
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++import json
++import sys
++from pathlib import Path
++
++import pytest
++
++from arcpuzzles.catalog import Catalog
++from reviewer_support import public_challenge_bytes, public_challenge_id
++
++
++TASK_ID = "14dacb3b518f"
++TASK_HOME = Path(__file__).resolve().parents[1]
++REPO_ROOT = Path(__file__).resolve().parents[3]
++PARAMETRIC_HOME = TASK_HOME / "workspace" / "parametric"
++DEFAULT = {"rule_mode": "hole_presence"}
++ALTERNATE = {"rule_mode": "most_holed_size_threshold"}
++
++
++def _load_module(filename: str, name: str):
++    path = PARAMETRIC_HOME / filename
++    assert path.is_file(), f"missing parametric source: {path}"
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec and spec.loader
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _adapter():
++    return _load_module("adapter.py", "test_parametric_adapter_14dacb3b518f")
++
++
++def _prototype():
++    return _load_module("prototype.py", "test_parametric_prototype_14dacb3b518f")
++
++
++def _grid(*rows: str) -> list[list[int]]:
++    assert rows and len({len(row) for row in rows}) == 1
++    return [[int(cell) for cell in row] for row in rows]
++
++
++HAND_INPUT = _grid(
++    "6666666000666600",
++    "6006006000600600",
++    "6006006000600600",
++    "6006006000666600",
++    "6666666000000000",
++    "0000000000000000",
++    "0000000000000000",
++    "6666660000000000",
++    "6666660000006600",
++    "6666660000006600",
++    "6666660000000000",
++    "0000000000000000",
++)
++
++CANONICAL_OUTPUT = _grid(
++    "8888888000888800",
++    "8008008000800800",
++    "8008008000800800",
++    "8008008000888800",
++    "8888888000000000",
++    "0000000000000000",
++    "0000000000000000",
++    "2222220000000000",
++    "2222220000002200",
++    "2222220000002200",
++    "2222220000000000",
++    "0000000000000000",
++)
++
++ALTERNATE_OUTPUT = _grid(
++    "8888888000222200",
++    "8008008000200200",
++    "8008008000200200",
++    "8008008000222200",
++    "8888888000000000",
++    "0000000000000000",
++    "0000000000000000",
++    "8888880000000000",
++    "8888880000002200",
++    "8888880000002200",
++    "8888880000000000",
++    "0000000000000000",
++)
++
++
++def _canonical_program() -> str:
++    catalog = Catalog(REPO_ROOT)
++    row = catalog.describe(TASK_ID)
++    authority = row.get("rule_task_id", TASK_ID)
++    programs = {
++        variant["program_solution"]
++        for variant in catalog._variants().get(authority, [])
++        if isinstance(variant.get("program_solution"), str)
++    }
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def _inputs(episode: dict) -> list[list[list[int]]]:
++    return [pair["input"] for split in ("train", "test") for pair in episode[split]]
++
++
++def test_default_program_is_exact_authority_and_alternate_is_distinct():
++    adapter = _adapter()
++    canonical = adapter.program(DEFAULT)
++    alternate = adapter.program(ALTERNATE)
++    assert canonical == _canonical_program()
++    assert hashlib.sha256(canonical.encode()).hexdigest() == "fe78a969401a4f718a8537ef8ea1a2a748a34cd2a3a8bcdd28b964d1654b1f9d"
++    assert alternate != canonical
++    assert alternate.strip().startswith("(rule!")
++
++
++def test_hand_fixture_exposes_the_causal_intermediate_and_both_rule_outputs():
++    prototype = _prototype()
++    analysis = prototype.analyze_input(HAND_INPUT)
++    assert analysis["errors"] == []
++    assert sorted(component["hole_count"] for component in analysis["components"]) == [0, 0, 1, 2]
++    assert sorted(component["size"] for component in analysis["components"]) == [4, 12, 23, 24]
++    assert analysis["anchor"]["hole_count"] == 2
++    assert analysis["anchor_size"] == 23
++    assert prototype.solve(HAND_INPUT, DEFAULT) == CANONICAL_OUTPUT
++    assert prototype.solve(HAND_INPUT, ALTERNATE) == ALTERNATE_OUTPUT
++
++
++def test_inputs_are_setting_independent_count_independent_distinct_and_query_one_stable():
++    adapter = _adapter()
++    canonical = adapter.generate(23, DEFAULT, demos=3, queries=4)
++    alternate = adapter.generate(23, ALTERNATE, demos=3, queries=4)
++    short_queries = adapter.generate(23, DEFAULT, demos=3, queries=1)
++    short_demos = adapter.generate(23, DEFAULT, demos=2, queries=4)
++
++    assert _inputs(canonical) == _inputs(alternate)
++    assert [pair["input"] for pair in canonical["train"][:2]] == [
++        pair["input"] for pair in short_demos["train"]
++    ]
++    assert [pair["input"] for pair in canonical["test"]] == [
++        pair["input"] for pair in short_demos["test"]
++    ]
++    assert canonical["test"][0]["input"] == short_queries["test"][0]["input"]
++
++    serialized = [json.dumps(grid, separators=(",", ":")) for grid in _inputs(canonical)]
++    assert len(serialized) == len(set(serialized)) == 7
++    assert all(
++        left["output"] != right["output"]
++        for left, right in zip(canonical["train"], alternate["train"])
++    )
++
++
++def test_supported_counts_have_exact_distinct_pairs_and_selected_outputs():
++    adapter = _adapter()
++    prototype = _prototype()
++    for demos in range(2, 7):
++        for queries in range(1, 5):
++            for settings in (DEFAULT, ALTERNATE):
++                episode = adapter.generate(101, settings, demos=demos, queries=queries)
++                assert len(episode["train"]) == demos
++                assert len(episode["test"]) == queries
++                assert episode["program_solution"] == adapter.program(settings)
++                inputs = _inputs(episode)
++                assert len({json.dumps(grid) for grid in inputs}) == demos + queries
++                for pair in [*episode["train"], *episode["test"]]:
++                    assert pair["output"] == prototype.solve(pair["input"], settings)
++
++
++def test_four_query_episode_includes_substantive_30x30_boundary_stress():
++    adapter = _adapter()
++    prototype = _prototype()
++    episode = adapter.generate(17, ALTERNATE, demos=3, queries=4)
++    query = episode["test"][3]["input"]
++    analysis = prototype.analyze_input(query)
++    assert (len(query), len(query[0])) == (30, 30)
++    assert analysis["errors"] == []
++    assert analysis["nonzero_cells"] >= 120
++    assert analysis["outer_boundary_components"] >= 2
++    assert len(analysis["components"]) == 5
++    assert max(len(pair["input"]) for pair in episode["test"]) > max(
++        len(pair["input"]) for pair in episode["train"]
++    )
++
++
++def test_public_projection_hides_settings_program_and_query_answers():
++    adapter = _adapter()
++    full = adapter.generate(7, ALTERNATE, demos=3, queries=4)
++    one = adapter.generate(7, ALTERNATE, demos=3, queries=1)
++
++    payload = public_challenge_bytes(full)
++    public = json.loads(payload)
++    assert set(public) == {"train", "test"}
++    assert all(set(pair) == {"input", "output"} for pair in public["train"])
++    assert all(set(pair) == {"input"} for pair in public["test"])
++    assert b"rule_mode" not in payload
++    assert b"program_solution" not in payload
++    assert public_challenge_id(full) == hashlib.sha256(payload).hexdigest()
++
++    first_turn_full = {"train": full["train"], "test": [full["test"][0]]}
++    first_turn_one = {"train": one["train"], "test": one["test"]}
++    assert public_challenge_bytes(first_turn_full) == public_challenge_bytes(first_turn_one)
++
++
++def _paint_by_selected_components(grid, selected_indices):
++    prototype = _prototype()
++    analysis = prototype.analyze_input(grid)
++    output = [[0 for _ in row] for row in grid]
++    for component in analysis["components"]:
++        color = 8 if component["index"] in selected_indices else 2
++        for row, col in component["cells"]:
++            output[row][col] = color
++    return output
++
++
++def _two_largest_rival(grid):
++    prototype = _prototype()
++    components = prototype.analyze_input(grid)["components"]
++    selected = {
++        component["index"]
++        for component in sorted(components, key=lambda item: (item["size"], item["index"]))[-2:]
++    }
++    return _paint_by_selected_components(grid, selected)
++
++
++def _bbox_gap_rival(grid):
++    prototype = _prototype()
++    components = prototype.analyze_input(grid)["components"]
++    selected = set()
++    for component in components:
++        r0, c0, r1, c1 = component["bbox"]
++        bbox_area = (r1 - r0 + 1) * (c1 - c0 + 1)
++        if component["size"] < bbox_area:
++            selected.add(component["index"])
++    return _paint_by_selected_components(grid, selected)
++
++
++def test_visible_demos_reject_size_rank_and_bbox_gap_shortcuts_that_fail_queries():
++    adapter = _adapter()
++    alternate = adapter.generate(23, ALTERNATE, demos=3, queries=4)
++    canonical = adapter.generate(23, DEFAULT, demos=3, queries=4)
++
++    assert any(pair["output"] != _two_largest_rival(pair["input"]) for pair in alternate["train"])
++    assert any(pair["output"] != _two_largest_rival(pair["input"]) for pair in alternate["test"])
++    assert any(pair["output"] != _bbox_gap_rival(pair["input"]) for pair in canonical["train"])
++    assert any(pair["output"] != _bbox_gap_rival(pair["input"]) for pair in canonical["test"])
++
++
++@pytest.mark.parametrize(
++    "settings",
++    [
++        {},
++        {"rule_mode": "unknown"},
++        {"rule_mode": "hole_presence", "extra": 1},
++    ],
++)
++def test_invalid_settings_are_rejected(settings):
++    adapter = _adapter()
++    with pytest.raises(ValueError, match="settings"):
++        adapter.program(settings)
++    with pytest.raises(ValueError, match="settings"):
++        adapter.generate(0, settings, demos=3, queries=4)
++
++
++@pytest.mark.parametrize(
++    ("seed", "demos", "queries", "message"),
++    [
++        (True, 3, 4, "seed"),
++        (-1, 3, 4, "seed"),
++        (0, 1, 4, "demos"),
++        (0, 7, 4, "demos"),
++        (0, 3, 0, "queries"),
++        (0, 3, 5, "queries"),
++    ],
++)
++def test_invalid_request_bounds_are_rejected(seed, demos, queries, message):
++    adapter = _adapter()
++    with pytest.raises(ValueError, match=message):
++        adapter.generate(seed, DEFAULT, demos=demos, queries=queries)
+diff --git a/repo/generators/14dacb3b518f/workspace/parametric/README.md b/repo/generators/14dacb3b518f/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/14dacb3b518f/workspace/parametric/README.md
+@@ -0,0 +1,20 @@
++# Parametric family for `14dacb3b518f`
++
++This adapter exposes a finite two-rule family over the same setting-independent
++input grammar.
++
++- `hole_presence` is the exact accepted canonical program: any object with at
++  least one enclosed background region becomes 8; every other object becomes 2.
++- `most_holed_size_threshold` first identifies the unique two-hole object,
++  reads its occupied-cell count, then recolors every object 8 iff its size is at
++  least that threshold.  This is a genuine input-dependent A→intermediate→B
++  rule, not a fixed constant disguised as composition.
++
++Every generated scene has exactly five separated color-6 components with hole
++counts `[0, 0, 0, 1, 2]`: a unique two-hole anchor, a one-hole object, a large
++solid, a small solid, and a leaky bbox-gap distractor.  The one-hole and leaky
++objects alternate above and below the anchor-size threshold, so visible examples
++reject fixed size-rank and bbox-gap shortcuts.  The required 2–6 demonstrations
++provide varied placements, dimensions, and threshold ranks. Inputs do not depend
++on the selected setting or requested total count. Query four is a substantive
++30×30 boundary-contact stress case.
+diff --git a/repo/generators/14dacb3b518f/workspace/parametric/adapter.py b/repo/generators/14dacb3b518f/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/14dacb3b518f/workspace/parametric/adapter.py
+@@ -0,0 +1,59 @@
++"""Finite parametric adapter for ARC task 14dacb3b518f."""
++from __future__ import annotations
++
++import copy
++import hashlib
++import importlib.util
++import sys
++from pathlib import Path
++from typing import Any
++
++_HOME = Path(__file__).resolve().parent
++
++
++def _load_prototype():
++    path = _HOME / "prototype.py"
++    name = "_arc_parametric_prototype_" + hashlib.sha256(str(path).encode()).hexdigest()
++    module = sys.modules.get(name)
++    if module is None:
++        spec = importlib.util.spec_from_file_location(name, path)
++        if spec is None or spec.loader is None:
++            raise RuntimeError(f"cannot load local prototype: {path}")
++        module = importlib.util.module_from_spec(spec)
++        sys.modules[name] = module
++        spec.loader.exec_module(module)
++    return module
++
++
++def _integer(value: Any, low: int, high: int, name: str) -> int:
++    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
++        raise ValueError(f"{name} must be an integer in {low}..{high}; bool is forbidden")
++    return value
++
++
++def program(settings: Any) -> str:
++    prototype = _load_prototype()
++    normalized = prototype.validate_settings(settings)
++    path = _HOME / "rules" / f"{normalized['rule_mode']}.rkt"
++    return path.read_text(encoding="utf-8")
++
++
++def generate(seed: Any, settings: Any, demos: Any, queries: Any) -> dict[str, Any]:
++    prototype = _load_prototype()
++    normalized = prototype.validate_settings(settings)
++    seed = _integer(seed, 0, 2**63 - 1, "seed")
++    demos = _integer(demos, 2, 6, "demos")
++    queries = _integer(queries, 1, 4, "queries")
++    demo_inputs, query_inputs = prototype.generate_inputs(seed, demos, queries)
++
++    def pair(grid: list[list[int]]) -> dict[str, list[list[int]]]:
++        return {
++            "input": copy.deepcopy(grid),
++            "output": prototype.solve(grid, normalized),
++        }
++
++    return {
++        "train": [pair(grid) for grid in demo_inputs],
++        "test": [pair(grid) for grid in query_inputs],
++        "program_solution": program(normalized),
++    }
+diff --git a/repo/generators/14dacb3b518f/workspace/parametric/evidence/current/behavioral-tests.json b/repo/generators/14dacb3b518f/workspace/parametric/evidence/current/behavioral-tests.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/14dacb3b518f/workspace/parametric/evidence/current/behavioral-tests.json
+@@ -0,0 +1,61 @@
++{
++  "command": [
++    "python3",
++    "-m",
++    "pytest",
++    "-q",
++    "generators/14dacb3b518f/tests/test_parametric_14dacb3b518f.py"
++  ],
++  "coverage": [
++    "exact canonical program bytes and distinct alternate program",
++    "hand-derived outputs and input-dependent anchor-size intermediate",
++    "setting-independent and count-independent input generation",
++    "all supported demo counts 2..6 and query counts 1..4",
++    "four distinct public queries including substantive 30x30 boundary stress",
++    "public projection hides settings, programs, and query answers",
++    "visible demonstrations reject two-largest and bbox-gap shortcuts that disagree on queries",
++    "invalid settings, typed seed, and request bounds are rejected"
++  ],
++  "cwd": "repo",
++  "exit_code": 0,
++  "limits": "Python behavioral/source contract tests only; protected-Racket execution is supplied separately by native qualification.",
++  "schema": "arcpuzzles-parametric-author-check-v1",
++  "source_files": [
++    {
++      "bytes": 2048,
++      "path": "generators/14dacb3b518f/workspace/parametric/adapter.py",
++      "sha256": "b4f91308b3b955f1b8f9dfa3d636cd42a355dfd4d34d4dc6567853d0e79a9e6b"
++    },
++    {
++      "bytes": 14071,
++      "path": "generators/14dacb3b518f/workspace/parametric/prototype.py",
++      "sha256": "a2db7d3eb2b1aec23734b517962f55a14e8254aedcfe598d77f248456147fd19"
++    },
++    {
++      "bytes": 967,
++      "path": "generators/14dacb3b518f/workspace/parametric/promotion.json",
++      "sha256": "1fdad2f13c1c85bc3dad8961c2d0bcc20e9db16510aa27d45d0a0cc60b06a350"
++    },
++    {
++      "bytes": 1069,
++      "path": "generators/14dacb3b518f/workspace/parametric/rules/hole_presence.rkt",
++      "sha256": "fe78a969401a4f718a8537ef8ea1a2a748a34cd2a3a8bcdd28b964d1654b1f9d"
++    },
++    {
++      "bytes": 1363,
++      "path": "generators/14dacb3b518f/workspace/parametric/rules/most_holed_size_threshold.rkt",
++      "sha256": "8680e4030bf7e4d61eeb18491c9906437661209cf2da469251c96fd892b4c6eb"
++    },
++    {
++      "bytes": 9864,
++      "path": "generators/14dacb3b518f/tests/test_parametric_14dacb3b518f.py",
++      "sha256": "e80aa5b538051114c833651dd11598f64d2ccbdf905e9ec7093a2b2672cd8b99"
++    }
++  ],
++  "status": "passed",
++  "task_id": "14dacb3b518f",
++  "tests": {
++    "failed": 0,
++    "passed": 16
++  }
++}
+diff --git a/repo/generators/14dacb3b518f/workspace/parametric/evidence/current/sampler-sweep.json b/repo/generators/14dacb3b518f/workspace/parametric/evidence/current/sampler-sweep.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/14dacb3b518f/workspace/parametric/evidence/current/sampler-sweep.json
+@@ -0,0 +1,56 @@
++{
++  "checks": [
++    "generation succeeded",
++    "all episode inputs distinct",
++    "inputs matched across settings",
++    "Python labels matched solve",
++    "every generated input had five components",
++    "two-largest rival rejected by visible alternate demos and disagreed on queries",
++    "bbox-gap rival rejected by visible canonical demos and disagreed on queries"
++  ],
++  "dimension_observations": {
++    "12x16": 1280,
++    "13x17": 1280,
++    "14x18": 1280,
++    "16x24": 768,
++    "18x20": 1024,
++    "20x22": 512,
++    "21x23": 960,
++    "24x26": 256,
++    "26x27": 640,
++    "30x30": 320
++  },
++  "failures": 0,
++  "limits": "Finite deterministic sweep over 32 seeds; protected-Racket parity is checked by native qualification.",
++  "requests": {
++    "demo_counts": [
++      2,
++      3,
++      4,
++      5,
++      6
++    ],
++    "episodes_checked": 1280,
++    "query_counts": [
++      1,
++      2,
++      3,
++      4
++    ],
++    "settings": 2
++  },
++  "schema": "arcpuzzles-parametric-sampler-sweep-v1",
++  "seeds": {
++    "count": 32,
++    "start": 0,
++    "stop_exclusive": 32
++  },
++  "status": "passed",
++  "stress_30x30": {
++    "components": 5,
++    "input_sha256": "f0c6b1ee82209464a65701285d5b123a6444dc7fdba0e9957bb1adf02674e5da",
++    "nonzero_cells": 256,
++    "outer_boundary_components": 5
++  },
++  "task_id": "14dacb3b518f"
++}
+diff --git a/repo/generators/14dacb3b518f/workspace/parametric/evidence/manifest.json b/repo/generators/14dacb3b518f/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/14dacb3b518f/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,82 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "fe78a969401a4f718a8537ef8ea1a2a748a34cd2a3a8bcdd28b964d1654b1f9d",
++  "canonical_rule_hash": "fe78a969401a",
++  "default": {
++    "rule_mode": "hole_presence"
++  },
++  "evidence_root": "generators/14dacb3b518f/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 28059,
++      "path": "generators/14dacb3b518f/generator.py",
++      "sha256": "60d817465de0aa5552e054895a50a584f2f4f4aaac5a99057dea7bb50b929121"
++    },
++    {
++      "bytes": 9864,
++      "path": "generators/14dacb3b518f/tests/test_parametric_14dacb3b518f.py",
++      "sha256": "e80aa5b538051114c833651dd11598f64d2ccbdf905e9ec7093a2b2672cd8b99"
++    },
++    {
++      "bytes": 2048,
++      "path": "generators/14dacb3b518f/workspace/parametric/adapter.py",
++      "sha256": "b4f91308b3b955f1b8f9dfa3d636cd42a355dfd4d34d4dc6567853d0e79a9e6b"
++    },
++    {
++      "bytes": 2283,
++      "path": "generators/14dacb3b518f/workspace/parametric/evidence/current/behavioral-tests.json",
++      "sha256": "83585663b4a61399b60330e56d2c1d5e36fcd91379fdb47b43af45590519afb7"
++    },
++    {
++      "bytes": 1308,
++      "path": "generators/14dacb3b518f/workspace/parametric/evidence/current/sampler-sweep.json",
++      "sha256": "9de2862272b90edf8168d72bb7e0df28fd7d711f3e97aa14ad605156a826391b"
++    },
++    {
++      "bytes": 967,
++      "path": "generators/14dacb3b518f/workspace/parametric/promotion.json",
++      "sha256": "1fdad2f13c1c85bc3dad8961c2d0bcc20e9db16510aa27d45d0a0cc60b06a350"
++    },
++    {
++      "bytes": 14071,
++      "path": "generators/14dacb3b518f/workspace/parametric/prototype.py",
++      "sha256": "a2db7d3eb2b1aec23734b517962f55a14e8254aedcfe598d77f248456147fd19"
++    },
++    {
++      "bytes": 1069,
++      "path": "generators/14dacb3b518f/workspace/parametric/rules/hole_presence.rkt",
++      "sha256": "fe78a969401a4f718a8537ef8ea1a2a748a34cd2a3a8bcdd28b964d1654b1f9d"
++    },
++    {
++      "bytes": 1363,
++      "path": "generators/14dacb3b518f/workspace/parametric/rules/most_holed_size_threshold.rkt",
++      "sha256": "8680e4030bf7e4d61eeb18491c9906437661209cf2da469251c96fd892b4c6eb"
++    }
++  ],
++  "generator_sha256": "60d817465de0aa5552e054895a50a584f2f4f4aaac5a99057dea7bb50b929121",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "rule_mode": [
++      "hole_presence",
++      "most_holed_size_threshold"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "16 focused pytest cases passed, including exact canonical bytes, all request counts, export privacy, 30x30 stress, and visible-demo rejection of two-largest and bbox-gap shortcuts. A 32-seed sweep checked 1,280 episodes across both settings and every supported demo/query count with zero failures. Protected-Racket labels are checked by native qualification.",
++  "rule_task_id": "14dacb3b518f",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "14dacb3b518f",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/14dacb3b518f/workspace/parametric/promotion.json b/repo/generators/14dacb3b518f/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/14dacb3b518f/workspace/parametric/promotion.json
+@@ -0,0 +1,33 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "task_id": "14dacb3b518f",
++  "adapter": "generators/14dacb3b518f/workspace/parametric/adapter.py",
++  "parameters": {
++    "rule_mode": [
++      "hole_presence",
++      "most_holed_size_threshold"
++    ]
++  },
++  "default": {
++    "rule_mode": "hole_presence"
++  },
++  "source": {
++    "type": "native_parametric_family",
++    "description": "Setting-independent five-object scenes. The alternate setting derives a size threshold from the unique most-holed component before recoloring all components; size-rank and bbox-gap distractors vary across visible demonstrations."
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "resources": [
++    "generators/14dacb3b518f/workspace/parametric/prototype.py",
++    "generators/14dacb3b518f/workspace/parametric/rules/hole_presence.rkt",
++    "generators/14dacb3b518f/workspace/parametric/rules/most_holed_size_threshold.rkt"
++  ]
++}
+diff --git a/repo/generators/14dacb3b518f/workspace/parametric/prototype.py b/repo/generators/14dacb3b518f/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/14dacb3b518f/workspace/parametric/prototype.py
+@@ -0,0 +1,374 @@
++"""Reference Python implementation and setting-independent scene sampler.
++
++The finite family keeps the original topology rule as its default and adds a
++composed alternative:
++
++1. find the unique component with the largest enclosed-hole count;
++2. use that component's occupied-cell count as a threshold;
++3. recolor every component 8 iff its size meets that threshold, else 2.
++
++Inputs are sampled without consulting the selected setting.  Every generated
++scene contains a unique two-hole anchor, one one-hole object, a large solid, a
++small solid, and a leaky bbox-gap distractor.  The one-hole and leaky objects
++alternate between below- and above-threshold sizes, so visible demonstrations
++reject fixed size-rank and bbox-gap shortcuts while preserving the topology-led
++intermediate.
++"""
++from __future__ import annotations
++
++import hashlib
++import random
++from collections import deque
++from typing import Any
++
++DEFAULT_SETTINGS = {"rule_mode": "hole_presence"}
++ALTERNATE_SETTINGS = {"rule_mode": "most_holed_size_threshold"}
++SUPPORTED_SETTINGS = (DEFAULT_SETTINGS, ALTERNATE_SETTINGS)
++
++_DEMO_DIMS = ((12, 16), (14, 18), (18, 20), (16, 24), (20, 22), (24, 26))
++_QUERY_DIMS = ((13, 17), (21, 23), (26, 27), (30, 30))
++_DIR4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
++
++
++def validate_settings(settings: Any) -> dict[str, str]:
++    if not isinstance(settings, dict) or set(settings) != {"rule_mode"}:
++        raise ValueError("settings must contain exactly rule_mode")
++    value = settings["rule_mode"]
++    if value not in {item["rule_mode"] for item in SUPPORTED_SETTINGS}:
++        raise ValueError("settings rule_mode is undeclared")
++    return {"rule_mode": value}
++
++
++def _validate_grid(grid: Any) -> str | None:
++    if not isinstance(grid, list) or not 1 <= len(grid) <= 30:
++        return "grid must have 1..30 rows"
++    if not grid or not isinstance(grid[0], list) or not 1 <= len(grid[0]) <= 30:
++        return "grid must have 1..30 columns"
++    width = len(grid[0])
++    for row in grid:
++        if not isinstance(row, list) or len(row) != width:
++            return "grid must be rectangular"
++        for cell in row:
++            if isinstance(cell, bool) or not isinstance(cell, int) or cell not in (0, 6):
++                return "input cells must be exact integers 0 or 6"
++    return None
++
++
++def _bbox(cells: set[tuple[int, int]]) -> tuple[int, int, int, int]:
++    rows = [row for row, _ in cells]
++    cols = [col for _, col in cells]
++    return min(rows), min(cols), max(rows), max(cols)
++
++
++def _hole_count(cells: set[tuple[int, int]]) -> int:
++    r0, c0, r1, c1 = _bbox(cells)
++    background = {
++        (row, col)
++        for row in range(r0, r1 + 1)
++        for col in range(c0, c1 + 1)
++        if (row, col) not in cells
++    }
++    seen: set[tuple[int, int]] = set()
++    holes = 0
++    for start in sorted(background):
++        if start in seen:
++            continue
++        queue = deque([start])
++        seen.add(start)
++        touches_edge = False
++        while queue:
++            row, col = queue.popleft()
++            if row in (r0, r1) or col in (c0, c1):
++                touches_edge = True
++            for dr, dc in _DIR4:
++                neighbor = (row + dr, col + dc)
++                if neighbor in background and neighbor not in seen:
++                    seen.add(neighbor)
++                    queue.append(neighbor)
++        if not touches_edge:
++            holes += 1
++    return holes
++
++
++def _components(grid: list[list[int]]) -> list[dict[str, Any]]:
++    height, width = len(grid), len(grid[0])
++    seen: set[tuple[int, int]] = set()
++    answer: list[dict[str, Any]] = []
++    for start_row in range(height):
++        for start_col in range(width):
++            start = (start_row, start_col)
++            if grid[start_row][start_col] != 6 or start in seen:
++                continue
++            stack = [start]
++            seen.add(start)
++            cells: set[tuple[int, int]] = set()
++            while stack:
++                row, col = stack.pop()
++                cells.add((row, col))
++                for dr, dc in _DIR4:
++                    nr, nc = row + dr, col + dc
++                    if (
++                        0 <= nr < height
++                        and 0 <= nc < width
++                        and (nr, nc) not in seen
++                        and grid[nr][nc] == 6
++                    ):
++                        seen.add((nr, nc))
++                        stack.append((nr, nc))
++            r0, c0, r1, c1 = _bbox(cells)
++            answer.append(
++                {
++                    "index": len(answer),
++                    "cells": cells,
++                    "size": len(cells),
++                    "hole_count": _hole_count(cells),
++                    "bbox": (r0, c0, r1, c1),
++                    "touches_outer_boundary": any(
++                        row in (0, height - 1) or col in (0, width - 1)
++                        for row, col in cells
++                    ),
++                }
++            )
++    return answer
++
++
++def analyze_input(grid: Any) -> dict[str, Any]:
++    error = _validate_grid(grid)
++    if error:
++        return {"errors": [error], "components": []}
++
++    components = _components(grid)
++    errors: list[str] = []
++    if len(components) not in (4, 5):
++        errors.append(f"expected four or five color-6 components, got {len(components)}")
++
++    two_hole = [component for component in components if component["hole_count"] == 2]
++    one_hole = [component for component in components if component["hole_count"] == 1]
++    unexpected = [component for component in components if component["hole_count"] not in (0, 1, 2)]
++    if len(two_hole) != 1 or len(one_hole) != 1 or unexpected:
++        holes = sorted(component["hole_count"] for component in components)
++        errors.append(
++            "expected exactly one two-hole anchor, one one-hole object, and all remaining objects solid; "
++            f"got {holes}"
++        )
++
++    anchor = two_hole[0] if len(two_hole) == 1 else None
++    anchor_size = anchor["size"] if anchor else None
++    if anchor_size is not None:
++        others = [component for component in components if component is not anchor]
++        if not any(component["size"] > anchor_size for component in others):
++            errors.append("at least one non-anchor object must be larger than the anchor")
++        if not any(component["size"] < anchor_size for component in others):
++            errors.append("at least one non-anchor object must be smaller than the anchor")
++
++    return {
++        "errors": errors,
++        "components": components,
++        "anchor": anchor,
++        "anchor_size": anchor_size,
++        "nonzero_cells": sum(component["size"] for component in components),
++        "outer_boundary_components": sum(
++            bool(component["touches_outer_boundary"]) for component in components
++        ),
++    }
++
++
++def solve(grid: list[list[int]], settings: Any) -> list[list[int]]:
++    normalized = validate_settings(settings)
++    analysis = analyze_input(grid)
++    if analysis["errors"]:
++        raise ValueError("input violates parametric grammar: " + "; ".join(analysis["errors"]))
++    output = [[0 for _ in row] for row in grid]
++    threshold = analysis["anchor_size"]
++    for component in analysis["components"]:
++        if normalized["rule_mode"] == "hole_presence":
++            color = 8 if component["hole_count"] >= 1 else 2
++        else:
++            color = 8 if component["size"] >= threshold else 2
++        for row, col in component["cells"]:
++            output[row][col] = color
++    return output
++
++
++def _rect_perimeter(height: int, width: int) -> set[tuple[int, int]]:
++    return {
++        (row, col)
++        for row in range(height)
++        for col in range(width)
++        if row in (0, height - 1) or col in (0, width - 1)
++    }
++
++
++def _anchor_shape(height: int, width: int) -> set[tuple[int, int]]:
++    cells = _rect_perimeter(height, width)
++    divider = width // 2
++    cells.update((row, divider) for row in range(1, height - 1))
++    return cells
++
++
++def _one_hole_shape(height: int, width: int, *, dense: bool) -> set[tuple[int, int]]:
++    if not dense:
++        return _rect_perimeter(height, width)
++    cells = _solid_shape(height, width)
++    cells.remove((height // 2, width // 2))
++    return cells
++
++
++def _solid_shape(height: int, width: int) -> set[tuple[int, int]]:
++    return {(row, col) for row in range(height) for col in range(width)}
++
++
++def _small_shape() -> set[tuple[int, int]]:
++    return {(0, 0), (0, 1), (1, 0), (1, 1)}
++
++
++def _leaky_shape(height: int, width: int, *, dense: bool) -> set[tuple[int, int]]:
++    middle = width // 2
++    if dense:
++        cells = _solid_shape(height, width)
++        cells.remove((0, middle))
++        cells.remove((1, middle))
++        return cells
++    cells = _rect_perimeter(height, width)
++    cells.remove((0, middle))
++    return cells
++
++
++def _rng(seed: int, role: str, index: int) -> random.Random:
++    digest = hashlib.sha256(f"14dacb3b518f:{seed}:{role}:{index}".encode()).digest()
++    return random.Random(int.from_bytes(digest[:16], "big"))
++
++
++def _slots(height: int, width: int) -> list[tuple[int, int, int, int]]:
++    separator_row = height // 2
++    row_specs = ((0, separator_row), (separator_row + 1, height - separator_row - 1))
++    usable_width = width - 2
++    base, remainder = divmod(usable_width, 3)
++    widths = [base + (1 if index < remainder else 0) for index in range(3)]
++    column_specs = []
++    start = 0
++    for slot_width in widths:
++        column_specs.append((start, slot_width))
++        start += slot_width + 1
++    return [
++        (row_start, col_start, slot_h, slot_w)
++        for row_start, slot_h in row_specs
++        for col_start, slot_w in column_specs
++    ]
++
++
++def _role_shape(role: str, slot_h: int, slot_w: int) -> set[tuple[int, int]]:
++    shape_h = min(slot_h, 9)
++    shape_w = min(slot_w, 9)
++    if role in {"anchor", "one_hole_small", "one_hole_large"}:
++        if shape_h < 5 or shape_w < 5:
++            raise ValueError("profile slot is too small for enclosed-hole grammar")
++    if role in {"leaky_small", "leaky_large"}:
++        if shape_h < 3 or shape_w < 3:
++            raise ValueError("profile slot is too small for leaky distractor grammar")
++    if role == "anchor":
++        return _anchor_shape(shape_h, shape_w)
++    if role == "one_hole_small":
++        return _one_hole_shape(shape_h, shape_w, dense=False)
++    if role == "one_hole_large":
++        return _one_hole_shape(shape_h, shape_w, dense=True)
++    if role == "large_solid":
++        return _solid_shape(slot_h, slot_w)
++    if role == "small_solid":
++        return _small_shape()
++    if role == "leaky_small":
++        return _leaky_shape(shape_h, shape_w, dense=False)
++    if role == "leaky_large":
++        return _leaky_shape(shape_h, shape_w, dense=True)
++    raise AssertionError(role)
++
++
++def _profile(role: str, index: int) -> tuple[bool, bool]:
++    profiles = (
++        (False, False),
++        (True, False),
++        (False, True),
++        (True, True),
++        (False, True),
++        (True, False),
++    ) if role == "demo" else (
++        (True, True),
++        (False, True),
++        (True, False),
++        (False, False),
++    )
++    return profiles[index]
++
++
++def _place(
++    grid: list[list[int]],
++    cells: set[tuple[int, int]],
++    slot: tuple[int, int, int, int],
++    rng: random.Random,
++    corner_lock: bool,
++) -> None:
++    slot_r, slot_c, slot_h, slot_w = slot
++    shape_h = max(row for row, _ in cells) + 1
++    shape_w = max(col for _, col in cells) + 1
++    row_slack, col_slack = slot_h - shape_h, slot_w - shape_w
++    if corner_lock:
++        # The slot's location determines the outward corner.  This makes the
++        # 30x30 stress case exercise clipping-adjacent topology without
++        # clipping any component.
++        top = slot_r == 0
++        left = slot_c == 0
++        row_offset = 0 if top else row_slack
++        col_offset = 0 if left else col_slack
++    else:
++        row_offset = rng.randint(0, row_slack)
++        col_offset = rng.randint(0, col_slack)
++    for row, col in cells:
++        grid[slot_r + row_offset + row][slot_c + col_offset + col] = 6
++
++
++def make_scene(seed: int, role: str, index: int) -> list[list[int]]:
++    dims = _DEMO_DIMS if role == "demo" else _QUERY_DIMS
++    height, width = dims[index]
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    slots = _slots(height, width)
++    rng = _rng(seed, role, index)
++    one_hole_large, leaky_large = _profile(role, index)
++
++    wide = [slot_index for slot_index, slot in enumerate(slots) if slot[2] >= 5 and slot[3] >= 5]
++    rng.shuffle(wide)
++    if len(wide) < 4:
++        raise AssertionError("profile needs four topology-capable slots")
++    assignments = {
++        "anchor": wide.pop(),
++        "one_hole_large" if one_hole_large else "one_hole_small": wide.pop(),
++        "large_solid": wide.pop(),
++    }
++    remaining = [slot_index for slot_index in range(len(slots)) if slot_index not in assignments.values()]
++    if leaky_large:
++        leaky_candidates = [slot_index for slot_index in wide if slot_index in remaining]
++        if not leaky_candidates:
++            raise AssertionError("profile needs a fourth topology-capable slot")
++        leaky_slot = rng.choice(leaky_candidates)
++    else:
++        leaky_slot = rng.choice(remaining)
++    assignments["leaky_large" if leaky_large else "leaky_small"] = leaky_slot
++    remaining.remove(leaky_slot)
++    small_slot = rng.choice(remaining)
++    assignments["small_solid"] = small_slot
++
++    corner_lock = role == "query" and index == len(_QUERY_DIMS) - 1
++    for object_role, slot_index in assignments.items():
++        slot = slots[slot_index]
++        cells = _role_shape(object_role, slot[2], slot[3])
++        _place(grid, cells, slot, rng, corner_lock)
++    analysis = analyze_input(grid)
++    if analysis["errors"]:
++        raise AssertionError(f"internal scene grammar failure: {analysis['errors']}")
++    return grid
++
++
++def generate_inputs(seed: int, demos: int, queries: int) -> tuple[list[list[list[int]]], list[list[list[int]]]]:
++    return (
++        [make_scene(seed, "demo", index) for index in range(demos)],
++        [make_scene(seed, "query", index) for index in range(queries)],
++    )
+diff --git a/repo/generators/14dacb3b518f/workspace/parametric/rules/hole_presence.rkt b/repo/generators/14dacb3b518f/workspace/parametric/rules/hole_presence.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/14dacb3b518f/workspace/parametric/rules/hole_presence.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (nonzero-cells grid) (filter (lambda (p) (not (= (at grid (first p) (second p)) 0))) (grid-positions grid))) (define (crop-nonzero grid) (let ((cells (nonzero-cells grid))) (if (empty? cells) (list (list 0)) (let* ((bb (bbox-of-cells cells))) (subgrid grid (first bb) (second bb) (third bb) (fourth bb)))))) (define (f14b-binary-crop grid) (crop-nonzero (grid-from-fn (rows grid) (cols grid) (lambda (r c) (if (= (at grid r c) 0) 0 1))))) (define (f14b-hole-count grid) (let* ((binary (f14b-binary-crop grid)) (regions (find-0-regions binary 0))) (length (filter (lambda (region) (not (any? (lambda (p) (or (= (first p) 0) (= (first p) (- (rows binary) 1)) (= (second p) 0) (= (second p) (- (cols binary) 1)))) region))) regions)))) (define (s17b-object-crop grid obj) (let ((bb (obj-bbox obj))) (subgrid grid (first bb) (second bb) (third bb) (fourth bb)))) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((obj (in-list (objects g 0)))) (paint-cells out (obj-cells obj) (if (>= (f14b-hole-count (s17b-object-crop g obj)) 1) 8 2)))))
+\ No newline at end of file
+diff --git a/repo/generators/14dacb3b518f/workspace/parametric/rules/most_holed_size_threshold.rkt b/repo/generators/14dacb3b518f/workspace/parametric/rules/most_holed_size_threshold.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/14dacb3b518f/workspace/parametric/rules/most_holed_size_threshold.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (nonzero-cells grid) (filter (lambda (p) (not (= (at grid (first p) (second p)) 0))) (grid-positions grid))) (define (crop-nonzero grid) (let ((cells (nonzero-cells grid))) (if (empty? cells) (list (list 0)) (let* ((bb (bbox-of-cells cells))) (subgrid grid (first bb) (second bb) (third bb) (fourth bb)))))) (define (f14b-binary-crop grid) (crop-nonzero (grid-from-fn (rows grid) (cols grid) (lambda (r c) (if (= (at grid r c) 0) 0 1))))) (define (f14b-hole-count grid) (let* ((binary (f14b-binary-crop grid)) (regions (find-0-regions binary 0))) (length (filter (lambda (region) (not (any? (lambda (p) (or (= (first p) 0) (= (first p) (- (rows binary) 1)) (= (second p) 0) (= (second p) (- (cols binary) 1)))) region))) regions)))) (define (s17b-object-crop grid obj) (let ((bb (obj-bbox obj))) (subgrid grid (first bb) (second bb) (third bb) (fourth bb)))) (define annotated (map (lambda (obj) (list obj (f14b-hole-count (s17b-object-crop g obj)))) (objects g 0))) (define max-holes (apply max (map second annotated))) (define anchor (first (filter (lambda (item) (= (second item) max-holes)) annotated))) (define threshold (length (obj-cells (first anchor)))) (for/fold ((out (empty-grid (rows g) (cols g) 0))) ((obj (in-list (objects g 0)))) (paint-cells out (obj-cells obj) (if (>= (length (obj-cells obj)) threshold) 8 2)))))
+\ No newline at end of file

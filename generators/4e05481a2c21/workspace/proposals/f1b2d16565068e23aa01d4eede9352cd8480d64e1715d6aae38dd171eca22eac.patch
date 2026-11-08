@@ -1,0 +1,1830 @@
+diff --git a/repo/generators/2dacb90452ce/notes.md b/repo/generators/2dacb90452ce/notes.md
+--- a/repo/generators/2dacb90452ce/notes.md
++++ b/repo/generators/2dacb90452ce/notes.md
+@@ -128,3 +128,9 @@
+ 
+ Current source-bound disposition and focused checks: [evidence/conflict-reconciliation.json](evidence/conflict-reconciliation.json). All proposed variants remain unapproved and training_admitted=false. Existing audits/failures are preserved; this reconciliation does not resolve an audit or refresh an exact-source safety approval.
+ <!-- arcpuzzles-current-conflict-reconciliation:end -->
++
++## Review 2026-10-24 — side-length-gated lesson shortcut
++
++A deterministic current lesson generated with seed 0, difficulty `hard`, samples 17–19 has input sides `[4, 4, 5]`. The wrong rule “apply the correct per-cell 2× upscale when side ≤ 4; otherwise tile the whole grid 2×2” matches both visible demonstrations and disagrees with the query on 89 cells under protected Racket.
++
++The rerunnable source-bound probe is `workspace/size_gate_shortcut_probe.py`; packaged evidence is `checks/2dacb90452ce/size-gate-shortcut.json`. Production source was intentionally left unchanged. Recommended repair: add this gate to `LESSON_COMPETITORS` and constructively require a visible side-5 example before a side-5 query, preferably without increasing the two-demo budget.
+diff --git a/repo/generators/2dacb90452ce/tests/test_size_gate_shortcut_probe.py b/repo/generators/2dacb90452ce/tests/test_size_gate_shortcut_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2dacb90452ce/tests/test_size_gate_shortcut_probe.py
+@@ -0,0 +1,29 @@
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++
++PROBE = Path(__file__).resolve().parents[1] / "workspace" / "size_gate_shortcut_probe.py"
++
++
++def load_probe():
++    spec = importlib.util.spec_from_file_location("size_gate_shortcut_probe", PROBE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_size_gate_uses_cellwise_upscale_through_side_four():
++    probe = load_probe()
++    grid = [[1, 2], [3, 4]]
++    assert probe.side_le_four_else_grid_tile(grid) == probe.upscale2(grid)
++
++
++def test_size_gate_switches_to_wrong_whole_grid_tiling_at_side_five():
++    probe = load_probe()
++    grid = [[(r * 5 + c) % 10 for c in range(5)] for r in range(5)]
++    prediction = probe.side_le_four_else_grid_tile(grid)
++    assert prediction == probe.tile_whole_grid(grid)
++    assert prediction != probe.upscale2(grid)
+diff --git a/repo/generators/2dacb90452ce/workspace/size_gate_shortcut_probe.py b/repo/generators/2dacb90452ce/workspace/size_gate_shortcut_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/2dacb90452ce/workspace/size_gate_shortcut_probe.py
+@@ -0,0 +1,172 @@
++"""Source-bound lesson probe for a side-length-gated upscale shortcut.
++
++The wrong rule performs the intended per-cell 2x upscale through side length
++four, then tiles the whole grid for side length five.  A deterministic current
++lesson (seed 0, hard samples 17..19) has two 4x4 demonstrations and a 5x5
++query, so the shortcut fits every visible demonstration and fails the query.
++Reference labels come only from public ``Catalog.apply`` (protected Racket).
++"""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++from typing import Any, Sequence
++
++TASK_ID = "2dacb90452ce"
++SEED = 0
++START = 17
++DIFFICULTY = "hard"
++
++
++def _validate_grid(grid: Sequence[Sequence[int]]) -> None:
++    if not isinstance(grid, (list, tuple)) or not grid:
++        raise ValueError("expected a nonempty grid")
++    width = len(grid[0]) if isinstance(grid[0], (list, tuple)) else 0
++    if not width or any(not isinstance(row, (list, tuple)) or len(row) != width for row in grid):
++        raise ValueError("expected a rectangular grid")
++    if any(type(cell) is not int or not 0 <= cell <= 9 for row in grid for cell in row):
++        raise ValueError("expected ARC colors 0..9")
++
++
++def upscale2(grid: Sequence[Sequence[int]]) -> list[list[int]]:
++    """The intended cellwise 2x nearest-neighbor upscale."""
++    _validate_grid(grid)
++    output: list[list[int]] = []
++    for row in grid:
++        expanded = [cell for cell in row for _ in range(2)]
++        output.extend((expanded[:], expanded[:]))
++    return output
++
++
++def tile_whole_grid(grid: Sequence[Sequence[int]]) -> list[list[int]]:
++    """Wrong operation: tile the complete input in a 2-by-2 arrangement."""
++    _validate_grid(grid)
++    doubled_rows = [list(row) + list(row) for row in grid]
++    return [row[:] for row in doubled_rows] + [row[:] for row in doubled_rows]
++
++
++def side_le_four_else_grid_tile(grid: Sequence[Sequence[int]]) -> list[list[int]]:
++    """Plausible finite shortcut that memorizes the visible size range."""
++    _validate_grid(grid)
++    return upscale2(grid) if len(grid) <= 4 else tile_whole_grid(grid)
++
++
++def changed_cells(left: Sequence[Sequence[int]], right: Sequence[Sequence[int]]) -> int:
++    if len(left) != len(right) or any(len(a) != len(b) for a, b in zip(left, right)):
++        raise ValueError("changed_cells requires equal shapes")
++    return sum(a != b for row_a, row_b in zip(left, right) for a, b in zip(row_a, row_b))
++
++
++def run_probe(out: Path) -> dict[str, Any]:
++    from arcpuzzles import Catalog
++    from reviewer_support import find_root, load_selected_generator
++
++    root = find_root(__file__)
++    generator, source, source_sha256 = load_selected_generator(TASK_ID, root=root)
++    inputs = [generator.generate(SEED, START + offset, difficulty=DIFFICULTY) for offset in range(3)]
++    self_checks = [generator.self_check(grid, difficulty=DIFFICULTY) for grid in inputs]
++    applied = Catalog(root).apply(
++        TASK_ID,
++        inputs,
++        reference="canonical",
++        timeout=180,
++        check_generator_domain=True,
++    )
++
++    cases = []
++    wrong_matches: list[bool] = []
++    intended_matches: list[bool] = []
++    for offset, (grid, result) in enumerate(zip(inputs, applied["results"], strict=True)):
++        label = result.get("output")
++        wrong = side_le_four_else_grid_tile(grid)
++        intended = upscale2(grid)
++        wrong_matches.append(wrong == label)
++        intended_matches.append(intended == label)
++        cases.append({
++            "role": "demonstration" if offset < 2 else "query",
++            "seed": SEED,
++            "sample_index": START + offset,
++            "difficulty": DIFFICULTY,
++            "input_side": len(grid),
++            "palette_count": len({cell for row in grid for cell in row}),
++            "self_check": self_checks[offset],
++            "racket_valid_output": bool(result.get("valid_output")),
++            "racket_error": result.get("error"),
++            "input": grid,
++            "racket_output": label,
++            "shortcut_output": wrong,
++            "shortcut_matches_racket": wrong == label,
++            "intended_python_matches_racket": intended == label,
++            "shortcut_disagreement_cells": 0 if wrong == label else changed_cells(wrong, label),
++        })
++
++    source_consistent = applied.get("generator_sha256") == source_sha256
++    passed = bool(
++        source_consistent
++        and applied.get("rule_hash_matches_catalog")
++        and all(not errors for errors in self_checks)
++        and all(case["racket_valid_output"] and not case["racket_error"] for case in cases)
++        and intended_matches == [True, True, True]
++        and wrong_matches == [True, True, False]
++        and [len(grid) for grid in inputs] == [4, 4, 5]
++        and cases[-1]["shortcut_disagreement_cells"] > 0
++    )
++    report = {
++        "schema": "arcpuzzles-peer-size-gate-shortcut-v1",
++        "task_id": TASK_ID,
++        "status": "PASS" if passed else "FAIL",
++        "passed": passed,
++        "source_binding": {
++            "generator_path": source.relative_to(root).as_posix(),
++            "generator_sha256": source_sha256,
++            "catalog_generator_sha256": applied.get("generator_sha256"),
++            "source_consistent": source_consistent,
++            "executed_rule_hash": applied.get("executed_rule_hash"),
++            "rule_hash_matches_catalog": applied.get("rule_hash_matches_catalog"),
++            "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        },
++        "lesson": {
++            "sampler": "generate(seed=0, sample_index=17..19, difficulty='hard')",
++            "visible_demonstrations": 2,
++            "query_count": 1,
++            "input_sides": [len(grid) for grid in inputs],
++            "wrong_rule": "Use correct per-cell 2x upscale when side <= 4; otherwise tile the whole grid 2x2.",
++            "wrong_rule_matches": wrong_matches,
++            "query_disagreement_cells": cases[-1]["shortcut_disagreement_cells"],
++        },
++        "reference_basis": "Public Catalog.apply canonical reference executed by protected Racket; Python rivals never supply labels.",
++        "reference_receipt": {key: value for key, value in applied.items() if key != "results"},
++        "cases": cases,
++        "recommendation": (
++            "Add this side-length gate to lesson competitors and require a visible side-5 demonstration "
++            "before any side-5 query, or otherwise constructively refute the gate without increasing the demo count."
++        ),
++        "limits": [
++            "This proves one deterministic current lesson is ambiguous against one finite shortcut, not universal unlearnability.",
++            "Production source is unchanged; the evidence is a reviewer proposal for the owner.",
++        ],
++    }
++    out.parent.mkdir(parents=True, exist_ok=True)
++    out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    return report
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    report = run_probe(args.out)
++    print(json.dumps({
++        "status": report["status"],
++        "input_sides": report["lesson"]["input_sides"],
++        "wrong_rule_matches": report["lesson"]["wrong_rule_matches"],
++        "query_disagreement_cells": report["lesson"]["query_disagreement_cells"],
++    }, sort_keys=True))
++    return 0 if report["passed"] else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/4537fc1035d2/notes.md b/repo/generators/4537fc1035d2/notes.md
+--- a/repo/generators/4537fc1035d2/notes.md
++++ b/repo/generators/4537fc1035d2/notes.md
+@@ -2,3 +2,9 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Review 2026-10-24 — orientation-gated T shortcut
++
++A deterministic current lesson generated with seed 0, difficulty `medium`, samples 20–22 contains only `horizontal_bar_down` T objects in both visible demonstrations, then a `vertical_bar_right` T in the query. The wrong rule “recolor only T tetrominoes whose three-cell bar is horizontal” matches both demonstrations and disagrees with the protected-Racket query label on four cells.
++
++The rerunnable source-bound probe is `workspace/orientation_shortcut_probe.py`; packaged evidence is `checks/4537fc1035d2/orientation-shortcut.json`. Production source was intentionally left unchanged. Recommended repair: add the orientation-gated rule to lesson competitors and guarantee a side-facing T in the visible demonstrations before any side-facing query.
+diff --git a/repo/generators/4537fc1035d2/tests/test_orientation_shortcut_probe.py b/repo/generators/4537fc1035d2/tests/test_orientation_shortcut_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4537fc1035d2/tests/test_orientation_shortcut_probe.py
+@@ -0,0 +1,45 @@
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++
++
++PROBE = Path(__file__).resolve().parents[1] / "workspace" / "orientation_shortcut_probe.py"
++
++
++def load_probe():
++    spec = importlib.util.spec_from_file_location("orientation_shortcut_probe", PROBE)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_horizontal_bar_shortcut_recolors_only_horizontal_bar_t_shapes():
++    probe = load_probe()
++    grid = [[0] * 12 for _ in range(8)]
++    # T with a horizontal three-cell bar.
++    for r, c in ((1, 1), (1, 2), (1, 3), (2, 2)):
++        grid[r][c] = 3
++    # Side-facing T with a vertical three-cell bar.
++    for r, c in ((1, 8), (2, 7), (2, 8), (3, 8)):
++        grid[r][c] = 3
++    # Non-T distractor.
++    for r, c in ((6, 1), (6, 2), (6, 3), (6, 4)):
++        grid[r][c] = 3
++
++    output = probe.horizontal_bar_t_only(grid)
++    assert all(output[r][c] == 6 for r, c in ((1, 1), (1, 2), (1, 3), (2, 2)))
++    assert all(output[r][c] == 3 for r, c in ((1, 8), (2, 7), (2, 8), (3, 8)))
++    assert all(output[r][c] == 3 for r, c in ((6, 1), (6, 2), (6, 3), (6, 4)))
++
++
++def test_orientation_names_distinguish_horizontal_and_vertical_bars():
++    probe = load_probe()
++    grid = [[0] * 12 for _ in range(8)]
++    for r, c in ((1, 1), (1, 2), (1, 3), (2, 2)):
++        grid[r][c] = 3
++    for r, c in ((1, 8), (2, 7), (2, 8), (3, 8)):
++        grid[r][c] = 3
++    names = probe.t_orientation_names(grid)
++    assert names == ["horizontal_bar_down", "vertical_bar_left"]
+diff --git a/repo/generators/4537fc1035d2/workspace/orientation_shortcut_probe.py b/repo/generators/4537fc1035d2/workspace/orientation_shortcut_probe.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4537fc1035d2/workspace/orientation_shortcut_probe.py
+@@ -0,0 +1,229 @@
++"""Source-bound lesson probe for an orientation-gated T-tetromino shortcut.
++
++The wrong rule recolors green T objects only when their three-cell bar is
++horizontal.  A deterministic current lesson (seed 0, medium samples 20..22)
++has horizontal-bar Ts in both visible demonstrations and a side-facing T in
++the query.  Reference labels come only from public ``Catalog.apply``
++(protected Racket).
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++from pathlib import Path
++from typing import Any, Iterable, Sequence
++
++TASK_ID = "4537fc1035d2"
++SEED = 0
++START = 20
++DIFFICULTY = "medium"
++
++ORIENTATION_BY_SHAPE = {
++    ((0, 0), (0, 1), (0, 2), (1, 1)): "horizontal_bar_down",
++    ((0, 1), (1, 0), (1, 1), (2, 1)): "vertical_bar_left",
++    ((0, 1), (1, 0), (1, 1), (1, 2)): "horizontal_bar_up",
++    ((0, 0), (1, 0), (1, 1), (2, 0)): "vertical_bar_right",
++}
++HORIZONTAL_BAR_SHAPES = {
++    shape for shape, name in ORIENTATION_BY_SHAPE.items() if name.startswith("horizontal_bar_")
++}
++
++
++def _validate_grid(grid: Sequence[Sequence[int]]) -> None:
++    if not isinstance(grid, (list, tuple)) or not grid:
++        raise ValueError("expected a nonempty grid")
++    width = len(grid[0]) if isinstance(grid[0], (list, tuple)) else 0
++    if not width or any(not isinstance(row, (list, tuple)) or len(row) != width for row in grid):
++        raise ValueError("expected a rectangular grid")
++    if any(type(cell) is not int or not 0 <= cell <= 9 for row in grid for cell in row):
++        raise ValueError("expected ARC colors 0..9")
++
++
++def green_components(grid: Sequence[Sequence[int]]) -> list[tuple[tuple[int, int], ...]]:
++    """Return row-major four-connected color-3 components."""
++    _validate_grid(grid)
++    height, width = len(grid), len(grid[0])
++    seen: set[tuple[int, int]] = set()
++    components: list[tuple[tuple[int, int], ...]] = []
++    for row in range(height):
++        for col in range(width):
++            if grid[row][col] != 3 or (row, col) in seen:
++                continue
++            queue = [(row, col)]
++            seen.add((row, col))
++            cells: list[tuple[int, int]] = []
++            for current_row, current_col in queue:
++                cells.append((current_row, current_col))
++                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
++                    nxt = current_row + dr, current_col + dc
++                    nr, nc = nxt
++                    if (0 <= nr < height and 0 <= nc < width
++                            and nxt not in seen and grid[nr][nc] == 3):
++                        seen.add(nxt)
++                        queue.append(nxt)
++            components.append(tuple(sorted(cells)))
++    return components
++
++
++def normalize(cells: Iterable[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
++    cells = tuple(cells)
++    if not cells:
++        raise ValueError("cannot normalize an empty component")
++    min_row = min(row for row, _ in cells)
++    min_col = min(col for _, col in cells)
++    return tuple(sorted((row - min_row, col - min_col) for row, col in cells))
++
++
++def t_orientation_names(grid: Sequence[Sequence[int]]) -> list[str]:
++    return [
++        ORIENTATION_BY_SHAPE[shape]
++        for component in green_components(grid)
++        if (shape := normalize(component)) in ORIENTATION_BY_SHAPE
++    ]
++
++
++def horizontal_bar_t_only(grid: Sequence[Sequence[int]]) -> list[list[int]]:
++    """Wrong rule: recolor only the two T rotations with horizontal bars."""
++    output = [list(row) for row in grid]
++    for component in green_components(grid):
++        if normalize(component) in HORIZONTAL_BAR_SHAPES:
++            for row, col in component:
++                output[row][col] = 6
++    return output
++
++
++def all_t_rotations(grid: Sequence[Sequence[int]]) -> list[list[int]]:
++    """Independent Python mirror of the intended all-rotation rule."""
++    output = [list(row) for row in grid]
++    for component in green_components(grid):
++        if normalize(component) in ORIENTATION_BY_SHAPE:
++            for row, col in component:
++                output[row][col] = 6
++    return output
++
++
++def changed_cells(left: Sequence[Sequence[int]], right: Sequence[Sequence[int]]) -> int:
++    if len(left) != len(right) or any(len(a) != len(b) for a, b in zip(left, right)):
++        raise ValueError("changed_cells requires equal shapes")
++    return sum(a != b for row_a, row_b in zip(left, right) for a, b in zip(row_a, row_b))
++
++
++def run_probe(out: Path) -> dict[str, Any]:
++    from arcpuzzles import Catalog
++    from reviewer_support import find_root, load_selected_generator
++
++    root = find_root(__file__)
++    generator, source, source_sha256 = load_selected_generator(TASK_ID, root=root)
++    inputs = [generator.generate(SEED, START + offset, difficulty=DIFFICULTY) for offset in range(3)]
++    self_checks = [generator.self_check(grid, difficulty=DIFFICULTY) for grid in inputs]
++    applied = Catalog(root).apply(
++        TASK_ID,
++        inputs,
++        reference="canonical",
++        timeout=180,
++        check_generator_domain=True,
++    )
++
++    cases = []
++    wrong_matches: list[bool] = []
++    intended_matches: list[bool] = []
++    orientations: list[list[str]] = []
++    for offset, (grid, result) in enumerate(zip(inputs, applied["results"], strict=True)):
++        label = result.get("output")
++        wrong = horizontal_bar_t_only(grid)
++        intended = all_t_rotations(grid)
++        names = t_orientation_names(grid)
++        orientations.append(names)
++        wrong_matches.append(wrong == label)
++        intended_matches.append(intended == label)
++        cases.append({
++            "role": "demonstration" if offset < 2 else "query",
++            "seed": SEED,
++            "sample_index": START + offset,
++            "difficulty": DIFFICULTY,
++            "t_orientations": names,
++            "self_check": self_checks[offset],
++            "racket_valid_output": bool(result.get("valid_output")),
++            "racket_error": result.get("error"),
++            "input": grid,
++            "racket_output": label,
++            "shortcut_output": wrong,
++            "shortcut_matches_racket": wrong == label,
++            "intended_python_matches_racket": intended == label,
++            "shortcut_disagreement_cells": 0 if wrong == label else changed_cells(wrong, label),
++        })
++
++    demos_horizontal_only = all(
++        names and all(name.startswith("horizontal_bar_") for name in names)
++        for names in orientations[:2]
++    )
++    query_has_vertical = any(name.startswith("vertical_bar_") for name in orientations[2])
++    source_consistent = applied.get("generator_sha256") == source_sha256
++    passed = bool(
++        source_consistent
++        and applied.get("rule_hash_matches_catalog")
++        and all(not errors for errors in self_checks)
++        and all(case["racket_valid_output"] and not case["racket_error"] for case in cases)
++        and intended_matches == [True, True, True]
++        and wrong_matches == [True, True, False]
++        and demos_horizontal_only
++        and query_has_vertical
++        and cases[-1]["shortcut_disagreement_cells"] > 0
++    )
++    report = {
++        "schema": "arcpuzzles-peer-t-orientation-shortcut-v1",
++        "task_id": TASK_ID,
++        "status": "PASS" if passed else "FAIL",
++        "passed": passed,
++        "source_binding": {
++            "generator_path": source.relative_to(root).as_posix(),
++            "generator_sha256": source_sha256,
++            "catalog_generator_sha256": applied.get("generator_sha256"),
++            "source_consistent": source_consistent,
++            "executed_rule_hash": applied.get("executed_rule_hash"),
++            "rule_hash_matches_catalog": applied.get("rule_hash_matches_catalog"),
++            "probe_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
++        },
++        "lesson": {
++            "sampler": "generate(seed=0, sample_index=20..22, difficulty='medium')",
++            "visible_demonstrations": 2,
++            "query_count": 1,
++            "t_orientations": orientations,
++            "wrong_rule": "Recolor green T tetrominoes only when the three-cell bar is horizontal.",
++            "wrong_rule_matches": wrong_matches,
++            "query_disagreement_cells": cases[-1]["shortcut_disagreement_cells"],
++        },
++        "reference_basis": "Public Catalog.apply canonical reference executed by protected Racket; Python rivals never supply labels.",
++        "reference_receipt": {key: value for key, value in applied.items() if key != "results"},
++        "cases": cases,
++        "recommendation": (
++            "Add the horizontal-bar-only rule to lesson competitors and guarantee that a side-facing T "
++            "appears in the visible demonstrations before any side-facing query."
++        ),
++        "limits": [
++            "This proves one deterministic current lesson is ambiguous against one finite shortcut, not universal unlearnability.",
++            "Production source is unchanged; the evidence is a reviewer proposal for the owner.",
++        ],
++    }
++    out.parent.mkdir(parents=True, exist_ok=True)
++    out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    return report
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    report = run_probe(args.out)
++    print(json.dumps({
++        "status": report["status"],
++        "t_orientations": report["lesson"]["t_orientations"],
++        "wrong_rule_matches": report["lesson"]["wrong_rule_matches"],
++        "query_disagreement_cells": report["lesson"]["query_disagreement_cells"],
++    }, sort_keys=True))
++    return 0 if report["passed"] else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/4e05481a2c21/notes.md b/repo/generators/4e05481a2c21/notes.md
+--- a/repo/generators/4e05481a2c21/notes.md
++++ b/repo/generators/4e05481a2c21/notes.md
+@@ -198,3 +198,15 @@
+ 
+ **Remaining uncertainty:** Finite declared-rival checks do not prove universal
+ identifiability.  Approval and training admission remain maintainer decisions.
++
++## Review 2026-10-24 — native pack-order parametric family
++
++**Scope.** Production `generator.py` remains unchanged at SHA-256 `5c48db7df2d19349f48317ba6ccc18aaa4234323eb24ffd198945fc8fdb89547`. The native family lives under `workspace/parametric/` and preserves the exact canonical Racket source for `pack_order=left_to_right`.
++
++**Nearby rule parameter.** The alternative `pack_order=hole_area_descending` first extracts each colored object's complete union of enclosed holes, computes the exact number of derived hole cells, then packs objects in descending derived area with source left-to-right order as the tie break. Inputs are setting-neutral; demonstration and query counts are independently prefix-stable over 2–6 and 1–4, with four controller-side queries and a substantive 30×30 case.
++
++**Sequential dependency.** Step A extracts the complete enclosed-hole union for every object. The intermediate is the per-object exact hole-cell area vector. Step B consumes that vector to choose the descending-area pack order before packing; it cannot choose the order before Step A. The retained protected-Racket counterfactual substitutes hole-union bounding-box area and changes 14 final cells.
++
++**Verification.** The reusable self-audit replayed 40 labels plus two causal programs through protected Racket, retained two finite-rival teaching examples, and found no survivor beyond the intended policy in the declared set. Native qualification passed both settings at seeds 0 and 17 with three demonstrations and four queries per job (40 protected-Racket labels). Public one-query exports passed byte, content-ID, schema, masking, and uniqueness checks. Evidence: `workspace/parametric/evidence/current/`, `workspace/parametric/evidence/manifest.json`, and packet checks `checks/4e05481a2c21/`.
++
++**Status.** Reviewer-ready only. Exact-source owner acceptance and any training admission remain pending; finite rivals and two seeds do not prove universal identifiability.
+diff --git a/repo/generators/4e05481a2c21/tests/test_parametric_family.py b/repo/generators/4e05481a2c21/tests/test_parametric_family.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/tests/test_parametric_family.py
+@@ -0,0 +1,156 @@
++"""Native parametric family contract for 4e05481a2c21."""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++
++from arcpuzzles import Catalog
++
++HOME = Path(__file__).resolve().parents[1]
++PARAMETRIC = HOME / "workspace" / "parametric"
++
++
++def _load(name: str, path: Path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++proto = _load("_4e05481a2c21_parametric_test", PARAMETRIC / "prototype.py")
++adapter = _load("_4e05481a2c21_parametric_adapter_test", PARAMETRIC / "adapter.py")
++
++
++def _compact(value):
++    return json.dumps(value, sort_keys=True, separators=(",", ":"))
++
++
++def test_canonical_program_is_exact_selected_authority():
++    record = Catalog(HOME.parents[1]).get("4e05481a2c21")
++    programs = {variant["program_solution"] for variant in record["variants"]}
++    assert len(programs) == 1
++    canonical = next(iter(programs))
++    assert (PARAMETRIC / "canonical.rkt").read_text(encoding="utf-8") == canonical
++    assert adapter.program({"pack_order": "left_to_right"}) == canonical
++
++
++def test_declared_programs_and_settings_are_total_and_strict():
++    assert proto.PACK_ORDERS == ("left_to_right", "hole_area_descending")
++    for setting in proto.PACK_ORDERS:
++        source = adapter.program({"pack_order": setting})
++        assert source.startswith("(rule!")
++        assert len(source) > 500
++    for bad in [None, {}, {"pack_order": "unknown"}, {"pack_order": 1},
++                {"pack_order": "left_to_right", "extra": 1}]:
++        with pytest.raises((TypeError, ValueError)):
++            adapter.program(bad)
++
++
++def test_counts_are_independent_prefix_stable_and_exact_integer_only():
++    for order in proto.PACK_ORDERS:
++        small = adapter.generate(41, {"pack_order": order}, 2, 1)
++        large = adapter.generate(41, {"pack_order": order}, 6, 4)
++        assert small["train"] == large["train"][:2]
++        assert small["test"] == large["test"][:1]
++        assert len(large["train"]) == 6
++        assert len(large["test"]) == 4
++        assert large["program_solution"] == adapter.program({"pack_order": order})
++    for name, value in [("demos", 1), ("demos", 7), ("demos", True),
++                        ("queries", 0), ("queries", 5), ("queries", 1.0)]:
++        kwargs = {"demos": 3, "queries": 4}
++        kwargs[name] = value
++        with pytest.raises((TypeError, ValueError)):
++            adapter.generate(0, {"pack_order": "left_to_right"}, **kwargs)
++
++
++def test_inputs_are_matched_across_settings_and_distinct_within_episode():
++    episodes = {
++        order: adapter.generate(17, {"pack_order": order}, 6, 4)
++        for order in proto.PACK_ORDERS
++    }
++    for split in ("train", "test"):
++        left = [pair["input"] for pair in episodes["left_to_right"][split]]
++        right = [pair["input"] for pair in episodes["hole_area_descending"][split]]
++        assert left == right
++    inputs = [pair["input"] for split in ("train", "test")
++              for pair in episodes["left_to_right"][split]]
++    assert len({_compact(grid) for grid in inputs}) == len(inputs)
++    assert any(
++        episodes["left_to_right"][split][i]["output"]
++        != episodes["hole_area_descending"][split][i]["output"]
++        for split in ("train", "test")
++        for i in range(len(episodes["left_to_right"][split]))
++    )
++
++
++def test_python_labels_follow_complete_hole_analysis_without_mutation():
++    for order in proto.PACK_ORDERS:
++        episode = adapter.generate(23, {"pack_order": order}, 6, 4)
++        for split in ("train", "test"):
++            for pair in episode[split]:
++                original = deepcopy(pair["input"])
++                analysis = proto.analyze(pair["input"])
++                assert 2 <= len(analysis["objects"]) <= 4
++                assert all(obj["hole_area"] > 0 for obj in analysis["objects"])
++                assert proto.solve_python(pair["input"], order) == pair["output"]
++                assert pair["input"] == original
++
++
++def test_first_two_demos_eliminate_declared_query_changing_rivals():
++    for seed in (0, 17, 991):
++        for order in proto.PACK_ORDERS:
++            episode = adapter.generate(seed, {"pack_order": order}, 2, 4)
++            audit = proto.teaching_check(episode, order)
++            assert audit["harmful_survivors"] == []
++            assert audit["rival_count"] >= 8
++            assert audit["settings_disagree_on_demos"] is True
++
++
++def test_four_query_profiles_include_substantive_30x30_boundary_stress():
++    episode = adapter.generate(123, {"pack_order": "hole_area_descending"}, 3, 4)
++    assert [tuple(map(len, (pair["input"], pair["input"][0]))) for pair in episode["test"]]
++    stress = episode["test"][3]["input"]
++    assert len(stress) == len(stress[0]) == 30
++    info = proto.analyze(stress)
++    assert len(info["objects"]) == 4
++    assert sum(len(obj["cells"]) for obj in info["objects"]) >= 120
++    boxes = [obj["bbox"] for obj in info["objects"]]
++    assert any(box[0] == 0 for box in boxes)
++    assert any(box[2] == 29 for box in boxes)
++    assert any(box[1] == 0 for box in boxes)
++    assert any(box[3] == 29 for box in boxes)
++    assert len({obj["hole_area"] for obj in info["objects"]}) >= 3
++
++
++def test_public_turn_masks_private_data_and_first_turn_is_query_count_invariant():
++    one = proto.generate_episode(55, pack_order="hole_area_descending", demos=3, queries=1)
++    four = proto.generate_episode(55, pack_order="hole_area_descending", demos=3, queries=4)
++    public_one = proto.public_view(one, 0)
++    public_four = proto.public_view(four, 0)
++    assert public_one == public_four
++    assert set(public_four) == {"train", "test"}
++    assert len(public_four["test"]) == 1
++    assert all(set(pair) == {"input", "output"} for pair in public_four["train"])
++    assert all(set(pair) == {"input"} for pair in public_four["test"])
++    text = _compact(public_four)
++    assert "pack_order" not in text
++    assert "program_solution" not in text
++    assert four["test"][0]["output"] not in [pair for pair in public_four["test"]]
++    assert hashlib.sha256(proto.public_bytes(four, 0)).hexdigest() == proto.public_id(four, 0)
++
++
++def test_reusable_self_audit_static_checks_cover_counts_settings_and_stress():
++    audit = _load("_4e05481a2c21_self_audit_test", PARAMETRIC / "self_audit.py")
++    report = audit.static_report(seeds=(0,))
++    assert report["status"] == "passed"
++    assert report["counts"]["episodes"] == 6
++    assert report["counts"]["matched_input_comparisons"] == 3
++    assert report["counts"]["stress_30x30"] == 6
++    assert report["findings"] == []
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/README.md b/repo/generators/4e05481a2c21/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/README.md
+@@ -0,0 +1,66 @@
++# Hole-area pack ordering
++
++This native opt-in family keeps the source task's complete enclosed-hole
++extraction and horizontal packing operation while varying one private,
++episode-fixed parameter:
++
++| `pack_order` | Rule |
++|---|---|
++| `left_to_right` | Exact selected canonical Racket program, byte-for-byte. |
++| `hole_area_descending` | Extract every object's complete enclosed-zero union, count its cells, then pack the extracted patterns by descending derived area; ties remain left-to-right. |
++
++The input sampler is independent of the setting. It supports 2–6 demonstrations
++and 1–4 queries independently. The first two demonstrations distinguish both
++settings and ten declared ordering shortcuts. Additional demonstrations are
++prefix-stable. Every four-query episode ends with a 30×30 scene containing four
++large boundary-spanning objects and at least 120 foreground cells.
++
++## Sequential dependency
++
++**A:** segment each colored object and extract its complete four-connected
++enclosed-zero union. **Intermediate:** the per-object vector of exact enclosed
++cell areas. **B:** use that vector to choose the descending-area pack order and
++then place the already-extracted patterns. B cannot be selected from object
++position, object size, hole bounding boxes, colors, or region counts before A's
++result exists.
++
++`bbox_area_descending.rkt` is a private counterfactual, not an admitted setting.
++It keeps extraction and packing but substitutes each extracted union's bounding-
++box area for its cell area. The retained protected-Racket witness changes the
++pack order and 14 final cells.
++
++## Public projection
++
++`prototype.public_view(episode, query_index)` returns demonstrations plus only
++the current query input. It excludes the private setting, seed, programs, all
++query answers, and future query inputs. Query 0 is byte-identical whether the
++controller requested one query or all four. Public IDs are SHA-256 hashes of
++`reviewer_support.public_challenge_bytes` only.
++
++## Reproduce
++
++From the outer packet directory:
++
++```bash
++python3 review.py run python3 -m pytest \
++  generators/4e05481a2c21/tests/test_parametric_family.py -q
++
++python3 review.py run python3 \
++  generators/4e05481a2c21/workspace/parametric/self_audit.py \
++  --out generators/4e05481a2c21/workspace/parametric/evidence/new-run \
++  --seeds 0,17
++
++python3 review.py run python3 -m arcpuzzles parametric manifest 4e05481a2c21 \
++  --evidence generators/4e05481a2c21/workspace/parametric/evidence/current \
++  --include generators/4e05481a2c21/tests/test_parametric_family.py \
++  --reported-checks 'State only the exact checks actually rerun'
++
++python3 review.py run python3 -m arcpuzzles parametric qualify 4e05481a2c21 \
++  --seed 0 --seed 17 --demos 3 --queries 4 \
++  --out ../checks/4e05481a2c21/qualification --summary
++```
++
++Qualification and the task-local audit establish correctness only for their
++bounded settings, seeds, counts, and finite rivals. They do not prove universal
++identifiability, measured learning value, owner acceptance, or training
++admission.
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/adapter.py b/repo/generators/4e05481a2c21/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/adapter.py
+@@ -0,0 +1,24 @@
++"""Thin exact-path native adapter for the 4e05481a2c21 packing family."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++_PATH = Path(__file__).resolve().with_name("prototype.py")
++_NAME = "_arc_4e05481a2c21_parametric_" + hashlib.sha256(str(_PATH).encode()).hexdigest()[:16]
++_SPEC = importlib.util.spec_from_file_location(_NAME, _PATH)
++if _SPEC is None or _SPEC.loader is None:
++    raise ImportError(f"cannot load adjacent prototype: {_PATH}")
++_IMPL = importlib.util.module_from_spec(_SPEC)
++sys.modules[_NAME] = _IMPL
++_SPEC.loader.exec_module(_IMPL)
++
++
++def program(settings):
++    return _IMPL.program(settings)
++
++
++def generate(seed, settings, demos, queries):
++    return _IMPL.generate(seed, settings, demos, queries)
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/bbox_area_descending.rkt b/repo/generators/4e05481a2c21/workspace/parametric/bbox_area_descending.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/bbox_area_descending.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (fifth xs) (list-ref xs 4)) (define (f4-norm cells) (let* ((bb (bbox-of-cells cells)) (r0 (first bb)) (c0 (second bb))) (map (lambda (p) (list (- (first p) r0) (- (second p) c0))) cells))) (define (f4-norm-info cells) (let* ((bb (bbox-of-cells cells)) (r0 (first bb)) (c0 (second bb)) (r1 (third bb)) (c1 (fourth bb))) (list (f4-norm cells) (+ 1 (- r1 r0)) (+ 1 (- c1 c0))))) (define (nx-hole-cells cells) (let* ((bb (bbox-of-cells cells)) (r0 (first bb)) (c0 (second bb)) (info (f4-norm-info cells)) (norm (first info)) (h (second info)) (w (third info)) (mask (paint-cells (empty-grid h w 0) norm 1)) (regions (filter (lambda (region) (not (any? (lambda (p) (or (= (first p) 0) (= (first p) (- h 1)) (= (second p) 0) (= (second p) (- w 1)))) region))) (find-0-regions mask 0)))) (apply append (map (lambda (region) (map (lambda (p) (list (+ r0 (first p)) (+ c0 (second p)))) region)) regions)))) (define (nx-hpack-shapes items) (if (empty? items) (list) (let* ((h (apply max (map second items))) (w (+ (apply + (map third items)) (- (length items) 1)))) (let loop ((xs items) (left 0) (out (empty-grid h w 0))) (if (empty? xs) out (let ((shape (first (first xs))) (ih (second (first xs))) (iw (third (first xs))) (color (fourth (first xs)))) (loop (rest xs) (+ left iw 1) (paint-cells out (map (lambda (p) (list (first p) (+ left (second p)))) shape) color)))))))) (let* ((items (filter values (for/list ((obj (in-list (objects g 0)))) (let ((holes (nx-hole-cells (obj-cells obj)))) (if (empty? holes) #f (let* ((hbb (bbox-of-cells holes)) (local (map (lambda (p) (list (- (first p) (first hbb)) (- (second p) (second hbb)))) holes)) (cbb (obj-bbox obj))) (list (second cbb) local (+ 1 (- (third hbb) (first hbb))) (+ 1 (- (fourth hbb) (second hbb))) (obj-color obj)))))))) (sorted (sort items (lambda (a b) (let ((aa (* (third a) (fourth a))) (bb (* (third b) (fourth b)))) (or (> aa bb) (and (= aa bb) (< (first a) (first b)))))))) (pack-items (map (lambda (item) (list (second item) (third item) (fourth item) (fifth item))) sorted))) (if (empty? pack-items) (list) (nx-hpack-shapes pack-items)))))
+\ No newline at end of file
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/canonical.rkt b/repo/generators/4e05481a2c21/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (fifth xs) (list-ref xs 4)) (define (f4-norm cells) (let* ((bb (bbox-of-cells cells)) (r0 (first bb)) (c0 (second bb))) (map (lambda (p) (list (- (first p) r0) (- (second p) c0))) cells))) (define (f4-norm-info cells) (let* ((bb (bbox-of-cells cells)) (r0 (first bb)) (c0 (second bb)) (r1 (third bb)) (c1 (fourth bb))) (list (f4-norm cells) (+ 1 (- r1 r0)) (+ 1 (- c1 c0))))) (define (nx-hole-cells cells) (let* ((bb (bbox-of-cells cells)) (r0 (first bb)) (c0 (second bb)) (info (f4-norm-info cells)) (norm (first info)) (h (second info)) (w (third info)) (mask (paint-cells (empty-grid h w 0) norm 1)) (regions (filter (lambda (region) (not (any? (lambda (p) (or (= (first p) 0) (= (first p) (- h 1)) (= (second p) 0) (= (second p) (- w 1)))) region))) (find-0-regions mask 0)))) (apply append (map (lambda (region) (map (lambda (p) (list (+ r0 (first p)) (+ c0 (second p)))) region)) regions)))) (define (nx-hpack-shapes items) (if (empty? items) (list) (let* ((h (apply max (map second items))) (w (+ (apply + (map third items)) (- (length items) 1)))) (let loop ((xs items) (left 0) (out (empty-grid h w 0))) (if (empty? xs) out (let ((shape (first (first xs))) (ih (second (first xs))) (iw (third (first xs))) (color (fourth (first xs)))) (loop (rest xs) (+ left iw 1) (paint-cells out (map (lambda (p) (list (first p) (+ left (second p)))) shape) color)))))))) (let* ((items (filter values (for/list ((obj (in-list (objects g 0)))) (let ((holes (nx-hole-cells (obj-cells obj)))) (if (empty? holes) #f (let* ((hbb (bbox-of-cells holes)) (local (map (lambda (p) (list (- (first p) (first hbb)) (- (second p) (second hbb)))) holes)) (cbb (obj-bbox obj))) (list (second cbb) local (+ 1 (- (third hbb) (first hbb))) (+ 1 (- (fourth hbb) (second hbb))) (obj-color obj)))))))) (sorted (sort items (lambda (a b) (< (first a) (first b))))) (pack-items (map (lambda (item) (list (second item) (third item) (fourth item) (fifth item))) sorted))) (if (empty? pack-items) (list) (nx-hpack-shapes pack-items)))))
+\ No newline at end of file
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/private/examples.json b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/private/examples.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/private/examples.json
+@@ -0,0 +1 @@
++{"episodes":[{"program_sha256":"e13b35a51ff45ec12272948377860bc0dfd5e39328405759f9c820a659a324a0","seed":0,"settings":{"pack_order":"left_to_right"},"test":[{"input":[[0,0,0,6,6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,6,0,6,0,0,2,2,2,2,2,2,0,0,0,0,0,0],[0,0,0,6,0,6,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,6,6,6,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,0,0,0,0,2,0,0,9,9,9,9],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,9,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,9,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[6,0,0,0,2,0,0,9,9],[6,0,0,0,2,0,0,9,9],[0,0,0,0,2,0,0,0,0],[0,0,2,2,2,2,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,8,8,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,8,0,0,0,8,0,1,1,1,1,1,1,1,0,7,7,7,0],[0,0,0,0,0,0,8,0,0,0,8,0,1,0,0,0,0,0,1,0,7,0,7,0],[0,0,0,0,0,0,8,8,8,8,8,0,1,1,1,1,1,1,1,0,7,0,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[4,4,0,0,8,8,8,0,1,1,1,1,1,0,7],[0,0,0,0,8,8,8,0,0,0,0,0,0,0,7],[0,4,4,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,9,9,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,9,0,0,0,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,9,9,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,9,0,0,0,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,9,9,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0],[0,5,0,0,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0],[0,5,0,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0]],"output":[[0,5,5,0,9,9,9,0,3,3,3,3,0,6,6],[5,5,0,0,0,0,0,0,0,3,0,0,0,6,6],[5,0,0,0,9,9,9,0,0,3,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,3,0,0,0,0,0]]},{"input":[[2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,2,2,0,0,5,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,5,5,0,0,8,8,8,8,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,0,0,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3]],"output":[[2,2,2,2,0,5,5,5,5,0,8,8,8,8,0,3,3,3,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,0,5,5,5,5,0,8,8,8,8,0,0,3,3,3]]}],"train":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,2,2,2,0,6,6,6,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,8,8,8,0,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4,4,0],[0,0,0,8,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,4,0],[0,0,0,8,8,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4,4,0],[0,0,0,8,8,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,8,0,0,2,2,2,0,6,6,0,4,4,4,4,4],[8,8,8,0,2,2,2,0,6,6,0,0,0,0,0,0],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,7,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,9,9,9,0,0,0,0,0,0,7,7,7,0],[0,0,0,0,0,0,0,0,0,0,0,9,0,0,0,9,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,9,9,9,0,1,1,1,1,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,0,9,0,0,0,9,0,1,0,0,1,0,0,0,0,0],[0,0,0,3,0,0,0,0,0,3,0,9,9,9,9,9,0,1,0,0,1,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[3,3,3,3,3,0,9,9,9,0,1,1,0,7],[0,0,0,0,0,0,0,0,0,0,1,1,0,7],[0,0,0,0,0,0,9,9,9,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,8,0,0,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,0,0,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,0,0,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,0,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,5,5,0,0,0,2,0,0,8,8,0],[5,5,0,0,0,0,2,0,0,0,0,0],[5,0,0,0,0,0,2,0,0,0,8,8],[0,0,0,0,2,2,2,2,0,0,0,0]]}]},{"program_sha256":"db22014ec74a7eafd770c274628df1a62b43377c9dbe5b62cda3ef4701ed2cd2","seed":0,"settings":{"pack_order":"hole_area_descending"},"test":[{"input":[[0,0,0,6,6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,6,0,6,0,0,2,2,2,2,2,2,0,0,0,0,0,0],[0,0,0,6,0,6,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,6,6,6,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,0,0,0,0,2,0,0,9,9,9,9],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,9,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,9,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,2,0,0,9,9,0,6],[0,0,2,0,0,9,9,0,6],[0,0,2,0,0,0,0,0,0],[2,2,2,2,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,8,8,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,8,0,0,0,8,0,1,1,1,1,1,1,1,0,7,7,7,0],[0,0,0,0,0,0,8,0,0,0,8,0,1,0,0,0,0,0,1,0,7,0,7,0],[0,0,0,0,0,0,8,8,8,8,8,0,1,1,1,1,1,1,1,0,7,0,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,0,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[8,8,8,0,1,1,1,1,1,0,4,4,0,0,7],[8,8,8,0,0,0,0,0,0,0,0,0,0,0,7],[0,0,0,0,0,0,0,0,0,0,0,4,4,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,0,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,9,9,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,9,0,0,0,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,9,9,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,9,0,0,0,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,9,9,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0],[0,5,0,0,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0],[0,5,0,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0]],"output":[[3,3,3,3,0,9,9,9,0,0,5,5,0,6,6],[0,3,0,0,0,0,0,0,0,5,5,0,0,6,6],[0,3,0,0,0,9,9,9,0,5,0,0,0,0,0],[0,3,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,2,2,0,0,5,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,0,0,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,5,5,5,5,5,5,0,0,8,8,8,8,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,0,0,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,8,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,0,0,0,3],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,3,3,3]],"output":[[2,2,2,2,0,8,8,8,8,0,5,5,5,5,0,3,3,3,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,8,8,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[2,2,2,2,0,8,8,8,8,0,5,5,5,5,0,0,3,3,3]]}],"train":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,2,2,2,0,6,6,6,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,8,8,8,0,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4,4,0],[0,0,0,8,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,4,0],[0,0,0,8,8,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4,4,0],[0,0,0,8,8,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[2,2,2,0,0,8,0,0,4,4,4,4,4,0,6,6],[2,2,2,0,8,8,8,0,0,0,0,0,0,0,6,6],[0,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,7,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,9,9,9,0,0,0,0,0,0,7,7,7,0],[0,0,0,0,0,0,0,0,0,0,0,9,0,0,0,9,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,9,9,9,0,1,1,1,1,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,0,9,0,0,0,9,0,1,0,0,1,0,0,0,0,0],[0,0,0,3,0,0,0,0,0,3,0,9,9,9,9,9,0,1,0,0,1,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[9,9,9,0,3,3,3,3,3,0,1,1,0,7],[0,0,0,0,0,0,0,0,0,0,1,1,0,7],[9,9,9,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,8,0,0,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,0,0,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,0,0,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,0,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,2,0,0,0,5,5,0,8,8,0],[0,0,2,0,0,5,5,0,0,0,0,0],[0,0,2,0,0,5,0,0,0,0,8,8],[2,2,2,2,0,0,0,0,0,0,0,0]]}]}]}
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public-check.json b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public-check.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public-check.json
+@@ -0,0 +1,24 @@
++{
++  "demonstrations": 3,
++  "files": [
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_review_181536/INPUT/WORK/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public/challenge-283917644f18b83def4c6585b5cb40b0047be97637daba490353967441622dc1.json",
++      "queries": 1,
++      "sha256": "283917644f18b83def4c6585b5cb40b0047be97637daba490353967441622dc1"
++    },
++    {
++      "demonstrations": 3,
++      "path": "/mnt/data/arc_review_181536/INPUT/WORK/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public/challenge-9d429df75856146f1cdabff42ff36efaecbb7668afb5219b4768a781fbd23198.json",
++      "queries": 1,
++      "sha256": "9d429df75856146f1cdabff42ff36efaecbb7668afb5219b4768a781fbd23198"
++    }
++  ],
++  "files_checked": 2,
++  "findings": [],
++  "limits": "Saved-file structure/identity only. Does not execute a writer, test private-metadata invariance, verify labels, establish identifiability or approve variants.",
++  "queries": 1,
++  "reference_labels_checked": false,
++  "schema": "arcpuzzles-public-export-check-v1",
++  "status": "passed"
++}
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public/challenge-283917644f18b83def4c6585b5cb40b0047be97637daba490353967441622dc1.json b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public/challenge-283917644f18b83def4c6585b5cb40b0047be97637daba490353967441622dc1.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public/challenge-283917644f18b83def4c6585b5cb40b0047be97637daba490353967441622dc1.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[0,0,0,6,6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,6,0,6,0,0,2,2,2,2,2,2,0,0,0,0,0,0],[0,0,0,6,0,6,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,6,6,6,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,0,0,0,0,2,0,0,9,9,9,9],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,9,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,9,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}],"train":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,2,2,2,0,6,6,6,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,8,8,8,0,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4,4,0],[0,0,0,8,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,4,0],[0,0,0,8,8,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4,4,0],[0,0,0,8,8,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[2,2,2,0,0,8,0,0,4,4,4,4,4,0,6,6],[2,2,2,0,8,8,8,0,0,0,0,0,0,0,6,6],[0,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,7,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,9,9,9,0,0,0,0,0,0,7,7,7,0],[0,0,0,0,0,0,0,0,0,0,0,9,0,0,0,9,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,9,9,9,0,1,1,1,1,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,0,9,0,0,0,9,0,1,0,0,1,0,0,0,0,0],[0,0,0,3,0,0,0,0,0,3,0,9,9,9,9,9,0,1,0,0,1,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[9,9,9,0,3,3,3,3,3,0,1,1,0,7],[0,0,0,0,0,0,0,0,0,0,1,1,0,7],[9,9,9,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,8,0,0,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,0,0,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,0,0,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,0,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,0,2,0,0,0,5,5,0,8,8,0],[0,0,2,0,0,5,5,0,0,0,0,0],[0,0,2,0,0,5,0,0,0,0,8,8],[2,2,2,2,0,0,0,0,0,0,0,0]]}]}
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public/challenge-9d429df75856146f1cdabff42ff36efaecbb7668afb5219b4768a781fbd23198.json b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public/challenge-9d429df75856146f1cdabff42ff36efaecbb7668afb5219b4768a781fbd23198.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/public/challenge-9d429df75856146f1cdabff42ff36efaecbb7668afb5219b4768a781fbd23198.json
+@@ -0,0 +1 @@
++{"test":[{"input":[[0,0,0,6,6,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,6,0,6,0,0,2,2,2,2,2,2,0,0,0,0,0,0],[0,0,0,6,0,6,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,6,6,6,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,0,0,0,0,2,0,0,9,9,9,9],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,9,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,0,0,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,9,9],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}],"train":[{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,2,2,2,0,6,6,6,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,8,8,8,0,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4,4,0],[0,0,0,8,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,4,0],[0,0,0,8,8,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4,4,0],[0,0,0,8,8,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,8,0,0,2,2,2,0,6,6,0,4,4,4,4,4],[8,8,8,0,2,2,2,0,6,6,0,0,0,0,0,0],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,7,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,7,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,7,0,7,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,9,9,9,0,0,0,0,0,0,7,7,7,0],[0,0,0,0,0,0,0,0,0,0,0,9,0,0,0,9,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,9,9,9,9,9,0,1,1,1,1,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,0,9,0,0,0,9,0,1,0,0,1,0,0,0,0,0],[0,0,0,3,0,0,0,0,0,3,0,9,9,9,9,9,0,1,0,0,1,0,0,0,0,0],[0,0,0,3,3,3,3,3,3,3,0,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[3,3,3,3,3,0,9,9,9,0,1,1,0,7],[0,0,0,0,0,0,0,0,0,0,1,1,0,7],[0,0,0,0,0,0,9,9,9,0,0,0,0,0]]},{"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,8,0,0,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,0,0,8,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,0,2,2,0,0,8,8,8,8,8,0,0,0],[0,0,0,0,0,0,0,0,2,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,0,0,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,0,0,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,0,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,5,5,5,5,5,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"output":[[0,5,5,0,0,0,2,0,0,8,8,0],[5,5,0,0,0,0,2,0,0,0,0,0],[5,0,0,0,0,0,2,0,0,0,8,8],[0,0,0,0,2,2,2,2,0,0,0,0]]}]}
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/self-audit.json b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/self-audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/self-audit.json
+@@ -0,0 +1 @@
++{"counts":{"cache_hits":0,"parity_rows":40,"protected_racket_evaluations":42,"retained_examples":2,"seeds":2,"settings":2},"limits":"finite rival elimination does not establish universal rule uniqueness","parity":[{"exact":true,"index":0,"input_sha256":"5f2d3d647fd05d2051b96c332977f4795122f2acf75da7a5358e76c9695b2560","order":"left_to_right","output_sha256":"cdeaca27f5e796a06910bdfe796ad9673b6738f7c41dfa596e15f917a8f2b839","seed":0,"split":"train"},{"exact":true,"index":1,"input_sha256":"c6f837be14cb576003424c5168b1e06589a94c9b7721dd4c645baf5dafcf4abe","order":"left_to_right","output_sha256":"e36260540ae57840b36a0f3e6f1adeb07790f22fab20a509d33c80c21cfb56ea","seed":0,"split":"train"},{"exact":true,"index":2,"input_sha256":"2cd4cee6c794a3594ecd3c612680ad314ee37dd7e53138e133c8fd961c77583a","order":"left_to_right","output_sha256":"6ea35e48f329da1b8533eec22a3fb87cb4f791dd37fb62d0e38d30270ab24401","seed":0,"split":"train"},{"exact":true,"index":3,"input_sha256":"297f237763e8ae2ed131e539797e47de0b17d32153060e29cbf968eddb321bf2","order":"left_to_right","output_sha256":"a477407418fd7742951810d5597177831c1777992eb3fb677c7f7a1803e04455","seed":0,"split":"train"},{"exact":true,"index":4,"input_sha256":"34bb17e08d5d4c4b653caa0e15ffba1be9b873f7fa97477cbe98ef13ddf6c73a","order":"left_to_right","output_sha256":"05368564862b2eb935d4a52ccb8d2f938c87821e94d62c91abe3cb2817cb11e4","seed":0,"split":"train"},{"exact":true,"index":5,"input_sha256":"9346ebbb3cc3fd3dcf04f6d7807247360e0a5b63e93c554067c25d032bb371e6","order":"left_to_right","output_sha256":"e60d35fe602870576912d0ff16ce454b2437c07a8dfaa9b31ea1156289aab656","seed":0,"split":"train"},{"exact":true,"index":0,"input_sha256":"dd372574b56d3b5458d98291ec0b849ccdab5e9721b6087c1ecced82d632ef9b","order":"left_to_right","output_sha256":"41ee3de691c0a00679a8efa492917f098db988f688ac077a19a4ef5212f38639","seed":0,"split":"test"},{"exact":true,"index":1,"input_sha256":"750b84464ba3dc490d0ff18bb9e2b3e6f30bd988b1ab11f3a283be173d7889c2","order":"left_to_right","output_sha256":"105b026811ebf051aff9c97cb35aac4c0927912016bb2170b9014b53fa5d3cea","seed":0,"split":"test"},{"exact":true,"index":2,"input_sha256":"ae828b86cbcf0c3871fa60f6da6174a7ebe5d98f383d2ce4e4f78844b7e08bca","order":"left_to_right","output_sha256":"4f9722435f58aa9ff3c4f928365c5de19c7b4ff2ee731045a4f302dec7bc9835","seed":0,"split":"test"},{"exact":true,"index":3,"input_sha256":"5d23581e696e62bbdccef04ab540384b02a57f787812a52bfcbb959b1a6407a2","order":"left_to_right","output_sha256":"099dc7478d3baacf9117ab66e4fe05fff638c51bfe5f8a659e26af63bcf973cc","seed":0,"split":"test"},{"exact":true,"index":0,"input_sha256":"5f2d3d647fd05d2051b96c332977f4795122f2acf75da7a5358e76c9695b2560","order":"hole_area_descending","output_sha256":"7e954210f740022ce18cf2e06b42eaf6d7498df6361032847d1afe0a247f7f99","seed":0,"split":"train"},{"exact":true,"index":1,"input_sha256":"c6f837be14cb576003424c5168b1e06589a94c9b7721dd4c645baf5dafcf4abe","order":"hole_area_descending","output_sha256":"68fae81df5741e82f193f37c9d4ef5c7c404a78d0a032079a860190645ac0e85","seed":0,"split":"train"},{"exact":true,"index":2,"input_sha256":"2cd4cee6c794a3594ecd3c612680ad314ee37dd7e53138e133c8fd961c77583a","order":"hole_area_descending","output_sha256":"0fc3980fbe54098676226a6448e8d8af749f6fd4ea4ed5bdbf9d8d97ea63bd2f","seed":0,"split":"train"},{"exact":true,"index":3,"input_sha256":"297f237763e8ae2ed131e539797e47de0b17d32153060e29cbf968eddb321bf2","order":"hole_area_descending","output_sha256":"93083e048eb0e180ec7c0366090d52439f582a03ef3890342b3d6b45958bdce2","seed":0,"split":"train"},{"exact":true,"index":4,"input_sha256":"34bb17e08d5d4c4b653caa0e15ffba1be9b873f7fa97477cbe98ef13ddf6c73a","order":"hole_area_descending","output_sha256":"ae6a795f141d6a2917293d09fe99d15b7f4359e1158f7ecb07eb5eefc420d097","seed":0,"split":"train"},{"exact":true,"index":5,"input_sha256":"9346ebbb3cc3fd3dcf04f6d7807247360e0a5b63e93c554067c25d032bb371e6","order":"hole_area_descending","output_sha256":"9140c842041803f61775101c8d771517c7b3e4fec645f78c8e10acddc75c052f","seed":0,"split":"train"},{"exact":true,"index":0,"input_sha256":"dd372574b56d3b5458d98291ec0b849ccdab5e9721b6087c1ecced82d632ef9b","order":"hole_area_descending","output_sha256":"b797a170950a283ce44c10ddbd5401014ea00998a25582719df41cff6cd48a38","seed":0,"split":"test"},{"exact":true,"index":1,"input_sha256":"750b84464ba3dc490d0ff18bb9e2b3e6f30bd988b1ab11f3a283be173d7889c2","order":"hole_area_descending","output_sha256":"10564ffacec03c669f5ffd5ee23678826e0ee7c877a3cb6525d42dbb10077778","seed":0,"split":"test"},{"exact":true,"index":2,"input_sha256":"ae828b86cbcf0c3871fa60f6da6174a7ebe5d98f383d2ce4e4f78844b7e08bca","order":"hole_area_descending","output_sha256":"de40483f34118fbfda5ef81d20051d2c09729bc4faf47d68c212586f8c6756ec","seed":0,"split":"test"},{"exact":true,"index":3,"input_sha256":"5d23581e696e62bbdccef04ab540384b02a57f787812a52bfcbb959b1a6407a2","order":"hole_area_descending","output_sha256":"a756203ad5f9db7bd06b09f30c6a8fe55b93577e4c6d713f8c65123ab92113da","seed":0,"split":"test"},{"exact":true,"index":0,"input_sha256":"2de8ab6f3dace8c57a4488a43340ec6a6814a5cd0ab8761597312b0510593c20","order":"left_to_right","output_sha256":"cdeaca27f5e796a06910bdfe796ad9673b6738f7c41dfa596e15f917a8f2b839","seed":17,"split":"train"},{"exact":true,"index":1,"input_sha256":"e7e1ccddf47c9cdb43d5d43624a94e7a3f05384a8e72869e6ddacf59189249a4","order":"left_to_right","output_sha256":"e36260540ae57840b36a0f3e6f1adeb07790f22fab20a509d33c80c21cfb56ea","seed":17,"split":"train"},{"exact":true,"index":2,"input_sha256":"d396487223356d917d30c0e3aa75ad2596c18085ae03497cde5cf4aef3415fe8","order":"left_to_right","output_sha256":"67cb47578bc3abc46c43a053d5916c151b8ace8a9e5675f5e63ada4354e8a635","seed":17,"split":"train"},{"exact":true,"index":3,"input_sha256":"0aefb3550d3d2b1699d99f86f248c8bed683f1b4d8d2fda3277a4b98b3be72c1","order":"left_to_right","output_sha256":"a477407418fd7742951810d5597177831c1777992eb3fb677c7f7a1803e04455","seed":17,"split":"train"},{"exact":true,"index":4,"input_sha256":"b8dc7e3646484d103ec508fc814c8f66c30d0b10bccfc4760db7bc0d0e4f4d8e","order":"left_to_right","output_sha256":"0aeadc06fe21ba7356f4f30f064ad452bb261c89ac31d9e770a9e9371f46d1ce","seed":17,"split":"train"},{"exact":true,"index":5,"input_sha256":"4399f784c788e1fb699e4d8c54a40d38dc573463281fbb37d1bc7a395f894eca","order":"left_to_right","output_sha256":"30daf0d6d54021b2a320956212239b05adb6ef11df3f9df464b05a2c3d684108","seed":17,"split":"train"},{"exact":true,"index":0,"input_sha256":"1f4c6f4ff82b238e4a8d9bf7b6ce8b396c05014769831055bb5d5eff3c43b7f4","order":"left_to_right","output_sha256":"41ee3de691c0a00679a8efa492917f098db988f688ac077a19a4ef5212f38639","seed":17,"split":"test"},{"exact":true,"index":1,"input_sha256":"0e14d19b0015c008524e29985cb90b2a5746aebb898c455634e64b87e03452b3","order":"left_to_right","output_sha256":"5082e73f5ef8c8e1019be76bedc38c66f544f628bc8aa9eaa73d07335aac6f51","seed":17,"split":"test"},{"exact":true,"index":2,"input_sha256":"2cf663f2de9af35268f9e78d0be56315b852d107bd4163a08ea82a2a2ae2a8dd","order":"left_to_right","output_sha256":"941e6a4b58de539d37bc0796562d8ab282420bb993359339418de12dc8497a85","seed":17,"split":"test"},{"exact":true,"index":3,"input_sha256":"907c3f94173599e4a48372fe0127cf673d0030d79dc8d385be07559680eb6d71","order":"left_to_right","output_sha256":"1bc650e43e64d9fcefcaa2011186b6b8a8856a1a55e3db4df6a6ce54d2300157","seed":17,"split":"test"},{"exact":true,"index":0,"input_sha256":"2de8ab6f3dace8c57a4488a43340ec6a6814a5cd0ab8761597312b0510593c20","order":"hole_area_descending","output_sha256":"7e954210f740022ce18cf2e06b42eaf6d7498df6361032847d1afe0a247f7f99","seed":17,"split":"train"},{"exact":true,"index":1,"input_sha256":"e7e1ccddf47c9cdb43d5d43624a94e7a3f05384a8e72869e6ddacf59189249a4","order":"hole_area_descending","output_sha256":"68fae81df5741e82f193f37c9d4ef5c7c404a78d0a032079a860190645ac0e85","seed":17,"split":"train"},{"exact":true,"index":2,"input_sha256":"d396487223356d917d30c0e3aa75ad2596c18085ae03497cde5cf4aef3415fe8","order":"hole_area_descending","output_sha256":"6f544f0ebbdbcce5698728a25540ec16082313c975ff83a310198afcfba80382","seed":17,"split":"train"},{"exact":true,"index":3,"input_sha256":"0aefb3550d3d2b1699d99f86f248c8bed683f1b4d8d2fda3277a4b98b3be72c1","order":"hole_area_descending","output_sha256":"93083e048eb0e180ec7c0366090d52439f582a03ef3890342b3d6b45958bdce2","seed":17,"split":"train"},{"exact":true,"index":4,"input_sha256":"b8dc7e3646484d103ec508fc814c8f66c30d0b10bccfc4760db7bc0d0e4f4d8e","order":"hole_area_descending","output_sha256":"8fcb7501dc1462aca509025e0d0f5281757173e7e7751b290896efac028bf829","seed":17,"split":"train"},{"exact":true,"index":5,"input_sha256":"4399f784c788e1fb699e4d8c54a40d38dc573463281fbb37d1bc7a395f894eca","order":"hole_area_descending","output_sha256":"36992232ab8928137ab088a0171a43c09cbed7bfe63efd51ef2c506ea7fc4f96","seed":17,"split":"train"},{"exact":true,"index":0,"input_sha256":"1f4c6f4ff82b238e4a8d9bf7b6ce8b396c05014769831055bb5d5eff3c43b7f4","order":"hole_area_descending","output_sha256":"b797a170950a283ce44c10ddbd5401014ea00998a25582719df41cff6cd48a38","seed":17,"split":"test"},{"exact":true,"index":1,"input_sha256":"0e14d19b0015c008524e29985cb90b2a5746aebb898c455634e64b87e03452b3","order":"hole_area_descending","output_sha256":"a36fba972cc756f6510b7bf68499468af1b65377cd6b22fb55b3f4f1d3dd28ec","seed":17,"split":"test"},{"exact":true,"index":2,"input_sha256":"2cf663f2de9af35268f9e78d0be56315b852d107bd4163a08ea82a2a2ae2a8dd","order":"hole_area_descending","output_sha256":"f8d8a379fc89a0a4d2ac4bf42340fb08eb102064d8e342b197716e6336c14887","seed":17,"split":"test"},{"exact":true,"index":3,"input_sha256":"907c3f94173599e4a48372fe0127cf673d0030d79dc8d385be07559680eb6d71","order":"hole_area_descending","output_sha256":"7d7c18c6e29686915f97b2c1c6143c8f7a5d6429bedaa17a7250035bd6146a05","seed":17,"split":"test"}],"racket":{"backend":"racket","binary_path":"/mnt/data/arc_review_181536/INPUT/WORK/.review/racket-runtime/racket/bin/racket","binary_sha256":"bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9","boot_script_sha256":"67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3","bridge_path":"/mnt/data/arc_review_181536/INPUT/WORK/repo/shared/runtime/arc_repl/racket_bridge.py","bridge_sha256":"4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323","candidate_environment":"empty-environment-variables-v1","candidate_exit_handler":"deny-process-exit-v1","candidate_input":"empty-string-port-v1","candidate_output":"discard-string-ports-v1","candidate_symbol_policy_schema":"arc-racket-candidate-symbol-policy-v1","candidate_symbol_policy_sha256":"509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8","deterministic":true,"evaluation_custodian":"fresh-per-eval-shutdown-before-reply-v1","evaluation_resource_limit":"nested-thread-512MiB-v1","prelude_path":"/mnt/data/arc_review_181536/INPUT/WORK/repo/shared/runtime/arc_repl/racket_prelude/arc-prelude.rkt","prelude_sha256":"953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0","protected":true,"schema":"arc-protected-racket-runtime-v1","security_canary":{"environment":"pass","exit":"pass","filesystem":"pass","input":"pass","memory":"pass","network":"pass","subprocess":"pass"},"security_guard":"deny-filesystem-network-link-v1","startup_handshake":"pass","subprocess_environment":"explicit-allowlist-v1"},"schema":"arcpuzzles-4e05481a2c21-protected-self-audit-v1","source_binding":{"canonical_program_sha256":"e13b35a51ff45ec12272948377860bc0dfd5e39328405759f9c820a659a324a0","canonical_rule_hash":"e13b35a51ff4","files":[{"path":"generators/4e05481a2c21/workspace/parametric/prototype.py","sha256":"7f09e4592dd5b93e72da563316b18bcf23b0158e131ebe1bcdb64079c72be73e"},{"path":"generators/4e05481a2c21/workspace/parametric/adapter.py","sha256":"1e1bf5a9c9f74b56d6d72a2ce4d82d4e76e6869a1816782c258a6fd25d5c08f7"},{"path":"generators/4e05481a2c21/workspace/parametric/promotion.json","sha256":"4860586f3392a259acfb1eff73c0495d9e159a3bd21d12ae0a7dbc4a8b92c581"},{"path":"generators/4e05481a2c21/workspace/parametric/canonical.rkt","sha256":"e13b35a51ff45ec12272948377860bc0dfd5e39328405759f9c820a659a324a0"},{"path":"generators/4e05481a2c21/workspace/parametric/hole_area_descending.rkt","sha256":"db22014ec74a7eafd770c274628df1a62b43377c9dbe5b62cda3ef4701ed2cd2"},{"path":"generators/4e05481a2c21/workspace/parametric/bbox_area_descending.rkt","sha256":"65b3ab8785e2bf99273b297d3be32cdd027a8e7cd52855571fe851cc5c32ab90"},{"path":"generators/4e05481a2c21/generator.py","sha256":"5c48db7df2d19349f48317ba6ccc18aaa4234323eb24ffd198945fc8fdb89547"}],"generator_sha256":"5c48db7df2d19349f48317ba6ccc18aaa4234323eb24ffd198945fc8fdb89547"},"static":{"count_profiles":[[2,4],[3,4],[6,4]],"counts":{"distinct_input_hashes":20,"episodes":12,"finite_rival_rows":12,"matched_input_comparisons":6,"public_first_turn_checks":4,"stress_30x30":12},"findings":[],"limits":"finite rival elimination does not establish universal rule uniqueness","schema":"arcpuzzles-4e05481a2c21-static-self-audit-v1","scope":"finite declared rivals; seeds and count profiles listed below","seeds":[0,17],"settings":["left_to_right","hole_area_descending"],"status":"passed","task_id":"4e05481a2c21","teaching":[{"demo_survivors":[],"demos":2,"harmful_survivors":[],"order":"left_to_right","queries":4,"seed":0},{"demo_survivors":[],"demos":2,"harmful_survivors":[],"order":"hole_area_descending","queries":4,"seed":0},{"demo_survivors":[],"demos":3,"harmful_survivors":[],"order":"left_to_right","queries":4,"seed":0},{"demo_survivors":[],"demos":3,"harmful_survivors":[],"order":"hole_area_descending","queries":4,"seed":0},{"demo_survivors":[],"demos":6,"harmful_survivors":[],"order":"left_to_right","queries":4,"seed":0},{"demo_survivors":[],"demos":6,"harmful_survivors":[],"order":"hole_area_descending","queries":4,"seed":0},{"demo_survivors":[],"demos":2,"harmful_survivors":[],"order":"left_to_right","queries":4,"seed":17},{"demo_survivors":[],"demos":2,"harmful_survivors":[],"order":"hole_area_descending","queries":4,"seed":17},{"demo_survivors":[],"demos":3,"harmful_survivors":[],"order":"left_to_right","queries":4,"seed":17},{"demo_survivors":[],"demos":3,"harmful_survivors":[],"order":"hole_area_descending","queries":4,"seed":17},{"demo_survivors":[],"demos":6,"harmful_survivors":[],"order":"left_to_right","queries":4,"seed":17},{"demo_survivors":[],"demos":6,"harmful_survivors":[],"order":"hole_area_descending","queries":4,"seed":17}]},"status":"passed","task_id":"4e05481a2c21","witness_summary":{"correct_order_colors":[2,8,4,6],"counterfactual_bbox_order_colors":[8,2,4,6],"different_cells":14}}
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/sequential-witness.json b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/sequential-witness.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/evidence/current/sequential-witness.json
+@@ -0,0 +1 @@
++{"correct_output":[[2,2,2,0,0,8,0,0,4,4,4,4,4,0,6,6],[2,2,2,0,8,8,8,0,0,0,0,0,0,0,6,6],[0,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0]],"correct_program_sha256":"db22014ec74a7eafd770c274628df1a62b43377c9dbe5b62cda3ef4701ed2cd2","counterfactual":"replace hole-cell area with the bounding-box area of each extracted union while leaving extraction and packing unchanged","counterfactual_output":[[0,8,0,0,2,2,2,0,4,4,4,4,4,0,6,6],[8,8,8,0,2,2,2,0,0,0,0,0,0,0,6,6],[0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"counterfactual_program_sha256":"65b3ab8785e2bf99273b297d3be32cdd027a8e7cd52855571fe851cc5c32ab90","different_cells":14,"input":[[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,6,6,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,0,0,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,2,2,2,2,0,6,6,6,6,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,8,8,8,0,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,8,8,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4,4,0],[0,0,0,8,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,4,0],[0,0,0,8,8,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,4,4,4,4,4,4,4,0],[0,0,0,8,8,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"intermediate":{"correct_order_colors":[2,8,4,6],"counterfactual_bbox_order_colors":[8,2,4,6],"name":"per-object enclosed-hole cell area vector","values":[{"color":8,"hole_area":5,"hole_bbox_area":9,"left":3},{"color":2,"hole_area":6,"hole_bbox_area":6,"left":9},{"color":6,"hole_area":4,"hole_bbox_area":4,"left":15},{"color":4,"hole_area":5,"hole_bbox_area":5,"left":20}]},"protected_racket":true,"schema":"arcpuzzles-parametric-sequential-witness-v1","setting":{"pack_order":"hole_area_descending"},"step_a":"extract each object's complete four-connected enclosed-zero union","step_b":"sort complete extracted patterns by descending derived hole area, tie left-to-right, then pack","task_id":"4e05481a2c21","why_b_depends_on_a":"the pack order cannot be selected until the input-dependent enclosed cells have been extracted and counted"}
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/evidence/manifest.json b/repo/generators/4e05481a2c21/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,112 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "e13b35a51ff45ec12272948377860bc0dfd5e39328405759f9c820a659a324a0",
++  "canonical_rule_hash": "e13b35a51ff4",
++  "default": {
++    "pack_order": "left_to_right"
++  },
++  "evidence_root": "generators/4e05481a2c21/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 18952,
++      "path": "generators/4e05481a2c21/generator.py",
++      "sha256": "5c48db7df2d19349f48317ba6ccc18aaa4234323eb24ffd198945fc8fdb89547"
++    },
++    {
++      "bytes": 6734,
++      "path": "generators/4e05481a2c21/tests/test_parametric_family.py",
++      "sha256": "7da1f0b8e35ba2b0efe98ff1eaabe1519236213b121df31d6045ca12a8654cfd"
++    },
++    {
++      "bytes": 779,
++      "path": "generators/4e05481a2c21/workspace/parametric/adapter.py",
++      "sha256": "1e1bf5a9c9f74b56d6d72a2ce4d82d4e76e6869a1816782c258a6fd25d5c08f7"
++    },
++    {
++      "bytes": 2135,
++      "path": "generators/4e05481a2c21/workspace/parametric/bbox_area_descending.rkt",
++      "sha256": "65b3ab8785e2bf99273b297d3be32cdd027a8e7cd52855571fe851cc5c32ab90"
++    },
++    {
++      "bytes": 2036,
++      "path": "generators/4e05481a2c21/workspace/parametric/canonical.rkt",
++      "sha256": "e13b35a51ff45ec12272948377860bc0dfd5e39328405759f9c820a659a324a0"
++    },
++    {
++      "bytes": 15620,
++      "path": "generators/4e05481a2c21/workspace/parametric/evidence/current/private/examples.json",
++      "sha256": "18669bff7557ea145a2c93ac4e402b303f906fe12dedf665eaa10dfb455fe87f"
++    },
++    {
++      "bytes": 3104,
++      "path": "generators/4e05481a2c21/workspace/parametric/evidence/current/public/challenge-283917644f18b83def4c6585b5cb40b0047be97637daba490353967441622dc1.json",
++      "sha256": "283917644f18b83def4c6585b5cb40b0047be97637daba490353967441622dc1"
++    },
++    {
++      "bytes": 3104,
++      "path": "generators/4e05481a2c21/workspace/parametric/evidence/current/public/challenge-9d429df75856146f1cdabff42ff36efaecbb7668afb5219b4768a781fbd23198.json",
++      "sha256": "9d429df75856146f1cdabff42ff36efaecbb7668afb5219b4768a781fbd23198"
++    },
++    {
++      "bytes": 1087,
++      "path": "generators/4e05481a2c21/workspace/parametric/evidence/current/public-check.json",
++      "sha256": "8d7ceaf257d91f62b55276d862e195d66aeeeacd31362d6e034536fef626ecba"
++    },
++    {
++      "bytes": 14715,
++      "path": "generators/4e05481a2c21/workspace/parametric/evidence/current/self-audit.json",
++      "sha256": "505db5d419b6acd848d9ff6336b77035f1dcb2199bbc630ccabb1a4e08a0f41d"
++    },
++    {
++      "bytes": 2149,
++      "path": "generators/4e05481a2c21/workspace/parametric/evidence/current/sequential-witness.json",
++      "sha256": "6e046c5dc7a76001c0d99769ee4694aa48bc81ea04d96650a0e8a3ac20b9b4d7"
++    },
++    {
++      "bytes": 2125,
++      "path": "generators/4e05481a2c21/workspace/parametric/hole_area_descending.rkt",
++      "sha256": "db22014ec74a7eafd770c274628df1a62b43377c9dbe5b62cda3ef4701ed2cd2"
++    },
++    {
++      "bytes": 597,
++      "path": "generators/4e05481a2c21/workspace/parametric/promotion.json",
++      "sha256": "4860586f3392a259acfb1eff73c0495d9e159a3bd21d12ae0a7dbc4a8b92c581"
++    },
++    {
++      "bytes": 17803,
++      "path": "generators/4e05481a2c21/workspace/parametric/prototype.py",
++      "sha256": "7f09e4592dd5b93e72da563316b18bcf23b0158e131ebe1bcdb64079c72be73e"
++    },
++    {
++      "bytes": 16348,
++      "path": "generators/4e05481a2c21/workspace/parametric/self_audit.py",
++      "sha256": "51178b85549f021813a0b4d9ee3e0de2acbd2b9deb06f9a1525f0ab275875809"
++    }
++  ],
++  "generator_sha256": "5c48db7df2d19349f48317ba6ccc18aaa4234323eb24ffd198945fc8fdb89547",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "pack_order": [
++      "left_to_right",
++      "hole_area_descending"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "9 focused contract tests passed; bounded static audit covered seeds 0/17, both settings, demo counts 2/3/6, four queries, matched inputs, finite rivals, public projection and 30x30 stress; 40 protected-Racket label replays plus two causal executions passed; two saved public challenges passed exact-byte/hash/schema inspection.",
++  "rule_task_id": "4e05481a2c21",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "4e05481a2c21",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/hole_area_descending.rkt b/repo/generators/4e05481a2c21/workspace/parametric/hole_area_descending.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/hole_area_descending.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (define (fifth xs) (list-ref xs 4)) (define (f4-norm cells) (let* ((bb (bbox-of-cells cells)) (r0 (first bb)) (c0 (second bb))) (map (lambda (p) (list (- (first p) r0) (- (second p) c0))) cells))) (define (f4-norm-info cells) (let* ((bb (bbox-of-cells cells)) (r0 (first bb)) (c0 (second bb)) (r1 (third bb)) (c1 (fourth bb))) (list (f4-norm cells) (+ 1 (- r1 r0)) (+ 1 (- c1 c0))))) (define (nx-hole-cells cells) (let* ((bb (bbox-of-cells cells)) (r0 (first bb)) (c0 (second bb)) (info (f4-norm-info cells)) (norm (first info)) (h (second info)) (w (third info)) (mask (paint-cells (empty-grid h w 0) norm 1)) (regions (filter (lambda (region) (not (any? (lambda (p) (or (= (first p) 0) (= (first p) (- h 1)) (= (second p) 0) (= (second p) (- w 1)))) region))) (find-0-regions mask 0)))) (apply append (map (lambda (region) (map (lambda (p) (list (+ r0 (first p)) (+ c0 (second p)))) region)) regions)))) (define (nx-hpack-shapes items) (if (empty? items) (list) (let* ((h (apply max (map second items))) (w (+ (apply + (map third items)) (- (length items) 1)))) (let loop ((xs items) (left 0) (out (empty-grid h w 0))) (if (empty? xs) out (let ((shape (first (first xs))) (ih (second (first xs))) (iw (third (first xs))) (color (fourth (first xs)))) (loop (rest xs) (+ left iw 1) (paint-cells out (map (lambda (p) (list (first p) (+ left (second p)))) shape) color)))))))) (let* ((items (filter values (for/list ((obj (in-list (objects g 0)))) (let ((holes (nx-hole-cells (obj-cells obj)))) (if (empty? holes) #f (let* ((hbb (bbox-of-cells holes)) (local (map (lambda (p) (list (- (first p) (first hbb)) (- (second p) (second hbb)))) holes)) (cbb (obj-bbox obj))) (list (second cbb) local (+ 1 (- (third hbb) (first hbb))) (+ 1 (- (fourth hbb) (second hbb))) (obj-color obj)))))))) (sorted (sort items (lambda (a b) (let ((aa (length (second a))) (bb (length (second b)))) (or (> aa bb) (and (= aa bb) (< (first a) (first b)))))))) (pack-items (map (lambda (item) (list (second item) (third item) (fourth item) (fifth item))) sorted))) (if (empty? pack-items) (list) (nx-hpack-shapes pack-items)))))
+\ No newline at end of file
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/promotion.json b/repo/generators/4e05481a2c21/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/promotion.json
+@@ -0,0 +1,23 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/4e05481a2c21/workspace/parametric/adapter.py",
++  "parameters": {
++    "pack_order": [
++      "left_to_right",
++      "hole_area_descending"
++    ]
++  },
++  "default": {
++    "pack_order": "left_to_right"
++  },
++  "limits": {
++    "demos": [2, 6],
++    "queries": [1, 4]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/4e05481a2c21/workspace/parametric/prototype.py",
++    "generators/4e05481a2c21/workspace/parametric/canonical.rkt",
++    "generators/4e05481a2c21/workspace/parametric/hole_area_descending.rkt"
++  ]
++}
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/prototype.py b/repo/generators/4e05481a2c21/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/prototype.py
+@@ -0,0 +1,430 @@
++"""Source-bound parametric packing family for ARC task 4e05481a2c21.
++
++The canonical setting packs extracted enclosed-hole patterns from left to right.
++The alternative computes each complete enclosed-hole union first, derives its
++cell area, and then packs patterns by descending derived area with left-to-right
++tie breaking.  Inputs are setting-neutral; native qualification replays labels
++through the exact adjacent Racket programs.
++"""
++from __future__ import annotations
++
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any, Callable, Iterable
++
++from reviewer_support import public_challenge_bytes
++
++TASK_ID = "4e05481a2c21"
++VERSION = "hole-area-pack-order-v1"
++PACK_ORDERS = ("left_to_right", "hole_area_descending")
++DEFAULT_PACK_ORDER = "left_to_right"
++HERE = Path(__file__).resolve().parent
++
++
++def validate_settings(settings: Any) -> str:
++    if type(settings) is not dict or set(settings) != {"pack_order"}:
++        raise ValueError("settings must contain exactly pack_order")
++    value = settings["pack_order"]
++    if type(value) is not str or value not in PACK_ORDERS:
++        raise ValueError("pack_order must be left_to_right or hole_area_descending")
++    return value
++
++
++def _count(name: str, value: Any, low: int, high: int) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++    return value
++
++
++def _seed(value: Any) -> int:
++    if type(value) is not int or not 0 <= value <= 2**63 - 1:
++        raise ValueError("seed must be an exact integer in 0..2**63-1")
++    return value
++
++
++def program_for(pack_order: str) -> str:
++    if pack_order not in PACK_ORDERS:
++        raise ValueError(f"unsupported pack_order: {pack_order!r}")
++    name = "canonical.rkt" if pack_order == "left_to_right" else "hole_area_descending.rkt"
++    return (HERE / name).read_text(encoding="utf-8")
++
++
++def program(settings: Any) -> str:
++    return program_for(validate_settings(settings))
++
++
++def _strict_grid(grid: Any) -> list[list[int]]:
++    if (type(grid) is not list or not 1 <= len(grid) <= 30
++            or type(grid[0]) is not list or not 1 <= len(grid[0]) <= 30):
++        raise ValueError("grid must have 1..30 rows and columns")
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width
++           or any(type(cell) is not int or not 0 <= cell <= 9 for cell in row)
++           for row in grid):
++        raise ValueError("grid must be rectangular with exact ARC colors")
++    return deepcopy(grid)
++
++
++def _bbox(cells: Iterable[tuple[int, int]]) -> tuple[int, int, int, int]:
++    cells = tuple(cells)
++    if not cells:
++        raise ValueError("cannot bound empty cells")
++    rows = [r for r, _ in cells]
++    cols = [c for _, c in cells]
++    return min(rows), min(cols), max(rows), max(cols)
++
++
++def _components(grid: list[list[int]]) -> list[tuple[int, frozenset[tuple[int, int]]]]:
++    height, width = len(grid), len(grid[0])
++    seen: set[tuple[int, int]] = set()
++    result = []
++    for row in range(height):
++        for col in range(width):
++            color = grid[row][col]
++            if color == 0 or (row, col) in seen:
++                continue
++            queue = [(row, col)]
++            seen.add((row, col))
++            cells = []
++            for rr, cc in queue:
++                cells.append((rr, cc))
++                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
++                    nxt = rr + dr, cc + dc
++                    if (0 <= nxt[0] < height and 0 <= nxt[1] < width
++                            and nxt not in seen and grid[nxt[0]][nxt[1]] == color):
++                        seen.add(nxt)
++                        queue.append(nxt)
++            result.append((color, frozenset(cells)))
++    return result
++
++
++def _enclosed_regions(cells: frozenset[tuple[int, int]]) -> list[frozenset[tuple[int, int]]]:
++    top, left, bottom, right = _bbox(cells)
++    zeros = {(r, c) for r in range(top, bottom + 1) for c in range(left, right + 1)
++             if (r, c) not in cells}
++    seen: set[tuple[int, int]] = set()
++    enclosed = []
++    for start in sorted(zeros):
++        if start in seen:
++            continue
++        queue = [start]
++        seen.add(start)
++        region = []
++        boundary = False
++        for row, col in queue:
++            region.append((row, col))
++            boundary |= row in (top, bottom) or col in (left, right)
++            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
++                nxt = row + dr, col + dc
++                if nxt in zeros and nxt not in seen:
++                    seen.add(nxt)
++                    queue.append(nxt)
++        if not boundary:
++            enclosed.append(frozenset(region))
++    return enclosed
++
++
++def analyze(grid: Any) -> dict[str, Any]:
++    source = _strict_grid(grid)
++    objects = []
++    for color, cells in _components(source):
++        regions = _enclosed_regions(cells)
++        holes = frozenset().union(*regions) if regions else frozenset()
++        if not holes:
++            continue
++        top, left, bottom, right = _bbox(cells)
++        htop, hleft, hbottom, hright = _bbox(holes)
++        local = frozenset((r - htop, c - hleft) for r, c in holes)
++        objects.append({
++            "color": color,
++            "cells": cells,
++            "bbox": (top, left, bottom, right),
++            "left": left,
++            "regions": regions,
++            "region_count": len(regions),
++            "largest_region_area": max(map(len, regions)),
++            "hole_cells": holes,
++            "local_holes": local,
++            "hole_area": len(holes),
++            "hole_height": hbottom - htop + 1,
++            "hole_width": hright - hleft + 1,
++            "hole_bbox_area": (hbottom - htop + 1) * (hright - hleft + 1),
++            "object_bbox_area": (bottom - top + 1) * (right - left + 1),
++            "colored_area": len(cells),
++        })
++    objects.sort(key=lambda obj: obj["left"])
++    if len(objects) < 2:
++        raise ValueError("prototype inputs require at least two hole-bearing objects")
++    if len({obj["left"] for obj in objects}) != len(objects):
++        raise ValueError("object left edges must be unique")
++    return {"height": len(source), "width": len(source[0]), "objects": objects}
++
++
++def _ordered(objects: list[dict[str, Any]], policy: str) -> list[dict[str, Any]]:
++    if policy == "left_to_right":
++        return sorted(objects, key=lambda obj: obj["left"])
++    if policy == "hole_area_descending":
++        return sorted(objects, key=lambda obj: (-obj["hole_area"], obj["left"]))
++    keys: dict[str, Callable[[dict[str, Any]], tuple[Any, ...]]] = {
++        "right_to_left": lambda obj: (-obj["left"],),
++        "hole_area_ascending": lambda obj: (obj["hole_area"], obj["left"]),
++        "hole_bbox_area_descending": lambda obj: (-obj["hole_bbox_area"], obj["left"]),
++        "object_bbox_area_descending": lambda obj: (-obj["object_bbox_area"], obj["left"]),
++        "colored_area_descending": lambda obj: (-obj["colored_area"], obj["left"]),
++        "largest_region_descending": lambda obj: (-obj["largest_region_area"], obj["left"]),
++        "region_count_descending": lambda obj: (-obj["region_count"], obj["left"]),
++        "hole_width_descending": lambda obj: (-obj["hole_width"], obj["left"]),
++        "color_ascending": lambda obj: (obj["color"], obj["left"]),
++        "area_descending_reverse_ties": lambda obj: (-obj["hole_area"], -obj["left"]),
++    }
++    if policy not in keys:
++        raise ValueError(f"unknown ordering policy: {policy}")
++    return sorted(objects, key=keys[policy])
++
++
++def _pack(records: list[dict[str, Any]]) -> list[list[int]]:
++    height = max(obj["hole_height"] for obj in records)
++    width = sum(obj["hole_width"] for obj in records) + len(records) - 1
++    output = [[0] * width for _ in range(height)]
++    left = 0
++    for obj in records:
++        for row, col in obj["local_holes"]:
++            output[row][left + col] = obj["color"]
++        left += obj["hole_width"] + 1
++    return output
++
++
++def solve_python(grid: Any, pack_order: str) -> list[list[int]]:
++    if pack_order not in PACK_ORDERS and pack_order not in RIVAL_POLICIES:
++        raise ValueError(f"unknown pack order: {pack_order}")
++    info = analyze(grid)
++    return _pack(_ordered(info["objects"], pack_order))
++
++
++# Hole masks are local zero cells. A full colored rectangle is drawn around them.
++SHAPES: dict[str, frozenset[tuple[int, int]]] = {
++    "cross5": frozenset({(0, 1), (1, 0), (1, 1), (1, 2), (2, 1)}),
++    "rect6": frozenset((r, c) for r in range(2) for c in range(3)),
++    "square4": frozenset((r, c) for r in range(2) for c in range(2)),
++    "line5": frozenset((0, c) for c in range(5)),
++    "split6": frozenset({(0, 0), (0, 1), (0, 2), (2, 0), (2, 1), (2, 2)}),
++    "domino2v": frozenset({(0, 0), (1, 0)}),
++    "line4": frozenset((0, c) for c in range(4)),
++    "zig5": frozenset({(0, 0), (0, 1), (1, 1), (1, 2), (2, 2)}),
++    "split4": frozenset({(0, 0), (0, 1), (2, 1), (2, 2)}),
++    "t7": frozenset({(0, 0), (0, 1), (0, 2), (0, 3), (1, 1), (2, 1), (3, 1)}),
++    "sparse8": frozenset({(0, 0), (0, 1), (0, 2), (0, 3),
++                            (5, 0), (5, 1), (5, 2), (5, 3)}),
++    "sparse10": frozenset({(0, 0), (0, 1), (0, 2), (0, 3),
++                             (2, 1), (2, 2),
++                             (5, 0), (5, 1), (5, 2), (5, 3)}),
++    "sparse12": frozenset({(0, 0), (0, 1), (0, 2), (0, 3),
++                             (1, 0), (1, 1), (1, 2), (1, 3),
++                             (5, 0), (5, 1), (5, 2), (5, 3)}),
++    "sparse6": frozenset({(0, 0), (0, 1), (0, 2),
++                            (5, 1), (5, 2), (5, 3)}),
++}
++
++
++def _shape_box(shape: frozenset[tuple[int, int]]) -> tuple[int, int]:
++    return max(r for r, _ in shape) + 1, max(c for _, c in shape) + 1
++
++
++def _flipped(shape: frozenset[tuple[int, int]], rng: random.Random) -> frozenset[tuple[int, int]]:
++    height, width = _shape_box(shape)
++    flip_y, flip_x = bool(rng.randrange(2)), bool(rng.randrange(2))
++    return frozenset((height - 1 - r if flip_y else r,
++                      width - 1 - c if flip_x else c) for r, c in shape)
++
++
++def _rng(seed: int, slot: str) -> random.Random:
++    digest = hashlib.sha256(f"{TASK_ID}/{VERSION}/{seed}/{slot}".encode()).digest()
++    return random.Random(int.from_bytes(digest, "big"))
++
++
++def _draw_object(grid: list[list[int]], top: int, left: int, color: int,
++                 holes: frozenset[tuple[int, int]]) -> None:
++    hole_h, hole_w = _shape_box(holes)
++    for row in range(top, top + hole_h + 2):
++        for col in range(left, left + hole_w + 2):
++            grid[row][col] = color
++    for row, col in holes:
++        grid[top + 1 + row][left + 1 + col] = 0
++
++
++def _scene(seed: int, slot: str, height: int, width: int,
++           names: list[str], colors: list[int], *, gap: int = 1,
++           fixed_tops: list[int] | None = None, left_margin: int | None = None) -> list[list[int]]:
++    if len(names) != len(colors):
++        raise ValueError("shape/color mismatch")
++    rng = _rng(seed, slot)
++    shapes = [_flipped(SHAPES[name], rng) for name in names]
++    sizes = [(_shape_box(shape)[0] + 2, _shape_box(shape)[1] + 2) for shape in shapes]
++    used_width = sum(w for _, w in sizes) + gap * (len(sizes) - 1)
++    if used_width > width:
++        raise ValueError(f"scene {slot} exceeds width {width}")
++    margin = rng.randrange(width - used_width + 1) if left_margin is None else left_margin
++    if not 0 <= margin <= width - used_width:
++        raise ValueError("invalid left margin")
++    tops = []
++    for index, (obj_h, _) in enumerate(sizes):
++        top = (rng.randrange(height - obj_h + 1) if fixed_tops is None
++               else fixed_tops[index])
++        if not 0 <= top <= height - obj_h:
++            raise ValueError("invalid fixed top")
++        tops.append(top)
++    grid = [[0] * width for _ in range(height)]
++    left = margin
++    for shape, color, top, (_, obj_w) in zip(shapes, colors, tops, sizes, strict=True):
++        _draw_object(grid, top, left, color, shape)
++        left += obj_w + gap
++    return grid
++
++
++def _demo_inputs(seed: int) -> list[list[list[int]]]:
++    return [
++        _scene(seed, "demo-0", 12, 28,
++               ["cross5", "rect6", "square4", "line5"], [8, 2, 6, 4]),
++        _scene(seed, "demo-1", 14, 26,
++               ["line5", "split6", "square4", "domino2v"], [3, 9, 1, 7]),
++        _scene(seed, "demo-2", 15, 24,
++               ["zig5", "t7", "split4"], [5, 2, 8], gap=2),
++        _scene(seed, "demo-3", 18, 29,
++               ["line4", "cross5", "split6", "domino2v"], [9, 4, 2, 6], gap=2),
++        _scene(seed, "demo-4", 11, 23,
++               ["square4", "line5", "zig5"], [1, 8, 3], gap=2),
++        _scene(seed, "demo-5", 20, 30,
++               ["t7", "split4", "rect6", "cross5"], [7, 3, 9, 2], gap=2),
++    ]
++
++
++def _query_inputs(seed: int) -> list[list[list[int]]]:
++    return [
++        _scene(seed, "query-0", 12, 20,
++               ["domino2v", "t7", "square4"], [6, 2, 9], gap=2),
++        _scene(seed, "query-1", 16, 24,
++               ["split4", "rect6", "line5", "domino2v"], [4, 8, 1, 7]),
++        _scene(seed, "query-2", 22, 28,
++               ["zig5", "split6", "t7", "square4"], [5, 9, 3, 6], gap=2),
++        _scene(seed, "query-3-stress", 30, 30,
++               ["sparse12", "sparse8", "sparse10", "sparse6"], [2, 5, 8, 3],
++               gap=2, fixed_tops=[0, 7, 14, 22], left_margin=0),
++    ]
++
++
++RIVAL_POLICIES = (
++    "right_to_left",
++    "hole_area_ascending",
++    "hole_bbox_area_descending",
++    "object_bbox_area_descending",
++    "colored_area_descending",
++    "largest_region_descending",
++    "region_count_descending",
++    "hole_width_descending",
++    "color_ascending",
++    "area_descending_reverse_ties",
++)
++
++
++def _candidate_policies(pack_order: str) -> tuple[str, ...]:
++    other = "hole_area_descending" if pack_order == "left_to_right" else "left_to_right"
++    return (other, *RIVAL_POLICIES)
++
++
++def teaching_check(episode: dict[str, Any], pack_order: str) -> dict[str, Any]:
++    if pack_order not in PACK_ORDERS:
++        raise ValueError("unknown pack_order")
++    rows = []
++    for policy in _candidate_policies(pack_order):
++        demo_differences = []
++        for index, pair in enumerate(episode["train"]):
++            got = solve_python(pair["input"], policy)
++            if got != pair["output"]:
++                demo_differences.append(index)
++        query_differences = []
++        if not demo_differences:
++            for index, pair in enumerate(episode["test"]):
++                if solve_python(pair["input"], policy) != pair["output"]:
++                    query_differences.append(index)
++        rows.append({
++            "policy": policy,
++            "demo_differences": demo_differences,
++            "demo_survives": not demo_differences,
++            "query_differences": query_differences,
++            "harmful": not demo_differences and bool(query_differences),
++        })
++    other = "hole_area_descending" if pack_order == "left_to_right" else "left_to_right"
++    return {
++        "pack_order": pack_order,
++        "rival_count": len(rows),
++        "rivals": rows,
++        "settings_disagree_on_demos": any(
++            solve_python(pair["input"], other) != pair["output"] for pair in episode["train"]
++        ),
++        "demo_survivors": [row["policy"] for row in rows if row["demo_survives"]],
++        "harmful_survivors": [row["policy"] for row in rows if row["harmful"]],
++    }
++
++
++def generate_episode(seed: int, *, pack_order: str, demos: int = 3,
++                     queries: int = 4) -> dict[str, Any]:
++    _seed(seed)
++    if pack_order not in PACK_ORDERS:
++        raise ValueError("unsupported pack_order")
++    demos = _count("demos", demos, 2, 6)
++    queries = _count("queries", queries, 1, 4)
++    demo_inputs = _demo_inputs(seed)
++    query_inputs = _query_inputs(seed)
++    train = [{"input": grid, "output": solve_python(grid, pack_order)}
++             for grid in demo_inputs[:demos]]
++    test = [{"input": grid, "output": solve_python(grid, pack_order)}
++            for grid in query_inputs[:queries]]
++    episode = {
++        "train": train,
++        "test": test,
++        "program_solution": program_for(pack_order),
++        "settings": {"pack_order": pack_order},
++        "seed": seed,
++    }
++    audit = teaching_check(episode, pack_order)
++    if audit["harmful_survivors"]:
++        raise AssertionError(f"teaching hole: {audit['harmful_survivors']}")
++    return episode
++
++
++def generate(seed: int, settings: Any, demos: int, queries: int) -> dict[str, Any]:
++    pack_order = validate_settings(settings)
++    episode = generate_episode(seed, pack_order=pack_order, demos=demos, queries=queries)
++    return {
++        "train": deepcopy(episode["train"]),
++        "test": deepcopy(episode["test"]),
++        "program_solution": episode["program_solution"],
++    }
++
++
++def public_view(episode: dict[str, Any], query_index: int = 0) -> dict[str, Any]:
++    if type(query_index) is not int or not 0 <= query_index < len(episode["test"]):
++        raise ValueError("query_index outside retained test range")
++    value = {
++        "train": deepcopy(episode["train"]),
++        "test": [{"input": deepcopy(episode["test"][query_index]["input"])}],
++    }
++    return json.loads(public_challenge_bytes(value))
++
++
++def public_bytes(episode: dict[str, Any], query_index: int = 0) -> bytes:
++    return public_challenge_bytes(public_view(episode, query_index))
++
++
++def public_id(episode: dict[str, Any], query_index: int = 0) -> str:
++    return hashlib.sha256(public_bytes(episode, query_index)).hexdigest()
++
++
++def derived_area_vector(grid: Any) -> list[dict[str, int]]:
++    """Compact A-stage intermediate for the retained causal witness."""
++    return [{"left": obj["left"], "color": obj["color"],
++             "hole_area": obj["hole_area"], "hole_bbox_area": obj["hole_bbox_area"]}
++            for obj in analyze(grid)["objects"]]
+diff --git a/repo/generators/4e05481a2c21/workspace/parametric/self_audit.py b/repo/generators/4e05481a2c21/workspace/parametric/self_audit.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/4e05481a2c21/workspace/parametric/self_audit.py
+@@ -0,0 +1,364 @@
++#!/usr/bin/env python3
++"""Bounded source-bound audit for the hole-area packing parameter family.
++
++Static checks cover count independence, matched inputs, finite teaching rivals,
++public projection, and the 30x30 stress profile.  ``run_audit`` additionally
++replays the maximal retained episodes and one causal counterfactual through the
++live protected Racket bridge, then writes compact evidence for future agents.
++"""
++from __future__ import annotations
++
++import argparse
++from copy import deepcopy
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any, Iterable
++
++HERE = Path(__file__).resolve().parent
++ROOT = HERE.parents[3]
++for path in (ROOT / "src", ROOT / "shared" / "runtime"):
++    if str(path) not in sys.path:
++        sys.path.insert(0, str(path))
++
++from arc_repl.racket_bridge import RacketBridge  # noqa: E402
++from arcpuzzles import Catalog  # noqa: E402
++from puzzle_generators.rule_wrap import wrap_rule  # noqa: E402
++
++TASK_ID = "4e05481a2c21"
++COUNT_PROFILES = ((2, 4), (3, 4), (6, 4))
++
++
++def _load_prototype():
++    path = HERE / "prototype.py"
++    name = "_arc_4e05481a2c21_self_audit_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    if Path(module.__file__).resolve() != path.resolve():
++        raise ImportError("prototype import escaped task home")
++    return module
++
++
++P = _load_prototype()
++
++
++def _compact(value: Any) -> bytes:
++    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
++                       ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
++
++
++def _sha_bytes(value: bytes) -> str:
++    return hashlib.sha256(value).hexdigest()
++
++
++def _sha_file(path: Path) -> str:
++    return _sha_bytes(path.read_bytes())
++
++
++def _grid_key(grid: list[list[int]]) -> str:
++    return _sha_bytes(_compact(grid))
++
++
++def _inputs(episode: dict[str, Any], split: str) -> list[list[list[int]]]:
++    return [pair["input"] for pair in episode[split]]
++
++
++def _stress_ok(grid: list[list[int]]) -> bool:
++    info = P.analyze(grid)
++    boxes = [obj["bbox"] for obj in info["objects"]]
++    return (
++        len(grid) == len(grid[0]) == 30
++        and len(info["objects"]) == 4
++        and sum(len(obj["cells"]) for obj in info["objects"]) >= 120
++        and any(box[0] == 0 for box in boxes)
++        and any(box[2] == 29 for box in boxes)
++        and any(box[1] == 0 for box in boxes)
++        and any(box[3] == 29 for box in boxes)
++    )
++
++
++def static_report(*, seeds: Iterable[int] = (0, 17)) -> dict[str, Any]:
++    seeds = tuple(seeds)
++    findings: list[dict[str, Any]] = []
++    episodes = 0
++    comparisons = 0
++    stress = 0
++    teaching_rows = []
++    public_checks = 0
++    distinct_inputs = set()
++
++    for seed in seeds:
++        maximal = {
++            order: P.generate_episode(seed, pack_order=order, demos=6, queries=4)
++            for order in P.PACK_ORDERS
++        }
++        for order in P.PACK_ORDERS:
++            one = P.generate_episode(seed, pack_order=order, demos=3, queries=1)
++            four = P.generate_episode(seed, pack_order=order, demos=3, queries=4)
++            if P.public_view(one, 0) != P.public_view(four, 0):
++                findings.append({"seed": seed, "order": order,
++                                 "code": "first_turn_query_count_drift"})
++            public_checks += 1
++        for demos, queries in COUNT_PROFILES:
++            current = {
++                order: P.generate_episode(seed, pack_order=order,
++                                          demos=demos, queries=queries)
++                for order in P.PACK_ORDERS
++            }
++            episodes += len(current)
++            comparisons += 1
++            left, right = (current[P.PACK_ORDERS[0]], current[P.PACK_ORDERS[1]])
++            if _inputs(left, "train") != _inputs(right, "train") or _inputs(left, "test") != _inputs(right, "test"):
++                findings.append({"seed": seed, "demos": demos, "queries": queries,
++                                 "code": "settings_changed_inputs"})
++            for order, episode in current.items():
++                rerun = P.generate_episode(seed, pack_order=order, demos=demos, queries=queries)
++                if episode != rerun:
++                    findings.append({"seed": seed, "order": order,
++                                     "demos": demos, "queries": queries,
++                                     "code": "nondeterministic"})
++                if (episode["train"] != maximal[order]["train"][:demos]
++                        or episode["test"] != maximal[order]["test"][:queries]):
++                    findings.append({"seed": seed, "order": order,
++                                     "demos": demos, "queries": queries,
++                                     "code": "prefix_instability"})
++                teaching = P.teaching_check(episode, order)
++                teaching_rows.append({"seed": seed, "order": order,
++                                      "demos": demos, "queries": queries,
++                                      "harmful_survivors": teaching["harmful_survivors"],
++                                      "demo_survivors": teaching["demo_survivors"]})
++                if teaching["harmful_survivors"]:
++                    findings.append({"seed": seed, "order": order,
++                                     "demos": demos, "queries": queries,
++                                     "code": "query_changing_rival_survived",
++                                     "rivals": teaching["harmful_survivors"]})
++                if not teaching["settings_disagree_on_demos"]:
++                    findings.append({"seed": seed, "order": order,
++                                     "demos": demos, "queries": queries,
++                                     "code": "settings_not_taught"})
++                if queries == 4 and _stress_ok(episode["test"][3]["input"]):
++                    stress += 1
++                else:
++                    findings.append({"seed": seed, "order": order,
++                                     "demos": demos, "queries": queries,
++                                     "code": "missing_30x30_stress"})
++                for split in ("train", "test"):
++                    keys = [_grid_key(pair["input"]) for pair in episode[split]]
++                    distinct_inputs.update(keys)
++                    if len(keys) != len(set(keys)):
++                        findings.append({"seed": seed, "order": order,
++                                         "demos": demos, "queries": queries,
++                                         "split": split, "code": "duplicate_input"})
++
++    return {
++        "schema": "arcpuzzles-4e05481a2c21-static-self-audit-v1",
++        "task_id": TASK_ID,
++        "status": "passed" if not findings else "failed",
++        "scope": "finite declared rivals; seeds and count profiles listed below",
++        "limits": "finite rival elimination does not establish universal rule uniqueness",
++        "seeds": list(seeds),
++        "count_profiles": [list(profile) for profile in COUNT_PROFILES],
++        "settings": list(P.PACK_ORDERS),
++        "counts": {
++            "episodes": episodes,
++            "matched_input_comparisons": comparisons,
++            "stress_30x30": stress,
++            "public_first_turn_checks": public_checks,
++            "distinct_input_hashes": len(distinct_inputs),
++            "finite_rival_rows": len(teaching_rows),
++        },
++        "teaching": teaching_rows,
++        "findings": findings,
++    }
++
++
++def _literal(grid: list[list[int]]) -> str:
++    return "'(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++
++
++def _execute(bridge: RacketBridge, source: str, grid: list[list[int]]) -> list[list[int]]:
++    return bridge.eval_text(f"({wrap_rule(source)} {_literal(grid)})")
++
++
++def _diff_cells(left: list[list[int]], right: list[list[int]]) -> int:
++    if len(left) != len(right) or (left and right and len(left[0]) != len(right[0])):
++        return max(sum(map(len, left)), sum(map(len, right)))
++    return sum(a != b for ra, rb in zip(left, right, strict=True)
++               for a, b in zip(ra, rb, strict=True))
++
++
++def _source_binding() -> dict[str, Any]:
++    catalog = Catalog(ROOT)
++    row = catalog.describe(TASK_ID)
++    programs = {v["program_solution"] for v in catalog.get(TASK_ID)["variants"]}
++    if len(programs) != 1:
++        raise ValueError("expected one selected canonical program")
++    canonical = next(iter(programs))
++    selected = [
++        HERE / "prototype.py", HERE / "adapter.py", HERE / "promotion.json",
++        HERE / "canonical.rkt", HERE / "hole_area_descending.rkt",
++        HERE / "bbox_area_descending.rkt", HERE.parent.parent / "generator.py",
++    ]
++    return {
++        "generator_sha256": row["generator_sha256"],
++        "canonical_rule_hash": row["rule_hash"],
++        "canonical_program_sha256": _sha_bytes(canonical.encode()),
++        "files": [{"path": path.relative_to(ROOT).as_posix(), "sha256": _sha_file(path)}
++                  for path in selected],
++    }
++
++
++def run_audit(*, seeds: Iterable[int] = (0, 17)) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
++    seeds = tuple(seeds)
++    static = static_report(seeds=seeds)
++    if static["status"] != "passed":
++        raise AssertionError(f"static self-audit failed: {static['findings']}")
++    cache: dict[tuple[str, str], list[list[int]]] = {}
++    calls = 0
++    hits = 0
++    parity = []
++    examples = []
++    with RacketBridge() as bridge:
++        identity = bridge.runtime_identity
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise RuntimeError("protected Racket is required")
++        for seed in seeds:
++            for order in P.PACK_ORDERS:
++                episode = P.generate_episode(seed, pack_order=order, demos=6, queries=4)
++                source = P.program_for(order)
++                source_hash = _sha_bytes(source.encode())
++                for split in ("train", "test"):
++                    for index, pair in enumerate(episode[split]):
++                        key = source_hash, _grid_key(pair["input"])
++                        if key in cache:
++                            got = cache[key]
++                            hits += 1
++                        else:
++                            got = _execute(bridge, source, pair["input"])
++                            cache[key] = got
++                            calls += 1
++                        exact = got == pair["output"]
++                        parity.append({"seed": seed, "order": order, "split": split,
++                                       "index": index, "exact": exact,
++                                       "input_sha256": key[1],
++                                       "output_sha256": _sha_bytes(_compact(got))})
++                        if not exact:
++                            raise AssertionError((seed, order, split, index))
++                if seed == seeds[0]:
++                    examples.append({
++                        "seed": seed,
++                        "settings": {"pack_order": order},
++                        "program_sha256": source_hash,
++                        "train": deepcopy(episode["train"][:3]),
++                        "test": deepcopy(episode["test"]),
++                    })
++
++        witness_episode = P.generate_episode(seeds[0], pack_order="hole_area_descending",
++                                             demos=2, queries=4)
++        witness_input = witness_episode["train"][0]["input"]
++        correct_source = P.program_for("hole_area_descending")
++        wrong_source = (HERE / "bbox_area_descending.rkt").read_text(encoding="utf-8")
++        correct_output = _execute(bridge, correct_source, witness_input)
++        wrong_output = _execute(bridge, wrong_source, witness_input)
++        calls += 2
++        if correct_output == wrong_output:
++            raise AssertionError("causal counterfactual failed to change final output")
++        if correct_output != P.solve_python(witness_input, "hole_area_descending"):
++            raise AssertionError("correct witness output disagrees with Python mirror")
++        if wrong_output != P.solve_python(witness_input, "hole_bbox_area_descending"):
++            raise AssertionError("counterfactual witness output disagrees with Python mirror")
++
++    vector = P.derived_area_vector(witness_input)
++    correct_order = [row["color"] for row in sorted(vector, key=lambda row: (-row["hole_area"], row["left"]))]
++    wrong_order = [row["color"] for row in sorted(vector, key=lambda row: (-row["hole_bbox_area"], row["left"]))]
++    witness = {
++        "schema": "arcpuzzles-parametric-sequential-witness-v1",
++        "task_id": TASK_ID,
++        "setting": {"pack_order": "hole_area_descending"},
++        "step_a": "extract each object's complete four-connected enclosed-zero union",
++        "intermediate": {
++            "name": "per-object enclosed-hole cell area vector",
++            "values": vector,
++            "correct_order_colors": correct_order,
++            "counterfactual_bbox_order_colors": wrong_order,
++        },
++        "step_b": "sort complete extracted patterns by descending derived hole area, tie left-to-right, then pack",
++        "why_b_depends_on_a": "the pack order cannot be selected until the input-dependent enclosed cells have been extracted and counted",
++        "counterfactual": "replace hole-cell area with the bounding-box area of each extracted union while leaving extraction and packing unchanged",
++        "input": witness_input,
++        "correct_program_sha256": _sha_bytes(correct_source.encode()),
++        "counterfactual_program_sha256": _sha_bytes(wrong_source.encode()),
++        "correct_output": correct_output,
++        "counterfactual_output": wrong_output,
++        "different_cells": _diff_cells(correct_output, wrong_output),
++        "protected_racket": True,
++    }
++    report = {
++        "schema": "arcpuzzles-4e05481a2c21-protected-self-audit-v1",
++        "task_id": TASK_ID,
++        "status": "passed",
++        "source_binding": _source_binding(),
++        "static": static,
++        "racket": identity,
++        "counts": {
++            "protected_racket_evaluations": calls,
++            "cache_hits": hits,
++            "parity_rows": len(parity),
++            "settings": len(P.PACK_ORDERS),
++            "seeds": len(seeds),
++            "retained_examples": len(examples),
++        },
++        "parity": parity,
++        "witness_summary": {
++            "different_cells": witness["different_cells"],
++            "correct_order_colors": correct_order,
++            "counterfactual_bbox_order_colors": wrong_order,
++        },
++        "limits": static["limits"],
++    }
++    return report, witness, examples
++
++
++def _write_new(path: Path, data: bytes) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with path.open("xb") as handle:
++        handle.write(data)
++
++
++def materialize(out: Path, *, seeds: Iterable[int] = (0, 17)) -> dict[str, Any]:
++    if out.exists():
++        raise FileExistsError(out)
++    report, witness, examples = run_audit(seeds=seeds)
++    out.mkdir(parents=True)
++    _write_new(out / "self-audit.json", _compact(report))
++    _write_new(out / "sequential-witness.json", _compact(witness))
++    _write_new(out / "private" / "examples.json", _compact({"episodes": examples}))
++    for example in examples:
++        order = example["settings"]["pack_order"]
++        episode = P.generate_episode(example["seed"], pack_order=order, demos=3, queries=4)
++        raw = P.public_bytes(episode, 0)
++        digest = _sha_bytes(raw)
++        _write_new(out / "public" / f"challenge-{digest}.json", raw)
++    return {"status": report["status"], **report["counts"],
++            "witness_different_cells": witness["different_cells"],
++            "out": str(out)}
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--out", type=Path, required=True)
++    parser.add_argument("--seeds", default="0,17")
++    args = parser.parse_args(argv)
++    seeds = tuple(int(value) for value in args.seeds.split(",") if value)
++    summary = materialize(args.out, seeds=seeds)
++    print(json.dumps(summary, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

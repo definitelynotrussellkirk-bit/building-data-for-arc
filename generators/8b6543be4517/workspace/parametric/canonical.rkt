@@ -1,0 +1,8 @@
+(rule!
+  (let* ((div-row (find-first (lambda (r) (for/and ([c (range 0 w)]) (= (at g r c) 8))) (range 0 h)))
+         (div-col (find-first (lambda (c) (for/and ([r (range 0 h)]) (= (at g r c) 8))) (range 0 w))))
+    (for/fold ([out g]) ([p (find-color g 7)])
+      (let* ((r (first p)) (c (second p))
+             (nr (if div-col r (- (* 2 div-row) r)))
+             (nc (if div-col (- (* 2 div-col) c) c)))
+        (if (in-bounds? nr nc h w) (set-cell out nr nc 7) out)))))

@@ -1,0 +1,10 @@
+(rule!
+ (let* ((h (rows g))
+        (classified (cellmap g (r c v)
+          (if (= v 8) (if (= (at g (- (- h 1) r) c) 8) 2 5) 0)))
+        (parts (objects g 0))
+        (winner (foldl (lambda (o best)
+                  (if (or (not best) (> (obj-size o) (obj-size best))) o best)) #f parts))
+        (selected-rows (if winner (remove-duplicates (map first (obj-cells winner))) '())))
+   (cellmap classified (r c v)
+     (if (and (= v 5) (member r selected-rows)) 4 v))))

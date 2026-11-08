@@ -1,0 +1,685 @@
+"""Generator for d47a6fca9d15 — rank three green components by area.
+
+The input is a black grid containing exactly three mutually separated,
+four-connected green (3) components with distinct cell counts.  Sort the
+components by cell count and recolor them red (2), yellow (4), and magenta (6)
+from smallest to largest, preserving every occupied cell and the canvas.
+
+The three-example default schedule is semantic rather than cosmetic:
+
+* a canonical 2/3/5 size profile,
+* a 1/4/5 profile whose bounding-box areas invert the two larger ranks, and
+* a shifted 3/5/7 profile that defeats fixed absolute-size thresholds.
+
+Reading order also cycles through ascending, descending, and mixed rank orders.
+Consequently every three consecutive demonstrations distinguish the intended
+relative-area rule from the main shortcuts that fit the canonical examples.
+"""
+from __future__ import annotations
+
+import copy
+from collections import deque
+from typing import Any, Callable
+
+from puzzle_generators.base import gen_ctx
+from puzzle_generators.helpers.grid import full_grid
+
+GENERATOR_ID = "d47a6fca9d15"
+TASK_ID = GENERATOR_ID
+VERSION = "3.0.0"
+RULE_HASH = "4f2a3760d35b"
+EXAMPLES_NEEDED = 3
+MIN_STRICT_FRAC = 1.0
+
+SUMMARY = (
+    "A black 8..10 by 11..13 grid contains exactly three mutually separated "
+    "green(3) four-connected components with strictly distinct cell counts. "
+    "Sort them by cell count and recolor smallest->red(2), middle->yellow(4), "
+    "largest->magenta(6), preserving shape, position, and grid dimensions."
+)
+
+INVARIANTS = [
+    "the only input colors are background 0 and component color 3",
+    "there are exactly three four-connected color-3 components",
+    "different components have a one-cell Chebyshev buffer",
+    "the three component cell counts are strictly distinct",
+    "the output changes only component colors, by ascending cell-count rank",
+]
+
+SIZE_PROFILES = ("canonical_235", "bbox_conflict_145", "shifted_357")
+RANK_ORDERS = ("ascending", "descending", "mixed")
+
+AXES = {
+    "grid_h": {
+        "type": "int",
+        "default": "canonical-envelope schedule within 8..10",
+        "valid": "8..10",
+    },
+    "grid_w": {
+        "type": "int",
+        "default": "canonical-envelope schedule within 11..13",
+        "valid": "11..13",
+    },
+    "size_profile": {
+        "type": "str",
+        "default": "three-example semantic schedule",
+        "valid": "|".join(SIZE_PROFILES),
+    },
+    "rank_order": {
+        "type": "str",
+        "default": "ascending|descending|mixed schedule",
+        "valid": "|".join(RANK_ORDERS),
+    },
+}
+
+HELPFUL_TEXTURES: tuple[str, ...] = ()
+DEGENERATE_TEXTURES: tuple[str, ...] = ()
+_VALID_DIFFICULTIES = (None, "easy", "medium", "hard")
+_NEIGHBORS4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
+_NEIGHBORS8 = tuple(
+    (dr, dc)
+    for dr in (-1, 0, 1)
+    for dc in (-1, 0, 1)
+    if (dr, dc) != (0, 0)
+)
+
+# The first two profiles overlap canonical component-count triples.  The third
+# deliberately shifts all counts upward to reject absolute-size bucket rules.
+_PROFILE_SIZES = {
+    "canonical_235": (2, 3, 5),
+    "bbox_conflict_145": (1, 4, 5),
+    "shifted_357": (3, 5, 7),
+}
+_SIZE_TO_PROFILE = {sizes: name for name, sizes in _PROFILE_SIZES.items()}
+
+# All forms have height <= 2 so three row bands always fit in an 8-row grid.
+# For bbox_conflict_145, size 4 has bbox area 6 while size 5 has bbox area 5;
+# a bbox-area ranking therefore swaps the middle and largest components.
+_PROFILE_FORMS = {
+    "canonical_235": {
+        2: (
+            ((0, 0), (0, 1)),
+            ((0, 0), (1, 0)),
+        ),
+        3: (
+            ((0, 0), (0, 1), (1, 0)),
+            ((0, 0), (0, 1), (0, 2)),
+        ),
+        5: (
+            ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2)),
+            ((0, 0), (0, 1), (1, 1), (1, 2), (1, 3)),
+        ),
+    },
+    "bbox_conflict_145": {
+        1: (((0, 0),),),
+        4: (
+            ((0, 0), (0, 1), (0, 2), (1, 1)),
+            ((0, 0), (0, 1), (0, 2), (1, 0)),
+        ),
+        5: (((0, 0), (0, 1), (0, 2), (0, 3), (0, 4)),),
+    },
+    "shifted_357": {
+        3: (
+            ((0, 0), (0, 1), (1, 0)),
+            ((0, 0), (0, 1), (0, 2)),
+        ),
+        5: (
+            ((0, 1), (1, 0), (1, 1), (1, 2), (0, 2)),
+            ((0, 0), (0, 1), (0, 2), (0, 3), (1, 1)),
+        ),
+        7: (
+            ((0, 0), (0, 1), (0, 2), (0, 3), (1, 1), (1, 2), (1, 3)),
+            ((0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (1, 1), (1, 3)),
+        ),
+    },
+}
+
+# Values are rank indices (0=smallest, 1=middle, 2=largest) in row-major
+# component order.  "mixed" is chosen from non-monotone permutations only.
+_RANK_PATTERNS = {
+    "ascending": ((0, 1, 2),),
+    "descending": ((2, 1, 0),),
+    "mixed": ((0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1)),
+}
+
+# These exact canonical triples are accepted by strict_canonical_like even when
+# not all are generated by the default three-profile schedule.
+_CANONICAL_SIZE_TRIPLES = {(1, 3, 5), (2, 3, 5), (1, 4, 5)}
+
+
+def _validate_call(difficulty: Any, overrides: dict[str, Any]) -> None:
+    if difficulty not in _VALID_DIFFICULTIES:
+        raise ValueError("difficulty must be None, 'easy', 'medium', or 'hard'")
+    unknown = sorted(set(overrides) - set(AXES))
+    if unknown:
+        raise TypeError(f"unknown override(s): {', '.join(unknown)}")
+
+    for name, value in overrides.items():
+        if value is None:
+            continue
+        if name == "grid_h":
+            if type(value) is not int or not 8 <= value <= 10:
+                raise ValueError("grid_h must be an integer in 8..10")
+        elif name == "grid_w":
+            if type(value) is not int or not 11 <= value <= 13:
+                raise ValueError("grid_w must be an integer in 11..13")
+        elif name == "size_profile" and value not in SIZE_PROFILES:
+            raise ValueError(f"size_profile must be one of {SIZE_PROFILES}")
+        elif name == "rank_order" and value not in RANK_ORDERS:
+            raise ValueError(f"rank_order must be one of {RANK_ORDERS}")
+
+
+def _draw_scheduled_int(ctx, name: str, lo: int, hi: int, scheduled: int) -> int:
+    if ctx.overrides.get(name) is not None:
+        return ctx.draw_int(name, lo, hi)
+    return ctx.draw_int(name, scheduled, scheduled)
+
+
+def _draw_scheduled_choice(ctx, name: str, options: tuple[str, ...], scheduled: str) -> str:
+    if ctx.overrides.get(name) is not None:
+        return str(ctx.draw_choice(name, options))
+    return str(ctx.draw_choice(name, (scheduled,)))
+
+
+def _dimension_schedule(seed: int, sample_index: int, difficulty: Any) -> tuple[int, int]:
+    """Cycle through the complete canonical dimension envelope.
+
+    Difficulty changes the phase only; it cannot push examples away from the
+    demonstrated 8..10 by 11..13 scale.
+    """
+    phase = {None: 0, "easy": 0, "medium": 1, "hard": 2}[difficulty]
+    pairs = (
+        (9, 12),  # exact canonical profile
+        (10, 11), # exact canonical profile
+        (8, 13),  # exact canonical profile
+        (8, 11),
+        (9, 13),
+        (10, 12),
+        (8, 12),
+        (9, 11),
+        (10, 13),
+    )
+    return pairs[(int(seed) + int(sample_index) + phase) % len(pairs)]
+
+
+def schedule_profile(seed: int, sample_index: int, difficulty: Any = None) -> str:
+    """Public lesson schedule hook used by semantic audits."""
+    del seed, difficulty
+    return SIZE_PROFILES[int(sample_index) % len(SIZE_PROFILES)]
+
+
+SCHEDULE_PROFILES = SIZE_PROFILES
+
+
+def _normalize(cells: tuple[tuple[int, int], ...]) -> tuple[tuple[int, int], ...]:
+    min_r = min(r for r, _ in cells)
+    min_c = min(c for _, c in cells)
+    return tuple(sorted((r - min_r, c - min_c) for r, c in cells))
+
+
+def _bbox(cells: tuple[tuple[int, int], ...] | list[tuple[int, int]]) -> tuple[int, int, int, int]:
+    rows = [r for r, _ in cells]
+    cols = [c for _, c in cells]
+    return min(rows), min(cols), max(rows), max(cols)
+
+
+def _components(grid: list[list[int]], color: int = 3) -> list[tuple[tuple[int, int], ...]]:
+    h, w = len(grid), len(grid[0])
+    remaining = {(r, c) for r in range(h) for c in range(w) if grid[r][c] == color}
+    found: list[tuple[tuple[int, int], ...]] = []
+    while remaining:
+        start = min(remaining)
+        remaining.remove(start)
+        queue = deque([start])
+        cells = [start]
+        while queue:
+            r, c = queue.popleft()
+            for dr, dc in _NEIGHBORS4:
+                nxt = (r + dr, c + dc)
+                if nxt in remaining:
+                    remaining.remove(nxt)
+                    queue.append(nxt)
+                    cells.append(nxt)
+        found.append(tuple(sorted(cells)))
+    return sorted(found, key=lambda cells: (_bbox(cells)[:2], len(cells), cells))
+
+
+def _analyze_grid(grid: Any) -> tuple[list[str], dict[str, Any] | None]:
+    errors: list[str] = []
+    if not isinstance(grid, list) or not grid or not isinstance(grid[0], list) or not grid[0]:
+        return ["grid must be a non-empty list of non-empty rows"], None
+    width = len(grid[0])
+    if any(not isinstance(row, list) or len(row) != width for row in grid):
+        return ["grid must be rectangular"], None
+    if any(type(value) is not int for row in grid for value in row):
+        return ["every cell must be an integer color"], None
+
+    h, w = len(grid), width
+    bad_colors = sorted({value for row in grid for value in row if value not in (0, 3)})
+    if bad_colors:
+        errors.append(f"input contains colors outside {{0,3}}: {bad_colors}")
+
+    components = _components(grid, 3)
+    if len(components) != 3:
+        errors.append(f"expected exactly 3 color-3 components, found {len(components)}")
+
+    infos: list[dict[str, Any]] = []
+    for cells in components:
+        min_r, min_c, max_r, max_c = _bbox(cells)
+        infos.append(
+            {
+                "cells": cells,
+                "size": len(cells),
+                "bbox": (min_r, min_c, max_r, max_c),
+                "bbox_area": (max_r - min_r + 1) * (max_c - min_c + 1),
+                "normalized": _normalize(cells),
+            }
+        )
+
+    sizes = sorted(info["size"] for info in infos)
+    if len(sizes) == 3 and len(set(sizes)) != 3:
+        errors.append(f"component sizes must be strictly distinct, found {sizes}")
+
+    # Four-connectivity alone permits diagonal contact.  The generator contract
+    # promises a full one-cell buffer, so reject any cross-component 8-neighbor.
+    owners: dict[tuple[int, int], int] = {}
+    for index, info in enumerate(infos):
+        for cell in info["cells"]:
+            owners[cell] = index
+    for (r, c), owner in owners.items():
+        for dr, dc in _NEIGHBORS8:
+            other = owners.get((r + dr, c + dc))
+            if other is not None and other != owner:
+                errors.append("different components must have a one-cell Chebyshev buffer")
+                break
+        if errors and errors[-1].startswith("different components"):
+            break
+
+    analysis = {
+        "height": h,
+        "width": w,
+        "components": infos,
+        "sizes": tuple(sizes),
+    }
+    return sorted(set(errors)), analysis
+
+
+def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+    """Reject malformed grids and every destructive contract mutation."""
+    del difficulty, meta
+    errors, _ = _analyze_grid(grid)
+    return errors
+
+
+def strict_canonical_like(grid) -> list[str]:
+    """Strict linked grammar, including canonical scale and count support."""
+    reasons, analysis = _analyze_grid(grid)
+    if reasons or analysis is None:
+        return reasons
+    if not 8 <= analysis["height"] <= 10:
+        reasons.append(f"canonical height is 8..10, got {analysis['height']}")
+    if not 11 <= analysis["width"] <= 13:
+        reasons.append(f"canonical width is 11..13, got {analysis['width']}")
+    accepted_sizes = set(_PROFILE_SIZES.values()) | _CANONICAL_SIZE_TRIPLES
+    if analysis["sizes"] not in accepted_sizes:
+        reasons.append(
+            "component-size triple is outside the canonical-linked curriculum: "
+            f"{analysis['sizes']}"
+        )
+    return reasons
+
+
+def _infer_rank_order(analysis: dict[str, Any]) -> str:
+    by_size = sorted(analysis["components"], key=lambda info: info["size"])
+    rank_of = {info["cells"]: rank for rank, info in enumerate(by_size)}
+    pattern = tuple(rank_of[info["cells"]] for info in analysis["components"])
+    if pattern == (0, 1, 2):
+        return "ascending"
+    if pattern == (2, 1, 0):
+        return "descending"
+    return "mixed"
+
+
+def observe_overrides(grid) -> dict[str, int | str]:
+    """Recover every exact declared axis from a valid generated grid."""
+    errors, analysis = _analyze_grid(grid)
+    if errors or analysis is None:
+        raise ValueError("cannot observe axes from invalid grid: " + "; ".join(errors))
+    profile = _SIZE_TO_PROFILE.get(analysis["sizes"])
+    if profile is None:
+        raise ValueError(f"valid grid has no declared size_profile: {analysis['sizes']}")
+    return {
+        "grid_h": analysis["height"],
+        "grid_w": analysis["width"],
+        "size_profile": profile,
+        "rank_order": _infer_rank_order(analysis),
+    }
+
+
+def _choose_form(ctx, profile: str, size: int) -> tuple[tuple[int, int], ...]:
+    forms = _PROFILE_FORMS[profile][size]
+    rng = ctx.draw_rng(f"form:{profile}:{size}")
+    return _normalize(tuple(rng.choice(forms)))
+
+
+def _place_profile(
+    grid: list[list[int]],
+    ctx,
+    profile: str,
+    rank_order: str,
+) -> None:
+    h, w = len(grid), len(grid[0])
+    row_starts = (0, 3, h - 2)
+    pattern_options = _RANK_PATTERNS[rank_order]
+    pattern_rng = ctx.draw_rng("rank_pattern")
+    pattern = tuple(pattern_rng.choice(pattern_options))
+    sizes = _PROFILE_SIZES[profile]
+
+    for slot, rank in enumerate(pattern):
+        size = sizes[rank]
+        form = _choose_form(ctx, profile, size)
+        _, _, max_r, max_c = _bbox(form)
+        shape_h, shape_w = max_r + 1, max_c + 1
+        if shape_h > 2 or shape_w > w:
+            raise RuntimeError(f"internal shape {profile}/{size} does not fit {h}x{w}")
+        row = row_starts[slot]
+        col_rng = ctx.draw_rng(f"column:{slot}:{profile}:{size}")
+        col = col_rng.randint(0, w - shape_w)
+        for dr, dc in form:
+            grid[row + dr][col + dc] = 3
+
+
+def generate(seed, sample_index, *, difficulty=None, **overrides):
+    _validate_call(difficulty, overrides)
+    ctx = gen_ctx(
+        seed=int(seed),
+        sample_index=int(sample_index),
+        version=VERSION,
+        task_id=TASK_ID,
+        difficulty=difficulty,
+        overrides=overrides,
+    )
+
+    scheduled_h, scheduled_w = _dimension_schedule(int(seed), int(sample_index), difficulty)
+    h = _draw_scheduled_int(ctx, "grid_h", 8, 10, scheduled_h)
+    w = _draw_scheduled_int(ctx, "grid_w", 11, 13, scheduled_w)
+    scheduled_profile = SIZE_PROFILES[int(sample_index) % len(SIZE_PROFILES)]
+    scheduled_order = RANK_ORDERS[int(sample_index) % len(RANK_ORDERS)]
+    profile = _draw_scheduled_choice(ctx, "size_profile", SIZE_PROFILES, scheduled_profile)
+    rank_order = _draw_scheduled_choice(ctx, "rank_order", RANK_ORDERS, scheduled_order)
+
+    grid = full_grid(h, w, 0)
+    _place_profile(grid, ctx, profile, rank_order)
+    errors = self_check(grid)
+    if errors:
+        raise RuntimeError("generator produced an invalid grid: " + "; ".join(errors))
+    return grid
+
+
+def rule_mirror(grid: list[list[int]]) -> list[list[int]]:
+    """Pure Python reference; canonical Racket remains output authority."""
+    errors, analysis = _analyze_grid(grid)
+    if errors or analysis is None:
+        raise ValueError("outside rule domain: " + "; ".join(errors))
+    out = copy.deepcopy(grid)
+    ranked = sorted(
+        analysis["components"],
+        key=lambda info: (info["size"], info["bbox"], info["cells"]),
+    )
+    for color, info in zip((2, 4, 6), ranked):
+        for r, c in info["cells"]:
+            out[r][c] = color
+    return out
+
+
+def _rank_by_key(grid, key: Callable[[dict[str, Any]], Any], colors=(2, 4, 6)):
+    errors, analysis = _analyze_grid(grid)
+    if errors or analysis is None:
+        return copy.deepcopy(grid)
+    out = copy.deepcopy(grid)
+    ranked = sorted(analysis["components"], key=lambda info: (key(info), info["bbox"]))
+    for color, info in zip(colors, ranked):
+        for r, c in info["cells"]:
+            out[r][c] = color
+    return out
+
+
+def _rival_identity(grid):
+    return copy.deepcopy(grid)
+
+
+def _rival_reading_order(grid):
+    errors, analysis = _analyze_grid(grid)
+    if errors or analysis is None:
+        return copy.deepcopy(grid)
+    out = copy.deepcopy(grid)
+    for color, info in zip((2, 4, 6), analysis["components"]):
+        for r, c in info["cells"]:
+            out[r][c] = color
+    return out
+
+
+def _rival_reverse_size(grid):
+    return _rank_by_key(grid, lambda info: info["size"], colors=(6, 4, 2))
+
+
+def _rival_bbox_area(grid):
+    return _rank_by_key(grid, lambda info: info["bbox_area"])
+
+
+def _rival_absolute_buckets(grid):
+    errors, analysis = _analyze_grid(grid)
+    if errors or analysis is None:
+        return copy.deepcopy(grid)
+    out = copy.deepcopy(grid)
+    for info in analysis["components"]:
+        color = 2 if info["size"] <= 2 else 4 if info["size"] <= 4 else 6
+        for r, c in info["cells"]:
+            out[r][c] = color
+    return out
+
+
+def _rival_bbox_fill(grid):
+    truth = rule_mirror(grid)
+    errors, analysis = _analyze_grid(grid)
+    if errors or analysis is None:
+        return copy.deepcopy(grid)
+    out = copy.deepcopy(truth)
+    ranked = sorted(analysis["components"], key=lambda info: info["size"])
+    for color, info in zip((2, 4, 6), ranked):
+        min_r, min_c, max_r, max_c = info["bbox"]
+        for r in range(min_r, max_r + 1):
+            for c in range(min_c, max_c + 1):
+                out[r][c] = color
+    return out
+
+
+def _rival_all_red(grid):
+    errors, analysis = _analyze_grid(grid)
+    if errors or analysis is None:
+        return copy.deepcopy(grid)
+    out = copy.deepcopy(grid)
+    for info in analysis["components"]:
+        for r, c in info["cells"]:
+            out[r][c] = 2
+    return out
+
+
+SEMANTIC_RIVALS = {
+    "identity": _rival_identity,
+    "rank_by_reading_order": _rival_reading_order,
+    "rank_size_descending": _rival_reverse_size,
+    "rank_by_bounding_box_area": _rival_bbox_area,
+    "fixed_absolute_size_buckets": _rival_absolute_buckets,
+    "fill_ranked_bounding_boxes": _rival_bbox_fill,
+    "recolor_every_component_red": _rival_all_red,
+}
+LESSON_COMPETITORS = dict(SEMANTIC_RIVALS)
+CANONICAL_SHORTCUTS = {
+    "rank_by_bounding_box_area": _rival_bbox_area,
+    "fixed_absolute_size_buckets": _rival_absolute_buckets,
+}
+
+
+def _valid_analysis(grid) -> dict[str, Any] | None:
+    errors, analysis = _analyze_grid(grid)
+    return None if errors else analysis
+
+
+def _witness_strict(grid) -> bool:
+    return strict_canonical_like(grid) == []
+
+
+def _witness_non_reading_order(grid) -> bool:
+    analysis = _valid_analysis(grid)
+    return analysis is not None and _infer_rank_order(analysis) != "ascending"
+
+
+def _witness_bbox_conflict(grid) -> bool:
+    analysis = _valid_analysis(grid)
+    if analysis is None:
+        return False
+    by_size = [info["cells"] for info in sorted(analysis["components"], key=lambda x: x["size"])]
+    by_bbox = [info["cells"] for info in sorted(analysis["components"], key=lambda x: x["bbox_area"])]
+    return by_size != by_bbox
+
+
+def _witness_absolute_shift(grid) -> bool:
+    analysis = _valid_analysis(grid)
+    return analysis is not None and analysis["sizes"] == _PROFILE_SIZES["shifted_357"]
+
+
+def _witness_nonrectangular(grid) -> bool:
+    analysis = _valid_analysis(grid)
+    return analysis is not None and any(info["size"] < info["bbox_area"] for info in analysis["components"])
+
+
+def _witness_visible_recolor(grid) -> bool:
+    try:
+        return rule_mirror(grid) != grid
+    except ValueError:
+        return False
+
+
+SEMANTIC_WITNESSES = {
+    "strict_canonical_scale_anchor": _witness_strict,
+    "relative_rank_not_reading_order": _witness_non_reading_order,
+    "cell_count_not_bounding_box_area": _witness_bbox_conflict,
+    "relative_rank_not_absolute_size_bucket": _witness_absolute_shift,
+    "preserve_shape_not_fill_bbox": _witness_nonrectangular,
+    "visible_three_color_recolor": _witness_visible_recolor,
+}
+
+WITNESS_RIVALS = {
+    "strict_canonical_scale_anchor": ["identity"],
+    "relative_rank_not_reading_order": ["rank_by_reading_order"],
+    "cell_count_not_bounding_box_area": ["rank_by_bounding_box_area"],
+    "relative_rank_not_absolute_size_bucket": ["fixed_absolute_size_buckets"],
+    "preserve_shape_not_fill_bbox": ["fill_ranked_bounding_boxes"],
+    "visible_three_color_recolor": ["identity", "recolor_every_component_red"],
+}
+
+
+def lesson_identifiable(demos, query) -> list[str]:
+    """Reject lessons on which any named plausible shortcut survives."""
+    reasons: list[str] = []
+    for index, demo in enumerate(demos):
+        try:
+            expected = rule_mirror(demo["input"])
+        except (KeyError, ValueError) as exc:
+            reasons.append(f"demo {index} is outside the rule domain: {exc}")
+            continue
+        if demo.get("output") != expected:
+            reasons.append(f"demo {index} output disagrees with ascending area rank")
+
+    try:
+        query_truth = rule_mirror(query["input"])
+    except (KeyError, ValueError) as exc:
+        reasons.append(f"query is outside the rule domain: {exc}")
+        return reasons
+    if query.get("output") is not None and query.get("output") != query_truth:
+        reasons.append("query output disagrees with ascending area rank")
+
+    if reasons:
+        return reasons
+
+    for name, competitor in LESSON_COMPETITORS.items():
+        survives = all(competitor(demo["input"]) == demo["output"] for demo in demos)
+        if survives and competitor(query["input"]) != query_truth:
+            reasons.append(
+                f"competing rule '{name}' fits every demo but answers the query differently"
+            )
+    return reasons
+
+
+def mutation_fixtures() -> list[tuple[str, list[list[int]]]]:
+    """Targeted invalid grids that self_check must reject."""
+    base = generate(92317, 1, difficulty="medium")
+    _, analysis = _analyze_grid(base)
+    assert analysis is not None
+
+    all_background = full_grid(len(base), len(base[0]), 0)
+    all_green = full_grid(len(base), len(base[0]), 3)
+
+    wrong_color = copy.deepcopy(base)
+    r, c = analysis["components"][0]["cells"][0]
+    wrong_color[r][c] = 8
+
+    two_components = copy.deepcopy(base)
+    for r, c in analysis["components"][0]["cells"]:
+        two_components[r][c] = 0
+
+    four_components = copy.deepcopy(base)
+    placed = False
+    occupied = {cell for info in analysis["components"] for cell in info["cells"]}
+    for r in range(len(base)):
+        for c in range(len(base[0])):
+            if (r, c) in occupied:
+                continue
+            if all((r + dr, c + dc) not in occupied for dr, dc in _NEIGHBORS8):
+                four_components[r][c] = 3
+                placed = True
+                break
+        if placed:
+            break
+    assert placed
+
+    tied_sizes = full_grid(8, 11, 0)
+    for cells in (
+        ((0, 0), (0, 1), (1, 0)),
+        ((3, 3), (3, 4), (4, 3)),
+        ((6, 8), (6, 9), (7, 8)),
+    ):
+        for rr, cc in cells:
+            tied_sizes[rr][cc] = 3
+
+    diagonal_touch = full_grid(8, 11, 0)
+    for cells in (
+        ((0, 0),),
+        ((1, 1), (1, 2)),
+        ((5, 5), (5, 6), (5, 7)),
+    ):
+        for rr, cc in cells:
+            diagonal_touch[rr][cc] = 3
+
+    short_line = full_grid(8, 11, 0)
+    short_line[2][2] = 3
+    short_line[2][3] = 3
+    solid_square = full_grid(8, 11, 0)
+    for rr in (2, 3):
+        for cc in (2, 3):
+            solid_square[rr][cc] = 3
+
+    ragged = [[0, 3], [0]]
+    return [
+        ("all_background", all_background),
+        ("all_green", all_green),
+        ("wrong_foreground_color", wrong_color),
+        ("only_two_components", two_components),
+        ("four_components", four_components),
+        ("tied_component_sizes", tied_sizes),
+        ("diagonal_component_contact", diagonal_touch),
+        ("pre_repair_short_line", short_line),
+        ("pre_repair_solid_square", solid_square),
+        ("ragged_grid", ragged),
+    ]

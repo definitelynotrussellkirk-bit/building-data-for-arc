@@ -1,0 +1,10 @@
+(rule! (lambda (g)
+         (let* ((objs (objects g 0))
+                (anchor (first (filter (lambda (o) (= (obj-color o) 3)) objs)))
+                (anchor-size (obj-size anchor))
+                (targets
+                 (filter (lambda (o)
+                           (and (= (obj-color o) 2)
+                                (= (obj-size o) anchor-size)))
+                         objs)))
+           (paint-objects g targets 1))))

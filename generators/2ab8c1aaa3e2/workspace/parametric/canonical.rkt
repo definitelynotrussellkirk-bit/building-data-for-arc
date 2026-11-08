@@ -1,0 +1,1 @@
+(rule! (let ((dummy 0)) (for/fold ((out g)) ((c (in-range (cols g)))) (for/fold ((acc out)) ((color (in-list (remove-duplicates (filter (lambda (v) (not (= v 0))) (col g c)))))) (let ((rs (filter (lambda (r) (= (at g r c) color)) (range (rows g))))) (if (= (length rs) 2) (paint-cells acc (map (lambda (r) (list r c)) (range (apply min rs) (+ (apply max rs) 1))) color) acc))))))

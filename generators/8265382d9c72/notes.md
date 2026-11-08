@@ -1,0 +1,5 @@
+# Current generator and family decisions: 8265382d9c72
+
+The accepted base validator repair and both exact Racket programs are unchanged. Revised crossed profiles preserve the full reported 5,000-seed three-demo audit over 19 rivals, retained verbatim as reviewer-reported evidence. Two demos separate the declared programs but admit expanded-property shortcuts; two-demo generation is now rejected. Actual supported range and qualification minimum are 3–6 demos and 3 respectively. Independently checked 16 seeds against all 19 rivals and replayed both settings at that declared minimum. The earlier two-demo advice is superseded, not relabelled as full teaching.
+
+Focused regressions and bounded execution receipts live in `workspace/parametric/evidence/J-current/`. Existing accepted program hashes are preserved. The base source is unchanged; these changed family bytes require fresh owner qualification and acceptance. Named-rival evidence is finite and does not prove universal identifiability or admit training data.

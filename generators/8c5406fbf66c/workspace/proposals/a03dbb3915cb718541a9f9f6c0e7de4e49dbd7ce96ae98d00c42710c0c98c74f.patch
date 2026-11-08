@@ -1,0 +1,1862 @@
+diff --git a/repo/generators/89dfcff52ee8/SUMMARY.md b/repo/generators/89dfcff52ee8/SUMMARY.md
+--- a/repo/generators/89dfcff52ee8/SUMMARY.md
++++ b/repo/generators/89dfcff52ee8/SUMMARY.md
+@@ -1,6 +1,6 @@
+ # 89dfcff52ee8
+ 
+-Sparse row endpoints expand to filled horizontal spans.
++On every row containing nonzero markers, recolor the complete horizontal interval from the leftmost marker through the rightmost marker cyan (8). A singleton marker therefore becomes one cyan cell.
+ 
+-Kind: `per_puzzle`. Imported version: `1.1.1`.
++Kind: `per_puzzle`. Imported version: `1.2.0`.
+ Approval is derived by the catalog from current code and retained evidence.
+diff --git a/repo/generators/89dfcff52ee8/generator.py b/repo/generators/89dfcff52ee8/generator.py
+--- a/repo/generators/89dfcff52ee8/generator.py
++++ b/repo/generators/89dfcff52ee8/generator.py
+@@ -12,17 +12,19 @@
+ from puzzle_generators.helpers.grid import full_grid
+ 
+ GENERATOR_ID = "89dfcff52ee8"
+-VERSION = "1.1.1"  # align generate() draw keys with declared grid_h/grid_w axes
++VERSION = "1.2.0"  # admit and deliberately teach canonical singleton rows
+ TASK_ID = "89dfcff52ee8"
+-SUMMARY = "Sparse row endpoints expand to filled horizontal spans."
++RULE_HASH = "a6278ce3852f"
++SUMMARY = "Each nonzero row closes from its first marker to its last; a singleton becomes one cyan cell."
+ 
+ INVARIANTS = [
+     "nonzero cells appear on two or three rows",
+-    "each active row has at least two endpoints",
++    "each active row has one marker or a separated pair/triple of markers",
+     "the output fills every cell between each row's extreme endpoints",
+ ]
+ 
+ PALETTE_KINDS = ("default", "warm", "cool", "varied")
++ROW_PROFILES = ("spans_only", "singleton_mixed")
+ DEGENERATE_TEXTURES = ("single_endpoint_only", "span_already_filled", "no_endpoints")
+ HELPFUL_TEXTURES = PALETTE_KINDS
+ 
+@@ -39,6 +41,8 @@
+     "density":        {"type": "str", "default": "sparse", "valid": "sparse"},
+     "texture":        {"type": "str", "default": "alias for palette_kind",
+                        "valid": "|".join(HELPFUL_TEXTURES + DEGENERATE_TEXTURES)},
++    "row_profile":    {"type": "str", "default": "rng spans_only|singleton_mixed",
++                       "valid": "|".join(ROW_PROFILES)},
+ }
+ 
+ 
+@@ -60,11 +64,15 @@
+         h = ctx.draw_int("grid_h", 6, 8)
+         w = ctx.draw_int("grid_w", 7, 10)
+         n = ctx.draw_int("active_rows", 2, 3)
++    row_profile = ctx.draw_choice("row_profile", ROW_PROFILES)
+     rng = ctx.draw_rng("layout")
+     g = full_grid(h, w, 0)
+     rows = rng.sample(range(h), n)
+     colors = [2, 3, 4, 5, 6, 7]
+     for idx, r in enumerate(rows):
++        if row_profile == "singleton_mixed" and idx == 0:
++            g[r][rng.randrange(w)] = colors[idx]
++            continue
+         c1 = rng.randint(0, w - 5)
+         c2 = rng.randint(c1 + 3, w - 1)
+         g[r][c1] = colors[idx]
+@@ -95,18 +103,42 @@
+ 
+ 
+ 
++def rule_mirror(grid):
++    """Apply the canonical row-closure rule, including singleton rows."""
++    if not grid or any(not isinstance(row, (list, tuple)) or len(row) != len(grid[0]) for row in grid):
++        raise ValueError("grid must be nonempty and rectangular")
++    if any(
++        isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 9
++        for row in grid for value in row
++    ):
++        raise ValueError("cells must be ARC colors")
++    output = full_grid(len(grid), len(grid[0]), 0)
++    for row_index, row in enumerate(grid):
++        columns = [column for column, value in enumerate(row) if value != 0]
++        if columns:
++            for column in range(min(columns), max(columns) + 1):
++                output[row_index][column] = 8
++    return output
++
++
++
+ def self_check(grid, *, difficulty=None, meta=None) -> list[str]:
+     errs: list[str] = []
+-    if not grid or any(len(row) != len(grid[0]) for row in grid):
++    if (not isinstance(grid, (list, tuple)) or not grid
++            or not isinstance(grid[0], (list, tuple)) or not grid[0]
++            or any(not isinstance(row, (list, tuple)) or len(row) != len(grid[0]) for row in grid)):
+         return ["grid must be nonempty and rectangular"]
++    if any(
++        isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 9
++        for row in grid for value in row
++    ):
++        return ["cells must be exact ARC colors"]
+     active = []
+     for r, row in enumerate(grid):
+         cols = [c for c, v in enumerate(row) if v != 0]
+         if cols:
+             active.append((r, cols))
+-            if len(cols) < 2:
+-                errs.append(f"row {r} has only {len(cols)} endpoint cell(s)")
+-            if max(cols) - min(cols) < 3:
++            if len(cols) >= 2 and max(cols) - min(cols) < 3:
+                 errs.append(f"row {r} span is too short to teach fill-between")
+     lo, hi = (2, 2) if difficulty == "easy" else ((3, 3) if difficulty == "hard" else (2, 3))
+     if not (lo <= len(active) <= hi):
+diff --git a/repo/generators/89dfcff52ee8/notes.md b/repo/generators/89dfcff52ee8/notes.md
+--- a/repo/generators/89dfcff52ee8/notes.md
++++ b/repo/generators/89dfcff52ee8/notes.md
+@@ -2,3 +2,21 @@
+ 
+ Record design decisions, hypotheses, review findings, and unresolved questions here.
+ Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++
++## Singleton-row canonical repair (2026-10-24)
++
++The retained audit was reproduced: canonical train input 0 contains a row with
++one nonzero marker, the Racket authority emits one cyan cell, and version 1.1.1
++rejected that row while normal generation never emitted it. Version 1.2.0 now
++accepts singleton active rows, exposes `row_profile=singleton_mixed`, and emits
++exactly one singleton alongside ordinary separated spans in that profile. A
++Python rule mirror, the exact canonical `RULE_HASH`, and strict ARC-cell
++validation were added.
++
++`tests/test_singleton_rows.py` covers every canonical singleton-bearing pair,
++a generated mixed witness, the “ignore singleton rows” rival, protected-Racket
++parity, and bool/out-of-range/non-integer rejection. The bounded 128-draw probe
++saw both normal profiles (60 span-only, 68 mixed), no self-check failures, and a
++one-cell disagreement between the retained rival and the Racket label. The
++broader legacy palette/texture/axis contract was not audited or repaired here;
++owner approval remains pending.
+diff --git a/repo/generators/89dfcff52ee8/tests/test_singleton_rows.py b/repo/generators/89dfcff52ee8/tests/test_singleton_rows.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/89dfcff52ee8/tests/test_singleton_rows.py
+@@ -0,0 +1,111 @@
++"""Focused repair tests for canonical singleton-row semantics."""
++from __future__ import annotations
++
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root
++
++TASK = "89dfcff52ee8"
++ROOT = find_root(__file__)
++HOME = ROOT / "generators" / TASK
++
++
++def load_generator():
++    path = HOME / "generator.py"
++    name = "_test_89dfcff52ee8_generator"
++    sys.modules.pop(name, None)
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++
++
++def canonical_program():
++    sources = {
++        json.loads(line)["program_solution"]
++        for line in canonical_path(ROOT).read_text().splitlines()
++        if json.loads(line).get("task_id") == TASK
++    }
++    assert len(sources) == 1
++    return next(iter(sources))
++
++
++def canonical_pairs():
++    rows = [
++        json.loads(line)
++        for line in canonical_path(ROOT).read_text().splitlines()
++        if json.loads(line).get("task_id") == TASK
++    ]
++    assert rows
++    result = []
++    for row in rows:
++        result.extend(row["train"])
++        test = row["test"]
++        result.extend(test if isinstance(test, list) else [test])
++    return result
++
++
++
++
++import pytest
++
++
++@pytest.fixture
++def racket_bridge():
++    from arc_repl.racket_bridge import RacketBridge
++
++    bridge = RacketBridge()
++    try:
++        yield bridge
++    finally:
++        bridge.close()
++
++
++def test_canonical_singleton_rows_are_accepted_and_mirrored():
++    generator = load_generator()
++    singleton_pairs = []
++    for pair in canonical_pairs():
++        if any(sum(value != 0 for value in row) == 1 for row in pair["input"]):
++            singleton_pairs.append(pair)
++            assert generator.self_check(pair["input"]) == []
++            assert generator.rule_mirror(pair["input"]) == pair["output"]
++    assert singleton_pairs, "canonical task must retain a singleton-row witness"
++
++
++def test_singleton_mixed_profile_is_generated_and_racket_labeled(racket_bridge):
++    generator = load_generator()
++    grid = generator.generate(11, 7, row_profile="singleton_mixed")
++    active_counts = [sum(value != 0 for value in row) for row in grid if any(row)]
++    assert active_counts.count(1) == 1
++    assert any(count >= 2 for count in active_counts)
++    assert generator.self_check(grid) == []
++
++    expected = generator.rule_mirror(grid)
++    ignore_singletons = [[0 for _ in row] for row in grid]
++    for row_index, row in enumerate(grid):
++        columns = [column for column, value in enumerate(row) if value != 0]
++        if len(columns) >= 2:
++            for column in range(min(columns), max(columns) + 1):
++                ignore_singletons[row_index][column] = 8
++    assert ignore_singletons != expected
++
++    racket_bridge.define_grid("singleton_probe", grid)
++    actual = racket_bridge.eval_text(
++        f"({wrap_rule(canonical_program())} singleton_probe)"
++    )
++    assert actual == expected
++
++
++def test_self_check_rejects_bool_and_non_arc_cells():
++    generator = load_generator()
++    assert generator.self_check([[True], [True]], difficulty="easy")
++    assert generator.self_check([[10], [10]], difficulty="easy")
++    assert generator.self_check([[1.0], [1.0]], difficulty="easy")
+diff --git a/repo/generators/8c5406fbf66c/notes.md b/repo/generators/8c5406fbf66c/notes.md
+--- a/repo/generators/8c5406fbf66c/notes.md
++++ b/repo/generators/8c5406fbf66c/notes.md
+@@ -47,3 +47,28 @@
+ The finite contract refutes the retained isolated-component shortcut; it does
+ not prove uniqueness against arbitrary programs. Imported associated notes keep
+ original evidence and timestamps in `evidence/associated_notes.jsonl`.
++
++## Native parametric admission proposal (2026-10-24)
++
++The canonical default remains byte-for-byte unchanged at program SHA-256
++`29d77c7080ca5589952e6febadcdcf8d34371c4fbea20b4e5bd86573e0534030`.
++The task-local `window_scope` adapter adds one nearby alternative,
++`key_count_relay`: count the unique color-1 source object's solid 2×2 windows
++(`k` in 1..3), sort three independently varied candidate objects by occupied
++area, select rank `k`, then mark only that object's 2×2-window top-left cells.
++The same inputs are used for both settings; candidate color, position, area,
++aspect ratio, source orientation, and isolated color-9 distractors vary.
++
++The adapter supports independent 2–6 demonstration and 1–4 query requests,
++keeps four private prefix-stable queries, reveals one query input per public
++turn, and includes a substantive 30×30 boundary case. Two demonstrations
++refute the finite shortcut set retained by `verify.py`; the check uses no query
++answers. Visible public grids are strictly validated while private settings,
++programs, future queries, and query answers cannot affect first-turn bytes.
++
++Current evidence is bound by `workspace/parametric/evidence/manifest.json`.
++Native qualification executed two settings over fresh seeds in protected Racket
++(4 jobs, 40 labels), and the retained wrong-rank-one replay changes the qualified
++answer when the intermediate is forced from 2 to 1. This is reviewer-ready only:
++the owner must re-run qualification and exact-source acceptance after integration;
++no variant or training admission is claimed.
+diff --git a/repo/generators/8c5406fbf66c/tests/test_parametric.py b/repo/generators/8c5406fbf66c/tests/test_parametric.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/tests/test_parametric.py
+@@ -0,0 +1,242 @@
++"""Native parametric contract for the 2x2-window count relay family."""
++from __future__ import annotations
++
++from copy import deepcopy
++import importlib.util
++import json
++from pathlib import Path
++import sys
++
++import pytest
++
++from puzzle_generators.rule_wrap import wrap_rule
++from reviewer_support import canonical_path, find_root
++
++TASK = "8c5406fbf66c"
++ROOT = find_root(__file__)
++HOME = ROOT / "generators" / TASK / "workspace" / "parametric"
++
++
++def load_adapter():
++    path = HOME / "adapter.py"
++    assert path.is_file(), "native parametric adapter is not implemented"
++    name = "_test_8c5406fbf66c_parametric"
++    sys.modules.pop(name, None)
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def canonical_program() -> str:
++    programs = {
++        row["program_solution"]
++        for line in canonical_path(ROOT).open()
++        if (row := json.loads(line)).get("task_id") == TASK
++        and isinstance(row.get("program_solution"), str)
++    }
++    assert len(programs) == 1
++    return next(iter(programs))
++
++
++def frozen(grid):
++    return tuple(tuple(row) for row in grid)
++
++
++@pytest.fixture
++def racket_bridge():
++    from arc_repl.racket_bridge import RacketBridge
++
++    bridge = RacketBridge()
++    try:
++        yield bridge
++    finally:
++        bridge.close()
++
++
++def test_canonical_default_is_exact_and_alternative_is_distinct():
++    adapter = load_adapter()
++    assert adapter.program({"window_scope": "all"}) == canonical_program()
++    assert adapter.program({"window_scope": "key_count_relay"}) != canonical_program()
++
++
++@pytest.mark.parametrize("demos,queries", [(2, 1), (2, 4), (3, 4), (6, 4)])
++def test_counts_are_independent_inputs_are_matched_and_prefixes_are_stable(demos, queries):
++    adapter = load_adapter()
++    episodes = [
++        adapter.generate(17, {"window_scope": scope}, demos, queries)
++        for scope in ("all", "key_count_relay")
++    ]
++    for episode in episodes:
++        assert len(episode["train"]) == demos
++        assert len(episode["test"]) == queries
++        pairs = episode["train"] + episode["test"]
++        assert len({frozen(pair["input"]) for pair in pairs}) == demos + queries
++        assert all(
++            type(value) is int and 0 <= value <= 9
++            for pair in pairs
++            for row in pair["input"]
++            for value in row
++        )
++    assert [pair["input"] for pair in episodes[0]["train"] + episodes[0]["test"]] == [
++        pair["input"] for pair in episodes[1]["train"] + episodes[1]["test"]
++    ]
++    assert episodes[0]["train"] != episodes[1]["train"]
++
++    smaller = adapter.generate(17, {"window_scope": "key_count_relay"}, 2, 1)
++    larger = adapter.generate(17, {"window_scope": "key_count_relay"}, 6, 4)
++    assert smaller["train"] == larger["train"][:2]
++    assert smaller["test"] == larger["test"][:1]
++
++
++@pytest.mark.parametrize(
++    "seed,demos,queries",
++    [
++        (True, 3, 4),
++        (-1, 3, 4),
++        (2**63, 3, 4),
++        (0, True, 4),
++        (0, 1, 4),
++        (0, 7, 4),
++        (0, 3, False),
++        (0, 3, 0),
++        (0, 3, 5),
++    ],
++)
++def test_strict_seed_and_count_validation(seed, demos, queries):
++    with pytest.raises(ValueError):
++        load_adapter().generate(seed, {"window_scope": "all"}, demos, queries)
++
++
++@pytest.mark.parametrize(
++    "settings",
++    [
++        {},
++        {"window_scope": True},
++        {"window_scope": "unknown"},
++        {"window_scope": "all", "extra": 1},
++    ],
++)
++def test_strict_setting_validation(settings):
++    with pytest.raises(ValueError):
++        load_adapter().program(settings)
++
++
++def test_relay_has_an_input_dependent_a_to_b_dependency():
++    adapter = load_adapter()
++    episode = adapter.generate(23, {"window_scope": "key_count_relay"}, 3, 4)
++    seen = set()
++    for pair in episode["train"] + episode["test"]:
++        analysis = adapter.prototype.analyze_relay(pair["input"])
++        seen.add(analysis["source_window_count"])
++        assert analysis["target_rank"] == analysis["source_window_count"]
++        assert pair["output"] == adapter.prototype.solve_python(
++            pair["input"], "key_count_relay"
++        )
++    assert seen == {1, 2, 3}
++
++    witness = episode["test"][0]["input"]
++    analysis = adapter.prototype.analyze_relay(witness)
++    assert analysis["source_window_count"] != 1
++    expected = adapter.prototype.solve_python(witness, "key_count_relay")
++    wrong = adapter.prototype.solve_relay_with_intermediate(witness, 1)
++    assert wrong != expected
++
++
++def test_two_demos_refute_declared_shortcuts_without_query_answers():
++    adapter = load_adapter()
++    for scope in ("all", "key_count_relay"):
++        episode = adapter.generate(13, {"window_scope": scope}, 2, 4)
++        report = adapter.prototype.teaching_check(episode, scope)
++        assert report["setting_survivors"] == [scope]
++        assert report["rival_survivors"] == []
++        assert report["used_query_answers"] is False
++
++
++def test_teaching_profiles_break_area_vs_window_count_and_position_shortcuts():
++    adapter = load_adapter()
++    episode = adapter.generate(13, {"window_scope": "key_count_relay"}, 2, 4)
++    for pair in episode["train"]:
++        analysis = adapter.prototype.analyze_relay(pair["input"])
++        by_area = analysis["candidate_colors_by_area"]
++        by_windows = analysis["candidate_colors_by_window_count"]
++        rank = analysis["source_window_count"] - 1
++        assert by_area[rank] != by_windows[rank]
++    report = adapter.prototype.teaching_check(episode, "key_count_relay")
++    assert {"window_count_rank", "top_left_rank", "bottom_right_rank"} <= set(
++        report["refuted_rivals"]
++    )
++
++
++def test_four_queries_include_a_substantive_30x30_stress_scene():
++    adapter = load_adapter()
++    episode = adapter.generate(5, {"window_scope": "all"}, 2, 4)
++    grids = [pair["input"] for pair in episode["test"]]
++    assert len({frozen(grid) for grid in grids}) == 4
++    stress = grids[3]
++    assert (len(stress), len(stress[0])) == (30, 30)
++    assert sum(value != 0 for row in stress for value in row) >= 190
++    assert any(stress[0]) and any(stress[-1])
++    assert any(row[0] for row in stress) and any(row[-1] for row in stress)
++    assert load_adapter().prototype.analyze_relay(stress)["source_window_count"] == 2
++
++
++def test_public_turn_rejects_malformed_visible_grids_but_ignores_private_answers():
++    adapter = load_adapter()
++    episode = adapter.generate(37, {"window_scope": "key_count_relay"}, 3, 4)
++
++    bad_train_input = deepcopy(episode)
++    bad_train_input["train"][0]["input"][0][0] = True
++    with pytest.raises(ValueError, match="exact ARC integers"):
++        adapter.prototype.public_turn(bad_train_input, 0)
++
++    bad_train_output = deepcopy(episode)
++    bad_train_output["train"][0]["output"][0].pop()
++    with pytest.raises(ValueError, match="rectangular"):
++        adapter.prototype.public_turn(bad_train_output, 0)
++
++    bad_query_input = deepcopy(episode)
++    bad_query_input["test"][0]["input"] = [[0, 0], [0, False]]
++    with pytest.raises(ValueError, match="exact ARC integers"):
++        adapter.prototype.public_turn(bad_query_input, 0)
++
++    private_answer_only = deepcopy(episode)
++    private_answer_only["test"][0]["output"] = [[True]]
++    assert adapter.prototype.public_turn(private_answer_only, 0) == adapter.prototype.public_turn(
++        episode, 0
++    )
++
++
++def test_public_turn_masks_private_state_and_is_first_turn_invariant():
++    adapter = load_adapter()
++    one = adapter.generate(31, {"window_scope": "key_count_relay"}, 3, 1)
++    four = adapter.generate(31, {"window_scope": "key_count_relay"}, 3, 4)
++    assert adapter.prototype.turn_bytes(one, 0) == adapter.prototype.turn_bytes(four, 0)
++
++    public = adapter.prototype.public_turn(four, 0)
++    assert set(public) == {"train", "test"}
++    assert len(public["test"]) == 1
++    assert set(public["test"][0]) == {"input"}
++    raw = adapter.prototype.turn_bytes(four, 0)
++    assert b"window_scope" not in raw
++    assert b"program_solution" not in raw
++
++    changed = deepcopy(four)
++    changed["settings"] = {"window_scope": "secret"}
++    changed["seed"] = 999
++    changed["program_solution"] = "secret"
++    changed["test"][0]["output"] = [[True]]
++    assert adapter.prototype.turn_bytes(changed, 0) == raw
++
++
++@pytest.mark.parametrize("scope", ["all", "key_count_relay"])
++def test_protected_racket_matches_python_on_ordinary_and_large_inputs(scope, racket_bridge):
++    adapter = load_adapter()
++    episode = adapter.generate(7, {"window_scope": scope}, 2, 4)
++    program = wrap_rule(adapter.program({"window_scope": scope}))
++    for pair in (episode["train"][0], episode["test"][3]):
++        racket_bridge.define_grid("parametric_grid", pair["input"])
++        actual = racket_bridge.eval_text(f"({program} parametric_grid)")
++        assert actual == pair["output"]
+diff --git a/repo/generators/8c5406fbf66c/tests/test_parametric_verify.py b/repo/generators/8c5406fbf66c/tests/test_parametric_verify.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/tests/test_parametric_verify.py
+@@ -0,0 +1,50 @@
++from __future__ import annotations
++
++import importlib.util
++from pathlib import Path
++import sys
++
++from reviewer_support import find_root
++
++ROOT = find_root(__file__)
++HOME = ROOT / "generators/8c5406fbf66c/workspace/parametric"
++
++
++def load(name: str, filename: str):
++    path = HOME / filename
++    assert path.is_file()
++    spec = importlib.util.spec_from_file_location(name, path)
++    assert spec is not None and spec.loader is not None
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_audit_tool_covers_count_boundaries_settings_and_causal_ablation():
++    verify = load("_test_8c54_verify", "verify.py")
++    adapter = verify.load_adapter()
++    programs = {
++        adapter.program({"window_scope": scope}): scope
++        for scope in ("all", "key_count_relay")
++    }
++
++    def execute(program, grid):
++        return adapter.prototype.solve_python(grid, programs[program])
++
++    report = verify.audit(
++        seeds=(0,),
++        count_cases=((2, 1), (3, 4), (6, 4)),
++        execute=execute,
++        runtime_identity={"backend": "test", "protected": False},
++    )
++    assert report["status"] == "passed"
++    assert report["settings"] == 2
++    assert report["jobs"] == 6
++    assert report["episodes"] == 6
++    assert report["label_count"] == (3 + 7 + 10) * 2
++    assert report["count_cases"] == [[2, 1], [3, 4], [6, 4]]
++    assert report["causal_ablation"]["changed_output"] is True
++    assert report["large_query"]["dimensions"] == [30, 30]
++    assert report["large_query"]["nonzero_cells"] >= 190
++    assert report["finite_rivals"]
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/README.md b/repo/generators/8c5406fbf66c/workspace/parametric/README.md
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/README.md
+@@ -0,0 +1,16 @@
++# 8c5406fbf66c parametric window relay
++
++`window_scope=all` is the exact selected canonical program: mark the top-left
++cell of every nonzero same-color 2×2 window.
++
++`window_scope=key_count_relay` adds a real dependency. Step A counts the active
++2×2 windows in the unique color-1 source rectangle. That count (1, 2, or 3) is
++the intermediate. Step B sorts the three candidate objects by occupied area,
++selects the candidate at that rank, and applies the canonical 2×2 top-left
++marking only to that selected object. Candidate colors, placements, areas,
++aspect ratios, and source orientation vary; color 9 supplies isolated distractors.
++
++The input stream is matched across settings. Demonstrations and queries are
++prefix-stable for independent 2–6 / 1–4 requests, and the fourth query is a
++substantive 30×30 boundary case. `wrong_rank_one.rkt` is an audit-only
++wrong-intermediate counterfactual, not an admitted setting.
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/adapter.py b/repo/generators/8c5406fbf66c/workspace/parametric/adapter.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/adapter.py
+@@ -0,0 +1,20 @@
++"""Native adapter loading only this task's adjacent parametric prototype."""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++from pathlib import Path
++import sys
++
++_SOURCE = Path(__file__).resolve().with_name("prototype.py")
++_NAME = "_arc_8c5406fbf66c_window_relay_" + hashlib.sha256(str(_SOURCE).encode()).hexdigest()
++_SPEC = importlib.util.spec_from_file_location(_NAME, _SOURCE)
++if _SPEC is None or _SPEC.loader is None:  # pragma: no cover
++    raise ImportError(f"cannot load sibling prototype: {_SOURCE}")
++prototype = importlib.util.module_from_spec(_SPEC)
++sys.modules[_NAME] = prototype
++_SPEC.loader.exec_module(prototype)
++
++program = prototype.program
++generate = prototype.generate
++public_turn = prototype.public_turn
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/canonical.rkt b/repo/generators/8c5406fbf66c/workspace/parametric/canonical.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/canonical.rkt
+@@ -0,0 +1 @@
++(rule! (let ((dummy 0)) (for*/fold ((out g)) ((r (in-range (- (rows g) 1))) (c (in-range (- (cols g) 1)))) (let ((v (at g r c))) (if (and (not (= v 0)) (= (at g r (+ c 1)) v) (= (at g (+ r 1) c) v) (= (at g (+ r 1) (+ c 1)) v)) (set-cell out r c 8) out)))))
+\ No newline at end of file
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/count_relay.rkt b/repo/generators/8c5406fbf66c/workspace/parametric/count_relay.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/count_relay.rkt
+@@ -0,0 +1,27 @@
++(rule!
++  (let ((dummy 0))
++    (define (active-anchors grid obj)
++      (let ((color (obj-color obj)))
++        (filter
++          (lambda (p)
++            (let ((r (first p)) (c (second p)))
++              (and (< r (- (rows grid) 1))
++                   (< c (- (cols grid) 1))
++                   (= (at grid r c) color)
++                   (= (at grid r (+ c 1)) color)
++                   (= (at grid (+ r 1) c) color)
++                   (= (at grid (+ r 1) (+ c 1)) color))))
++          (obj-cells obj))))
++    (define all-objects (objects g 0))
++    (define source
++      (first (filter (lambda (obj) (= (obj-color obj) 1)) all-objects)))
++    (define candidates
++      (sort
++        (filter
++          (lambda (obj) (member? (obj-color obj) (list 2 3 4 5 6 7)))
++          all-objects)
++        (lambda (a b) (< (obj-size a) (obj-size b)))))
++    (define source-window-count (length (active-anchors g source)))
++    (define target (list-ref candidates (- source-window-count 1)))
++    (for/fold ((out g)) ((p (in-list (active-anchors g target))))
++      (set-cell out (first p) (second p) 8))))
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/evidence/current/authoring_audit.json b/repo/generators/8c5406fbf66c/workspace/parametric/evidence/current/authoring_audit.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/evidence/current/authoring_audit.json
+@@ -0,0 +1,315 @@
++{
++  "causal_ablation": {
++    "ablation": "wrong_intermediate",
++    "changed_output": true,
++    "counterfactual_program_sha256": "ec529c6f597d459a569282c545e9f900258021c932e70274d4d950e385522f61",
++    "counterfactual_value": 1,
++    "input_sha256": "7427e5d182da06cad2cba5260ab04cb4d06a0e962593aa048f7738ee1ca650fb",
++    "intermediate_value": 2,
++    "program_sha256": "280ae4b2ca2eeab634a85cb08ab2f6b87382e6f78881a54b033641a2bfec3ce5"
++  },
++  "count_cases": [
++    [
++      2,
++      1
++    ],
++    [
++      3,
++      4
++    ],
++    [
++      6,
++      4
++    ]
++  ],
++  "episodes": 12,
++  "finite_rivals": [
++    "bottom_right_rank",
++    "largest_area",
++    "mark_all_candidates",
++    "mark_source_and_target",
++    "mark_source_only",
++    "middle_area",
++    "smallest_area",
++    "top_left_rank",
++    "window_count_rank"
++  ],
++  "jobs": 12,
++  "jobs_detail": [
++    {
++      "demos": 2,
++      "public_first_turn_sha256": "7064f24def1f278ac65a6bf934cee40e161cc4b16d8c28b716906a570b0cca85",
++      "queries": 1,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "all",
++      "seed": 0
++    },
++    {
++      "demos": 2,
++      "public_first_turn_sha256": "6daf28dbc1058a2a6e65de0c3f40c6ed91e8f4143fae1e90d1f1279ff2169eb6",
++      "queries": 1,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "key_count_relay",
++      "seed": 0
++    },
++    {
++      "demos": 3,
++      "public_first_turn_sha256": "f9b62783b3c8f3e204dd4dc564fb0a86bab061007f214da3188f15c30e0475bd",
++      "queries": 4,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "all",
++      "seed": 0
++    },
++    {
++      "demos": 3,
++      "public_first_turn_sha256": "58647a386c76762fb5331335c93ca1587f231948814ccb6bc53664290673e25f",
++      "queries": 4,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "key_count_relay",
++      "seed": 0
++    },
++    {
++      "demos": 6,
++      "public_first_turn_sha256": "876e3e3c1cdb8f787868e5de79d4dce63e58d19a21bf7f75b3ffb4048d881a1d",
++      "queries": 4,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "all",
++      "seed": 0
++    },
++    {
++      "demos": 6,
++      "public_first_turn_sha256": "695577459f4bad6d84fb6f247f880c50b061ceb0bad16d10fa7ce82cd6a353f6",
++      "queries": 4,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "key_count_relay",
++      "seed": 0
++    },
++    {
++      "demos": 2,
++      "public_first_turn_sha256": "914ad9be5fa99fd2d2e5965f7dc3de871efcf7e0ffc3a4b370d7ed79135a1116",
++      "queries": 1,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "all",
++      "seed": 17
++    },
++    {
++      "demos": 2,
++      "public_first_turn_sha256": "3aadb3ba388b76aec21c3f8b71d6ab6914fead9ef867e4479245e4ef537f9af6",
++      "queries": 1,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "key_count_relay",
++      "seed": 17
++    },
++    {
++      "demos": 3,
++      "public_first_turn_sha256": "633a961c068c4ad6520e26fe0edcbcd8c3ccf6efa638cd984b7722892bfed6ce",
++      "queries": 4,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "all",
++      "seed": 17
++    },
++    {
++      "demos": 3,
++      "public_first_turn_sha256": "3db54ac5f0d9208cbadd3fcc1d11f323726c5635f128a742f2fb537f6c7d137f",
++      "queries": 4,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "key_count_relay",
++      "seed": 17
++    },
++    {
++      "demos": 6,
++      "public_first_turn_sha256": "2cda6428d9ed94d6aa9d55958465b30679ddea12e9d2e6082493126f6d65af22",
++      "queries": 4,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "all",
++      "seed": 17
++    },
++    {
++      "demos": 6,
++      "public_first_turn_sha256": "84e16331f996cd5425085a8ed7ff6316ccb2d07aa913627441f07ed873c4c1b0",
++      "queries": 4,
++      "refuted_rivals": [
++        "bottom_right_rank",
++        "largest_area",
++        "mark_all_candidates",
++        "mark_source_and_target",
++        "mark_source_only",
++        "middle_area",
++        "smallest_area",
++        "top_left_rank",
++        "window_count_rank"
++      ],
++      "scope": "key_count_relay",
++      "seed": 17
++    }
++  ],
++  "label_count": 80,
++  "large_query": {
++    "dimensions": [
++      30,
++      30
++    ],
++    "nonzero_cells": 209
++  },
++  "racket": {
++    "backend": "racket",
++    "binary_path": "/mnt/data/arc_review_173246/WORK/.review/racket-runtime/racket/bin/racket",
++    "binary_sha256": "bdf13d3b5b7ff97eba51ac56fd9198a34725f4a6f7c54066e2d2353107e29ce9",
++    "boot_script_sha256": "67adcf9dba254106ba3e8fd79dfff4019a4866463228762f21583bc4f3130dc3",
++    "bridge_path": "/mnt/data/arc_review_173246/WORK/repo/shared/runtime/arc_repl/racket_bridge.py",
++    "bridge_sha256": "4683877815a6306e0256a0e891baf4c0f84091e448a591b0d7e5b8abacf5e323",
++    "candidate_environment": "empty-environment-variables-v1",
++    "candidate_exit_handler": "deny-process-exit-v1",
++    "candidate_input": "empty-string-port-v1",
++    "candidate_output": "discard-string-ports-v1",
++    "candidate_symbol_policy_schema": "arc-racket-candidate-symbol-policy-v1",
++    "candidate_symbol_policy_sha256": "509c9e7d5e1023d85250668b90f58f0086d3f2052ae6c175c21e5e6b558f34f8",
++    "deterministic": true,
++    "evaluation_custodian": "fresh-per-eval-shutdown-before-reply-v1",
++    "evaluation_resource_limit": "nested-thread-512MiB-v1",
++    "prelude_path": "/mnt/data/arc_review_173246/WORK/repo/shared/runtime/arc_repl/racket_prelude/arc-prelude.rkt",
++    "prelude_sha256": "953ee9236e30953d037735e071b45c01b8e53f6588b606d70eaa85a2e21b7de0",
++    "protected": true,
++    "schema": "arc-protected-racket-runtime-v1",
++    "security_canary": {
++      "environment": "pass",
++      "exit": "pass",
++      "filesystem": "pass",
++      "input": "pass",
++      "memory": "pass",
++      "network": "pass",
++      "subprocess": "pass"
++    },
++    "security_guard": "deny-filesystem-network-link-v1",
++    "startup_handshake": "pass",
++    "subprocess_environment": "explicit-allowlist-v1"
++  },
++  "racket_evaluations": 82,
++  "schema": "arcpuzzles-parametric-authoring-audit-v1",
++  "scope": "Finite seeds/counts and named rivals only; this is authoring evidence, not native qualification, owner acceptance, or training admission.",
++  "seeds": [
++    0,
++    17
++  ],
++  "settings": 2,
++  "sources": {
++    "adapter.py": "7a0280cea7b38db9289f0152fcaed15685902ead3e72e4ab797f557020e89bc5",
++    "canonical.rkt": "29d77c7080ca5589952e6febadcdcf8d34371c4fbea20b4e5bd86573e0534030",
++    "count_relay.rkt": "280ae4b2ca2eeab634a85cb08ab2f6b87382e6f78881a54b033641a2bfec3ce5",
++    "promotion.json": "6d70858776fb445ba907fdf60a944aa7dcf4e834a350a74d229781d2d3319ed6",
++    "prototype.py": "43c7302e7f39162b313d3d06d6f38c9e749a59947948760540d3f84443a95591",
++    "wrong_rank_one.rkt": "ec529c6f597d459a569282c545e9f900258021c932e70274d4d950e385522f61"
++  },
++  "status": "passed",
++  "task_id": "8c5406fbf66c"
++}
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/evidence/current/focused_tests.log b/repo/generators/8c5406fbf66c/workspace/parametric/evidence/current/focused_tests.log
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/evidence/current/focused_tests.log
+@@ -0,0 +1,4 @@
++effective cwd: /mnt/data/arc_review_173246/WORK/repo
++Payload paths are relative to repo; use generators/TASK/..., not repo/generators/TASK/...
++...........................                                              [100%]
++27 passed in 5.52s
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/evidence/manifest.json b/repo/generators/8c5406fbf66c/workspace/parametric/evidence/manifest.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/evidence/manifest.json
+@@ -0,0 +1,97 @@
++{
++  "builder_executed_checks": false,
++  "canonical_program_sha256": "29d77c7080ca5589952e6febadcdcf8d34371c4fbea20b4e5bd86573e0534030",
++  "canonical_rule_hash": "29d77c7080ca",
++  "default": {
++    "window_scope": "all"
++  },
++  "evidence_root": "generators/8c5406fbf66c/workspace/parametric/evidence/current",
++  "files": [
++    {
++      "bytes": 14536,
++      "path": "generators/8c5406fbf66c/generator.py",
++      "sha256": "a2e368fb439f15f6f8cf85ea56571747709dba8a74e3d99ae5a805eb75b4e76b"
++    },
++    {
++      "bytes": 8909,
++      "path": "generators/8c5406fbf66c/tests/test_parametric.py",
++      "sha256": "62be36b32476e5e6844aee5b6be21494986133b72a6d0523fc3520fc74e5e304"
++    },
++    {
++      "bytes": 1625,
++      "path": "generators/8c5406fbf66c/tests/test_parametric_verify.py",
++      "sha256": "c90ea67d9a17687a2abe24140a24f476224484b5f2714425e6279b9f13d2d418"
++    },
++    {
++      "bytes": 747,
++      "path": "generators/8c5406fbf66c/workspace/parametric/adapter.py",
++      "sha256": "7a0280cea7b38db9289f0152fcaed15685902ead3e72e4ab797f557020e89bc5"
++    },
++    {
++      "bytes": 257,
++      "path": "generators/8c5406fbf66c/workspace/parametric/canonical.rkt",
++      "sha256": "29d77c7080ca5589952e6febadcdcf8d34371c4fbea20b4e5bd86573e0534030"
++    },
++    {
++      "bytes": 1080,
++      "path": "generators/8c5406fbf66c/workspace/parametric/count_relay.rkt",
++      "sha256": "280ae4b2ca2eeab634a85cb08ab2f6b87382e6f78881a54b033641a2bfec3ce5"
++    },
++    {
++      "bytes": 9310,
++      "path": "generators/8c5406fbf66c/workspace/parametric/evidence/current/authoring_audit.json",
++      "sha256": "05d08430da0272e2e5cf0f6aea4372c4b460b024ff1b6758e541d0832eb08355"
++    },
++    {
++      "bytes": 242,
++      "path": "generators/8c5406fbf66c/workspace/parametric/evidence/current/focused_tests.log",
++      "sha256": "128a2190a36fd52f14eb88db72072f9406893aa95e821d60033019d09ea854e9"
++    },
++    {
++      "bytes": 609,
++      "path": "generators/8c5406fbf66c/workspace/parametric/promotion.json",
++      "sha256": "6d70858776fb445ba907fdf60a944aa7dcf4e834a350a74d229781d2d3319ed6"
++    },
++    {
++      "bytes": 17241,
++      "path": "generators/8c5406fbf66c/workspace/parametric/prototype.py",
++      "sha256": "43c7302e7f39162b313d3d06d6f38c9e749a59947948760540d3f84443a95591"
++    },
++    {
++      "bytes": 9924,
++      "path": "generators/8c5406fbf66c/workspace/parametric/verify.py",
++      "sha256": "87d5052bc70f5f20b67897d084d6b690668a947b061b6cd8d14cd366af6ea702"
++    },
++    {
++      "bytes": 891,
++      "path": "generators/8c5406fbf66c/workspace/parametric/wrong_rank_one.rkt",
++      "sha256": "ec529c6f597d459a569282c545e9f900258021c932e70274d4d950e385522f61"
++    }
++  ],
++  "generator_sha256": "a2e368fb439f15f6f8cf85ea56571747709dba8a74e3d99ae5a805eb75b4e76b",
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "parameters": {
++    "window_scope": [
++      "all",
++      "key_count_relay"
++    ]
++  },
++  "production_parametric_api": false,
++  "reported_checks": "27 focused tests passed; all 38 task-local tests passed; protected-Racket authoring audit passed 12 jobs, 80 labels and 82 executions across seeds 0/17, demo/query boundaries 2/1, 3/4 and 6/4, matched settings, finite shortcut rivals, strict public projection, 30x30 stress and wrong-intermediate ablation.",
++  "rule_task_id": "8c5406fbf66c",
++  "schema": "arcpuzzles-parametric-prototype-evidence-v1",
++  "scope": "Author-reported task-local inventory. Current hashes are not execution, qualification, acceptance or training admission.",
++  "task_id": "8c5406fbf66c",
++  "training_admitted": false,
++  "variant_approved": false,
++  "verification_status": "reviewer_reported"
++}
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/promotion.json b/repo/generators/8c5406fbf66c/workspace/parametric/promotion.json
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/promotion.json
+@@ -0,0 +1,29 @@
++{
++  "schema": "arcpuzzles-parametric-adapter-v1",
++  "adapter": "generators/8c5406fbf66c/workspace/parametric/adapter.py",
++  "parameters": {
++    "window_scope": [
++      "all",
++      "key_count_relay"
++    ]
++  },
++  "default": {
++    "window_scope": "all"
++  },
++  "limits": {
++    "demos": [
++      2,
++      6
++    ],
++    "queries": [
++      1,
++      4
++    ]
++  },
++  "qualification_demos": 3,
++  "resources": [
++    "generators/8c5406fbf66c/workspace/parametric/canonical.rkt",
++    "generators/8c5406fbf66c/workspace/parametric/count_relay.rkt",
++    "generators/8c5406fbf66c/workspace/parametric/wrong_rank_one.rkt"
++  ]
++}
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/prototype.py b/repo/generators/8c5406fbf66c/workspace/parametric/prototype.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/prototype.py
+@@ -0,0 +1,447 @@
++"""Matched-input all-window and key-count-relay parametric family.
++
++The canonical setting preserves the exact selected Racket source.  The relay
++setting first counts 2x2 windows in the unique color-1 source object, then uses
++that input-dependent count (1, 2, or 3) as a rank into three candidate objects
++ordered by occupied area.  Only the selected candidate receives the canonical
++2x2 top-left markings.
++"""
++from __future__ import annotations
++
++from collections import deque
++from copy import deepcopy
++import hashlib
++import json
++from pathlib import Path
++import random
++from typing import Any, Iterable
++
++_HOME = Path(__file__).resolve().parent
++_CANONICAL = (_HOME / "canonical.rkt").read_text()
++_RELAY = (_HOME / "count_relay.rkt").read_text()
++
++SCOPES = ("all", "key_count_relay")
++_CANDIDATE_COLORS = (2, 3, 4, 5, 6, 7)
++
++# profile: height, width, source-window count, area-ranked candidate rectangles,
++# rank->slot permutation (TR, BL, BR), source anchor, per-slot candidate anchors.
++_DEMO_PROFILES = (
++    (18, 22, 1, ((4, 4), (2, 9), (3, 7)), (2, 0, 1), "tl", ("tr", "bl", "br")),
++    (20, 24, 3, ((3, 4), (4, 4), (2, 9)), (0, 2, 1), "br", ("tl", "bl", "br")),
++    (19, 23, 2, ((4, 4), (2, 9), (3, 7)), (1, 0, 2), "center", ("tr", "tl", "br")),
++    (21, 25, 2, ((5, 3), (2, 8), (4, 5)), (2, 1, 0), "bl", ("center", "bl", "tr")),
++    (22, 24, 1, ((5, 3), (2, 8), (4, 5)), (1, 2, 0), "tr", ("tl", "center", "br")),
++    (22, 26, 3, ((3, 5), (5, 4), (2, 11)), (2, 0, 1), "center", ("tr", "bl", "center")),
++)
++_QUERY_PROFILES = (
++    (23, 27, 2, ((4, 4), (2, 9), (3, 7)), (2, 0, 1), "center", ("tr", "bl", "br")),
++    (24, 20, 1, ((5, 3), (2, 8), (4, 5)), (1, 2, 0), "bl", ("tl", "center", "br")),
++    (18, 30, 3, ((3, 5), (5, 4), (2, 11)), (0, 2, 1), "tr", ("tr", "bl", "br")),
++    (30, 30, 2, ((8, 8), (5, 13), (7, 10)), (2, 0, 1), "tl", ("tr", "bl", "br")),
++)
++
++
++def _scope(settings: Any) -> str:
++    if type(settings) is not dict or set(settings) != {"window_scope"}:
++        raise ValueError("settings must contain exactly window_scope")
++    value = settings["window_scope"]
++    if type(value) is not str or value not in SCOPES:
++        raise ValueError(f"window_scope must be one of {SCOPES}")
++    return value
++
++
++def _integer(value: Any, low: int, high: int, name: str) -> int:
++    if type(value) is not int or not low <= value <= high:
++        raise ValueError(f"{name} must be an exact integer in {low}..{high}")
++    return value
++
++
++def program(settings: dict[str, Any]) -> str:
++    return _CANONICAL if _scope(settings) == "all" else _RELAY
++
++
++def _rng(seed: int, stream: str, index: int) -> random.Random:
++    digest = hashlib.sha256(
++        f"8c5406fbf66c:key-count-relay:v1:{seed}:{stream}:{index}".encode()
++    ).digest()
++    return random.Random(int.from_bytes(digest, "big"))
++
++
++def _slots(height: int, width: int) -> tuple[tuple[int, int, int, int], ...]:
++    middle_row, middle_col = height // 2, width // 2
++    return (
++        (0, 0, middle_row - 1, middle_col - 1),
++        (0, middle_col + 1, middle_row - 1, width - 1),
++        (middle_row + 1, 0, height - 1, middle_col - 1),
++        (middle_row + 1, middle_col + 1, height - 1, width - 1),
++    )
++
++
++def _origin(
++    slot: tuple[int, int, int, int],
++    shape: tuple[int, int],
++    anchor: str,
++    rng: random.Random,
++) -> tuple[int, int]:
++    r0, c0, r1, c1 = slot
++    sh, sw = shape
++    if sh > r1 - r0 + 1 or sw > c1 - c0 + 1:
++        raise ValueError(f"shape {shape} does not fit slot {slot}")
++    choices = {
++        "tl": (r0, c0),
++        "tr": (r0, c1 - sw + 1),
++        "bl": (r1 - sh + 1, c0),
++        "br": (r1 - sh + 1, c1 - sw + 1),
++        "center": ((r0 + r1 - sh + 1) // 2, (c0 + c1 - sw + 1) // 2),
++    }
++    if anchor == "random":
++        return rng.randint(r0, r1 - sh + 1), rng.randint(c0, c1 - sw + 1)
++    if anchor not in choices:
++        raise ValueError(f"unknown anchor {anchor}")
++    return choices[anchor]
++
++
++def _paint_rectangle(
++    grid: list[list[int]],
++    slot: tuple[int, int, int, int],
++    shape: tuple[int, int],
++    color: int,
++    anchor: str,
++    rng: random.Random,
++) -> None:
++    row0, col0 = _origin(slot, shape, anchor, rng)
++    height, width = shape
++    for row in range(row0, row0 + height):
++        for col in range(col0, col0 + width):
++            if grid[row][col] != 0:
++                raise ValueError("scene objects overlap")
++            grid[row][col] = color
++
++
++def _scene(
++    seed: int,
++    stream: str,
++    index: int,
++    profile: tuple[Any, ...],
++) -> list[list[int]]:
++    height, width, source_windows, shapes, permutation, source_anchor, slot_anchors = profile
++    rng = _rng(seed, stream, index)
++    grid = [[0 for _ in range(width)] for _ in range(height)]
++    slots = _slots(height, width)
++
++    source_shape = (2, source_windows + 1)
++    if rng.randrange(2):
++        source_shape = source_shape[::-1]
++    _paint_rectangle(grid, slots[0], source_shape, 1, source_anchor, rng)
++
++    colors = rng.sample(list(_CANDIDATE_COLORS), 3)
++    for rank, (shape, color) in enumerate(zip(shapes, colors)):
++        candidate_slot = permutation[rank]
++        _paint_rectangle(
++            grid,
++            slots[candidate_slot + 1],
++            shape,
++            color,
++            slot_anchors[candidate_slot],
++            rng,
++        )
++
++    # Color 9 is a non-window distractor.  These isolated cross-gutter cells
++    # vary with the seed but never participate in either rule.
++    middle_row, middle_col = height // 2, width // 2
++    distractors = [
++        (middle_row, 0),
++        (middle_row, width - 1),
++        (0, middle_col),
++        (height - 1, middle_col),
++    ]
++    rng.shuffle(distractors)
++    for row, col in distractors[: 2 + rng.randrange(3)]:
++        grid[row][col] = 9
++    return grid
++
++
++def _strict_grid(grid: Any) -> list[list[int]]:
++    if type(grid) is not list or not 2 <= len(grid) <= 30:
++        raise ValueError("grid height must be in 2..30")
++    if not grid or type(grid[0]) is not list or not 2 <= len(grid[0]) <= 30:
++        raise ValueError("grid width must be in 2..30")
++    width = len(grid[0])
++    if any(type(row) is not list or len(row) != width for row in grid):
++        raise ValueError("grid must be rectangular")
++    if any(type(value) is not int or not 0 <= value <= 9 for row in grid for value in row):
++        raise ValueError("grid cells must be exact ARC integers")
++    return grid
++
++
++def _all_window_anchors(grid: list[list[int]]) -> list[tuple[int, int]]:
++    result = []
++    for row in range(len(grid) - 1):
++        for col in range(len(grid[0]) - 1):
++            value = grid[row][col]
++            if (
++                value != 0
++                and grid[row][col + 1] == value
++                and grid[row + 1][col] == value
++                and grid[row + 1][col + 1] == value
++            ):
++                result.append((row, col))
++    return result
++
++
++def _objects(grid: list[list[int]]) -> list[dict[str, Any]]:
++    seen: set[tuple[int, int]] = set()
++    found: list[dict[str, Any]] = []
++    height, width = len(grid), len(grid[0])
++    for row in range(height):
++        for col in range(width):
++            color = grid[row][col]
++            if color == 0 or (row, col) in seen:
++                continue
++            queue = deque([(row, col)])
++            seen.add((row, col))
++            cells: set[tuple[int, int]] = set()
++            while queue:
++                point = queue.popleft()
++                cells.add(point)
++                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
++                    nxt = point[0] + dr, point[1] + dc
++                    if (
++                        0 <= nxt[0] < height
++                        and 0 <= nxt[1] < width
++                        and nxt not in seen
++                        and grid[nxt[0]][nxt[1]] == color
++                    ):
++                        seen.add(nxt)
++                        queue.append(nxt)
++            found.append(
++                {
++                    "color": color,
++                    "cells": cells,
++                    "size": len(cells),
++                    "bbox": (
++                        min(r for r, _ in cells),
++                        min(c for _, c in cells),
++                        max(r for r, _ in cells),
++                        max(c for _, c in cells),
++                    ),
++                }
++            )
++    return found
++
++
++def _object_anchors(obj: dict[str, Any]) -> list[tuple[int, int]]:
++    cells = obj["cells"]
++    return sorted(
++        (row, col)
++        for row, col in cells
++        if {
++            (row, col),
++            (row, col + 1),
++            (row + 1, col),
++            (row + 1, col + 1),
++        }
++        <= cells
++    )
++
++
++def analyze_relay(grid: Any) -> dict[str, Any]:
++    grid = _strict_grid(grid)
++    objects = _objects(grid)
++    sources = [obj for obj in objects if obj["color"] == 1]
++    candidates = [obj for obj in objects if obj["color"] in _CANDIDATE_COLORS]
++    if len(sources) != 1:
++        raise ValueError("relay grammar requires one color-1 source object")
++    if len(candidates) != 3:
++        raise ValueError("relay grammar requires exactly three candidate objects")
++    if len({obj["size"] for obj in candidates}) != 3:
++        raise ValueError("candidate areas must be distinct")
++    source_anchors = _object_anchors(sources[0])
++    source_window_count = len(source_anchors)
++    if source_window_count not in (1, 2, 3):
++        raise ValueError("source must encode one of three candidate ranks")
++    by_area = sorted(candidates, key=lambda obj: (obj["size"], obj["bbox"], obj["color"]))
++    by_windows = sorted(
++        candidates,
++        key=lambda obj: (len(_object_anchors(obj)), obj["size"], obj["bbox"], obj["color"]),
++    )
++    target = by_area[source_window_count - 1]
++    return {
++        "source_window_count": source_window_count,
++        "source_color": 1,
++        "source_anchors": source_anchors,
++        "target_rank": source_window_count,
++        "target_color": target["color"],
++        "target_area": target["size"],
++        "target_anchors": _object_anchors(target),
++        "candidate_colors_by_area": [obj["color"] for obj in by_area],
++        "candidate_areas": [obj["size"] for obj in by_area],
++        "candidate_window_counts_by_area": [len(_object_anchors(obj)) for obj in by_area],
++        "candidate_colors_by_window_count": [obj["color"] for obj in by_windows],
++        "candidate_colors_by_reading_order": [
++            obj["color"] for obj in sorted(candidates, key=lambda obj: (obj["bbox"][0], obj["bbox"][1]))
++        ],
++        "objects_by_area": by_area,
++        "objects_by_window_count": by_windows,
++        "candidates": candidates,
++        "source": sources[0],
++    }
++
++
++def _mark_objects(grid: list[list[int]], objects: Iterable[dict[str, Any]]) -> list[list[int]]:
++    output = [row[:] for row in grid]
++    for obj in objects:
++        for row, col in _object_anchors(obj):
++            output[row][col] = 8
++    return output
++
++
++def solve_relay_with_intermediate(grid: Any, intermediate: int) -> list[list[int]]:
++    grid = _strict_grid(grid)
++    if type(intermediate) is not int or intermediate not in (1, 2, 3):
++        raise ValueError("intermediate must be the exact integer 1, 2, or 3")
++    analysis = analyze_relay(grid)
++    return _mark_objects(grid, [analysis["objects_by_area"][intermediate - 1]])
++
++
++def solve_python(grid: Any, scope: str) -> list[list[int]]:
++    grid = _strict_grid(grid)
++    if scope == "all":
++        output = [row[:] for row in grid]
++        for row, col in _all_window_anchors(grid):
++            output[row][col] = 8
++        return output
++    if scope == "key_count_relay":
++        analysis = analyze_relay(grid)
++        return _mark_objects(grid, [analysis["objects_by_area"][analysis["source_window_count"] - 1]])
++    raise ValueError(f"unknown scope {scope!r}")
++
++
++def _rival_predictions(grid: list[list[int]]) -> dict[str, list[list[int]]]:
++    analysis = analyze_relay(grid)
++    area = analysis["objects_by_area"]
++    reading = sorted(analysis["candidates"], key=lambda obj: (obj["bbox"][0], obj["bbox"][1]))
++    k = analysis["source_window_count"]
++    target = area[k - 1]
++    return {
++        "smallest_area": _mark_objects(grid, [area[0]]),
++        "middle_area": _mark_objects(grid, [area[1]]),
++        "largest_area": _mark_objects(grid, [area[2]]),
++        "window_count_rank": _mark_objects(grid, [analysis["objects_by_window_count"][k - 1]]),
++        "top_left_rank": _mark_objects(grid, [reading[0]]),
++        "bottom_right_rank": _mark_objects(grid, [reading[-1]]),
++        "mark_source_and_target": _mark_objects(grid, [analysis["source"], target]),
++        "mark_all_candidates": _mark_objects(grid, area),
++        "mark_source_only": _mark_objects(grid, [analysis["source"]]),
++    }
++
++
++def teaching_check(episode: Any, chosen_scope: str) -> dict[str, Any]:
++    if chosen_scope not in SCOPES:
++        raise ValueError("unknown chosen scope")
++    if type(episode) is not dict or type(episode.get("train")) is not list:
++        raise ValueError("episode must contain a train list")
++    demos = episode["train"]
++    if len(demos) < 2:
++        raise ValueError("teaching check requires at least two demonstrations")
++    setting_survivors = [
++        scope
++        for scope in SCOPES
++        if all(solve_python(pair["input"], scope) == pair["output"] for pair in demos)
++    ]
++    rival_names = sorted(_rival_predictions(demos[0]["input"]))
++    rival_survivors = [
++        name
++        for name in rival_names
++        if all(_rival_predictions(pair["input"])[name] == pair["output"] for pair in demos)
++    ]
++    return {
++        "setting_survivors": setting_survivors,
++        "rival_survivors": rival_survivors,
++        "refuted_rivals": [name for name in rival_names if name not in rival_survivors],
++        "used_query_answers": False,
++        "demo_count": len(demos),
++        "scope": chosen_scope,
++    }
++
++
++def _pair(grid: list[list[int]], scope: str) -> dict[str, list[list[int]]]:
++    return {"input": [row[:] for row in grid], "output": solve_python(grid, scope)}
++
++
++def generate(seed: int, settings: dict[str, Any], demos: int, queries: int) -> dict[str, Any]:
++    scope = _scope(settings)
++    _integer(seed, 0, 2**63 - 1, "seed")
++    _integer(demos, 2, 6, "demos")
++    _integer(queries, 1, 4, "queries")
++
++    demo_inputs = [
++        _scene(seed, "demo", index, _DEMO_PROFILES[index]) for index in range(demos)
++    ]
++    query_inputs = [
++        _scene(seed, "query", index, _QUERY_PROFILES[index]) for index in range(queries)
++    ]
++    all_inputs = demo_inputs + query_inputs
++    frozen = [tuple(tuple(row) for row in grid) for grid in all_inputs]
++    if len(frozen) != len(set(frozen)):
++        raise ValueError("all demonstration and query inputs must be distinct")
++    for grid in all_inputs:
++        analysis = analyze_relay(grid)
++        if solve_python(grid, "all") == solve_python(grid, "key_count_relay"):
++            raise ValueError("every input must distinguish the declared settings")
++        if len(set(analysis["candidate_window_counts_by_area"])) != 3:
++            raise ValueError("candidate window counts must be distinct")
++
++    episode = {
++        "train": [_pair(grid, scope) for grid in demo_inputs],
++        "test": [_pair(grid, scope) for grid in query_inputs],
++        "program_solution": program(settings),
++        "settings": {"window_scope": scope},
++        "seed": seed,
++        "teaching": {
++            "used_query_answers": False,
++            "dependency": "source 2x2-window count -> area-ranked candidate -> selected markings",
++        },
++    }
++    report = teaching_check(episode, scope)
++    if report["setting_survivors"] != [scope] or report["rival_survivors"]:
++        raise ValueError(f"demonstrations are not identifying: {report}")
++    episode["teaching"]["check"] = report
++    return episode
++
++
++def public_turn(episode: Any, query_index: Any = 0) -> dict[str, Any]:
++    if type(episode) is not dict or type(episode.get("train")) is not list or type(episode.get("test")) is not list:
++        raise ValueError("episode must contain train and test lists")
++    if type(query_index) is not int:
++        raise TypeError("query_index must be an exact integer")
++    if not 0 <= query_index < len(episode["test"]):
++        raise IndexError("query_index is outside the private episode")
++    try:
++        train = []
++        for pair in episode["train"]:
++            input_grid = deepcopy(pair["input"])
++            output_grid = deepcopy(pair["output"])
++            _strict_grid(input_grid)
++            _strict_grid(output_grid)
++            train.append({"input": input_grid, "output": output_grid})
++        query_grid = deepcopy(episode["test"][query_index]["input"])
++        _strict_grid(query_grid)
++        query = {"input": query_grid}
++    except (KeyError, TypeError) as error:
++        raise ValueError("episode pairs require input grids and demonstration outputs") from error
++    return {"train": train, "test": [query]}
++
++
++def turn_bytes(episode: Any, query_index: Any = 0) -> bytes:
++    return json.dumps(
++        public_turn(episode, query_index),
++        sort_keys=True,
++        separators=(",", ":"),
++        ensure_ascii=False,
++        allow_nan=False,
++    ).encode("utf-8")
++
++
++def public_id(episode: Any, query_index: Any = 0) -> str:
++    return hashlib.sha256(turn_bytes(episode, query_index)).hexdigest()
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/verify.py b/repo/generators/8c5406fbf66c/workspace/parametric/verify.py
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/verify.py
+@@ -0,0 +1,241 @@
++#!/usr/bin/env python3
++"""Bounded authoring audit for the 8c5406fbf66c parametric family.
++
++The audit checks count boundaries, matched inputs, prefix-stable sequential
++projection, finite-rival teaching, protected-Racket labels, a substantive 30x30
++query, and a wrong-intermediate causal ablation.  It is intentionally scoped to
++this task and does not grant native qualification or owner acceptance.
++"""
++from __future__ import annotations
++
++from contextlib import contextmanager
++from copy import deepcopy
++import argparse
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++from typing import Any, Callable, Iterable
++
++_HOME = Path(__file__).resolve().parent
++_SCOPES = ("all", "key_count_relay")
++
++
++def _sha(path: Path) -> str:
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def load_adapter():
++    path = _HOME / "adapter.py"
++    name = "_audit_8c5406fbf66c_" + hashlib.sha256(str(path).encode()).hexdigest()
++    sys.modules.pop(name, None)
++    spec = importlib.util.spec_from_file_location(name, path)
++    if spec is None or spec.loader is None:
++        raise ImportError(path)
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def _grid(value: Any) -> list[list[int]]:
++    if type(value) is not list or not value or type(value[0]) is not list or not value[0]:
++        raise ValueError("Racket result is not a nonempty grid")
++    width = len(value[0])
++    if any(type(row) is not list or len(row) != width for row in value):
++        raise ValueError("Racket result is ragged")
++    if any(type(cell) is not int or not 0 <= cell <= 9 for row in value for cell in row):
++        raise ValueError("Racket result contains non-ARC cells")
++    return value
++
++
++@contextmanager
++def protected_executor():
++    from arc_repl.racket_bridge import RacketBridge
++    from puzzle_generators.rule_wrap import wrap_rule
++
++    bridge = RacketBridge()
++    wrapped: dict[str, str] = {}
++    evaluations = {"count": 0}
++    try:
++        identity = dict(bridge.runtime_identity)
++        if identity.get("backend") != "racket" or identity.get("protected") is not True:
++            raise ValueError("audit requires a protected Racket backend")
++
++        def execute(program: str, grid: list[list[int]]) -> list[list[int]]:
++            if program not in wrapped:
++                wrapped[program] = wrap_rule(program)
++            literal = "'(" + " ".join(
++                "(" + " ".join(map(str, row)) + ")" for row in grid
++            ) + ")"
++            evaluations["count"] += 1
++            return _grid(bridge.eval_text(f"({wrapped[program]} {literal})"))
++
++        yield execute, identity, evaluations
++    finally:
++        bridge.close()
++
++
++def _inputs(episode: dict[str, Any]) -> list[list[list[int]]]:
++    return [pair["input"] for pair in episode["train"] + episode["test"]]
++
++
++def audit(
++    *,
++    seeds: Iterable[int] = (0, 17),
++    count_cases: Iterable[tuple[int, int]] = ((2, 1), (3, 4), (6, 4)),
++    execute: Callable[[str, list[list[int]]], list[list[int]]],
++    runtime_identity: dict[str, Any],
++) -> dict[str, Any]:
++    adapter = load_adapter()
++    seeds = tuple(seeds)
++    count_cases = tuple(count_cases)
++    if not seeds or not count_cases:
++        raise ValueError("audit needs seeds and count cases")
++
++    episodes = 0
++    jobs = 0
++    labels = 0
++    finite_rivals: set[str] = set()
++    per_job = []
++    large_query = None
++
++    for seed in seeds:
++        for demos, queries in count_cases:
++            generated = {
++                scope: adapter.generate(seed, {"window_scope": scope}, demos, queries)
++                for scope in _SCOPES
++            }
++            if _inputs(generated["all"]) != _inputs(generated["key_count_relay"]):
++                raise AssertionError("settings did not receive matched inputs")
++            for scope, episode in generated.items():
++                program = adapter.program({"window_scope": scope})
++                for pair in episode["train"] + episode["test"]:
++                    actual = execute(program, deepcopy(pair["input"]))
++                    if actual != pair["output"]:
++                        raise AssertionError(f"Racket label mismatch for {scope}")
++                    labels += 1
++                teaching = adapter.prototype.teaching_check(episode, scope)
++                if teaching["setting_survivors"] != [scope] or teaching["rival_survivors"]:
++                    raise AssertionError(f"teaching ambiguity for {scope}: {teaching}")
++                finite_rivals.update(teaching["refuted_rivals"])
++                jobs += 1
++                episodes += 1
++                per_job.append(
++                    {
++                        "seed": seed,
++                        "scope": scope,
++                        "demos": demos,
++                        "queries": queries,
++                        "public_first_turn_sha256": hashlib.sha256(
++                            adapter.prototype.turn_bytes(episode, 0)
++                        ).hexdigest(),
++                        "refuted_rivals": teaching["refuted_rivals"],
++                    }
++                )
++                if queries == 4:
++                    stress = episode["test"][3]["input"]
++                    details = {
++                        "dimensions": [len(stress), len(stress[0])],
++                        "nonzero_cells": sum(cell != 0 for row in stress for cell in row),
++                    }
++                    if details["dimensions"] != [30, 30] or details["nonzero_cells"] < 190:
++                        raise AssertionError(f"large query is not substantive: {details}")
++                    large_query = details
++
++        # Count changes must not mutate shared demonstrations or first query.
++        small = adapter.generate(seed, {"window_scope": "key_count_relay"}, 2, 1)
++        large = adapter.generate(seed, {"window_scope": "key_count_relay"}, 6, 4)
++        if small["train"] != large["train"][:2] or small["test"] != large["test"][:1]:
++            raise AssertionError("count requests are not prefix-stable")
++        one_query = adapter.generate(seed, {"window_scope": "key_count_relay"}, 3, 1)
++        four_queries = adapter.generate(seed, {"window_scope": "key_count_relay"}, 3, 4)
++        if adapter.prototype.turn_bytes(one_query, 0) != adapter.prototype.turn_bytes(four_queries, 0):
++            raise AssertionError("first-turn bytes changed with future query count")
++
++    # The first query has source-window count 2.  Force the intermediate to 1;
++    # protected execution must select a different area-ranked object.
++    seed = seeds[0]
++    relay = adapter.generate(seed, {"window_scope": "key_count_relay"}, 3, 4)
++    witness_input = relay["test"][0]["input"]
++    intermediate = adapter.prototype.analyze_relay(witness_input)["source_window_count"]
++    if intermediate == 1:
++        raise AssertionError("causal witness needs a non-one intermediate")
++    program = adapter.program({"window_scope": "key_count_relay"})
++    expected = execute(program, deepcopy(witness_input))
++    wrong_program = (_HOME / "wrong_rank_one.rkt").read_text()
++    if runtime_identity.get("backend") == "test":
++        wrong = adapter.prototype.solve_relay_with_intermediate(witness_input, 1)
++    else:
++        wrong = execute(wrong_program, deepcopy(witness_input))
++    if expected == wrong:
++        raise AssertionError("wrong intermediate did not change the final output")
++
++    report = {
++        "schema": "arcpuzzles-parametric-authoring-audit-v1",
++        "task_id": "8c5406fbf66c",
++        "status": "passed",
++        "settings": len(_SCOPES),
++        "jobs": jobs,
++        "episodes": episodes,
++        "label_count": labels,
++        "seeds": list(seeds),
++        "count_cases": [list(case) for case in count_cases],
++        "finite_rivals": sorted(finite_rivals),
++        "large_query": large_query,
++        "causal_ablation": {
++            "ablation": "wrong_intermediate",
++            "intermediate_value": intermediate,
++            "counterfactual_value": 1,
++            "changed_output": expected != wrong,
++            "input_sha256": hashlib.sha256(
++                json.dumps(witness_input, separators=(",", ":")).encode()
++            ).hexdigest(),
++            "program_sha256": hashlib.sha256(program.encode()).hexdigest(),
++            "counterfactual_program_sha256": hashlib.sha256(wrong_program.encode()).hexdigest(),
++        },
++        "racket": runtime_identity,
++        "sources": {
++            name: _sha(_HOME / name)
++            for name in (
++                "adapter.py",
++                "prototype.py",
++                "promotion.json",
++                "canonical.rkt",
++                "count_relay.rkt",
++                "wrong_rank_one.rkt",
++            )
++        },
++        "jobs_detail": per_job,
++        "scope": (
++            "Finite seeds/counts and named rivals only; this is authoring evidence, "
++            "not native qualification, owner acceptance, or training admission."
++        ),
++    }
++    return report
++
++
++def main(argv: list[str] | None = None) -> int:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--out", type=Path, required=True)
++    args = parser.parse_args(argv)
++    with protected_executor() as (execute, identity, evaluations):
++        report = audit(execute=execute, runtime_identity=identity)
++        report["racket_evaluations"] = evaluations["count"]
++    args.out.parent.mkdir(parents=True, exist_ok=True)
++    raw = json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
++    args.out.write_text(raw)
++    print(json.dumps({
++        "status": report["status"],
++        "jobs": report["jobs"],
++        "labels": report["label_count"],
++        "racket_evaluations": report["racket_evaluations"],
++        "out": str(args.out),
++        "sha256": hashlib.sha256(raw.encode()).hexdigest(),
++    }, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/repo/generators/8c5406fbf66c/workspace/parametric/wrong_rank_one.rkt b/repo/generators/8c5406fbf66c/workspace/parametric/wrong_rank_one.rkt
+new file mode 100644
+--- /dev/null
++++ b/repo/generators/8c5406fbf66c/workspace/parametric/wrong_rank_one.rkt
+@@ -0,0 +1,24 @@
++(rule!
++  (let ((dummy 0))
++    (define (active-anchors grid obj)
++      (let ((color (obj-color obj)))
++        (filter
++          (lambda (p)
++            (let ((r (first p)) (c (second p)))
++              (and (< r (- (rows grid) 1))
++                   (< c (- (cols grid) 1))
++                   (= (at grid r c) color)
++                   (= (at grid r (+ c 1)) color)
++                   (= (at grid (+ r 1) c) color)
++                   (= (at grid (+ r 1) (+ c 1)) color))))
++          (obj-cells obj))))
++    (define all-objects (objects g 0))
++    (define candidates
++      (sort
++        (filter
++          (lambda (obj) (member? (obj-color obj) (list 2 3 4 5 6 7)))
++          all-objects)
++        (lambda (a b) (< (obj-size a) (obj-size b)))))
++    (define target (first candidates))
++    (for/fold ((out g)) ((p (in-list (active-anchors g target))))
++      (set-cell out (first p) (second p) 8))))

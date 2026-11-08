@@ -1,0 +1,926 @@
+--- a/generators/4512012999bb/notes.md
++++ b/generators/4512012999bb/notes.md
+@@ -1,4 +1,43 @@
+-# Working notes: 4512012999bb
++# Current notes: 4512012999bb
+ 
+-Record design decisions, hypotheses, review findings, and unresolved questions here.
+-Imported associated notes retain original evidence/timestamps in `evidence/associated_notes.jsonl`.
++## Canonical behavior
++Find the unique paired vertical guides and detached crop, compare side-color
++match counts, mirror only on a strictly better score, and copy each wall row.
++The selected generator, canonical rule, existing tests, and approval bytes are
++unchanged by this proposal. Parent: training:846bdb03.
++
++## Proposed tie policy
++`workspace/parametric/prototype.py` exposes `direct` (exact canonical source)
++and `mirror` (change only `>` to `>=` at the orientation comparison). It keeps
++one policy per episode and independent demonstration/query counts. The default
++three demonstrations teach a positive-score asymmetric tie and both strict
++branches. Four queries have active crop areas 49, 64, 72, and 100 versus
++12, 18, and 24 in the default demonstrations; larger inputs contain larger
++crops, not only padding. Input sides remain at most 30; no exact-30 quota is
++claimed. Zero-score ties and uninformative symmetric ties have independent
++Racket-backed checks in the returned evidence.
++
++All labels and four declared rival programs execute through Racket. The default
++seed-17 batch retains both settings, 14 distinct inputs, all eight query
++certificates, and replayable private programs. Each setting is the sole survivor
++from its demonstrations within {direct, mirror, always-direct, always-mirror}.
++This finite-family claim is not uniqueness among all possible ARC rules.
++
++Public content and filenames derive only from visible challenge bytes via the
++shared reviewer support helper. The private directory contains settings,
++programs, answers, source hashes, and prediction matrices. Expose only public/.
++
++## Verification and remaining work
++Eight prototype contract tests, an actual 61-evaluation generation, a separate
++61-evaluation source-bound replay, and ten independent Racket-backed cases passed.
++Five of the independent cases are original canonical pairs. Production batteries
++were not rerun because production source is unchanged. Source drift is rejected
++by the replay tool rather than silently refreshing evidence.
++
++Normal review intake remains blocked: assignment review-f41cf94e34ab02dd was
++observed for this task, but its seed/journal was lost when the initial temporary
++execution session closed. No assignment was reconstructed or redrawn; no
++supplementary tickets were drawn. The return is an independently verified
++proposal patch, not a controller-approved return or a training-admission claim.
++The next action is owner review of this source-bound proposal; a normal new
++assignment requires an explicit recovery decision.
+--- /dev/null
++++ b/generators/4512012999bb/tests/test_parametric_4512012999bb.py
+@@ -0,0 +1,143 @@
++"""Stdlib contract tests for the opt-in parametric proposal.
++
++Run without writing bytecode: python3 -B -m unittest discover -s
++generators/4512012999bb/tests -p 'test_parametric_4512012999bb.py' -v
++"""
++from __future__ import annotations
++
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import random
++import tempfile
++import unittest
++
++
++HERE = Path(__file__).resolve().parents[1] / "workspace" / "parametric"
++SPEC = importlib.util.spec_from_file_location("parametric_4512012999bb", HERE / "prototype.py")
++P = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(P)
++
++
++class ParametricContracts(unittest.TestCase):
++    def test_program_default_is_byte_exact_and_ambiguous_selector_fails_closed(self):
++        canonical = "(rule! (lambda (g) (let ((flip? (> (score #t) (score #f)))) g)))\n"
++        programs = P.programs_from(canonical)
++        self.assertEqual(programs["direct"].encode(), canonical.encode())
++        self.assertEqual(
++            programs["mirror"],
++            "(rule! (lambda (g) (let ((flip? (>= (score #t) (score #f)))) g)))\n",
++        )
++        with self.assertRaises(ValueError):
++            P.programs_from(canonical + canonical)
++        with self.assertRaises(ValueError):
++            P.programs_from("(rule! (lambda (g) g))")
++
++    def test_side_score_ignores_odd_center_and_non_side_colors(self):
++        self.assertEqual(P.side_scores([[2, 9, 1], [1, 1, 2]], 2, 1), (2, 2))
++        self.assertEqual(P.side_scores([[2, 2, 8, 1], [0, 2, 1, 1]], 2, 1), (6, 0))
++
++    def test_generation_is_deterministic_distinct_and_does_not_touch_global_rng(self):
++        random.seed(993)
++        before = random.getstate()
++        first = P.sample_inputs(17, 3, 4, stream="direct")
++        self.assertEqual(random.getstate(), before)
++        self.assertEqual(first, P.sample_inputs(17, 3, 4, stream="direct"))
++        keys = [json.dumps(scene["input"]) for split in ("train", "test") for scene in first[split]]
++        self.assertEqual(len(keys), len(set(keys)))
++        self.assertEqual((len(first["train"]), len(first["test"])), (3, 4))
++        larger = P.sample_inputs(17, 5, 2, stream="direct")
++        self.assertEqual((len(larger["train"]), len(larger["test"])), (5, 2))
++        self.assertEqual(first["train"], larger["train"][:3])
++        self.assertEqual(first["test"][:2], larger["test"])
++
++    def test_teaching_has_positive_asymmetric_tie_and_both_strict_branches(self):
++        scenes = P.sample_inputs(23, 3, 4, stream="direct")
++        self.assertEqual([s["meta"]["kind"] for s in scenes["train"]], ["tie", "direct", "mirror"])
++        for split in ("train", "test"):
++            for scene in scenes[split]:
++                meta = scene["meta"]
++                self.assertEqual(len(P.find_candidates(scene["input"])), 1)
++                self.assertTrue(meta["asymmetric"])
++                direct, mirrored = meta["scores"]
++                if meta["kind"] == "tie":
++                    self.assertGreater(direct, 0)
++                    self.assertEqual(direct, mirrored)
++                elif meta["kind"] == "direct":
++                    self.assertGreater(direct, mirrored)
++                else:
++                    self.assertGreater(mirrored, direct)
++        max_demo_area = max(s["meta"]["crop_area"] for s in scenes["train"])
++        for query in scenes["test"]:
++            self.assertGreater(query["meta"]["crop_area"], max_demo_area)
++            self.assertGreater(len(set(query["meta"]["left_wall"][1:-1])), 1)
++        self.assertEqual([s["meta"]["kind"] for s in scenes["test"]], ["tie", "direct", "mirror", "tie"])
++
++    def test_counts_and_attempt_limit_reject_invalid_requests(self):
++        for train, test, attempts in ((2, 4, 64), (3, 0, 64), (3, 4, 0), (True, 4, 64)):
++            with self.assertRaises(ValueError):
++                P.sample_inputs(17, train, test, max_attempts=attempts)
++        first = P.sample_inputs(17, 3, 1, max_attempts=1)
++        forbidden = {P.grid_key(first["train"][0]["input"])}
++        with self.assertRaisesRegex(RuntimeError, "attempt"):
++            P.sample_inputs(17, 3, 1, max_attempts=1, forbidden=forbidden)
++
++    def test_query_answers_cannot_resolve_demo_ambiguity(self):
++        demos = [{"input": [[9]], "output": [[1]]}]
++        predictions = {
++            "direct": {"train": [[[1]]], "test": [[[2]]]},
++            "mirror": {"train": [[[1]]], "test": [[[3]]]},
++            "always-direct": {"train": [[[4]]], "test": [[[2]]]},
++        }
++        certificate = P.identify_from_demos(demos, predictions)
++        self.assertEqual(certificate["survivors"], ["direct", "mirror"])
++        self.assertFalse(certificate["queries"][0]["identifiable"])
++        self.assertEqual(certificate["eliminated"]["always-direct"], [0])
++        predictions["mirror"]["test"] = [[[2]]]
++        certificate = P.identify_from_demos(demos, predictions)
++        self.assertEqual(certificate["survivors"], ["direct", "mirror"])
++        self.assertTrue(certificate["queries"][0]["identifiable"])
++
++    def test_public_writer_uses_only_visible_bytes_and_refuses_overwrite(self):
++        challenge = {
++            "train": [{"input": [[1]], "output": [[2]]}],
++            "test": [{"input": [[3]], "output": [[9]], "private": "secret"}],
++            "setting": "secret",
++        }
++        episode = {"setting": "direct", "challenge": challenge, "query_answers": [[[9]]], "certificate": {}}
++        with tempfile.TemporaryDirectory() as temp:
++            out = Path(temp) / "batch"
++            result = P.write_batch(out, [episode], {"direct": "(rule! identity)"}, {"private": "secret"})
++            public_files = list((out / "public").iterdir())
++            self.assertEqual(len(public_files), 1)
++            data = public_files[0].read_bytes()
++            self.assertEqual(public_files[0].stem, hashlib.sha256(data).hexdigest())
++            self.assertEqual(json.loads(data), {
++                "train": [{"input": [[1]], "output": [[2]]}],
++                "test": [{"input": [[3]]}],
++            })
++            self.assertEqual(result["public_ids"], sorted(result["public_ids"]))
++            private = json.loads((out / "private" / "manifest.json").read_text())
++            self.assertEqual(private["episodes"][0]["query_answers"], [[[9]]])
++            self.assertTrue((out / "private" / "programs" / "direct.rkt").is_file())
++            with self.assertRaises(FileExistsError):
++                P.write_batch(out, [episode], {}, {})
++
++    def test_evidence_rejects_changed_source_before_starting_a_runtime(self):
++        spec = importlib.util.spec_from_file_location("parametric_evidence", HERE / "evidence.py")
++        evidence = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(evidence)
++        with tempfile.TemporaryDirectory() as temp:
++            batch = Path(temp)
++            (batch / "private").mkdir()
++            (batch / "private/manifest.json").write_text(json.dumps({
++                "schema": "4512012999bb-parametric-proposal-v1",
++                "provenance": {"prototype_sha256": "0" * 64},
++            }))
++            with self.assertRaisesRegex(ValueError, "source"):
++                evidence.audit_batch(batch)
++
++
++if __name__ == "__main__":
++    unittest.main()
+--- /dev/null
++++ b/generators/4512012999bb/workspace/parametric/README.md
+@@ -0,0 +1,131 @@
++# Opt-in parametric proposal: guide/crop tie policy
++
++This workspace prototype extends generator **4512012999bb**, whose parent is
++**training:846bdb03**. It does not edit or select `../../generator.py`. The
++canonical task and its rule remain the reference. This is an independently
++replayable proposal; it does not assert completion of the normal review intake.
++
++## Run
++
++From the outer review packet directory, use its existing `review.py run` entry
++point. That command runs its payload with `WORK/repo` as the working directory
++and provides the repository's Racket runtime and Python import paths.
++
++```bash
++python3 review.py run python3 -B generators/4512012999bb/workspace/parametric/prototype.py --seed 17 --setting all --train 3 --test 4 --out ../checks/parametric/final
++```
++
++For one episode, choose `--setting direct` or `--setting mirror`. Omitting
++`--setting` selects the canonical **direct** tie policy. `--train` and `--test`
++are independent; their defaults are 3 and 4. The supported ranges are 3–64 demos
++and 1–64 queries. Three demos are required to teach a positive-score tie, a
++strict direct decision, and a strict mirror decision. Each split/index has an
++independent deterministic random stream. No global random state is used.
++
++Choose a **new** `--out` directory every time. Existing destinations are refused.
++`--max-attempts` bounds construction attempts per scene (default 64; maximum
++256). A failure reports the scene and bound. `--timeout` bounds each Racket
++evaluation (default 30 seconds). `--canonical PATH` can explicitly identify a
++canonical JSON or JSONL file; it is unnecessary in the complete review runtime.
++The raw canonical program hash is checked before generation.
++
++## Semantic parameter
++
++`tie_policy` takes the values **direct** and **mirror**. The CLI calls this
++choice `--setting` and also accepts `all` to emit one episode of each setting.
++Every program retains the same backbone:
++
++1. Search for two nonzero vertical guide segments with equal endpoint colors.
++2. Find the bounding box of all remaining nonzero cells; it must be two rows
++   and two columns smaller than the guide-defined frame.
++3. Score the detached crop in both horizontal orientations using the **first
++   interior** color of each guide. An odd center column contributes to neither
++   score; non-side colors also contribute to neither score.
++4. Copy both guide columns row by row into the output, leave the top/bottom
++   interior zero, and insert the chosen crop orientation.
++
++The `direct` materialized program is byte-for-byte the exact canonical
++`program_solution`. Its raw SHA-256 is:
++
++```text
++e3238cefdd981958e0835cc7d91d0680cd68f3d3db6321936805ae88fb3f1beb
++```
++
++The `mirror` program changes exactly the sole comparison
++`(> (score #t) (score #f))` to `(>= (score #t) (score #f))`.
++Construction fails if that exact selector is missing or occurs more than once.
++Two teaching rivals, `always-direct` and `always-mirror`, replace only that same
++selector with `#f` or `#t`. They are declared diagnostic rivals, not settings
++that the generator selects.
++
++Every label and every rival prediction comes from the actual **RacketBridge**.
++The original wrapper and complete program source are evaluated unchanged under
++a lexical identity binding for `rule!`. Python samples inputs and checks shape,
++guide, crop, score, and serialization invariants; it is not the label backend.
++Generation first replays all five labeled original pairs with the exact
++canonical program. The original examples alone do not demonstrate tie policy.
++
++## Teaching and queries
++
++The first three demos contain an asymmetric **positive-score tie**, a strict
++direct case, and a strict mirror case. Different top-corner accents make every
++crop visibly different from its horizontal reflection. All scenes must have
++exactly one canonical guide/crop candidate. All inputs are distinct across
++demos, queries, and both settings in an `all` batch.
++
++The four default queries use crop sizes **7×7, 8×8, 8×9, and 10×10**; the three
++default demos use **3×4, 3×6, and 4×6**. Query decisions are respectively tie,
++strict direct, strict mirror, and tie. Query crops mix correct and opposite side
++colors; their strict score margins are two cells. Queries also vary guide-wall
++colors after the first interior row, preserve accent colors, and include odd
++widths whose colored center column must be excluded from scoring. Larger active
++crops increase the cells that must be counted and copied. Surrounding blank
++padding is placement variation and is not claimed to add reasoning difficulty.
++
++## Public/private boundary and identifiability
++
++`public/` contains only `<visible-content-sha256>.json` files. Each file is
++written using the repository's `reviewer_support.public_challenge_bytes`, and
++its name comes from `public_challenge_id`. The only visible fields are demo
++inputs/outputs and query inputs. Identity is the hash of those exact bytes,
++including the helper's trailing newline. Public names contain no setting,
++seed, program, task, or answer metadata. Batch order is the sorted content-ID
++order recorded privately.
++
++`private/manifest.json` contains the selected setting, scene facts, hidden query
++answers, the complete four-program prediction matrix, provenance hashes, and a
++certificate for **each query**. `private/programs/` contains the exact four
++materialized Racket programs and their hashes are recorded in the manifest.
++Share only the `public/` files for a blind challenge.
++
++The certificate first eliminates declared programs using **only demo outputs**.
++It then groups the survivors' predictions for each query. A query is identified
++when every surviving declared program predicts the same output. Generation
++requires the selected policy to be the sole surviving program, and requires
++every query to be identified. This establishes identifiability only within the
++four explicitly declared programs. It makes no claim about all possible ARC
++rules, unseen shortcut hypotheses, or a learner's empirical solve rate.
++
++## Verify
++
++Source-only contract tests need only the Python standard library:
++
++```bash
++python3 review.py run python3 -B -m unittest discover -s generators/4512012999bb/tests -p test_parametric_4512012999bb.py -v
++```
++
++Replay the generated batch using actual Racket again, checking materialized
++program bytes, source hashes, public hashes, all predictions, private answers,
++and the demo-only certificates:
++
++```bash
++python3 review.py run python3 -B generators/4512012999bb/workspace/parametric/evidence.py --batch ../checks/parametric/final --out ../checks/parametric/final/private/evidence.json
++```
++
++The evidence script bounds replay to 64 generated scenes by default (adjustable
++up to 256). For the two default episodes it replays 14 generated scenes against
++four programs plus the five canonical examples: **61 Racket evaluations**. It
++refuses replay if the proposal source, canonical source file, or selected
++generator has changed since generation. The resulting private report binds the
++observations to the source, materialized programs, manifest, executable,
++prelude, and bridge hashes. This is an authoring audit, not a blind solve.
+--- /dev/null
++++ b/generators/4512012999bb/workspace/parametric/evidence.py
+@@ -0,0 +1,159 @@
++"""Bounded source-bound replay of an already generated parametric batch.
++
++This is an authoring audit: it deliberately reads private programs/answers.
++It is not a blind solver or evidence of a completed review intake.
++"""
++from __future__ import annotations
++
++import argparse
++import importlib.util
++import json
++from pathlib import Path
++import re
++import sys
++
++
++HERE = Path(__file__).resolve().parent
++SPEC = importlib.util.spec_from_file_location("parametric_proposal", HERE / "prototype.py")
++P = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(P)
++
++
++def audit_batch(batch, *, canonical=None, max_pairs=64, timeout=30):
++    """Replay at most max_pairs scenes, four programs each, plus five originals."""
++    batch = Path(batch)
++    if type(max_pairs) is not int or not 1 <= max_pairs <= 256:
++        raise ValueError("max_pairs must be in 1..256")
++    manifest_path = batch / "private/manifest.json"
++    manifest = json.loads(manifest_path.read_text())
++    if manifest.get("schema") != "4512012999bb-parametric-proposal-v1":
++        raise ValueError("unexpected proposal manifest schema")
++    provenance = manifest["provenance"]
++    source_sha = P.sha256((HERE / "prototype.py").read_bytes())
++    if provenance["prototype_sha256"] != source_sha:
++        raise ValueError("proposal source changed since batch generation; regenerate before replay")
++    selected = HERE.parents[1] / "generator.py"
++    selected_sha = P.sha256(selected.read_bytes())
++    if provenance["selected_generator_sha256"] != selected_sha:
++        raise ValueError("selected generator source changed since batch generation")
++    canonical_row, canonical_path = P.load_canonical(canonical)
++    if P.sha256(canonical_path.read_bytes()) != provenance["canonical_file_sha256"]:
++        raise ValueError("canonical source file changed since batch generation")
++    expected_programs = P.programs_from(canonical_row["program_solution"])
++    programs = {}
++    if set(manifest["program_sha256"]) != set(P.RIVALS):
++        raise ValueError("the evidence must cover exactly the four declared programs")
++    for name in P.RIVALS:
++        raw = (batch / "private/programs" / f"{name}.rkt").read_bytes()
++        if raw != expected_programs[name].encode() or P.sha256(raw) != manifest["program_sha256"][name]:
++            raise ValueError(f"materialized {name} program differs from its bound source")
++        programs[name] = raw.decode()
++    ids = manifest["public_ids"]
++    if (not ids or len(ids) > 2 or ids != sorted(set(ids))
++            or any(not re.fullmatch(r"[0-9a-f]{64}", item) for item in ids)):
++        raise ValueError("public IDs must be a sorted unique batch of one or two hashes")
++    if sorted(p.name for p in (batch / "public").iterdir()) != [f"{item}.json" for item in ids]:
++        raise ValueError("public directory must contain only the visible-content hash files")
++    if [episode["public_id"] for episode in manifest["episodes"]] != ids:
++        raise ValueError("private episodes are not aligned to the sorted public batch")
++    P._add_runtime_path()
++    from reviewer_support import public_challenge_bytes, public_challenge_id
++    challenges, seen = [], set()
++    count = 0
++    for episode in manifest["episodes"]:
++        public_id = episode["public_id"]
++        raw = (batch / "public" / f"{public_id}.json").read_bytes()
++        challenge = json.loads(raw)
++        if raw != public_challenge_bytes(challenge) or public_challenge_id(challenge) != public_id:
++            raise ValueError("public file has extra fields, noncanonical bytes, or an invalid content ID")
++        if episode["setting"] not in ("direct", "mirror"):
++            raise ValueError("unknown selected policy")
++        for split in ("train", "test"):
++            if len(challenge[split]) != len(episode["scenes"][split]):
++                raise ValueError("metadata scene count mismatch")
++            for pair in challenge[split]:
++                key = P.grid_key(pair["input"])
++                if key in seen:
++                    raise ValueError("input grid repeated across the batch")
++                seen.add(key)
++                if len(P.find_candidates(pair["input"])) != 1:
++                    raise ValueError("scene does not have exactly one guide/crop candidate")
++                count += 1
++        challenges.append((episode, challenge))
++    if count > max_pairs:
++        raise ValueError(f"batch contains {count} scenes, above replay bound {max_pairs}")
++    runner = P.RacketRunner(timeout=timeout)
++    episode_evidence = []
++    try:
++        originals = list(canonical_row["train"])
++        test = canonical_row.get("test", [])
++        originals += [test] if isinstance(test, dict) else test
++        labeled = [pair for pair in originals if "output" in pair]
++        if len(labeled) != 5:
++            raise ValueError("expected five labeled original pairs")
++        for index, pair in enumerate(labeled):
++            if runner.apply(programs["direct"], pair["input"]) != pair["output"]:
++                raise AssertionError(f"canonical replay mismatch at pair {index}")
++        for episode, challenge in challenges:
++            predictions = {name: {"train": [], "test": []} for name in P.RIVALS}
++            for split in ("train", "test"):
++                for index, pair in enumerate(challenge[split]):
++                    outputs = {name: runner.apply(programs[name], pair["input"]) for name in P.RIVALS}
++                    scene = {"input": pair["input"], "meta": episode["scenes"][split][index]}
++                    P._check_outputs(scene, outputs)
++                    for name, output in outputs.items():
++                        predictions[name][split].append(output)
++            if predictions != episode["predictions"]:
++                raise AssertionError("materialized prediction matrix failed live Racket replay")
++            if predictions[episode["setting"]]["test"] != episode["query_answers"]:
++                raise AssertionError("private query answers failed live Racket replay")
++            certificate = P.identify_from_demos(challenge["train"], predictions)
++            if (certificate != episode["certificate"] or certificate["survivors"] != [episode["setting"]]
++                    or not all(query["identifiable"] for query in certificate["queries"])):
++                raise AssertionError("demo-only finite-family certificate failed recomputation")
++            episode_evidence.append({"public_id": episode["public_id"], "setting": episode["setting"],
++                                     "train": len(challenge["train"]), "test": len(challenge["test"]),
++                                     "certificate": certificate,
++                                     "query_crop_shapes": [s["crop_shape"] for s in episode["scenes"]["test"]]})
++        result = {"schema": "4512012999bb-parametric-replay-v1", "status": "pass",
++                  "scope": "source-bound authoring replay; finite declared rivals only; not review intake",
++                  "canonical_pairs_passed": len(labeled), "scenes_replayed": count,
++                  "racket_evaluations": runner.calls, "max_scene_bound": max_pairs,
++                  "public_ids": ids, "episodes": episode_evidence,
++                  "source_sha256": {"prototype.py": source_sha,
++                                    "evidence.py": P.sha256(Path(__file__).read_bytes()),
++                                    "selected_generator.py": selected_sha,
++                                    "canonical_file": P.sha256(canonical_path.read_bytes()),
++                                    "private_manifest": P.sha256(manifest_path.read_bytes())},
++                  "program_sha256": manifest["program_sha256"],
++                  "runtime_identity": runner.bridge.runtime_identity}
++    finally:
++        runner.close()
++    return result
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--batch", type=Path, required=True)
++    parser.add_argument("--out", type=Path, required=True, help="new private evidence JSON file")
++    parser.add_argument("--canonical", type=Path)
++    parser.add_argument("--max-pairs", type=int, default=64)
++    parser.add_argument("--timeout", type=float, default=30)
++    args = parser.parse_args(argv)
++    try:
++        if args.out.exists():
++            raise FileExistsError(f"evidence output already exists: {args.out}")
++        result = audit_batch(args.batch, canonical=args.canonical, max_pairs=args.max_pairs, timeout=args.timeout)
++        args.out.parent.mkdir(parents=True, exist_ok=True)
++        with args.out.open("x", encoding="utf-8") as handle:
++            handle.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
++    except (ValueError, KeyError, OSError, RuntimeError, AssertionError) as error:
++        print(f"parametric replay failed: {error}", file=sys.stderr)
++        return 1
++    print(json.dumps({"status": result["status"], "scenes_replayed": result["scenes_replayed"],
++                      "racket_evaluations": result["racket_evaluations"], "public_ids": result["public_ids"]}, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- /dev/null
++++ b/generators/4512012999bb/workspace/parametric/prototype.py
+@@ -0,0 +1,432 @@
++"""Opt-in tie-policy proposal; never changes or selects the canonical generator.
++
++All labels and declared rival predictions are produced by the real RacketBridge.
++Python constructs inputs, observes structural constraints, and checks evidence.
++"""
++from __future__ import annotations
++
++import argparse
++import hashlib
++import itertools
++import json
++from pathlib import Path
++import random
++import sys
++
++
++TASK_ID = "4512012999bb"
++PARENT_ID = "training:846bdb03"
++HERE = Path(__file__).resolve().parent
++REPO = HERE.parents[3]
++CANONICAL_SHA256 = "e3238cefdd981958e0835cc7d91d0680cd68f3d3db6321936805ae88fb3f1beb"
++SELECTOR = "(> (score #t) (score #f))"
++RIVALS = ("direct", "mirror", "always-direct", "always-mirror")
++
++
++def sha256(data):
++    return hashlib.sha256(data if isinstance(data, bytes) else data.encode("utf-8")).hexdigest()
++
++
++def grid_key(grid):
++    return tuple(tuple(row) for row in grid)
++
++
++def programs_from(canonical_source):
++    """Exact canonical default; one guarded local edit for each declared rival."""
++    if canonical_source.count(SELECTOR) != 1:
++        raise ValueError("canonical orientation selector must occur exactly once")
++    return {
++        "direct": canonical_source,
++        "mirror": canonical_source.replace(SELECTOR, "(>= (score #t) (score #f))", 1),
++        "always-direct": canonical_source.replace(SELECTOR, "#f", 1),
++        "always-mirror": canonical_source.replace(SELECTOR, "#t", 1),
++    }
++
++
++def load_canonical(path=None):
++    candidates = [Path(path)] if path else [
++        REPO / "shared/data/canonical/puzzles.jsonl",
++        REPO / "data/canonical/puzzles.jsonl",
++    ]
++    source_path = next((p.resolve() for p in candidates if p.is_file()), None)
++    if source_path is None:
++        raise FileNotFoundError("canonical ledger unavailable; pass --canonical to its JSON/JSONL file")
++    raw = source_path.read_bytes()
++    if source_path.suffix == ".jsonl":
++        rows = [json.loads(line) for line in raw.decode().splitlines() if line.strip()]
++    else:
++        value = json.loads(raw)
++        rows = value if isinstance(value, list) else [value]
++    matches = [row for row in rows if row.get("task_id") == TASK_ID]
++    if not matches:
++        raise ValueError(f"canonical source contains no exact task {TASK_ID}")
++    sources = {row["program_solution"] for row in matches}
++    if len(sources) != 1 or sha256(next(iter(sources))) != CANONICAL_SHA256:
++        raise ValueError("canonical raw source changed; review the proposal before adapting it")
++    row = next((r for r in matches if r.get("source") == "training"), matches[0])
++    return row, source_path
++
++
++def side_scores(crop, left, right):
++    """Structural measurement only; this function does not produce labels."""
++    width = len(crop[0])
++    direct = mirrored = 0
++    for row in crop:
++        for col, value in enumerate(row):
++            if col < width // 2:
++                direct += value == left
++                mirrored += value == right
++            elif col >= (width + 1) // 2:
++                direct += value == right
++                mirrored += value == left
++    return direct, mirrored
++
++
++def find_candidates(grid):
++    """Observe all guide/crop candidates in the canonical enumeration order."""
++    height, width = len(grid), len(grid[0])
++    nonzero = [(r, c) for r in range(height) for c in range(width) if grid[r][c]]
++    candidates = []
++    for r0 in range(height):
++        for r1 in range(r0 + 2, height):
++            columns = [c for c in range(width) if grid[r0][c]
++                       and grid[r0][c] == grid[r1][c]
++                       and all(grid[r][c] for r in range(r0, r1 + 1))]
++            for left, right in itertools.combinations(columns, 2):
++                cells = [(r, c) for r, c in nonzero
++                         if not (r0 <= r <= r1 and c in (left, right))]
++                if not cells:
++                    continue
++                pr0, pr1 = min(r for r, _ in cells), max(r for r, _ in cells)
++                pc0, pc1 = min(c for _, c in cells), max(c for _, c in cells)
++                if pr1 - pr0 + 1 == r1 - r0 - 1 and pc1 - pc0 + 1 == right - left - 1:
++                    candidates.append((r0, r1, left, right, pr0, pr1, pc0, pc1))
++    return candidates
++
++
++def _crop(rng, height, width, left, right, accents, kind, hard):
++    # Two different accents at opposite top corners guarantee visible asymmetry.
++    # Reserved corners also fix the complete bbox before any side-color sampling.
++    reserved = {(0, 0), (0, width - 1), (height - 1, width - 1)}
++    crop = [[rng.choice((0, 0, *accents)) for _ in range(width)] for _ in range(height)]
++    crop[0][0], crop[0][-1], crop[-1][-1] = accents[0], accents[1], accents[0]
++    slots = [(r, c) for r in range(height) for c in range(width)
++             if (r, c) not in reserved and (c < width // 2 or c >= (width + 1) // 2)]
++    rng.shuffle(slots)
++    total = max(4, 2 * (int(len(slots) * 0.65) // 2))
++    total = min(total, 2 * (len(slots) // 2))
++    if kind == "tie":
++        direct_count = total // 2
++    elif hard:
++        direct_count = total // 2 + (1 if kind == "direct" else -1)
++    else:
++        majority = total - max(1, total // 5)
++        direct_count = majority if kind == "direct" else total - majority
++    for index, (r, c) in enumerate(slots[:total]):
++        correct = left if c < width // 2 else right
++        wrong = right if c < width // 2 else left
++        crop[r][c] = correct if index < direct_count else wrong
++    if width % 2:
++        for r in range(height):
++            crop[r][width // 2] = left if r % 2 == 0 else right
++    return crop
++
++
++def _scene(rng, split, index):
++    kinds = ("tie", "direct", "mirror", "tie") if split == "test" else ("tie", "direct", "mirror")
++    kind = kinds[index % len(kinds)]
++    if split == "test":
++        inner_h, inner_w = ((7, 7), (8, 8), (8, 9), (10, 10))[index % 4]
++    else:
++        inner_h, inner_w = ((3, 4), (3, 6), (4, 6), (5, 5), (4, 4))[index % 5]
++    outer_h, outer_w = inner_h + 2, inner_w + 2
++    marker, left, right, accent1, accent2 = rng.sample(range(1, 10), 5)
++    crop = _crop(rng, inner_h, inner_w, left, right, (accent1, accent2), kind, split == "test")
++    placement = ("right", "below", "above")[index % 3] if split == "test" else ("above", "below", "right")[index % 3]
++    top, margin, gap = rng.randint(1, 2), rng.randint(1, 2), rng.randint(1, 2)
++    if placement == "above":
++        pr0, pc0 = top, margin + rng.randint(0, 2)
++        r0, cL = pr0 + inner_h + gap, margin
++    elif placement == "below":
++        r0, cL = top, margin
++        pr0, pc0 = r0 + outer_h + gap, margin + rng.randint(0, 2)
++    else:
++        r0, cL = top, margin
++        pr0, pc0 = r0 + 1, cL + outer_w + gap
++    r1, cR = r0 + outer_h - 1, cL + outer_w - 1
++    height = max(r1 + 1, pr0 + inner_h) + rng.randint(1, 2)
++    width = max(cR + 1, pc0 + inner_w) + rng.randint(1, 2)
++    if height > 30 or width > 30:
++        return None
++    grid = [[0] * width for _ in range(height)]
++    varied = split == "test" or index % 3 == 2
++    left_wall, right_wall = [], []
++    for row in range(outer_h):
++        if row in (0, outer_h - 1):
++            lval = rval = marker
++        elif varied and row > 1 and row % 2 == 0:
++            lval, rval = accent1, accent2
++        else:
++            lval, rval = left, right
++        left_wall.append(lval)
++        right_wall.append(rval)
++        grid[r0 + row][cL], grid[r0 + row][cR] = lval, rval
++    for r, row in enumerate(crop):
++        grid[pr0 + r][pc0:pc0 + inner_w] = row
++    candidate = (r0, r1, cL, cR, pr0, pr0 + inner_h - 1, pc0, pc0 + inner_w - 1)
++    candidates = find_candidates(grid)
++    if candidates != [candidate]:
++        return None
++    scores = side_scores(crop, left, right)
++    if ((kind == "tie" and not scores[0] == scores[1] > 0)
++            or (kind == "direct" and scores[0] <= scores[1])
++            or (kind == "mirror" and scores[1] <= scores[0])):
++        raise AssertionError("constructed score relation does not match its lesson")
++    return {"input": grid, "meta": {
++        "kind": kind, "placement": placement, "input_shape": [height, width],
++        "crop_shape": [inner_h, inner_w], "crop_area": inner_h * inner_w,
++        "output_shape": [outer_h, outer_w], "candidate": list(candidate),
++        "candidate_count": len(candidates), "crop": crop, "scores": list(scores),
++        "left_color": left, "right_color": right,
++        "left_wall": left_wall, "right_wall": right_wall,
++        "asymmetric": any(row != row[::-1] for row in crop),
++        "odd_center_ignored": inner_w % 2 == 1,
++        "variegated_walls": varied,
++    }}
++
++
++def sample_inputs(seed, train_count=3, test_count=4, *, stream="direct", max_attempts=64, forbidden=None):
++    if type(seed) is not int:
++        raise ValueError("seed must be an integer")
++    if type(train_count) is not int or not 3 <= train_count <= 64:
++        raise ValueError("train must be an integer in 3..64 (three branch witnesses are required)")
++    if type(test_count) is not int or not 1 <= test_count <= 64:
++        raise ValueError("test must be an integer in 1..64")
++    if type(max_attempts) is not int or not 1 <= max_attempts <= 256:
++        raise ValueError("max_attempts must be an integer in 1..256")
++    seen = set() if forbidden is None else set(forbidden)
++    result = {"train": [], "test": []}
++    for split, count in (("train", train_count), ("test", test_count)):
++        for index in range(count):
++            for attempt in range(max_attempts):
++                # Every split/index is its own stream: changing --train cannot
++                # silently replace the held-out query inputs, and vice versa.
++                token = f"tie-policy-v1:{seed}:{stream}:{split}:{index}:{attempt}"
++                scene = _scene(random.Random(int(sha256(token), 16)), split, index)
++                if scene is not None and grid_key(scene["input"]) not in seen:
++                    seen.add(grid_key(scene["input"]))
++                    scene["meta"]["attempts"] = attempt + 1
++                    result[split].append(scene)
++                    break
++            else:
++                raise RuntimeError(f"{split}[{index}] exhausted {max_attempts} attempts for a unique valid scene")
++    return result
++
++
++def identify_from_demos(demos, predictions):
++    """Finite version space: only demo outputs can select surviving programs."""
++    if not demos or not predictions:
++        raise ValueError("nonempty demonstrations and declared predictions are required")
++    query_counts = {len(value["test"]) for value in predictions.values()}
++    if len(query_counts) != 1 or any(len(value["train"]) != len(demos) for value in predictions.values()):
++        raise ValueError("prediction matrix shape does not match the episode")
++    eliminated = {name: [i for i, pair in enumerate(demos) if value["train"][i] != pair["output"]]
++                  for name, value in predictions.items()}
++    survivors = sorted(name for name, mismatches in eliminated.items() if not mismatches)
++    if not survivors:
++        raise ValueError("no declared program agrees with the demonstrations")
++    queries = []
++    for index in range(next(iter(query_counts))):
++        groups = {}
++        for name in survivors:
++            key = sha256(json.dumps(predictions[name]["test"][index], separators=(",", ":")))
++            groups.setdefault(key, []).append(name)
++        queries.append({"query_index": index, "identifiable": len(groups) == 1,
++                        "surviving_prediction_classes": groups})
++    return {"scope": "only the finite declared program family; no claim about all possible rules",
++            "selection_uses": "demonstration inputs and outputs only",
++            "declared_programs": sorted(predictions), "survivors": survivors,
++            "eliminated": {name: indices for name, indices in eliminated.items() if indices},
++            "queries": queries}
++
++
++def _add_runtime_path():
++    runtime = REPO / "shared/runtime"
++    if runtime.is_dir() and str(runtime) not in sys.path:
++        sys.path.insert(0, str(runtime))
++
++
++class RacketRunner:
++    def __init__(self, timeout=30):
++        _add_runtime_path()
++        from arc_repl.racket_bridge import RacketBridge
++        self.bridge = RacketBridge(timeout=timeout)
++        self.calls = 0
++
++    def apply(self, source, grid):
++        literal = "(" + " ".join("(" + " ".join(map(str, row)) + ")" for row in grid) + ")"
++        # The source, including its rule! wrapper, is not rewritten to execute.
++        expression = f"((let ((rule! (lambda (f) f))) {source}) '{literal})"
++        result = self.bridge.eval_text(expression)
++        self.calls += 1
++        if (type(result) is not list or not result or type(result[0]) is not list or not result[0]
++                or len(result) > 30 or len(result[0]) > 30
++                or any(type(row) is not list or len(row) != len(result[0])
++                       or any(type(v) is not int or not 0 <= v <= 9 for v in row) for row in result)):
++            raise RuntimeError("Racket returned a malformed grid")
++        return result
++
++    def close(self):
++        self.bridge.close()
++
++
++def _check_outputs(scene, outputs):
++    meta = scene["meta"]
++    h, w = meta["output_shape"]
++    for name, output in outputs.items():
++        if [len(output), len(output[0])] != [h, w]:
++            raise AssertionError(f"{name}: wrong output shape")
++        if [row[0] for row in output] != meta["left_wall"] or [row[-1] for row in output] != meta["right_wall"]:
++            raise AssertionError(f"{name}: guide walls were not copied row by row")
++        if any(output[0][1:-1]) or any(output[-1][1:-1]):
++            raise AssertionError(f"{name}: nonzero horizontal frame interior")
++    if outputs["always-direct"] == outputs["always-mirror"]:
++        raise AssertionError("scene does not expose orientation")
++    for policy in ("direct", "mirror"):
++        direct_score, mirror_score = meta["scores"]
++        flip = mirror_score > direct_score or (policy == "mirror" and mirror_score == direct_score)
++        rival = "always-mirror" if flip else "always-direct"
++        if outputs[policy] != outputs[rival]:
++            raise AssertionError(f"{policy}: Racket branch disagrees with measured scores")
++    crop = meta["crop"]
++    if [row[1:-1] for row in outputs["always-direct"][1:-1]] != crop:
++        raise AssertionError("Racket direct output failed to preserve the detached crop")
++    if [row[1:-1] for row in outputs["always-mirror"][1:-1]] != [row[::-1] for row in crop]:
++        raise AssertionError("Racket mirror output failed to reflect the detached crop")
++
++
++def build_episode(setting, scenes, programs, runner):
++    if setting not in ("direct", "mirror"):
++        raise ValueError("setting must be direct or mirror")
++    predictions = {name: {"train": [], "test": []} for name in RIVALS}
++    for split in ("train", "test"):
++        for scene in scenes[split]:
++            outputs = {name: runner.apply(programs[name], scene["input"]) for name in RIVALS}
++            _check_outputs(scene, outputs)
++            for name, output in outputs.items():
++                predictions[name][split].append(output)
++    demos = [{"input": scene["input"], "output": predictions[setting]["train"][i]}
++             for i, scene in enumerate(scenes["train"])]
++    certificate = identify_from_demos(demos, predictions)
++    if certificate["survivors"] != [setting] or not all(q["identifiable"] for q in certificate["queries"]):
++        raise AssertionError("demonstrations fail to identify every query in the declared family")
++    return {"setting": setting,
++            "challenge": {"train": demos, "test": [{"input": s["input"]} for s in scenes["test"]]},
++            "query_answers": predictions[setting]["test"], "predictions": predictions,
++            "certificate": certificate,
++            "scenes": {split: [s["meta"] for s in scenes[split]] for split in ("train", "test")}}
++
++
++def write_batch(out, episodes, programs, provenance):
++    _add_runtime_path()
++    from reviewer_support import public_challenge_bytes, public_challenge_id
++    out = Path(out)
++    if out.exists():
++        raise FileExistsError(f"output directory already exists: {out}; choose a new --out")
++    bound = []
++    for episode in episodes:
++        visible = public_challenge_bytes(episode["challenge"])
++        public_id = public_challenge_id(episode["challenge"])
++        if sha256(visible) != public_id:
++            raise AssertionError("public helper byte/hash mismatch")
++        bound.append((public_id, visible, episode))
++    bound.sort(key=lambda item: item[0])
++    if len({item[0] for item in bound}) != len(bound):
++        raise ValueError("batch contains duplicate public challenges")
++    out.mkdir(parents=True, exist_ok=False)
++    (out / "public").mkdir()
++    (out / "private/programs").mkdir(parents=True)
++    for name, source in sorted(programs.items()):
++        (out / "private/programs" / f"{name}.rkt").write_bytes(source.encode("utf-8"))
++    records = []
++    for public_id, visible, episode in bound:
++        (out / "public" / f"{public_id}.json").write_bytes(visible)
++        records.append({"public_id": public_id, **{k: v for k, v in episode.items() if k != "challenge"}})
++    manifest = {"schema": "4512012999bb-parametric-proposal-v1", "task_id": TASK_ID,
++                "parent_id": PARENT_ID, "status": "opt-in proposal; not selected generator",
++                "public_ids": [item[0] for item in bound],
++                "program_sha256": {name: sha256(source) for name, source in sorted(programs.items())},
++                "provenance": provenance, "episodes": records}
++    (out / "private/manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    return manifest
++
++
++def generate_batch(*, seed=17, train=3, test=4, setting="direct", out, canonical=None, max_attempts=64, timeout=30):
++    if Path(out).exists():
++        raise FileExistsError(f"output directory already exists: {out}; choose a new --out")
++    if setting not in ("all", "direct", "mirror"):
++        raise ValueError("setting must be all, direct, or mirror")
++    canonical_row, canonical_path = load_canonical(canonical)
++    programs = programs_from(canonical_row["program_solution"])
++    settings = ("direct", "mirror") if setting == "all" else (setting,)
++    scenes_by_setting, seen = {}, set()
++    for policy in settings:
++        scenes = sample_inputs(seed, train, test, stream=policy, max_attempts=max_attempts, forbidden=seen)
++        scenes_by_setting[policy] = scenes
++        seen.update(grid_key(s["input"]) for split in ("train", "test") for s in scenes[split])
++    runner = RacketRunner(timeout=timeout)
++    try:
++        canonical_pairs = list(canonical_row["train"])
++        held_out = canonical_row.get("test", [])
++        canonical_pairs += [held_out] if isinstance(held_out, dict) else held_out
++        canonical_passed = 0
++        for index, pair in enumerate(canonical_pairs):
++            if "output" not in pair:
++                continue
++            if runner.apply(programs["direct"], pair["input"]) != pair["output"]:
++                raise AssertionError(f"exact canonical program failed labeled pair {index}")
++            canonical_passed += 1
++        if canonical_passed != 5:
++            raise AssertionError(f"expected all five labeled canonical pairs, found {canonical_passed}")
++        episodes = [build_episode(policy, scenes_by_setting[policy], programs, runner) for policy in settings]
++        provenance = {"seed": seed, "train": train, "test": test, "setting": setting,
++                      "max_attempts_per_scene": max_attempts, "label_backend": "actual RacketBridge",
++                      "canonical_pairs_passed": canonical_passed, "racket_evaluations": runner.calls,
++                      "canonical_program_sha256": sha256(programs["direct"]),
++                      "canonical_file_sha256": sha256(canonical_path.read_bytes()),
++                      "prototype_sha256": sha256(Path(__file__).read_bytes()),
++                      "selected_generator_sha256": sha256((HERE.parents[1] / "generator.py").read_bytes()),
++                      "runtime_identity": runner.bridge.runtime_identity}
++    finally:
++        runner.close()
++    return write_batch(out, episodes, programs, provenance)
++
++
++def parser():
++    result = argparse.ArgumentParser(description=__doc__)
++    result.add_argument("--seed", type=int, default=17)
++    result.add_argument("--train", type=int, default=3, help="demo count, 3..64 (independent of --test)")
++    result.add_argument("--test", type=int, default=4, help="query count, 1..64 (independent of --train)")
++    result.add_argument("--setting", choices=("all", "direct", "mirror"), default="direct")
++    result.add_argument("--out", type=Path, required=True, help="new output directory; existing paths are refused")
++    result.add_argument("--canonical", type=Path, help="explicit canonical JSON or JSONL (optional in review runtime)")
++    result.add_argument("--max-attempts", type=int, default=64)
++    result.add_argument("--timeout", type=float, default=30, help="seconds per Racket evaluation")
++    return result
++
++
++def main(argv=None):
++    arguments = parser().parse_args(argv)
++    try:
++        result = generate_batch(**vars(arguments))
++    except (ValueError, FileNotFoundError, FileExistsError, RuntimeError, AssertionError) as error:
++        print(f"parametric proposal failed: {error}", file=sys.stderr)
++        return 1
++    print(json.dumps({"status": "generated", "public_ids": result["public_ids"],
++                      "canonical_pairs_passed": result["provenance"]["canonical_pairs_passed"],
++                      "racket_evaluations": result["provenance"]["racket_evaluations"]}, sort_keys=True))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

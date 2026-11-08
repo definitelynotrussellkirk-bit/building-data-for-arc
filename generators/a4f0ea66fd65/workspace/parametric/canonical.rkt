@@ -1,0 +1,11 @@
+(rule!
+  (let* ((a (first (find-color g 2)))
+         (b (first (find-color g 3)))
+         (dr (- (first b) (first a)))
+         (dc (- (second b) (second a))))
+    (foldl (lambda (p out)
+             (let ((nr (+ (first p) dr)) (nc (+ (second p) dc)))
+               (if (in-bounds? nr nc (rows g) (cols g))
+                   (set-cell out nr nc 1)
+                   out)))
+           g (find-color g 8))))

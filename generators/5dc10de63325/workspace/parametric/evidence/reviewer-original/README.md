@@ -1,0 +1,57 @@
+# Fill-order parametric prototype
+
+This is an **isolated proposed prototype**. It does not alter the selected
+canonical generator, canonical Racket program, rule hash, or approval state.
+
+## Parameter
+
+`fill_order` is selected exactly once from the deterministic episode seed:
+
+- `bottom_row_first` — canonical/default: bottom-right, bottom-left,
+  top-right, top-left;
+- `right_column_first` — bottom-right, top-right, bottom-left, top-left;
+- `top_row_first` — top-left, top-right, bottom-left, bottom-right.
+
+Every setting preserves the original reasoning chain: count cyan cells,
+floor-divide by four, fill that many cells of a 2×2 glyph, and repeat the glyph
+in four quadrants around a zero middle row and column. Only the within-glyph
+fill order changes. The canonical setting materializes to the exact pinned
+canonical source bytes.
+
+Each retained episode uses q1, q2, and q3 demonstrations with varied lawful
+input geometries, followed by a q2 query with a different remainder and shape.
+The demonstrations distinguish the selected setting from both declared rivals
+before the query. All retained labels are produced by executed Racket; the
+Python implementation is only a test/debug mirror.
+
+## Reproduce
+
+From the outer extracted packet directory:
+
+```bash
+python3 review.py run python3 \
+  generators/5dc10de63325/workspace/parametric/prototype.py \
+  --out-dir ../checks/parametric/fill-order-v1
+```
+
+The builder refuses to overwrite evidence. It writes:
+
+- `summary.json` and a hash manifest;
+- one redacted public challenge per setting under `public/`;
+- private episodes, all rival outputs, exact Racket text/hashes, source hashes,
+  runtime identity, and query answers under `private/`;
+- one exact materialized Racket file per setting under `private/rules/`.
+
+Public challenge files omit the episode seed, hidden parameter, Racket source,
+alternative outputs, and query answer.
+
+Focused portable tests:
+
+```bash
+python3 review.py run python3 -m pytest -q \
+  generators/5dc10de63325/tests/test_parametric_fill_order.py
+```
+
+This evidence is bounded to three declared fill orders and one retained episode
+per setting. It is not a production parametric-rule API, an exhaustive
+identifiability proof, or training approval.

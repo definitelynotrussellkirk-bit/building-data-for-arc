@@ -1,0 +1,31 @@
+(rule!
+  (let ((dummy 0))
+    (define axis (quotient (cols g) 2))
+    (define stage
+      (for*/fold ((out g))
+                 ((r (in-range (rows g))) (c (in-range axis)))
+        (let ((mc (- (* 2 axis) c)))
+          (if (and (= (at g r c) 2)
+                   (in-bounds? r mc (rows g) (cols g)))
+              (set-cell out r mc 7)
+              out))))
+    (define marker
+      (find-first
+        (lambda (p) (= (at stage (first p) (second p)) 1))
+        (grid-positions stage)))
+    (define mr (first marker))
+    (define mc (second marker))
+    (define (first-orange c)
+      (if (>= c (cols stage))
+          #f
+          (if (= (at stage mr c) 7) c (first-orange (+ c 1)))))
+    (define start (first-orange (+ mc 1)))
+    (define (after-orange c)
+      (if (and (< c (cols stage)) (= (at stage mr c) 7))
+          (after-orange (+ c 1))
+          c))
+    (define stop (after-orange start))
+    (if (and (in-bounds? mr stop (rows stage) (cols stage))
+             (= (at stage mr stop) 0))
+        (set-cell stage mr stop 1)
+        stage)))

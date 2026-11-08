@@ -1,0 +1,1 @@
+F1: The public-creation preflight raises on the first original mismatch without writing an original-pair diagnostic; retain a failed receipt with exact diff cells and source/runtime hashes so later agents can investigate without rerunning or accidentally treating an xfail as a completed build.

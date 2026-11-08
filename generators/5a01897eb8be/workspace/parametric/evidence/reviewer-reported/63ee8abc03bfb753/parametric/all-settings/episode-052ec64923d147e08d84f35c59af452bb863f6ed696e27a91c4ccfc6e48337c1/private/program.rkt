@@ -1,0 +1,82 @@
+(rule!
+ ;; Each color draws a corner glyph: an L whose ARM length shows how
+ ;; thick its ring's corners are. Nest all colors as concentric square
+ ;; rings (sizes 1,3,5,... when some glyph is a single cell, else
+ ;; 3,5,7,...): a glyph needs a ring at least as big as itself; glyphs
+ ;; that exactly match a ring size claim theirs largest-first. Draw
+ ;; each assigned ring as four corner Ls of the glyph's arm length.
+ (lambda (g)
+   (let ()
+     (define bg (at g 0 0))
+     (define (count-ext col from-r from-c dr dc)
+       (let loop ((i 0))
+         (let ((nr (+ from-r (* i dr))) (nc (+ from-c (* i dc))))
+           (if (and (in-bounds? nr nc h w) (= (at g nr nc) col))
+               (loop (+ i 1))
+               i))))
+     (define (corner-arm col cell dr dc)
+       (min (count-ext col (first cell) (second cell) 0 dc)
+            (count-ext col (first cell) (second cell) dr 0)))
+     (define (color-info c)  ;; (color max-dim arm)
+       (let* ((cells (find-color g c))
+              (bb (bbox-of-cells cells)))
+         (list c
+               (max (+ 1 (- (third bb) (first bb)))
+                    (+ 1 (- (fourth bb) (second bb))))
+               (max-of (lambda (cell)
+                         (max (corner-arm c cell 1 1)
+                              (corner-arm c cell 1 -1)
+                              (corner-arm c cell -1 1)
+                              (corner-arm c cell -1 -1)))
+                       cells))))
+     (define infos
+       (map color-info (filter (lambda (c) (not (= c bg)))
+                               (grid-colors g))))
+     (define n (length infos))
+     (define has-center (any? (lambda (i) (= (second i) 1)) infos))
+     (define out-size (+ (if has-center 1 3) (* 4 (- n 1))))
+     (define ring-sizes
+       (map (lambda (i) (+ (if has-center 1 3) (* 4 i))) (range 0 n)))
+     (define (exact? info) (member? (second info) ring-sizes))
+     (define (assign shps available acc)
+       ;; each shape takes the smallest ring that still fits it
+       (if (null? shps)
+           (list acc available)
+           (let ((target (find (lambda (r) (>= r (second (first shps))))
+                               available)))
+             (assign (rest shps)
+                     (filter (lambda (r) (not (= r target))) available)
+                     (cons (list (first shps) target) acc)))))
+     (define assignments  ;; loose fits first, exact matches biggest-first
+       (let* ((step1 (assign (filter (lambda (i) (not (exact? i))) infos)
+                             ring-sizes (list)))
+              (step2 (assign (sort-by (filter exact? infos)
+                                      (lambda (i) (- 0 (second i))))
+                             (second step1) (first step1))))
+         (reverse (first step2))))
+     (define out-mid (quotient out-size 2))
+     (define (l-cells arm size)  ;; 4 corner Ls of a size x size ring
+       (let ((tl (append (map (lambda (i) (list 0 i)) (range 0 arm))
+                         (map (lambda (i) (list i 0)) (range 0 arm)))))
+         (append tl
+                 (map (lambda (p) (list (first p)
+                                        (- (- size 1) (second p))))
+                      tl)
+                 (map (lambda (p) (list (- (- size 1) (first p))
+                                        (second p)))
+                      tl)
+                 (map (lambda (p) (list (- (- size 1) (first p))
+                                        (- (- size 1) (second p))))
+                      tl))))
+     (define (place-ring gg assn)
+       (let* ((shape (first assn))
+              (ring-size (second assn))
+              (offset (- out-mid (quotient ring-size 2))))
+         (recolor-cells gg
+                        (map (lambda (p) (list (+ (first p) offset)
+                                               (+ (second p) offset)))
+                             (l-cells (min (third shape) ring-size)
+                                      ring-size))
+                        (first shape))))
+     (reduce place-ring (empty-grid out-size out-size bg)
+             (sort-by assignments (lambda (a) (- 0 (second a))))))))

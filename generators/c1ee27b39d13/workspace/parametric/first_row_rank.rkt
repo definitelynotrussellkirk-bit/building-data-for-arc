@@ -1,0 +1,18 @@
+(rule!
+ (let ((dummy 0))
+  (let* ((sel-cols
+          (filter (lambda (c) (and (> c 0) (= (at g 0 c) 4)))
+                  (range 0 (cols g))))
+         (sel-rows
+          (filter (lambda (r) (= (at g r 0) 5))
+                  (range 1 (rows g))))
+         (picked
+          (for/list ((r (in-list sel-rows)))
+           (for/list ((c (in-list sel-cols)))
+            (at g r c))))
+         (order
+          (map first
+               (sort-by (enumerate-list (first picked)) second))))
+   (for/list ((row (in-list picked)))
+    (for/list ((index (in-list order)))
+     (nth row index))))))

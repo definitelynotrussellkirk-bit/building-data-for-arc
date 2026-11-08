@@ -1,0 +1,60 @@
+(rule!
+ ;; Two solid rectangular frames lie in a striped exterior. Their interior
+ ;; background colors may differ. One contains repeated multicolor templates;
+ ;; the other contains singleton anchors. The anchor color identifies a template.
+ ;; Normalize each template around its unique matching marker, not its bbox.
+ ;; Crop the target and stamp those relative colored cells at matching markers,
+ ;; retaining the frame and the original target markers. The exterior is ignored.
+ (lambda (g)
+  (let ()
+   (define (area frame) (* (rows (second frame)) (cols (second frame))))
+   (define candidates
+    (for*/fold ((found '())) ((top (range (- (rows g) 4))) (left (range (- (cols g) 4))))
+     (let ((border (at g top left)))
+      (if (and (= (at g top (+ left 1)) border)
+               (= (at g (+ top 1) left) border)
+               (not (= (at g (+ top 1) (+ left 1)) border)))
+       (for*/fold ((acc found)) ((bottom (range (+ top 4) (rows g))) (right (range (+ left 4) (cols g))))
+        (if (and (andmap (lambda (c) (= (at g top c) border)) (range left (+ right 1)))
+                 (andmap (lambda (c) (= (at g bottom c) border)) (range left (+ right 1)))
+                 (andmap (lambda (r) (= (at g r left) border)) (range top (+ bottom 1)))
+                 (andmap (lambda (r) (= (at g r right) border)) (range top (+ bottom 1))))
+         (let* ((board (subgrid g top left bottom right))
+                (inside (subgrid board 1 1 (- (rows board) 2) (- (cols board) 2)))
+                (bg (pick-max (grid-colors inside) (lambda (x) (count-color inside x))))
+                (objs (objects-multicolor inside bg)))
+          (if (or (= bg border) (null? objs)) acc
+           (cons (list (list top left bottom right) board bg objs inside) acc))) acc)) found))))
+   (define (overlap? a b)
+    (not (or (< (third a) (first b)) (< (third b) (first a))
+             (< (fourth a) (second b)) (< (fourth b) (second a)))))
+   (define frames
+    (for/fold ((kept '())) ((frame (sort candidates (lambda (a b) (> (area a) (area b))))))
+     (if (ormap (lambda (old) (overlap? (first old) (first frame))) kept) kept (append kept (list frame)))))
+   (define target (find-first (lambda (f) (andmap (lambda (o) (= (obj-size o) 1)) (fourth f))) frames))
+   (define source (find-first (lambda (f) (not (equal? f target))) frames))
+   (define source-grid (fifth source))
+   (define target-grid (fifth target))
+   (define board (second target))
+   (define marker-colors (grid-colors target-grid (third target)))
+   (define templates
+    (map (lambda (obj)
+     (let* ((cells (obj-cells obj))
+            (marker (find-first (lambda (p) (member (at source-grid (first p) (second p)) marker-colors)) cells))
+            (color (at source-grid (first marker) (second marker)))
+            (anchor-r (first marker)) (anchor-c (second marker)))
+      (list color (obj-size obj)
+       (map (lambda (p) (list (- (first p) anchor-r) (- (second p) anchor-c)
+                             (at source-grid (first p) (second p)))) cells)))) (fourth source)))
+   (define largest (apply max (map second templates)))
+   (define (chosen? template) #t)
+   (for/fold ((out board)) ((obj (fourth target)))
+    (let* ((p (first (obj-cells obj))) (ar (+ 1 (first p))) (ac (+ 1 (second p)))
+           (color (at target-grid (first p) (second p)))
+           (template (find-first (lambda (item) (= (first item) color)) templates)))
+     (if (chosen? template)
+      (for/fold ((acc out)) ((cell (third template)))
+       (let ((r (+ ar (first cell))) (c (+ ac (second cell))))
+        (if (and (< 0 r (- (rows board) 1)) (< 0 c (- (cols board) 1))
+                 (= (at board r c) (third target)))
+         (set-cell acc r c (third cell)) acc))) out))))))

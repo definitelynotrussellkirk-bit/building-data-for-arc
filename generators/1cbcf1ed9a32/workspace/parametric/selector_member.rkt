@@ -1,0 +1,63 @@
+(rule! (let ((dummy 0))
+  (define (normalize cells)
+    (let* ((bb (bbox-of-cells cells)))
+      (sort (map (lambda (p)
+                   (list (- (first p) (first bb))
+                         (- (second p) (second bb))))
+                 cells)
+            cell<)))
+  (define (mirror-h pts)
+    (let ((maxc (apply max (map second pts))))
+      (sort (map (lambda (p) (list (first p) (- maxc (second p)))) pts) cell<)))
+  (define (rot1 pts)
+    (let ((maxr (apply max (map first pts))))
+      (normalize (map (lambda (p) (list (second p) (- maxr (first p)))) pts))))
+  (define (rotate pts k)
+    (let loop ((n (modulo k 4)) (acc pts))
+      (if (= n 0) acc (loop (- n 1) (rot1 acc)))))
+  (define (canonical cells)
+    (let* ((pts (normalize cells))
+           (vars (remove-duplicates
+                  (apply append
+                         (for/list ((k (in-range 4)))
+                           (let ((r (rotate pts k)))
+                             (list r (mirror-h r))))))))
+      (first (sort vars
+                   (lambda (a b)
+                     (string<? (format "~a" a) (format "~a" b)))))))
+  (define bars
+    (filter (lambda (c)
+              (all? (lambda (r) (= (at g r c) 5))
+                    (range 0 (rows g))))
+            (range 0 (cols g))))
+  (define c1 (first bars))
+  (define c2 (second bars))
+  (define panels
+    (list (subgrid g 0 0 (- (rows g) 1) (- c1 1))
+          (subgrid g 0 (+ c1 1) (- (rows g) 1) (- c2 1))
+          (subgrid g 0 (+ c2 1) (- (rows g) 1) (- (cols g) 1))))
+  (define largest
+    (map (lambda (p)
+           (first (sort (objects p 0)
+                        (lambda (a b) (> (obj-size a) (obj-size b))))))
+         panels))
+  (define sigs (map (lambda (o) (canonical (obj-cells o))) largest))
+  (define max-count
+    (apply max
+           (map (lambda (sig)
+                  (count-where (lambda (x) (equal? x sig)) sigs))
+                sigs)))
+  (define common
+    (first (filter (lambda (sig)
+                     (= (count-where (lambda (x) (equal? x sig)) sigs)
+                        max-count))
+                   sigs)))
+  (define matching
+    (filter (lambda (o) (equal? (canonical (obj-cells o)) common)) largest))
+  (define selector
+    (first (filter (lambda (x) (or (= x 1) (= x 2))) (apply append g))))
+  (define selected (if (= selector 1) (first matching) (second matching)))
+  (define observed (normalize (obj-cells selected)))
+  (define out-h (+ 1 (apply max (map first observed))))
+  (define out-w (+ 1 (apply max (map second observed))))
+  (paint-cells (empty-grid out-h out-w 0) observed 8)))
