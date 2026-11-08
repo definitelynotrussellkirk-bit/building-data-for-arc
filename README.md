@@ -227,27 +227,13 @@ to 50 rows and allow at most 1,000. Use `offset` for more. Invalid filters retur
 
 ## Checks and reviews
 
-The [latest reviewer release](https://github.com/definitelynotrussellkirk-bit/ARCpuzzles/releases/latest)
-contains the self-contained ZIP and checksums. The current trial draws one unapproved
-base from a rotating 500-generator subset and requires one full parametric build
-with deep adversarial self-review. No peer audits or solves are assigned by default.
-Reviewers start at `START-HERE.md`, then `python3 review.py start` and `duties`.
-Owners publish quickly with `review pack-full --fast`; [review operations](REVIEW/README.md)
-records the frozen policies, source-bound intake and separate verification status.
-The generator ZIP to send is local
-`var/review/SEND-THIS-ARCpuzzles-review.zip`. It is an ignored generated
-artifact, so a GitHub clone does not contain it. The
-[review guide](REVIEW/README.md) records how to obtain or rebuild the packet
-from its hash-bound sources. The separate
-`var/review/SEND-THIS-ARC2-loop-review.zip` reviews the rollout-to-distillation
-process: one random improvement ticket plus two audits. Its code and intake
-belong to [ARC2train](https://github.com/definitelynotrussellkirk-bit/ARC2train/blob/main/docs/harness-review.md).
-The small [Flash-to-Qwen9 validation packet](https://github.com/definitelynotrussellkirk-bit/ARC2train/blob/main/docs/teammate-validation.md)
-is a separate CPU teammate handoff at `var/review/SEND-THIS-Flash-Qwen9-validation.zip`.
-It includes English-first instructions, a Chinese translation and three pinned
-historical traces; it does not grant compute or training admission.
-The working folder shows the sendable packets and `INTERNAL`; retained
-receipts and packet libraries keep stable paths behind that clean view.
+Review packets are not part of this release. Generators were reviewed from
+self-contained packets built by `review pack-full`; the packet sources, reviewer
+assignments and raw returns are withheld, so the packet commands below do not
+run in this copy. Reviews that were accepted are kept with each generator
+(`notes.md`, `evidence/`, `counterexamples/`), and approval receipts are under
+`REVIEW/approvals/`. The paper's Appendix G (`writeup/paper/main.pdf`) quotes
+the packet instructions.
 
 Blind and exposed Python solves are optional historical lanes. Issued packets
 retain their original contracts; current one-build packets require neither.
