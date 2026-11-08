@@ -38,6 +38,7 @@ ARCpuzzles treats correct labels and sensible lessons as requirements. The point
 - the same identifiability screen applied after the fact to ARCpuzzles episodes (Section 12), and per-generator mastery of the trained model measured by prefill scans (Appendix D);
 - the ideas we used and the pitfalls we hit, each with its case (Section 14);
 - the release: everything, unfinished generators included, with each generator's label and open findings (Section 15), and how to use it (Section 17).
+- a direct answer to each of the six judging criteria (Section 19);
 - excerpts from the reviewer instructions (Appendix F), and a random easy, medium and hard generator from each library (Appendix G).
 
 ## 2 Examples
@@ -637,13 +638,29 @@ arcpuzzles lesson-census 3ef9eae12446 --per-band 20 --out var/census/3ef9.json
 
 Our ARC-AGI-2 submission is a Qwen3.8-27B that writes the output grid directly, trained for 273 GPU-hours (231 on one GPU, 42 on two rented multi-GPU pods) on training examples drawn almost entirely (94%) from generators: ARCpuzzles plus screened RE-ARC, ARC-GEN and NVARC episodes. The run, its supervision format and its evaluations are in the appendices (A–D). Submitted alone, the model scored 5.00 on the public leaderboard (submission 57783445, 29 October); three other submissions of it between 27 and 30 October scored 2.50 to 3.75. Our recipe saw only 379,598 training examples over 48 rounds. NVARC's solution trained on 3.2 million augmented samples of 103k synthetic puzzles [7], and the 2026 third-place solution on about six million verified puzzles, each expanded into 24 augmented samples [8]. We do not attribute the accuracy gap to data volume alone; model, format, test-time training and compute differ.
 
-## 19 Conclusion
+## 19 Against the judging criteria
+
+The paper track scores six criteria. We answer each directly.
+
+**Accuracy.**  Low. The model trained on these data, submitted alone, scored 5.00 on the public leaderboard (submission 57783445); three other submissions of it scored 2.50 to 3.75 (Section 18). Our local public-evaluation scores are not independent evidence, because those tasks were in training (Appendix C).
+
+**Universality.**  None of the steps depends on ARC grids; only the DSL and the samplers do. Compute every label with an executable rule; draw inputs with keyed, reproducible randomness; declare the rival rules a learner might infer; schedule inputs that refute them; for parametric families, certify per lesson that only one setting fits; and bind approval to the reviewed source. Any task family whose rules can be executed and whose inputs can be generated can follow the same steps. Our evidence covers ARC-style grid tasks only.
+
+**Progress.**  Others can use three things to reach a higher score: the data, with 1,984 approved generators and 941 parametric families adding 1,233 rule variants, released with the 2,077 unfinished generators and labels that say how far each got (Section 15); checks that test a lesson against declared rivals, and a screen that flags ambiguous episodes in RE-ARC, ARC-GEN, NVARC and our own data (Section 12); and the ideas and pitfalls from building them (Section 14). We have not shown that these choices raise a leaderboard score. Our own run suggests that the next step was training longer, not adding capacity (Appendix A).
+
+**Theory.**  An executable rule makes every label correct, but correct labels can still leave a rival rule that fits every demonstration and answers the query differently (Section 1). A good lesson is lossless on a class of sensible rules yet hard to invert. Declared rivals make that class concrete; schedules place the inputs that refute them in every window of consecutive draws (Section 5); lesson checks and per-episode certificates reject lessons the rivals survive (Sections 7 and 8). Agreement between label programs, the check RE-ARC and NVARC use, constrains each output given its input, not which inputs appear together, so it cannot provide this (Section 12). That such lessons train better models is a hypothesis we did not test with a controlled comparison.
+
+**Completeness.**  The appendices give the model and adapter configuration, the optimiser and its changes, the data mix by source and mode, the supervision formats, the evaluations, and the prefill scans that chose the data (Appendices A–D). Section 17 gives the commands to regenerate data from the release.
+
+**Novelty.**  Compared with RE-ARC, ARC-GEN and NVARC, the datasets we examined, the new elements are: treating the identifiability of each lesson, not only label agreement, as a requirement; declared rivals with schedules and per-lesson checks; parametric families certified per episode; review and approval bound to exact source hashes; and releasing unfinished generators with labels that state their stage (Section 12). We make no claim beyond those three datasets.
+
+## 20 Conclusion
 
 Labels computed by an executable rule are correct by construction, so the hard part of building data for ARC is the lesson: which inputs appear together, and whether they rule out the readings a solver would plausibly take instead. No finite lesson determines a rule, so every lesson check here is relative to declared rivals, a regularizer rather than a proof. Within that frame, the measurements in this paper say where lessons fail. Simple shortcuts fit the original pairs of five of six randomly sampled generators. In one audited NVARC puzzle, independent sampling hides a second rule from 4.4% of three-demonstration lessons. Two-demonstration episodes are flagged several times as often as longer ones. Declarations and approvals drift as the checks tighten: none of six sampled approved generators passes today's battery in full.
 
 We release all 4,061 generators, unfinished ones included, with their labels, open findings and evidence, so that others can use the approved ones, see how much work remains, and continue it. Section 14 lists the ideas and pitfalls we would want to know before starting again.
 
-## 20 Limitations
+## 21 Limitations
 
 - Rival and identifiability checks cover declared rivals on sampled lessons; they do not prove uniqueness.
 - Approval binds a generator's source hash, not the gate version. Checks added later, such as the 23 October verification of declared canonical shortcuts, are not re-run on approved generators; three approved generators examined here fail it.
@@ -708,6 +725,8 @@ We decided against further burst runs, because we could not tell how much the mo
 
 - **Capacity was barely used.** In the final adapter (update 19,969, rank 128), the 32 largest singular values of each weight update hold a median 98.2% of its squared Frobenius norm (its energy), and at least 88.2% in every one of its 496 tensors; the median stable rank is 2.5. A rank-32 adapter could have held almost all of what this one learned.
 - **Training had not converged.** The adapter's norm was still growing, from 10.1 at update 13,673 to 14.7 at the end. Each route is trained once, so a round's training loss is measured on examples the model had not seen. That loss fell from 0.032 in rounds 38–40 to 0.025 in rounds 48–50. The repair modes fell (verify 0.0057 to 0.0030, verify-then-fix 0.048 to 0.042), and verify-then-fix routes also made up less of the mix (56% to 48%). The direct-answer loss held near 0.017 over the same rounds, on data chosen as the most surprising draws available.
+
+Training for about two weeks (22 October to 2 November) sounds long, but it is short by current standards, and keeping one Colab session alive for the whole run was itself difficult.
 
 ![Figure 13](figures/fig-run-modes.png)
 
