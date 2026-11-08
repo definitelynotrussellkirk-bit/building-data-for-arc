@@ -1,5 +1,11 @@
 # ARCpuzzles
 
+Release for the ARC Prize 2026 paper **Building data for ARC: labels are cheap, lessons are not**.
+
+- **Gallery** of the 1,984 approved generators, with generated lessons, rival checks and rules: https://arc2.notagreatname.com/
+- **Paper:** [writeup/paper/main.pdf](writeup/paper/main.pdf) (Markdown version: [writeup/building-data-for-arc.md](writeup/building-data-for-arc.md))
+- **What is here:** 4,061 procedural generators for ARC-style tasks, each a Python input sampler and a Racket reference rule. 1,984 are approved; the rest are released unfinished, with labels that say how far each got. Generation and export use approved generators by default. Read the paper's sections "Using the release" and "Limitations" before training on the data.
+
 **[Generate puzzles or review generators](docs/teammate-start.md)**
 
 Query puzzles, generate verified examples, and prepare generator improvement
@@ -230,7 +236,7 @@ self-contained packets built by `review pack-full`; the packet sources, reviewer
 assignments and raw returns are withheld, so the packet commands below do not
 run in this copy. Reviews that were accepted are kept with each generator
 (`notes.md`, `evidence/`, `counterexamples/`), and approval receipts are under
-`REVIEW/approvals/`. The paper's Appendix G (`writeup/paper/main.pdf`) quotes
+`REVIEW/approvals/`. The paper's Appendix F (`writeup/paper/main.pdf`) quotes
 the packet instructions.
 
 Blind and exposed Python solves are optional historical lanes. Issued packets
