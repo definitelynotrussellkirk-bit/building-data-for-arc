@@ -1,7 +1,7 @@
 # Generate puzzles or improve generators
 
-[HQ / all five jobs](https://github.com/definitelynotrussellkirk-bit/ARC2HQ#what-do-you-want-to-do)
-· [Download retained model traces](https://github.com/definitelynotrussellkirk-bit/ARC2train/blob/main/docs/download-data.md)
+HQ / all five jobs
+· Download retained model traces
 
 Accept the private GitHub invitation first. Clone ARCpuzzles for dataset
 generation; the reviewer ZIP already contains its own generator library.
@@ -110,7 +110,7 @@ and model-trajectory admission are separate.
 
 ## Improve generators
 
-**[Download the current reviewer packet](https://github.com/definitelynotrussellkirk-bit/ARCpuzzles/releases/latest).**
+**Download the current reviewer packet.**
 Download **`SEND-THIS-ARCpuzzles-review.zip`**, extract it, read `START-HERE.md`, then
 run `python3 review.py verify`, `python3 review.py start` and
 `python3 review.py duties` from the extracted packet root. Current packets carry

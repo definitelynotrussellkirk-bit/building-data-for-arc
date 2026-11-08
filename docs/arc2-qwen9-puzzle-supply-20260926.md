@@ -10,9 +10,9 @@ their recorded hashes. Rebuild the relevant inventory before another selection. 
 work leads and review commands, use [teammate pickup](onboarding.md) and the
 [review guide](../REVIEW/README.md).
 
-[HQ's campaign map](https://github.com/definitelynotrussellkirk-bit/ARC2HQ/blob/main/CAMPAIGN_MAP.md) selects all 1,120
+HQ's campaign map selects all 1,120
 original public tasks as the learner pool. This repository supplies new grid
-instances and verified labels; [ARC2train](https://github.com/definitelynotrussellkirk-bit/ARC2train/blob/main/docs/rollout-data.md)
+instances and verified labels; ARC2train
 owns rollout captures and learner admission.
 
 ## Available producer surface
@@ -355,5 +355,5 @@ views of their parent, not generator episodes. Their actor-facing projection
 must keep query answers private, preserve the canonical task ID and record the
 exact view/order. DPO comparisons require the same initial view and prefix on
 both routes; pass@2 evaluation fixes both views before looking at private
-scores. The [ARC2train panel](https://github.com/definitelynotrussellkirk-bit/ARC2train/blob/main/experiments/official_dpo_panel/README.md)
+scores. The ARC2train panel
 owns the original task/view inventory.

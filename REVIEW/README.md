@@ -318,8 +318,8 @@ evidence, never the source packet or a checkout/runtime copy.
 | Review purpose | Stable local ZIP | Owner guide |
 |---|---|---|
 | Generator repair, Python solve and generator audits | [SEND-THIS-ARCpuzzles-review.zip](../var/review/SEND-THIS-ARCpuzzles-review.zip) | This guide |
-| ARC2 collection, serving, capture and distillation process | [SEND-THIS-ARC2-loop-review.zip](../var/review/SEND-THIS-ARC2-loop-review.zip) | [ARC2train harness review](https://github.com/definitelynotrussellkirk-bit/ARC2train/blob/main/docs/harness-review.md) |
-| Riri's CPU action-mask/token/length validation | [SEND-THIS-Flash-Qwen9-validation.zip](../var/review/SEND-THIS-Flash-Qwen9-validation.zip) | [English-first guide, then Chinese](https://github.com/definitelynotrussellkirk-bit/ARC2train/blob/main/docs/teammate-validation.md) |
+| ARC2 collection, serving, capture and distillation process | [SEND-THIS-ARC2-loop-review.zip](../var/review/SEND-THIS-ARC2-loop-review.zip) | ARC2train harness review |
+| Riri's CPU action-mask/token/length validation | [SEND-THIS-Flash-Qwen9-validation.zip](../var/review/SEND-THIS-Flash-Qwen9-validation.zip) | English-first guide, then Chinese |
 
 Each purpose has one canonical sendable ZIP. The local generator
 [handoff record](full-packet-current.json) gives its current size, SHA-256,
@@ -334,7 +334,7 @@ edit the starter `RESULTS.json` produced by their draw.
 
 A fresh Git clone has the handoff metadata, but not this ignored ZIP, its
 build/check receipts, original returned ZIPs, or the optional Racket archive.
-Download the pinned packet from the [latest release](https://github.com/definitelynotrussellkirk-bit/ARCpuzzles/releases/latest),
+Download the pinned packet from the latest release,
 which includes `SEND-THIS-ARCpuzzles-review.zip`, `SHA256SUMS` and packet identity.
 With repository access, `gh release download --repo definitelynotrussellkirk-bit/ARCpuzzles
 --pattern SEND-THIS-ARCpuzzles-review.zip --pattern SHA256SUMS --dir downloads`

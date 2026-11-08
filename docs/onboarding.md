@@ -3,7 +3,7 @@
 Start here for current navigation; the
 [September 11 pickup](SESSION_STATE.md) records historical migration work.
 ARCpuzzles owns generators, reference rules, review evidence, and hashed dataset
-exports. [ARC2HQ](https://github.com/definitelynotrussellkirk-bit/ARC2HQ/blob/main/README.md)
+exports. ARC2HQ
 owns the shared plan; ARC2train owns rollout archives and learner admission;
 ARC2kaggle owns competition notebooks. Work in the repo that owns your task.
 
@@ -16,12 +16,12 @@ feeding training. Read the [accepted-family index](../REVIEW/parametric-families
 and [current packet record](../REVIEW/full-packet-current.json) for updated counts,
 source identities and verification limits; rerun `arcpuzzles stats` for live base
 approval counts. The checkpoint source/evidence is pushed at
-[`8d91eb358`](https://github.com/definitelynotrussellkirk-bit/ARCpuzzles/commit/8d91eb35837247e9e983a3f34c6beca150a18009).
+`8d91eb358`.
 
 The sendable file is `var/review/SEND-THIS-ARCpuzzles-review.zip`. A clone can
 retrieve the same hash-bound artifact, checksums and source identity from the
-[saved private release](https://github.com/definitelynotrussellkirk-bit/ARCpuzzles/releases/tag/review-packet-20261026-a1204407);
-the [latest release](https://github.com/definitelynotrussellkirk-bit/ARCpuzzles/releases/latest)
+saved private release;
+the latest release
 may be newer. Fast source closure/content hashes and the remote asset digest
 were verified. Historical-evidence validation and cold-runtime replay remain
 pending; trainer reload/activation was not verified.
@@ -98,7 +98,7 @@ Keep the current admission/runtime freeze: do not change
 `shared/runtime/**`, or `shared/tools/comment_solutions.py` as an intake workaround.
 This lane owns data curation; training mixtures, model jobs and checkpoints stay
 with the trainer. The append-only coordination channel is
-[ARC2HQ/TRAINING-FEEDBACK.md](https://github.com/definitelynotrussellkirk-bit/ARC2HQ/blob/main/TRAINING-FEEDBACK.md)
+ARC2HQ/TRAINING-FEEDBACK.md
 (locally `/home/user/Desktop/ARC2HQ/TRAINING-FEEDBACK.md`). Use it when dataset
 consumption needs checking; source acceptance alone does not prove the trainer
 has loaded the new families.

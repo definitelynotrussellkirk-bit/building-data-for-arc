@@ -3,7 +3,7 @@
 For generator improvements and these solve exercises, send
 `var/review/SEND-THIS-ARCpuzzles-review.zip`. The separate
 `var/review/SEND-THIS-ARC2-loop-review.zip` reviews the model/harness/training
-process through random tickets; [ARC2train owns that workflow](https://github.com/definitelynotrussellkirk-bit/ARC2train/blob/main/docs/harness-review.md).
+process through random tickets; ARC2train owns that workflow.
 New packets first require a separate approved-task solve **before** opening any
 repair/reference material. Draw with `python3 assignment.py`, then follow the
 blind task in `DUTIES.md`:

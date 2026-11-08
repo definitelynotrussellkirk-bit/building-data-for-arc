@@ -4,7 +4,7 @@ This is the September 11 migration snapshot. Its uncommitted-change statements,
 job observations, and next-training notes describe that date, not current Git or
 run state. Start with [teammate pickup](onboarding.md) and the
 [review guide](../REVIEW/README.md) for maintained puzzle work; cross-project
-direction lives in [HQ strategy](https://github.com/definitelynotrussellkirk-bit/ARC2HQ/blob/main/STRATEGY.md).
+direction lives in HQ strategy.
 
 The focused-repository split is verified for maintained work. Preserve ARCagi2
 and its existing jobs. Selected new training: Qwen3.5-9B rank128/alpha32 LoRA, Transformers/PEFT,

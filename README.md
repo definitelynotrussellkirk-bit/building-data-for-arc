@@ -1,13 +1,11 @@
 # ARCpuzzles
 
-**[HQ / all five lanes](https://github.com/definitelynotrussellkirk-bit/ARC2HQ#what-do-you-want-to-do)** · **[Generate puzzles or review generators](docs/teammate-start.md)**
+**[Generate puzzles or review generators](docs/teammate-start.md)**
 
 Query puzzles, generate verified examples, and prepare generator improvement
 reviews from one independent repository. No ARCagi2 or sibling checkout is needed.
 
-New teammates can start with the
-[ARC2 repo map](https://github.com/definitelynotrussellkirk-bit/ARC2HQ/blob/main/README.md#new-teammate-first-five-minutes),
-then use [teammate pickup](docs/onboarding.md) for read-only commands, current
+New readers can use [teammate pickup](docs/onboarding.md) for read-only commands, current
 work leads, ownership, and artifacts missing from a clone. Read this repo's
 [rules](AGENTS.md), [placement guide](docs/placement.md), and
 [review guide](REVIEW/README.md) before generator assignments.
