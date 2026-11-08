@@ -668,7 +668,7 @@ Direction was set on 22 October 2026: one Qwen3.8-27B answering with the grid di
 | \quad from public training tasks | 17,230 |
 | \quad from public evaluation tasks | 3,981 |
 | Routes by mode | direct 207,625; refine 70,092; verify-then-fix 55,461; verify 27,304; points 14,079; fix 3,597; exec 1,440 |
-| Parametric families | from round 7; up to 292 families and 623 settings in one round |
+| Parametric families | from round 7; up to 758 families and 1,554 settings in one round (round 12); none in rounds 29–35 and 37 |
 | External generators | RE-ARC 391, ARC-GEN 891, NVARC 855 files, requested at one third of generator items |
 | Pilot (round 1) | 4,332 episodes from 1,459 approved generators in 530 families; answer loss 0.191 $\to$ 0.124 |
 
